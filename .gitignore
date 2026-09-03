@@ -1,0 +1,28 @@
+# Rust
+/backend/target/
+Cargo.lock
+
+# Node.js
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+# Local Pi runtime state
+.atl/

@@ -1,0 +1,65 @@
+# Tasks: p1-backend-base — Lean Axum Foundation
+
+## Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated changed lines | 550 - 750 |
+| 400-line budget risk | High |
+| Chained PRs recommended | Yes |
+| Suggested split | PR 1 (Foundation) → PR 2 (Auth Core) → PR 3 (End-to-End Wiring) |
+| Delivery strategy | auto-chain |
+| Chain strategy | pending |
+
+Decision needed before apply: Yes
+Chained PRs recommended: Yes
+Chain strategy: pending
+400-line budget risk: High
+
+### Suggested Work Units
+
+| Unit | Goal | Likely PR | Focused test command | Runtime harness | Rollback boundary |
+|------|------|-----------|----------------------|-----------------|-------------------|
+| 1 | Server Boot, Config, DB Pool, & Errors | PR 1 | `cargo test` (Error/Config) | `curl localhost:PORT/health` | `backend/src/{config,db,error,state}.rs` |
+| 2 | Auth Core: Passwords, Tokens, Rate Limit | PR 2 | `cargo test` (Auth logic) | `cargo test` (Auth unit) | `backend/src/auth/` |
+| 3 | End-to-End Wiring: Routes & Middleware | PR 3 | `cargo test` (Integration) | `docker compose up` + curl | `backend/src/routes/`, `main.rs` |
+
+## Phase 1: Foundation & Infrastructure (Work Unit 1)
+
+- [ ] 1.1 Update `backend/Cargo.toml` with Axum, Tokio, SQLx, tower-http, etc.
+- [ ] 1.2 Create `backend/src/config.rs` for env-driven boot (fail-closed).
+- [ ] 1.3 Create `backend/src/error.rs` with `AppError` enum and `IntoResponse` envelope.
+- [ ] 1.4 Create `backend/src/db.rs` with bounded `PgPool` (max 5, acquire ≤5s).
+- [ ] 1.5 Create `backend/src/state.rs` for shared `AppState`.
+- [ ] 1.6 Create `backend/src/main.rs` minimal boot logic (Config $\to$ DB $\to$ Server).
+- [ ] 1.7 Implement `GET /health` in `backend/src/routes/health.rs` (no DB).
+- [ ] 1.8 Implement `GET /ready` in `backend/src/routes/ready.rs` (`SELECT 1`, 2s timeout).
+- [ ] 1.9 Verify Unit 1: `cargo test`, `cargo clippy`, and curl probes for `/health` (read-only) and `/ready` (read-only).
+
+## Phase 2: Auth Core Implementation (Work Unit 2)
+
+- [ ] 2.1 Create `backend/src/auth/password.rs`: Argon2id verify/hash.
+- [ ] 2.2 Create `backend/src/auth/tokens.rs`: 32-byte random $\to$ base64url $\to$ SHA-256 hash.
+- [ ] 2.3 Create `backend/src/auth/rate_limit.rs`: In-process `Mutex<HashMap>` (10/15min).
+- [ ] 2.4 Create `backend/src/auth/middleware.rs`: Bearer extraction $\to$ Hash $\to$ Session lookup.
+- [ ] 2.5 Write unit tests for token round-trip, password verification, and limiter windows.
+- [ ] 2.6 Verify Unit 2: `cargo test` (auth module) and `cargo clippy`.
+
+## Phase 3: End-to-End Wiring & Integration (Work Unit 3)
+
+- [ ] 3.1 Implement `POST /login` in `backend/src/routes/login.rs` (Auth Core $\to$ DB).
+- [ ] 3.2 Implement `POST /logout` in `backend/src/routes/logout.rs` (Revoke $\to$ DB).
+- [ ] 3.3 Implement `GET /me` in `backend/src/routes/me.rs` (Middleware $\to$ User/Prefs).
+- [ ] 3.4 Implement a one-shot CLI command in `main.rs` (or separate bin) to create seed-user.
+- [ ] 3.5 Wire all routes into `main.rs` with correct layer order (RequestId $\to$ Trace $\to$ CORS $\to$ Auth).
+- [ ] 3.6 Update `docker/backend.Dockerfile` with `SQLX_OFFLINE=true`, `.sqlx` cache, and non-root user.
+- [ ] 3.7 Update `docker-compose.yml` with healthchecks, resource limits, and `depends_on healthy`.
+- [ ] 3.8 Update `.gitignore` to un-ignore `Cargo.lock`.
+- [ ] 3.9 Verify Unit 3: `cargo test` (integration), `docker compose up`, and full login/me/logout curl flow.
+
+## Phase 4: Verification & Cleanup
+
+- [ ] 4.1 Run `cargo sqlx prepare` to generate `.sqlx/` offline cache.
+- [ ] 4.2 Verify `x-request-id` presence on all responses (including 401/500).
+- [ ] 4.3 Verify that passwords/tokens NEVER appear in logs.
+- [ ] 4.4 Final check: `cargo clippy --all-targets -- -D warnings`.

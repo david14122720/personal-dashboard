@@ -1,0 +1,12 @@
+testing:
+  strict_tdd: false
+  workspace_command: null
+  projects:
+    - name: backend
+      path: backend
+      command: cargo test
+      layer: unit/integration
+    - name: frontend
+      path: frontend
+      command: npm test
+      layer: unit/component
