@@ -17,6 +17,7 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(digest)
 }
 
+#[allow(dead_code)]
 /// Constant-time comparison of two hex-encoded hashes.
 /// Returns `true` iff they are equal length and equal bytes.
 pub fn hashes_equal(a: &str, b: &str) -> bool {

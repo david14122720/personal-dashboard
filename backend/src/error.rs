@@ -19,10 +19,11 @@ pub enum AppError {
     Internal,
     #[error("database error")]
     Db,
+    #[error("rate limited")]
+    RateLimited(u64),
 }
 
 impl AppError {
-    #[allow(dead_code)]
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Auth => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
@@ -30,17 +31,18 @@ impl AppError {
             Self::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "VALIDATION_ERROR"),
             Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
+            Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED"),
             Self::Internal | Self::Db => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         }
     }
 
-    #[allow(dead_code)]
     fn message(&self) -> String {
         match self {
             Self::Validation(msg) | Self::Conflict(msg) => msg.clone(),
-            Self::Auth => "Unauthorized".to_string(),
+            Self::Auth => "Invalid credentials".to_string(),
             Self::Forbidden => "Forbidden".to_string(),
             Self::NotFound => "Not found".to_string(),
+            Self::RateLimited(_) => "Too many requests".to_string(),
             Self::Internal | Self::Db => "Internal server error".to_string(),
         }
     }
@@ -49,13 +51,24 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, code) = self.status_and_code();
+        let retry = match self {
+            Self::RateLimited(secs) => Some(secs),
+            _ => None,
+        };
         let body = Json(json!({
             "error": {
                 "code": code,
                 "message": self.message()
             }
         }));
-        (status, body).into_response()
+        let mut resp = (status, body).into_response();
+        if let Some(secs) = retry {
+            resp.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
+            );
+        }
+        resp
     }
 }
 

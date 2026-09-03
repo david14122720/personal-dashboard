@@ -1,6 +1,8 @@
 # Rust
 /backend/target/
-Cargo.lock
+# Cargo.lock committed for reproducible backend builds (see p1-backend-base)
+/frontend/Cargo.lock
+!backend/Cargo.lock
 
 # Node.js
 /frontend/node_modules/

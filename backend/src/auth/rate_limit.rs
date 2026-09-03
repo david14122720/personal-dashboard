@@ -64,7 +64,7 @@ impl LoginRateLimiter {
         }
     }
 
-    /// Current count for `ip` within window (for testing).
+    #[allow(dead_code)]
     #[cfg(test)]
     fn count(&self, ip: IpAddr) -> usize {
         let map = self.inner.lock().unwrap();

@@ -47,15 +47,15 @@ Chain strategy: pending
 
 ## Phase 3: End-to-End Wiring & Integration (Work Unit 3)
 
-- [ ] 3.1 Implement `POST /login` in `backend/src/routes/login.rs` (Auth Core $\to$ DB).
-- [ ] 3.2 Implement `POST /logout` in `backend/src/routes/logout.rs` (Revoke $\to$ DB).
-- [ ] 3.3 Implement `GET /me` in `backend/src/routes/me.rs` (Middleware $\to$ User/Prefs).
-- [ ] 3.4 Implement a one-shot CLI command in `main.rs` (or separate bin) to create seed-user.
-- [ ] 3.5 Wire all routes into `main.rs` with correct layer order (RequestId $\to$ Trace $\to$ CORS $\to$ Auth).
-- [ ] 3.6 Update `docker/backend.Dockerfile` with `SQLX_OFFLINE=true`, `.sqlx` cache, and non-root user.
-- [ ] 3.7 Update `docker-compose.yml` with healthchecks, resource limits, and `depends_on healthy`.
-- [ ] 3.8 Update `.gitignore` to un-ignore `Cargo.lock`.
-- [ ] 3.9 Verify Unit 3: `cargo test` (integration), `docker compose up`, and full login/me/logout curl flow.
+- [x] 3.1 Implement `POST /login` in `backend/src/routes/login.rs` (Auth Core $\to$ DB).
+- [x] 3.2 Implement `POST /logout` in `backend/src/routes/logout.rs` (Revoke $\to$ DB).
+- [x] 3.3 Implement `GET /me` in `backend/src/routes/me.rs` (Middleware $\to$ User/Prefs).
+- [x] 3.4 Implement a one-shot CLI command in `main.rs` (or separate bin) to create seed-user.
+- [x] 3.5 Wire all routes into `main.rs` with correct layer order (RequestId $\to$ Trace $\to$ CORS $\to$ Auth).
+- [x] 3.6 Update `docker/backend.Dockerfile` with `SQLX_OFFLINE=true`, `.sqlx` cache, and non-root user.
+- [x] 3.7 Update `docker-compose.yml` with healthchecks, resource limits, and `depends_on healthy`.
+- [x] 3.8 Update `.gitignore` to un-ignore `Cargo.lock`.
+- [x] 3.9 Verify Unit 3: `cargo test` (integration), `docker compose up`, and full login/me/logout curl flow.
 
 ## Phase 4: Verification & Cleanup
 
