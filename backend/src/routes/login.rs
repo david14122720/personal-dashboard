@@ -8,6 +8,12 @@ use crate::{
     state::AppState,
 };
 
+/// Look up a user by email. `$1` is cast to `citext` so the comparison is
+/// case-insensitive, matching the `CITEXT` column type (a plain `text` bind
+/// would otherwise resolve `citext = text` case-sensitively).
+const LOGIN_LOOKUP_SQL: &str =
+    "SELECT id, password_hash, is_active FROM users WHERE email = $1::citext";
+
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
@@ -60,9 +66,7 @@ pub async fn login_handler(
     }
 
     // Fetch user by CITEXT email
-    let row = sqlx::query_as::<_, (uuid::Uuid, String, bool)>(
-        "SELECT id, password_hash, is_active FROM users WHERE email = $1",
-    )
+    let row = sqlx::query_as::<_, (uuid::Uuid, String, bool)>(LOGIN_LOOKUP_SQL)
     .bind(&email)
     .fetch_optional(&state.pool)
     .await
@@ -92,4 +96,21 @@ pub async fn login_handler(
     .map_err(|_| AppError::Internal)?;
 
     Ok(Json(LoginResponse { token, expires_at }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LOGIN_LOOKUP_SQL;
+
+    #[test]
+    fn login_lookup_binds_email_as_citext() {
+        // Regression: the email lookup predicate MUST cast `$1` to `citext` so
+        // that `citext = citext` comparison is case-insensitive. If it binds a
+        // plain `text` value, PG falls back to case-sensitive comparison and
+        // login fails for any casing other than the stored one.
+        assert!(
+            LOGIN_LOOKUP_SQL.contains("WHERE email = $1::citext"),
+            "login lookup must use CITEXT-aware comparison, got: {LOGIN_LOOKUP_SQL}"
+        );
+    }
 }
