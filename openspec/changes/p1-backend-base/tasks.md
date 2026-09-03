@@ -38,12 +38,12 @@ Chain strategy: pending
 
 ## Phase 2: Auth Core Implementation (Work Unit 2)
 
-- [ ] 2.1 Create `backend/src/auth/password.rs`: Argon2id verify/hash.
-- [ ] 2.2 Create `backend/src/auth/tokens.rs`: 32-byte random $\to$ base64url $\to$ SHA-256 hash.
-- [ ] 2.3 Create `backend/src/auth/rate_limit.rs`: In-process `Mutex<HashMap>` (10/15min).
-- [ ] 2.4 Create `backend/src/auth/middleware.rs`: Bearer extraction $\to$ Hash $\to$ Session lookup.
-- [ ] 2.5 Write unit tests for token round-trip, password verification, and limiter windows.
-- [ ] 2.6 Verify Unit 2: `cargo test` (auth module) and `cargo clippy`.
+- [x] 2.1 Create `backend/src/auth/password.rs`: Argon2id verify/hash.
+- [x] 2.2 Create `backend/src/auth/tokens.rs`: 32-byte random $\to$ base64url $\to$ SHA-256 hash.
+- [x] 2.3 Create `backend/src/auth/rate_limit.rs`: In-process `Mutex<HashMap>` (10/15min).
+- [x] 2.4 Create `backend/src/auth/middleware.rs`: Bearer extraction $\to$ Hash $\to$ Session lookup.
+- [x] 2.5 Write unit tests for token round-trip, password verification, and limiter windows.
+- [x] 2.6 Verify Unit 2: `cargo test` (auth module) and `cargo clippy`.
 
 ## Phase 3: End-to-End Wiring & Integration (Work Unit 3)
 
