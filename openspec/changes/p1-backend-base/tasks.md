@@ -26,15 +26,15 @@ Chain strategy: pending
 
 ## Phase 1: Foundation & Infrastructure (Work Unit 1)
 
-- [ ] 1.1 Update `backend/Cargo.toml` with Axum, Tokio, SQLx, tower-http, etc.
-- [ ] 1.2 Create `backend/src/config.rs` for env-driven boot (fail-closed).
-- [ ] 1.3 Create `backend/src/error.rs` with `AppError` enum and `IntoResponse` envelope.
-- [ ] 1.4 Create `backend/src/db.rs` with bounded `PgPool` (max 5, acquire ≤5s).
-- [ ] 1.5 Create `backend/src/state.rs` for shared `AppState`.
-- [ ] 1.6 Create `backend/src/main.rs` minimal boot logic (Config $\to$ DB $\to$ Server).
-- [ ] 1.7 Implement `GET /health` in `backend/src/routes/health.rs` (no DB).
-- [ ] 1.8 Implement `GET /ready` in `backend/src/routes/ready.rs` (`SELECT 1`, 2s timeout).
-- [ ] 1.9 Verify Unit 1: `cargo test`, `cargo clippy`, and curl probes for `/health` (read-only) and `/ready` (read-only).
+- [x] 1.1 Update `backend/Cargo.toml` with Axum, Tokio, SQLx, tower-http, etc.
+- [x] 1.2 Create `backend/src/config.rs` for env-driven boot (fail-closed).
+- [x] 1.3 Create `backend/src/error.rs` with `AppError` enum and `IntoResponse` envelope.
+- [x] 1.4 Create `backend/src/db.rs` with bounded `PgPool` (max 5, acquire ≤5s).
+- [x] 1.5 Create `backend/src/state.rs` for shared `AppState`.
+- [x] 1.6 Create `backend/src/main.rs` minimal boot logic (Config $\to$ DB $\to$ Server).
+- [x] 1.7 Implement `GET /health` in `backend/src/routes/health.rs` (no DB).
+- [x] 1.8 Implement `GET /ready` in `backend/src/routes/ready.rs` (`SELECT 1`, 2s timeout).
+- [x] 1.9 Verify Unit 1: `cargo test`, `cargo clippy`, and curl probes for `/health` (read-only) and `/ready` (read-only).
 
 ## Phase 2: Auth Core Implementation (Work Unit 2)
 
