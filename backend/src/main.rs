@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod db;
 mod error;
+mod finance;
 mod routes;
 mod state;
 
