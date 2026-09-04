@@ -276,3 +276,72 @@ Additional gates: `cargo clippy --all-targets -- -D warnings` clean (after justi
 
 - NOTHING. All four slices complete (PR1 + PR2 + PR3 + PR4).
 - Next recommended: `sdd-verify` for `p2-finance-core`, then archive.
+
+## Remediation (bounded, TEST-ONLY) — verify CRITICAL-1 + CRITICAL-2 fixed
+
+- Authority: orchestrator remediation attempt, token-bound; implementation files
+  untouched (`git diff --stat` shows only the two `#[cfg(test)]` modules below
+  plus this note). No migration, no handler, no Cargo change.
+- Unit: fix the two test-harness bugs from `verify.md` section 6 (both had
+  always SKIP-printed without `DATABASE_URL`, so they never executed before
+  verify). Status: 2/2 fixed, static + live green, clippy clean.
+
+### CRITICAL-1 — reconciliation test asserted a false invariant (budgets.rs)
+
+- Root cause: the signed-sum query used `ELSE 0` for `transfer` legs while
+  `accounts.balance` includes transfer effects (app txn debits source,
+  credits dest). Live: bank `20.00` vs recomputed `0` → fail. The
+  "transfers net to zero" comment was true only globally (across both
+  accounts), never per account.
+- Fix (test-only): the per-account recomputation now nets transfer legs
+  symmetrically via the known seeded-transfer endpoints — leg on source
+  `wallet` counts `-amount`, leg on dest `bank` counts `+amount`
+  (`transactions` stores no direction marker; both legs are
+  `type='transfer'` with a positive amount, so the test uses its own seeded
+  endpoints). Assertion stays meaningful: cached balance == recomputed
+  ledger sum for every account (wallet `50.00` = 100−30−20, bank `20.00` =
+  +20, both asserted exactly as before).
+
+### CRITICAL-2 — atomicity harness sent multi-statement DDL via prepared protocol (transfers.rs)
+
+- Root cause: `DROP TRIGGER ...; CREATE TRIGGER ...` (install) and
+  `DROP TRIGGER ...; DROP FUNCTION ...` (cleanup) were each one
+  `sqlx::query` string. sqlx uses the extended (prepared-statement)
+  protocol, which rejects multi-command strings with `42601 cannot insert
+  multiple commands into a prepared statement`.
+- Fix (test-only): each DDL statement is now its own single-statement
+  `sqlx::query` call (stale-trigger DROP, then CREATE TRIGGER; TRIGGER
+  DROP, then FUNCTION DROP on cleanup). The single `CREATE FUNCTION`
+  (dollar-quoted body) was already one statement and is unchanged in
+  behavior. Fault scope unchanged (probe description + same-group check),
+  so parallel tests are still unaffected.
+
+### Proof
+
+| Gate | Command (backend/) | Result |
+|------|--------------------|--------|
+| Static, no DB | `cargo test` | 90 unit + 5 integration passed, 0 failed (DB-gated SKIP-print honestly) |
+| Focused static | `cargo test reconciliation_signed_sum_matches_cached_balance` / `cargo test rollback_on_second_leg_failure_leaves_no_orphans` | pass via SKIP path (no `DATABASE_URL`) |
+| Live scratch PG 18.6 (same-network Dokploy; scratch `p2_remed_scratch` created, migrations 0001–0005 applied, exercised, dropped; prod `pdbname` never mutated — connection refs opaque) | `DATABASE_URL=<live scratch> cargo test` | 90 unit + 5 integration passed, 0 failed |
+| Focused live | same `DATABASE_URL`, `--nocapture` on both tests | 1 passed each, no SKIP output — both execute against real PG |
+| Lint | `cargo clippy --all-targets -- -D warnings` | clean |
+
+### Files changed (test-code + this note only)
+
+- `backend/src/routes/budgets.rs` — `mod tests::reconciliation_signed_sum_matches_cached_balance` query + comments only.
+- `backend/src/routes/transfers.rs` — `mod tests::rollback_on_second_leg_failure_leaves_no_orphans` DDL splitting + comments only.
+- `openspec/changes/p2-finance-core/apply-progress.md` — this remediation note (append-only; all prior batches preserved above).
+
+### Review budget
+
+- Authored: ~58 changed lines (2 test-hunk fixes + comments + this note).
+  Single cohesive remediation slice; nothing beyond the two prescribed test
+  fixes was started. Implementation correctness was already proven by verify
+  (independent live reproduction); this slice only repairs the covering
+  tests so the rollback and reconciliation scenarios have passing tests at
+  runtime per the sdd-verify contract.
+
+## Remaining (post-remediation)
+
+- Remediation complete. Next recommended: re-verify `p2-finance-core`
+  (both covering tests now execute and pass against live PG), then archive.

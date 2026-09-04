@@ -695,9 +695,10 @@ mod tests {
 
     #[tokio::test]
     async fn reconciliation_signed_sum_matches_cached_balance() {
-        // Task 5.2: income adds, expenses subtract, transfers net to zero, so
-        // the signed transaction total must equal the trigger-maintained
-        // `accounts.balance` for every account.
+        // Task 5.2: income adds, expenses subtract, and transfers MOVE money
+        // (out of the source, into the destination), so the per-account
+        // signed ledger sum must net transfer legs symmetrically to equal
+        // the maintained `accounts.balance`.
         let Some(pool) = test_pool() else {
             eprintln!("SKIP reconciliation_signed_sum_matches_cached_balance: no DATABASE_URL");
             return;
@@ -757,10 +758,21 @@ mod tests {
                 .await
                 .expect("read balances");
         for (account_id, balance) in rows {
+            // Recompute the ledger per account: income adds, expenses
+            // subtract, and each transfer leg nets symmetrically — the leg on
+            // the source account (`wallet`) moved money out (-amount), the
+            // leg on the destination (`bank`) moved it in (+amount).
+            // `transactions` stores no direction marker (both legs are
+            // `type='transfer'` with a positive amount), so the test nets
+            // them via the known endpoints of the seeded transfer above.
+            // Assertion stays meaningful: the maintained cached balance must
+            // equal the recomputed ledger sum for every account.
             let signed: Decimal = sqlx::query_scalar(
-                "SELECT COALESCE(SUM(CASE WHEN type='income' THEN amount WHEN type='expense' THEN -amount ELSE 0 END),0) FROM transactions WHERE account_id=$1",
+                "SELECT COALESCE(SUM(CASE WHEN type='income' THEN amount WHEN type='expense' THEN -amount WHEN type='transfer' AND account_id=$2 THEN -amount WHEN type='transfer' AND account_id=$3 THEN amount ELSE 0 END),0) FROM transactions WHERE account_id=$1",
             )
             .bind(account_id)
+            .bind(wallet)
+            .bind(bank)
             .fetch_one(&pool)
             .await
             .expect("signed sum");

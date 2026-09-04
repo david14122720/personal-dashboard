@@ -595,7 +595,9 @@ mod tests {
         };
         // Fault injection: a temporary trigger that fails the SECOND transfer
         // insert carrying the probe description, leaving all other traffic
-        // (including parallel tests) untouched.
+        // (including parallel tests) untouched. Each DDL statement runs as
+        // its own single-statement query: sqlx uses the prepared-statement
+        // protocol, which rejects multi-command strings with 42601.
         sqlx::query(
             "CREATE OR REPLACE FUNCTION tmp_fail_second_transfer_leg() RETURNS trigger AS $$
              BEGIN
@@ -609,9 +611,12 @@ mod tests {
         .execute(&pool)
         .await
         .expect("install fault trigger fn");
+        sqlx::query("DROP TRIGGER IF EXISTS tmp_fail_second_leg ON transactions")
+            .execute(&pool)
+            .await
+            .expect("drop stale fault trigger");
         sqlx::query(
-            "DROP TRIGGER IF EXISTS tmp_fail_second_leg ON transactions;
-             CREATE TRIGGER tmp_fail_second_leg BEFORE INSERT ON transactions
+            "CREATE TRIGGER tmp_fail_second_leg BEFORE INSERT ON transactions
              FOR EACH ROW WHEN (NEW.type = 'transfer') EXECUTE FUNCTION tmp_fail_second_transfer_leg()",
         )
         .execute(&pool)
@@ -643,13 +648,14 @@ mod tests {
         assert_eq!(transfer_leg_count(&pool, user_id).await, 0);
         assert_eq!(account_balance(&pool, from).await, Decimal::new(50000, 2));
         assert_eq!(account_balance(&pool, to).await, Decimal::new(0, 2));
-        sqlx::query(
-            "DROP TRIGGER IF EXISTS tmp_fail_second_leg ON transactions;
-             DROP FUNCTION IF EXISTS tmp_fail_second_transfer_leg()",
-        )
-        .execute(&pool)
-        .await
-        .expect("remove fault trigger");
+        sqlx::query("DROP TRIGGER IF EXISTS tmp_fail_second_leg ON transactions")
+            .execute(&pool)
+            .await
+            .expect("remove fault trigger");
+        sqlx::query("DROP FUNCTION IF EXISTS tmp_fail_second_transfer_leg()")
+            .execute(&pool)
+            .await
+            .expect("remove fault trigger fn");
         cleanup_user(&pool, user_id).await;
     }
 }
