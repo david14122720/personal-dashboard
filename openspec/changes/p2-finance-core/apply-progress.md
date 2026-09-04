@@ -1,4 +1,70 @@
-# Apply Progress: p2-finance-core — PR1-infra
+# Apply Progress: p2-finance-core — PR1-infra + PR2-ledger
+
+## Work unit (PR2-ledger)
+
+- Unit: PR2-ledger (Basic Ledger). Tasks 2.1–2.6.
+- Mode: Standard with TDD discipline (tests written first, RED observed, then GREEN).
+  No live Postgres available, so DB-backed paths are DB-gated (skip without
+  `DATABASE_URL`) exactly like PR1.
+- Chain: stacked-to-main per session preflight. This batch is one autonomous slice.
+- Status: 6/6 PR1 tasks + 6/6 PR2 tasks complete. PR3–PR4 explicitly NOT started.
+
+## TDD Cycle Evidence (RED → GREEN) — PR2
+
+| Task | RED (failing test first) | GREEN (implementation) | REFACTOR |
+|------|--------------------------|------------------------|----------|
+| 2.1/2.2 account validation + 409 | 9 tests failed on `todo!()` panic (type/name/currency validators, patch-length); duplicate-409 + foreign-404 DB tests SKIP-printed | `routes/accounts.rs`: CRUD + archive, `WHERE id=$1 AND user_id=$2`, `23505`→409, `23514`→422 | `rustfmt` on new files only (repo-wide fmt drift left untouched) |
+| 2.3/2.4 tx validation + money | 4 tests failed on `todo!()` panic (type/date/patch validators); money 422 reuses `parse_money_amount` (PR1-tested) + string-amount serde test | `routes/transactions.rs`: income/expense create, metadata-only patch, delete; `transfer` rejected with `POST /transfers` hint | Strict `YYYY-MM-DD` shape check added after chrono accepted `2026-9-1` (test caught leniency, implementation tightened) |
+| 2.5 ownership 404 | 5 DB-gated tests SKIP without `DATABASE_URL` | `ensure_account_owned` → 404; `ensure_finance_category` (owned + `kind='finance'`) → 422 | Category unowned/kind-mismatch both 422 per design (never 404, no oracle) |
+| 2.6 green | `cargo test routes::`: 25 passed after GREEN (9 RED failures resolved) | Full `cargo test`: 66 unit + 5 integration passed, 0 failed | `cargo clippy --all-targets -- -D warnings` clean |
+
+RED run: `cargo test routes::` showed 9 FAILED (`todo!()` panics) + contract
+tests (serde/SQL/serialization) passing + 5 DB SKIP-prints.
+GREEN run: 66 unit + 5 integration passed, 0 failed.
+
+## Work Unit Evidence — PR2
+
+| Evidence | Value |
+|----------|-------|
+| Focused test command and exact result | `cargo test routes::` (backend/): 25 passed, 0 failed (5 DB-gated SKIP without `DATABASE_URL`) |
+| Runtime harness command/scenario and exact result | N/A — no runtime boundary exists in this slice (routes declared but not registered; registration is PR4). DB-gated handler tests (`POST /accounts` dup-409, `POST /transactions` 201→`DELETE` 204, foreign-404, category-kind-422) SKIP without `DATABASE_URL`, verified via `--nocapture` |
+| Rollback boundary | Exact files removable without unrelated work: `backend/src/routes/accounts.rs`, `backend/src/routes/transactions.rs`; revertible 3-line module declarations in `backend/src/routes/mod.rs`. No migration, no Cargo change, no wiring touched |
+
+Additional gates: `cargo clippy --all-targets -- -D warnings` clean (file-level
+`allow(dead_code)` with PR4-wiring justification, matching PR1 precedent);
+`rustfmt` applied to the two new files only.
+
+## Files Changed — PR2
+
+| File | Action | What was done |
+|------|--------|---------------|
+| `backend/src/routes/accounts.rs` | Created (~480 lines) | CRUD + archive; all queries `WHERE ... AND user_id=$N` via `require_user_id`; 201/200, 409 dup name, 422 bad type/currency/lengths, 404 foreign/missing; `deny_unknown_fields` on DTOs; money serialized as string |
+| `backend/src/routes/transactions.rs` | Created (~560 lines) | Income/expense create (string amount via `parse_money_amount`, strict date, finance-category check), metadata-only patch (`deny_unknown_fields` → 422 on core-field edits), delete 204 (trigger reverses); `transfer` type rejected toward `POST /transfers` |
+| `backend/src/routes/mod.rs` | Modified (+3) | Module declarations only (`pub mod accounts/transactions`); route registration stays PR4 |
+| `openspec/changes/p2-finance-core/tasks.md` | Modified | Phase 2 tasks 2.1–2.6 marked `[x]` |
+
+## Decisions / deviations — PR2
+
+- `GET /accounts` lists non-archived only (`AND NOT is_archived`); detail
+  `GET /accounts/:id` still returns archived rows (200). Reads the spec
+  scenario literally ("no longer appears in active account lists").
+- `PATCH` with zero updatable fields → 422 (explicit, avoids no-op 200s).
+- Category unowned OR wrong-kind → 422 (never 404), per design error mapping.
+- `occurred_on` enforces strict 10-char `YYYY-MM-DD` shape before chrono parse
+  (chrono leniently accepts `2026-9-1`; API boundary stays canonical).
+- `rust_decimal` default serde already renders strings (`"50.00"`, proven by
+  test); the `rust_decimal::serde::str` path does not exist in 1.43 (private
+  module), so no `with` attribute and no Cargo change was needed.
+
+## Review budget — PR2
+
+- Authored: ~1040 changed lines (two new files incl. required TDD tests + 3
+  tracked-line module declarations). Over the 400 budget; the overage is
+  required contract tests + DB-gated integration tests that cannot be cut
+  without violating the work-unit contract → recommend `size:exception` for
+  the PR2 review slice (same treatment as PR1's 734-count exception).
+
+## Prior batch (PR1-infra, preserved)
 
 ## Work unit
 - Unit: PR1-infra (Foundation & Migration). Tasks 1.1–1.6.
@@ -9,7 +75,7 @@
 - Chain: stacked-to-main per session preflight. This batch is one autonomous slice.
 - Status: 6/6 PR1 tasks complete. PR2–PR4 explicitly NOT started.
 
-## TDD Cycle Evidence (RED → GREEN)
+## TDD Cycle Evidence (RED → GREEN) — PR1
 
 | Task | RED (failing test first) | GREEN (implementation) | REFACTOR |
 |------|--------------------------|------------------------|----------|
@@ -19,7 +85,7 @@
 
 RED run: 34 passed, 8 failed. GREEN run: 42 unit + 5 integration passed, 0 failed.
 
-## Work Unit Evidence
+## Work Unit Evidence — PR1
 
 | Evidence | Value |
 |----------|-------|
@@ -31,7 +97,7 @@ Additional gates: `cargo clippy --all-targets -- -D warnings` clean (after justi
 `allow(dead_code)` on the two PR2-consumer functions, matching the existing
 `error.rs` precedent).
 
-## Files Changed
+## Files Changed — PR1
 
 | File | Action | What was done |
 |------|--------|---------------|
@@ -45,7 +111,8 @@ Additional gates: `cargo clippy --all-targets -- -D warnings` clean (after justi
 | `backend/tests/migration_0005_transfer_trigger.rs` | Created (97 lines) | 5 file-content regression tests: transfer branches contain no `UPDATE`, income/expense/card paths preserved, function-only (no `CREATE TRIGGER`), 0002 still holds original logic |
 | `openspec/changes/p2-finance-core/tasks.md` | Modified | Phase 1 tasks 1.1–1.6 marked `[x]` |
 
-## Decisions / deviations
+## Decisions / deviations — PR1
+
 - `finance/money.rs` is not listed in tasks.md Phase 1, but the orchestrator work
   unit explicitly required the money string-parse test in PR1; the module is the
   minimal home for it and front-loads spec rule "reject `<=0`, `scale>2` → 422".
@@ -55,7 +122,8 @@ Additional gates: `cargo clippy --all-targets -- -D warnings` clean (after justi
 - Trigger test is file-content rather than live-DB (no Postgres in this
   environment); live transfer-balance behavior test belongs to PR3 per tasks.md 3.3.
 
-## Review budget
+## Review budget — PR1
+
 - Authored: ~408 changed lines (402 new-file lines + ~6 tracked-line edits;
   `Cargo.lock` excluded as generated). Marginally over the 400 budget; the
   overage is required TDD tests that cannot be cut without violating the
@@ -64,5 +132,6 @@ Additional gates: `cargo clippy --all-targets -- -D warnings` clean (after justi
   inside PR1 (migration + helper + money are each already minimal).
 
 ## Remaining
-- PR2 (Ledger), PR3 (Transfers), PR4 (Budgets + Wiring) — untouched.
-- Next recommended: `sdd-apply` PR2 slice, then verify.
+
+- PR3 (Transfers), PR4 (Budgets + Wiring) — untouched.
+- Next recommended: `sdd-apply` PR3 slice, then verify.

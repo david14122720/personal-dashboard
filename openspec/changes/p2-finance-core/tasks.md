@@ -36,12 +36,12 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Basic Ledger (Accounts & Transactions)
 
-- [ ] 2.1 Create `backend/src/routes/accounts.rs`: Implement CRUD + soft-archive (scoped by `user_id`).
-- [ ] 2.2 Write RED tests for Account creation: Verify 409 Conflict for duplicate names per user.
-- [ ] 2.3 Create `backend/src/routes/transactions.rs`: Implement Create (Income/Expense), Limited Patch (metadata only), and Delete.
-- [ ] 2.4 Write RED tests for Transaction amounts: Verify 422 for `amount <= 0` or `scale > 2`.
-- [ ] 2.5 Write RED integration tests for Ownership: Verify 404 for foreign `account_id` or `transaction_id`.
-- [ ] 2.6 Verify Green: `cargo test routes::{accounts,transactions}`.
+- [x] 2.1 Create `backend/src/routes/accounts.rs`: Implement CRUD + soft-archive (scoped by `user_id`).
+- [x] 2.2 Write RED tests for Account creation: Verify 409 Conflict for duplicate names per user.
+- [x] 2.3 Create `backend/src/routes/transactions.rs`: Implement Create (Income/Expense), Limited Patch (metadata only), and Delete.
+- [x] 2.4 Write RED tests for Transaction amounts: Verify 422 for `amount <= 0` or `scale > 2`.
+- [x] 2.5 Write RED integration tests for Ownership: Verify 404 for foreign `account_id` or `transaction_id`.
+- [x] 2.6 Verify Green: `cargo test routes::{accounts,transactions}`.
 
 ## Phase 3: Atomic Transfers
 
