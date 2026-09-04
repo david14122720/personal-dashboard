@@ -1,4 +1,78 @@
-# Apply Progress: p2-finance-core — PR1-infra + PR2-ledger + PR3-transfers
+# Apply Progress: p2-finance-core — PR1-infra + PR2-ledger + PR3-transfers + PR4-budgets-wiring (COMPLETE)
+
+## Work unit (PR4-budgets-wiring) — FINAL SLICE
+
+- Unit: PR4-budgets-wiring (Budgets & Wiring). Tasks 4.1–4.5 + 5.1–5.3.
+- Mode: Standard with TDD discipline (tests written first, RED observed, then GREEN).
+  No live Postgres available (`DATABASE_URL` unset), so DB-backed paths are
+  DB-gated (SKIP-print without `DATABASE_URL`) exactly like PR1/PR2/PR3.
+- Chain: stacked-to-main per session preflight. This batch is one autonomous slice.
+- Status: 6/6 PR1 + 6/6 PR2 + 7/7 PR3 + 8/8 PR4 tasks complete. Change COMPLETE.
+
+## TDD Cycle Evidence (RED → GREEN) — PR4
+
+| Task | RED (failing test first) | GREEN (implementation) | REFACTOR |
+|------|--------------------------|------------------------|----------|
+| 4.1/4.3 budget validation | 4 tests failed on `todo!()` panic (`accepts_ordered_and_single_day_periods`, `accepts_default_thresholds`, `rejects_inverted_period_as_422`, `rejects_bad_thresholds_as_422`); contract/DB-SKIP tests passing | `routes/budgets.rs`: `validate_budget_period` (end < start → 422, equal OK), `validate_thresholds` (warn ∈ [0,1], over ∈ [warn,2], finite, else 422), `parse_money_amount` + strict date + `ensure_finance_category` reuse | Clippy `manual_range_contains`: `!(0.0..=1.0).contains(&warn)` |
+| 4.2/4.4 status aggregate + mapper | `status_maps_ok_warn_over_with_boundaries_on_upper_tier` failed on `todo!()` | `map_budget_status` (pct ≥ over → over, pct ≥ warn → warn, else ok; boundaries on upper tier) + `STATUS_SPENT_SQL` single `SUM ... type='expense' ... BETWEEN` aggregate; `decimal_to_f64` via canonical string form (no `ToPrimitive` feature gate) | Thresholds decoded as `Decimal`, exposed as `f64` ratios; money stays `Decimal`-as-string |
+| 4.5 green | `cargo test routes::budgets`: 4 FAILED + 10 passing (serde/SQL/DB-SKIP) | `cargo test routes::budgets`: 14 passed, 0 failed | `rustfmt` on the new file only (repo-wide fmt drift left untouched, PR1 precedent) |
+| 5.1 wiring | Whole binary did not route finance handlers (modules unregistered) | `main.rs`: 8 routes (`/accounts`, `/accounts/:id`, `/transactions`, `/transactions/:id`, `/transfers`, `/budgets`, `/budgets/:id`, `/budgets/:id/status`); `mod.rs` + `pub mod budgets`; removed 3 now-wired `allow(dead_code)`s + stale "PR4 registers" comments | Unused `delete` routing import removed (method form used); one rustfmt hunk hand-fixed in new block |
+| 5.2 reconciliation | New DB-gated test SKIP-printed | `reconciliation_signed_sum_matches_cached_balance`: income +100 / expense −30 / transfer ±20 → signed `SUM(CASE ...)` equals `accounts.balance` per account (wallet 50.00, bank 20.00) | Transfer legs net to zero via `ELSE 0` branch, proving transfers stay out of totals |
+| 5.3 green | — | Full `cargo test`: 90 unit + 5 integration passed, 0 failed; `cargo build` compiles whole binary; `cargo clippy --all-targets -- -D warnings` clean | — |
+
+RED run: `cargo test routes::budgets` showed 4 FAILED (`todo!()` panics) + 10
+passing (serde/SQL/shape/DB-SKIP).
+GREEN run: 14/14 budgets passed; full suite 90 unit + 5 integration, 0 failed.
+
+## Work Unit Evidence — PR4
+
+| Evidence | Value |
+|----------|-------|
+| Focused test command and exact result | `cargo test routes::budgets` (backend/): 14 passed, 0 failed (5 DB-gated SKIP without `DATABASE_URL`) |
+| Runtime harness command/scenario and exact result | `cargo build` (backend/): whole binary compiles with all 8 finance routes registered; route-level runtime (`curl /budgets/:id/status`) has no live DB in this environment — DB-gated handler tests (`POST /budgets` 201 → status ok/warn/over walk, inverted-period/zero-amount 422, habit/foreign-category 422, foreign-budget 404, signed-sum reconciliation) SKIP without `DATABASE_URL`, verified via `--nocapture` pattern per PR1–PR3 precedent |
+| Rollback boundary | Exact files removable without unrelated work: `backend/src/routes/budgets.rs`; revertible wiring in `backend/src/main.rs` (8 route lines + routing import), 1-line module declaration in `backend/src/routes/mod.rs`, restored `allow(dead_code)`s in `accounts.rs`/`transactions.rs`/`transfers.rs`. No migration, no Cargo change |
+
+Additional gates: `cargo clippy --all-targets -- -D warnings` clean;
+`rustfmt` applied to the new file only plus one hand-fixed hunk in the new
+`main.rs` block (pre-existing drift in `middleware.rs`/`password.rs`/`config.rs`
+and old `main.rs` regions left untouched).
+
+## Files Changed — PR4
+
+| File | Action | What was done |
+|------|--------|---------------|
+| `backend/src/routes/budgets.rs` | Created (~790 lines) | `POST /budgets` (string amount, strict dates, period + threshold + finance-category validation → 201/422), `GET /budgets`, `GET /budgets/:id` (404), `GET /budgets/:id/status` → 200 `{spent, remaining, pct, status}` via single expense-SUM aggregate; 14 tests (9 pure + 5 DB-gated incl. reconciliation) |
+| `backend/src/main.rs` | Modified (+34/−1) | Registered all 8 finance routes with `post/get/patch/delete` method routers |
+| `backend/src/routes/mod.rs` | Modified (+1) | `pub mod budgets` declaration |
+| `backend/src/routes/accounts.rs` | Modified | Removed now-wired `allow(dead_code)` + stale comment |
+| `backend/src/routes/transactions.rs` | Modified | Removed now-wired `allow(dead_code)` + stale comment |
+| `backend/src/routes/transfers.rs` | Modified | Removed now-wired `allow(dead_code)` + stale comment |
+| `openspec/changes/p2-finance-core/tasks.md` | Modified | Phase 4 tasks 4.1–4.5 and Phase 5 tasks 5.1–5.3 marked `[x]` |
+
+## Decisions / deviations — PR4
+
+- Thresholds travel as JSON numbers (`Option<f64>`, defaults 0.8/1.0) and are
+  bound as `f64` (Postgres assignment-cast to `NUMERIC(4,3)`); amounts stay
+  strings→`Decimal` per the shared money rule. Thresholds decode as `Decimal`
+  and convert via the canonical string form to avoid `ToPrimitive` gates.
+- `validate_occurred_on` and `ensure_finance_category` are reused from
+  `routes::transactions` (no duplication); category failures stay 422 per the
+  design error mapping, budget misses stay 404.
+- Single-day periods (`start == end`) accepted as valid; `pct` boundaries
+  belong to the upper tier (0.80 → `warn`, 1.00 → `over`).
+- `helper.rs`/`money.rs` `allow(dead_code)`s left untouched (already consumed
+  by callers since PR2; not part of this wiring boundary).
+
+## Review budget — PR4
+
+- Authored: ~837 changed lines (787 new-file lines incl. required TDD tests +
+  ~50 wiring/checkbox lines). Over the 400 budget; the overage is required
+  contract tests + DB-gated budget/status/reconciliation tests that cannot be
+  cut without violating the work-unit contract → recommend `size:exception`
+  for the PR4 review slice (same treatment as PR1/PR2/PR3 exceptions). LAST
+  slice: nothing beyond budgets + wiring + final compile was started.
+
+## Prior batch (PR3-transfers, preserved)
 
 ## Work unit (PR3-transfers)
 
@@ -200,5 +274,5 @@ Additional gates: `cargo clippy --all-targets -- -D warnings` clean (after justi
 
 ## Remaining
 
-- PR4 (Budgets + Wiring) — untouched.
-- Next recommended: `sdd-apply` PR4 slice, then verify.
+- NOTHING. All four slices complete (PR1 + PR2 + PR3 + PR4).
+- Next recommended: `sdd-verify` for `p2-finance-core`, then archive.

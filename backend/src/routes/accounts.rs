@@ -4,10 +4,7 @@
 //! foreign id resolves to 404 without leaking existence. Duplicate names per
 //! user surface as 409 via pgcode `23505`; unknown account types as 422.
 //!
-//! Route registration happens in PR4; this module only declares handlers.
-
-// Allowed until PR4 registers routes; covered by unit tests.
-#![allow(dead_code)]
+//! Registered in `main.rs` (PR4 wiring).
 
 use axum::{
     extract::{Path, State},

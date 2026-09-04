@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod budgets;
 pub mod health;
 pub mod login;
 pub mod logout;

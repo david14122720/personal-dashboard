@@ -8,10 +8,7 @@
 //! `deny_unknown_fields`). Deletes rely on the DB trigger to reverse the
 //! balance effect. Transfers are owned by PR3 and rejected here.
 //!
-//! Route registration happens in PR4; this module only declares handlers.
-
-// Allowed until PR4 registers routes; covered by unit tests.
-#![allow(dead_code)]
+//! Registered in `main.rs` (PR4 wiring).
 
 use axum::{
     extract::{Path, State},

@@ -56,14 +56,14 @@ Chain strategy: feature-branch-chain
 
 ## Phase 4: Budgets & Status
 
-- [ ] 4.1 Create `backend/src/routes/budgets.rs`: Implement CRUD + `GET /budgets/:id/status`.
-- [ ] 4.2 Implement budget status aggregation query: `SUM(amount)` for `type='expense'` within period.
-- [ ] 4.3 Write RED tests for Budget validation: Verify 422 for `period_end < period_start` or `amount <= 0`.
-- [ ] 4.4 Write RED tests for Status Mapper: Verify `ok` $\rightarrow$ `warn` $\rightarrow$ `over` transitions based on percentage.
-- [ ] 4.5 Verify Green: `cargo test routes::budgets`.
+- [x] 4.1 Create `backend/src/routes/budgets.rs`: Implement CRUD + `GET /budgets/:id/status`.
+- [x] 4.2 Implement budget status aggregation query: `SUM(amount)` for `type='expense'` within period.
+- [x] 4.3 Write RED tests for Budget validation: Verify 422 for `period_end < period_start` or `amount <= 0`.
+- [x] 4.4 Write RED tests for Status Mapper: Verify `ok` → `warn` → `over` transitions based on percentage.
+- [x] 4.5 Verify Green: `cargo test routes::budgets`.
 
 ## Phase 5: Wiring & Final Verification
 
-- [ ] 5.1 Update `backend/src/routes/mod.rs` and `backend/src/main.rs`: Register all new finance routes.
-- [ ] 5.2 Write Final Reconciliation Integration Test: Verify `SUM(transactions)` equals `accounts.balance` across all accounts.
-- [ ] 5.3 Verify Green: `cargo test` (all targets).
+- [x] 5.1 Update `backend/src/routes/mod.rs` and `backend/src/main.rs`: Register all new finance routes.
+- [x] 5.2 Write Final Reconciliation Integration Test: Verify `SUM(transactions)` equals `accounts.balance` across all accounts.
+- [x] 5.3 Verify Green: `cargo test` (all targets).

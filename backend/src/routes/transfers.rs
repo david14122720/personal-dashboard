@@ -19,10 +19,7 @@
 //! aggregates (`SUM ... WHERE type='expense'`) and income/expense totals
 //! never count moved money.
 //!
-//! Route registration happens in PR4; this module only declares handlers.
-
-// Allowed until PR4 registers routes; covered by unit tests.
-#![allow(dead_code)]
+//! Registered in `main.rs` (PR4 wiring).
 
 use axum::{
     extract::State,

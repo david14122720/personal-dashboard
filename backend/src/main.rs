@@ -9,7 +9,7 @@ mod state;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    routing::{get, post},
+    routing::{get, patch, post},
     Router,
 };
 use tower_http::{
@@ -88,6 +88,38 @@ async fn main() {
         .route("/login", post(routes::login::login_handler))
         .route("/logout", post(routes::logout::logout_handler))
         .route("/me", get(routes::me::me_handler))
+        .route(
+            "/accounts",
+            post(routes::accounts::create_account_handler)
+                .get(routes::accounts::list_accounts_handler),
+        )
+        .route(
+            "/accounts/:id",
+            get(routes::accounts::get_account_handler)
+                .patch(routes::accounts::patch_account_handler),
+        )
+        .route(
+            "/transactions",
+            post(routes::transactions::create_transaction_handler),
+        )
+        .route(
+            "/transactions/:id",
+            patch(routes::transactions::patch_transaction_handler)
+                .delete(routes::transactions::delete_transaction_handler),
+        )
+        .route(
+            "/transfers",
+            post(routes::transfers::create_transfer_handler),
+        )
+        .route(
+            "/budgets",
+            post(routes::budgets::create_budget_handler).get(routes::budgets::list_budgets_handler),
+        )
+        .route("/budgets/:id", get(routes::budgets::get_budget_handler))
+        .route(
+            "/budgets/:id/status",
+            get(routes::budgets::budget_status_handler),
+        )
         .with_state(state);
 
     let cors = CorsLayer::new()
