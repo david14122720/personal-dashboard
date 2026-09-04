@@ -5,3 +5,4 @@ pub mod logout;
 pub mod me;
 pub mod ready;
 pub mod transactions;
+pub mod transfers;

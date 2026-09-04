@@ -1,6 +1,73 @@
-# Apply Progress: p2-finance-core — PR1-infra + PR2-ledger
+# Apply Progress: p2-finance-core — PR1-infra + PR2-ledger + PR3-transfers
 
-## Work unit (PR2-ledger)
+## Work unit (PR3-transfers)
+
+- Unit: PR3-transfers (Atomic Transfers). Tasks 3.1–3.4.
+- Mode: Standard with TDD discipline (tests written first, RED observed, then GREEN).
+  No live Postgres available (`DATABASE_URL` unset), so DB-backed paths are
+  DB-gated (SKIP-print without `DATABASE_URL`) exactly like PR1/PR2.
+- Chain: stacked-to-main per session preflight. This batch is one autonomous slice.
+- Status: 6/6 PR1 + 6/6 PR2 + 7/7 PR3 tasks complete. PR4 explicitly NOT started.
+
+## TDD Cycle Evidence (RED → GREEN) — PR3
+
+| Task | RED (failing test first) | GREEN (implementation) | REFACTOR |
+|------|--------------------------|------------------------|----------|
+| 3.1 txn skeleton | 3 tests failed on `todo!()` panic (`same_account_transfer_is_422`, `distinct_accounts_pass_validation`, `lock_order_is_sorted_uuid_regardless_of_direction`); 7 contract/DB-SKIP tests passing | `routes/transfers.rs`: `execute_transfer` (BEGIN → sorted-UUID `FOR UPDATE` locks → ownership check → group id → leg1 NULL-link → leg2 → back-link → explicit debit/credit → COMMIT, any err → ROLLBACK) | `rustfmt` on the new file only (repo-wide fmt drift left untouched, PR1 precedent) |
+| 3.2 same-account 422 | RED above | `validate_transfer_accounts` (from == to → 422) + handler calls it before touching the DB | Pure unit test + DB-gated no-op test (balance unchanged, 0 legs) |
+| 3.3 atomicity rollback | DB tests SKIP-printed (no `DATABASE_URL`) | Fault-injection DB test (temp `BEFORE INSERT` trigger fails 2nd `fault-probe` leg → 500, 0 legs, balances unchanged) + foreign-leg 404 rollback test | Trigger scoped by probe description so parallel tests are unaffected; always dropped in-test |
+| 3.4 green | `cargo test routes::transfers`: 7 passed, 3 failed (RED) | `cargo test routes::transfers`: 10 passed, 0 failed; full `cargo test`: 76 unit + 5 integration passed, 0 failed | `cargo clippy --all-targets -- -D warnings` clean |
+
+RED run: `cargo test routes::transfers` showed 3 FAILED (`todo!()` panics) + 7
+passing (serde/SQL/shape/DB-SKIP).
+GREEN run: 10/10 transfers passed; full suite 76 unit + 5 integration, 0 failed.
+
+## Work Unit Evidence — PR3
+
+| Evidence | Value |
+|----------|-------|
+| Focused test command and exact result | `cargo test routes::transfers` (backend/): 10 passed, 0 failed (4 DB-gated SKIP without `DATABASE_URL`) |
+| Runtime harness command/scenario and exact result | N/A — no runtime boundary exists in this slice (handler declared but not registered; registration is PR4). DB-gated handler tests (`POST /transfers` 201 with ±balances/group/cross-links, same-account 422 no-op, foreign-leg 404 rollback, injected 2nd-leg-failure rollback) SKIP without `DATABASE_URL`, verified via `--nocapture` |
+| Rollback boundary | Exact files removable without unrelated work: `backend/src/routes/transfers.rs`; revertible 1-line module declaration in `backend/src/routes/mod.rs`. No migration, no Cargo change, no wiring touched |
+
+Additional gates: `cargo clippy --all-targets -- -D warnings` clean (file-level
+`allow(dead_code)` with PR4-wiring justification, matching PR1/PR2 precedent);
+`rustfmt` applied to the new file only.
+
+## Files Changed — PR3
+
+| File | Action | What was done |
+|------|--------|---------------|
+| `backend/src/routes/transfers.rs` | Created (~630 lines) | `POST /transfers` handler: sorted-UUID `FOR UPDATE` locks, in-txn ownership check (404), `parse_money_amount` + strict date + description caps (422), both legs `type='transfer'` with shared `transfer_group_id` + cross `related_transfer_id`, explicit debit/credit, COMMIT/ROLLBACK; 201 + `{transfer_group_id, legs}` |
+| `backend/src/routes/mod.rs` | Modified (+1) | Module declaration only (`pub mod transfers`); route registration stays PR4 |
+| `openspec/changes/p2-finance-core/tasks.md` | Modified | Phase 3 tasks 3.1–3.4 marked `[x]` |
+
+## Decisions / deviations — PR3
+
+- Both legs are `type='transfer'` (design's fixed order), not income/expense:
+  the spec's "expense/income leg" wording describes money direction (out/in),
+  while the actual type keeps transfers out of income/expense totals and the
+  budget `type='expense'` aggregate.
+- Cross-linking is insert-leg1-NULL → insert-leg2→leg1 → update-leg1→leg2,
+  because the `related_transfer_id` FK requires the counterparty row to exist.
+  The 0002 counterparty trigger is a harmless no-op on this path (documented
+  in-module) and 0005 keeps transfer balances trigger-free.
+- Ownership is verified INSIDE the txn after locking, so the 404 path rolls
+  back an open transaction (covered by the foreign-leg rollback test).
+- `validate_occurred_on` is reused from `routes::transactions` (no duplication);
+  `TransactionResponse::from` converts legs (identical row shape).
+- Response is `201 + {transfer_group_id, legs:[out,in]}` (no precedent existed;
+  PR4 wiring may narrow it).
+
+## Review budget — PR3
+
+- Authored: ~640 changed lines (one new file incl. required TDD tests + 1
+  tracked-line module declaration). Over the 400 budget; the overage is
+  required contract tests + DB-gated atomicity tests that cannot be cut
+  without violating the work-unit contract → recommend `size:exception` for
+  the PR3 review slice (same treatment as PR1/PR2 exceptions).
+
+## Prior batch (PR2-ledger, preserved)
 
 - Unit: PR2-ledger (Basic Ledger). Tasks 2.1–2.6.
 - Mode: Standard with TDD discipline (tests written first, RED observed, then GREEN).
@@ -133,5 +200,5 @@ Additional gates: `cargo clippy --all-targets -- -D warnings` clean (after justi
 
 ## Remaining
 
-- PR3 (Transfers), PR4 (Budgets + Wiring) — untouched.
-- Next recommended: `sdd-apply` PR3 slice, then verify.
+- PR4 (Budgets + Wiring) — untouched.
+- Next recommended: `sdd-apply` PR4 slice, then verify.

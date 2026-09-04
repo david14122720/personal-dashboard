@@ -45,14 +45,14 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: Atomic Transfers
 
-- [ ] 3.1 Create `backend/src/routes/transfers.rs`: Implement atomic transfer transaction.
-    - [ ] 3.1.1 Lock accounts in sorted-UUID order (`SELECT ... FOR UPDATE`).
-    - [ ] 3.1.2 Validate distinct ownership and amount precision.
-    - [ ] 3.1.3 Insert both legs with `transfer_group_id`.
-    - [ ] 3.1.4 Explicitly `UPDATE` account balances.
-- [ ] 3.2 Write RED tests for Transfer validation: Verify 422 for same-account transfer.
-- [ ] 3.3 Write RED integration test for Atomicity: Simulate failure on 2nd leg $\rightarrow$ verify full rollback (no orphan legs, no balance change).
-- [ ] 3.4 Verify Green: `cargo test routes::transfers`.
+- [x] 3.1 Create `backend/src/routes/transfers.rs`: Implement atomic transfer transaction.
+    - [x] 3.1.1 Lock accounts in sorted-UUID order (`SELECT ... FOR UPDATE`).
+    - [x] 3.1.2 Validate distinct ownership and amount precision.
+    - [x] 3.1.3 Insert both legs with `transfer_group_id`.
+    - [x] 3.1.4 Explicitly `UPDATE` account balances.
+- [x] 3.2 Write RED tests for Transfer validation: Verify 422 for same-account transfer.
+- [x] 3.3 Write RED integration test for Atomicity: Simulate failure on 2nd leg $\rightarrow$ verify full rollback (no orphan legs, no balance change).
+- [x] 3.4 Verify Green: `cargo test routes::transfers`.
 
 ## Phase 4: Budgets & Status
 
