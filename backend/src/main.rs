@@ -9,7 +9,7 @@ mod state;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use tower_http::{
@@ -120,6 +120,58 @@ async fn main() {
             "/budgets/:id/status",
             get(routes::budgets::budget_status_handler),
         )
+        .route(
+            "/savings-goals",
+            post(routes::savings::create_goal_handler).get(routes::savings::list_goals_handler),
+        )
+        .route(
+            "/savings-goals/:id",
+            get(routes::savings::get_goal_handler).delete(routes::savings::delete_goal_handler),
+        )
+        .route(
+            "/savings-goals/:id/movements",
+            post(routes::savings::create_movement_handler),
+        )
+        .route(
+            "/savings-goals/:id/movements/:mid",
+            delete(routes::savings::delete_movement_handler),
+        )
+        .route(
+            "/debts",
+            post(routes::debts::create_debt_handler).get(routes::debts::list_debts_handler),
+        )
+        .route(
+            "/debts/:id",
+            get(routes::debts::get_debt_handler).delete(routes::debts::delete_debt_handler),
+        )
+        .route(
+            "/debts/:id/payments",
+            post(routes::debts::create_payment_handler),
+        )
+        .route(
+            "/subscriptions",
+            post(routes::subscriptions::create_subscription_handler)
+                .get(routes::subscriptions::list_subscriptions_handler),
+        )
+        .route(
+            "/subscriptions/:id",
+            get(routes::subscriptions::get_subscription_handler)
+                .patch(routes::subscriptions::patch_subscription_handler)
+                .delete(routes::subscriptions::delete_subscription_handler),
+        )
+        .route(
+            "/assets",
+            post(routes::assets::create_asset_handler).get(routes::assets::list_assets_handler),
+        )
+        .route(
+            "/assets/:id",
+            get(routes::assets::get_asset_handler).delete(routes::assets::delete_asset_handler),
+        )
+        .route(
+            "/assets/:id/valuations",
+            post(routes::assets::create_valuation_handler),
+        )
+        .route("/net-worth", get(routes::assets::get_net_worth_handler))
         .with_state(state);
 
     let cors = CorsLayer::new()

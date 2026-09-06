@@ -85,6 +85,8 @@ const ASSET_EXISTS_SQL: &str = "SELECT id FROM assets WHERE id=$1";
 const ACCOUNT_OWNERSHIP_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
 const MAX_VALUATION_SQL: &str = "SELECT max(recorded_on) FROM asset_valuations WHERE asset_id=$1";
 const CREATE_VALUATION_SQL: &str = "INSERT INTO asset_valuations (user_id, asset_id, value, recorded_on, notes) VALUES ($1,$2,$3,$4,$5) RETURNING id, asset_id, value, recorded_on, notes, created_at";
+// Test-only probe: verifies trigger-synced current_value without going through HTTP.
+#[cfg(test)]
 const ASSET_VALUE_SQL: &str = "SELECT current_value FROM assets WHERE id=$1 AND user_id=$2";
 const NET_WORTH_SQL: &str = "SELECT COALESCE(a.currency, d.currency) AS currency, COALESCE(a.total, 0) AS assets, COALESCE(d.total, 0) AS debts FROM (SELECT currency, SUM(current_value) AS total FROM assets WHERE user_id=$1 AND NOT is_archived GROUP BY currency) a FULL OUTER JOIN (SELECT currency, SUM(pending_amount) AS total FROM debts WHERE user_id=$1 AND status='active' GROUP BY currency) d ON a.currency = d.currency ORDER BY currency ASC";
 

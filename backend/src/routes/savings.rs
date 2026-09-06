@@ -49,6 +49,8 @@ const DELETE_MOVEMENT_SQL: &str =
 const GOAL_OWNERSHIP_SQL: &str = "SELECT id FROM savings_goals WHERE id=$1 AND user_id=$2";
 const GOAL_EXISTS_SQL: &str = "SELECT id FROM savings_goals WHERE id=$1";
 const TRANSACTION_OWNERSHIP_SQL: &str = "SELECT id FROM transactions WHERE id=$1 AND user_id=$2";
+// Test-only probe: verifies trigger-refreshed balance without going through HTTP.
+#[cfg(test)]
 const GOAL_BALANCE_SQL: &str =
     "SELECT saved_amount, is_completed FROM savings_goals WHERE id=$1 AND user_id=$2";
 
