@@ -1,4 +1,6 @@
 pub mod accounts;
+#[allow(dead_code)]
+pub mod assets;
 pub mod budgets;
 #[allow(dead_code)]
 pub mod debts;
