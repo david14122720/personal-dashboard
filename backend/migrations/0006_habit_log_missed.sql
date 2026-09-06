@@ -1,0 +1,15 @@
+-- Migration 0006: add 'missed' to habit_log_status.
+--
+-- Single-statement migration with NO transaction block: PostgreSQL forbids
+-- ALTER TYPE ... ADD VALUE inside a transaction block, so this file must not
+-- contain BEGIN/COMMIT (unlike 0001/0004). The closest P3 precedent is 0005,
+-- which is also bare statements with no BEGIN/COMMIT. Like all migrations in
+-- this project, it is applied out-of-band with autocommit (there is no
+-- _sqlx_migrations tracking table; sqlx would otherwise wrap the file in an
+-- implicit transaction and the statement would fail).
+--
+-- Additive and rollback-safe: existing rows ('done', 'skipped', 'not_done')
+-- are untouched. A rollback would be a follow-up migration (the enum value,
+-- once added, is retained). Readers must treat both 'missed' and the legacy
+-- 'not_done' as streak-breaking; writers only accept 'missed'.
+ALTER TYPE habit_log_status ADD VALUE 'missed';

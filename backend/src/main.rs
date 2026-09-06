@@ -149,6 +149,25 @@ async fn main() {
             post(routes::debts::create_payment_handler),
         )
         .route(
+            "/habits",
+            post(routes::habits::create_habit_handler).get(routes::habits::list_habits_handler),
+        )
+        .route(
+            "/habits/:id",
+            get(routes::habits::get_habit_handler)
+                .patch(routes::habits::patch_habit_handler)
+                .delete(routes::habits::delete_habit_handler),
+        )
+        .route("/habits/:id/logs", post(routes::habits::create_log_handler))
+        .route(
+            "/habits/:id/logs/:date",
+            patch(routes::habits::patch_log_handler),
+        )
+        .route(
+            "/habits/:id/streak",
+            get(routes::habits::get_streak_handler),
+        )
+        .route(
             "/subscriptions",
             post(routes::subscriptions::create_subscription_handler)
                 .get(routes::subscriptions::list_subscriptions_handler),
