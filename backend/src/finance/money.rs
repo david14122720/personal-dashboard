@@ -51,8 +51,7 @@ pub fn parse_money_amount_nonneg(raw: &str) -> Result<Decimal, AppError> {
     Ok(amount)
 }
 
-// Allowed until savings movement routes (P3 slice 2) call it; covered by unit tests.
-#[allow(dead_code)]
+// Called by the savings movement routes (P3 slice 2b); covered by unit tests.
 /// Parse a signed wire-format money string into [`Decimal`].
 ///
 /// Accepts non-zero values (positive deposits, negative withdrawals) with at

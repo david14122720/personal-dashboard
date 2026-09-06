@@ -1,15 +1,18 @@
-//! Savings goals CRUD, strictly scoped by `user_id`.
+//! Savings goals CRUD plus signed movements, strictly scoped by `user_id`.
 //!
-//! Amounts arrive as strings and are validated by
+//! Amounts arrive as strings and are validated at the boundary: goals use
 //! [`parse_money_amount`][crate::finance::money::parse_money_amount]
-//! (`> 0`, `scale <= 2`, else 422). Derived columns (`saved_amount`,
-//! `is_completed`, `completed_at`) are trigger-owned and never writable:
-//! the create DTO carries `deny_unknown_fields` and exposes no PATCH.
-//! Duplicate names per user surface as 409 via pgcode `23505`; a
-//! `category_id` outside the owned `finance` kind is 422; foreign ids
-//! resolve to 404 without leaking existence.
+//! (`> 0`, `scale <= 2`, else 422) while movements use
+//! [`parse_signed_amount`][crate::finance::money::parse_signed_amount]
+//! (`!= 0`, `scale <= 2`, else 422; positive = deposit, negative =
+//! withdrawal). Derived columns (`saved_amount`, `is_completed`,
+//! `completed_at`) are trigger-owned and never writable: both DTOs carry
+//! `deny_unknown_fields` and there is no PATCH. Duplicate goal names per user
+//! surface as 409 via pgcode `23505`; a `category_id` outside the owned
+//! `finance` kind or an unowned `transaction_id` is 422; foreign goal ids
+//! resolve to 404 without leaking existence, while movements against a
+//! goal id that exists for nobody are 422 (orphaned-goal FK guard).
 //!
-//! Movements (`POST /savings-goals/:id/movements`) arrive in slice 2b.
 //! Registered in `routes/mod.rs` (wiring in `main.rs` lands in Phase 6).
 //!
 //! Registered in `main.rs` (Phase 6 wiring).
@@ -25,7 +28,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::helper::require_user_id, error::AppError, finance::money::parse_money_amount,
+    auth::helper::require_user_id,
+    error::AppError,
+    finance::money::{parse_money_amount, parse_signed_amount},
     state::AppState,
 };
 
@@ -38,6 +43,14 @@ const LIST_GOALS_SQL: &str = "SELECT id, name, description, target_amount, saved
 const GET_GOAL_SQL: &str = "SELECT id, name, description, target_amount, saved_amount, currency, target_date, category_id, color, is_completed, completed_at, created_at, updated_at FROM savings_goals WHERE id=$1 AND user_id=$2";
 const DELETE_GOAL_SQL: &str = "DELETE FROM savings_goals WHERE id=$1 AND user_id=$2";
 const CATEGORY_LOOKUP_SQL: &str = "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
+const CREATE_MOVEMENT_SQL: &str = "INSERT INTO savings_goal_movements (user_id, savings_goal_id, amount, occurred_on, transaction_id, notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, savings_goal_id, amount, occurred_on, transaction_id, notes, created_at";
+const DELETE_MOVEMENT_SQL: &str =
+    "DELETE FROM savings_goal_movements WHERE id=$1 AND savings_goal_id=$2 AND user_id=$3";
+const GOAL_OWNERSHIP_SQL: &str = "SELECT id FROM savings_goals WHERE id=$1 AND user_id=$2";
+const GOAL_EXISTS_SQL: &str = "SELECT id FROM savings_goals WHERE id=$1";
+const TRANSACTION_OWNERSHIP_SQL: &str = "SELECT id FROM transactions WHERE id=$1 AND user_id=$2";
+const GOAL_BALANCE_SQL: &str =
+    "SELECT saved_amount, is_completed FROM savings_goals WHERE id=$1 AND user_id=$2";
 
 type GoalRow = (
     Uuid,
@@ -315,6 +328,191 @@ pub async fn delete_goal_handler(
     Ok(StatusCode::NO_CONTENT)
 }
 
+type MovementRow = (
+    Uuid,
+    Uuid,
+    Decimal,
+    NaiveDate,
+    Option<Uuid>,
+    Option<String>,
+    DateTime<Utc>,
+);
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateMovementRequest {
+    /// Signed wire-format money string: positive = deposit, negative =
+    /// withdrawal (`!= 0`, never a JSON number).
+    pub amount: String,
+    /// Calendar date `YYYY-MM-DD`.
+    pub occurred_on: String,
+    pub transaction_id: Option<Uuid>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MovementResponse {
+    pub id: Uuid,
+    pub savings_goal_id: Uuid,
+    /// Signed amount as a string (e.g. `"50.00"`, `"-30.00"`); serde renders
+    /// decimals as strings, never floats.
+    pub amount: Decimal,
+    pub occurred_on: NaiveDate,
+    pub transaction_id: Option<Uuid>,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<MovementRow> for MovementResponse {
+    fn from(
+        row: (
+            Uuid,
+            Uuid,
+            Decimal,
+            NaiveDate,
+            Option<Uuid>,
+            Option<String>,
+            DateTime<Utc>,
+        ),
+    ) -> Self {
+        let (id, savings_goal_id, amount, occurred_on, transaction_id, notes, created_at) = row;
+        Self {
+            id,
+            savings_goal_id,
+            amount,
+            occurred_on,
+            transaction_id,
+            notes,
+            created_at,
+        }
+    }
+}
+
+/// Parse `occurred_on` as a calendar date (strict `YYYY-MM-DD`), else 422.
+pub fn validate_movement_date(raw: &str) -> Result<NaiveDate, AppError> {
+    let trimmed = raw.trim();
+    let well_formed =
+        trimmed.len() == 10 && trimmed.as_bytes()[4] == b'-' && trimmed.as_bytes()[7] == b'-';
+    if !well_formed {
+        return Err(AppError::Validation(
+            "occurred_on must be a calendar date YYYY-MM-DD".into(),
+        ));
+    }
+    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+        .map_err(|_| AppError::Validation("occurred_on must be a calendar date YYYY-MM-DD".into()))
+}
+
+/// Resolve the goal for a movement write: owned → Ok; exists for another
+/// user → 404 (never leak existence); exists for nobody → 422
+/// (orphaned-goal FK guard per the finance-savings spec).
+pub async fn ensure_goal_writable(
+    pool: &sqlx::PgPool,
+    goal_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    let owned: Option<Uuid> = sqlx::query_scalar(GOAL_OWNERSHIP_SQL)
+        .bind(goal_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if owned.is_some() {
+        return Ok(());
+    }
+    let exists: Option<Uuid> = sqlx::query_scalar(GOAL_EXISTS_SQL)
+        .bind(goal_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if exists.is_some() {
+        return Err(AppError::NotFound);
+    }
+    Err(AppError::Validation("savings goal does not exist".into()))
+}
+
+/// Verify the linked transaction is owned by the caller (else 422 per
+/// design: unowned `transaction_id` maps to 422, never 404).
+pub async fn ensure_transaction_owned(
+    pool: &sqlx::PgPool,
+    transaction_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    let owned: Option<Uuid> = sqlx::query_scalar(TRANSACTION_OWNERSHIP_SQL)
+        .bind(transaction_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    owned.map(|_| ()).ok_or(AppError::Validation(
+        "transaction must be an owned transaction".into(),
+    ))
+}
+
+/// Map movement write errors: `23503` (FK: goal vanished mid-flight or
+/// transaction deleted) → 422; `23514` (check: over-withdrawal drove
+/// `saved_amount` below 0) → 422; everything else is internal.
+fn map_movement_db_err(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db) = &e {
+        match db.code().as_deref() {
+            Some("23503") => {
+                return AppError::Validation("invalid savings movement reference".into());
+            }
+            Some("23514") => {
+                return AppError::Validation("movement would overdraw the goal balance".into());
+            }
+            _ => {}
+        }
+    }
+    AppError::Internal
+}
+
+pub async fn create_movement_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(goal_id): Path<Uuid>,
+    Json(body): Json<CreateMovementRequest>,
+) -> Result<(StatusCode, Json<MovementResponse>), AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let amount = parse_signed_amount(&body.amount)?;
+    let occurred_on = validate_movement_date(&body.occurred_on)?;
+    validate_optional_text(body.notes.as_deref(), MAX_TEXT_LEN, "notes")?;
+    ensure_goal_writable(&state.pool, goal_id, user_id).await?;
+    if let Some(transaction_id) = body.transaction_id {
+        ensure_transaction_owned(&state.pool, transaction_id, user_id).await?;
+    }
+    let row = sqlx::query_as::<_, MovementRow>(CREATE_MOVEMENT_SQL)
+        .bind(user_id)
+        .bind(goal_id)
+        .bind(amount)
+        .bind(occurred_on)
+        .bind(body.transaction_id)
+        .bind(body.notes.as_deref())
+        .fetch_one(&state.pool)
+        .await
+        .map_err(map_movement_db_err)?;
+    Ok((StatusCode::CREATED, Json(MovementResponse::from(row))))
+}
+
+pub async fn delete_movement_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((goal_id, movement_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    ensure_goal_writable(&state.pool, goal_id, user_id).await?;
+    let res = sqlx::query(DELETE_MOVEMENT_SQL)
+        .bind(movement_id)
+        .bind(goal_id)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +648,93 @@ mod tests {
         assert!(
             CATEGORY_LOOKUP_SQL.contains("kind::text"),
             "category check must read kind, got: {CATEGORY_LOOKUP_SQL}"
+        );
+    }
+
+    #[test]
+    fn movement_amount_must_arrive_as_string_not_json_number() {
+        // Money travels as string to avoid float drift; a JSON number must
+        // fail deserialization (axum surfaces it as 422).
+        let payload = json!({"amount": 50.00, "occurred_on": "2026-09-01"});
+        assert!(
+            serde_json::from_value::<CreateMovementRequest>(payload).is_err(),
+            "numeric movement amount must fail deserialization"
+        );
+        for raw in ["50.00", "-30.00"] {
+            let ok: CreateMovementRequest = serde_json::from_value(json!({
+                "amount": raw,
+                "occurred_on": "2026-09-01"
+            }))
+            .unwrap();
+            assert_eq!(ok.amount, raw);
+        }
+    }
+
+    #[test]
+    fn movement_rejects_bad_money_and_bad_dates_as_422() {
+        // Signed parser: "abc"/"0.00" → 422; date guard: malformed → 422.
+        for raw in ["abc", "", "0.00", "0", "-0.00", "10.005"] {
+            assert_422(parse_signed_amount(raw).unwrap_err());
+        }
+        for raw in ["", "2026-13-01", "2026-02-30", "01/09/2026", "not-a-date"] {
+            assert_422(validate_movement_date(raw).unwrap_err());
+        }
+        assert_eq!(
+            validate_movement_date("2026-09-01").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn movement_trigger_owned_fields_are_never_writable() {
+        // `saved_amount` / `is_completed` belong to the 0003 trigger, not to
+        // a movement row; `deny_unknown_fields` turns them into 422.
+        for payload in [
+            json!({"amount": "50.00", "occurred_on": "2026-09-01", "saved_amount": "10.00"}),
+            json!({"amount": "50.00", "occurred_on": "2026-09-01", "is_completed": true}),
+        ] {
+            assert!(
+                serde_json::from_value::<CreateMovementRequest>(payload).is_err(),
+                "trigger-owned field must fail deserialization"
+            );
+        }
+    }
+
+    #[test]
+    fn movement_amount_serializes_as_string_never_float() {
+        let resp = MovementResponse {
+            id: Uuid::new_v4(),
+            savings_goal_id: Uuid::new_v4(),
+            amount: Decimal::new(-3000, 2),
+            occurred_on: NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
+            transaction_id: None,
+            notes: None,
+            created_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["amount"], serde_json::Value::String("-30.00".into()));
+    }
+
+    #[test]
+    fn movement_sql_scopes_every_query_by_user_id() {
+        for sql in [
+            CREATE_MOVEMENT_SQL,
+            DELETE_MOVEMENT_SQL,
+            GOAL_OWNERSHIP_SQL,
+            TRANSACTION_OWNERSHIP_SQL,
+        ] {
+            assert!(
+                sql.contains("user_id"),
+                "movement SQL must scope by user_id, got: {sql}"
+            );
+        }
+        assert!(
+            DELETE_MOVEMENT_SQL.contains("id=$1 AND savings_goal_id=$2 AND user_id=$3"),
+            "movement delete must scope id+goal+user, got: {DELETE_MOVEMENT_SQL}"
+        );
+        assert!(
+            GOAL_EXISTS_SQL.contains("FROM savings_goals WHERE id=$1"),
+            "orphaned-goal probe must be unscoped, got: {GOAL_EXISTS_SQL}"
         );
     }
 
@@ -623,6 +908,311 @@ mod tests {
         let err = create_goal_handler(State(state.clone()), headers, body)
             .await
             .expect_err("habit-kind category must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    fn movement_body(amount: &str) -> Json<CreateMovementRequest> {
+        Json(
+            serde_json::from_value(json!({"amount": amount, "occurred_on": "2026-09-01"}))
+                .expect("valid movement body"),
+        )
+    }
+
+    async fn seed_goal(pool: &sqlx::PgPool, user_id: Uuid, target: &str) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO savings_goals (user_id, name, target_amount) VALUES ($1,$2,$3::numeric) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(format!("goal-{}", Uuid::new_v4()))
+        .bind(target)
+        .fetch_one(pool)
+        .await
+        .expect("seed goal")
+    }
+
+    /// Re-read the trigger-owned balance after a movement write.
+    async fn goal_state(pool: &sqlx::PgPool, goal_id: Uuid, user_id: Uuid) -> (Decimal, bool) {
+        sqlx::query_as::<_, (Decimal, bool)>(GOAL_BALANCE_SQL)
+            .bind(goal_id)
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("read goal balance")
+    }
+
+    async fn seed_owned_transaction(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
+        let account_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("seed account");
+        sqlx::query_scalar(
+            "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on) VALUES ($1,$2,'income',50, '2026-09-01') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(account_id)
+        .fetch_one(pool)
+        .await
+        .expect("seed transaction")
+    }
+
+    #[tokio::test]
+    async fn deposit_movement_201_updates_saved_amount_via_trigger() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP deposit_movement_201_updates_saved_amount_via_trigger: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let goal_id = seed_goal(&pool, user_id, "1000.00").await;
+        let (status, created) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            movement_body("50.00"),
+        )
+        .await
+        .expect("deposit is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created.savings_goal_id, goal_id);
+        let (saved, completed) = goal_state(&pool, goal_id, user_id).await;
+        assert_eq!(saved, Decimal::new(5000, 2));
+        assert!(!completed);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn withdrawal_movement_reduces_balance_via_trigger() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP withdrawal_movement_reduces_balance_via_trigger: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let goal_id = seed_goal(&pool, user_id, "1000.00").await;
+        let (status, _) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            movement_body("100.00"),
+        )
+        .await
+        .expect("seed deposit is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            movement_body("-30.00"),
+        )
+        .await
+        .expect("withdrawal is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        let (saved, _) = goal_state(&pool, goal_id, user_id).await;
+        assert_eq!(saved, Decimal::new(7000, 2));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn reaching_target_flips_is_completed_via_trigger() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP reaching_target_flips_is_completed_via_trigger: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let goal_id = seed_goal(&pool, user_id, "100.00").await;
+        let (status, _) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            movement_body("90.00"),
+        )
+        .await
+        .expect("first deposit is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        let (_, completed) = goal_state(&pool, goal_id, user_id).await;
+        assert!(!completed);
+        let (status, _) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            movement_body("10.00"),
+        )
+        .await
+        .expect("completing deposit is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        let (saved, completed) = goal_state(&pool, goal_id, user_id).await;
+        assert_eq!(saved, Decimal::new(10000, 2));
+        assert!(completed);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn delete_movement_204_reverses_trigger_balance() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_movement_204_reverses_trigger_balance: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let goal_id = seed_goal(&pool, user_id, "1000.00").await;
+        let (_, created) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            movement_body("50.00"),
+        )
+        .await
+        .expect("deposit is 201");
+        let status = delete_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path((goal_id, created.id)),
+        )
+        .await
+        .expect("delete is 204");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (saved, completed) = goal_state(&pool, goal_id, user_id).await;
+        assert_eq!(saved, Decimal::new(0, 2));
+        assert!(!completed);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn movement_with_invalid_money_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP movement_with_invalid_money_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let goal_id = seed_goal(&pool, user_id, "1000.00").await;
+        for amount in ["abc", "0.00", "10.005"] {
+            let err = create_movement_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(goal_id),
+                movement_body(amount),
+            )
+            .await
+            .expect_err("bad movement money must be 422");
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn movement_on_missing_goal_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP movement_on_missing_goal_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let err = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(Uuid::new_v4()),
+            movement_body("10.00"),
+        )
+        .await
+        .expect_err("orphaned goal movement must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn movement_on_foreign_goal_is_404() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP movement_on_foreign_goal_is_404: no DATABASE_URL");
+            return;
+        };
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let goal_id = seed_goal(&pool, user_a, "1000.00").await;
+        let err = create_movement_handler(
+            State(state_b.clone()),
+            headers_b.clone(),
+            Path(goal_id),
+            movement_body("10.00"),
+        )
+        .await
+        .expect_err("foreign goal movement must be 404");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        let err = delete_movement_handler(
+            State(state_b.clone()),
+            headers_b,
+            Path((goal_id, Uuid::new_v4())),
+        )
+        .await
+        .expect_err("foreign goal movement delete must be 404");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    #[tokio::test]
+    async fn movement_with_unowned_transaction_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP movement_with_unowned_transaction_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let foreign_tx = seed_owned_transaction(&pool, user_a).await;
+        let goal_id = seed_goal(&pool, user_b, "1000.00").await;
+        let body = Json(
+            serde_json::from_value(json!({
+                "amount": "10.00",
+                "occurred_on": "2026-09-01",
+                "transaction_id": foreign_tx
+            }))
+            .expect("valid body with transaction"),
+        );
+        let err = create_movement_handler(State(state_b.clone()), headers_b, Path(goal_id), body)
+            .await
+            .expect_err("unowned transaction must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    #[tokio::test]
+    async fn over_withdrawal_below_zero_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP over_withdrawal_below_zero_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let goal_id = seed_goal(&pool, user_id, "1000.00").await;
+        let err = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            movement_body("-10.00"),
+        )
+        .await
+        .expect_err("over-withdrawal must be 422");
         assert_eq!(
             err.into_response().status(),
             axum::http::StatusCode::UNPROCESSABLE_ENTITY
