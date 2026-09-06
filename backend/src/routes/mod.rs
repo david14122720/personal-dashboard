@@ -9,5 +9,7 @@ pub mod me;
 pub mod ready;
 #[allow(dead_code)]
 pub mod savings;
+#[allow(dead_code)]
+pub mod subscriptions;
 pub mod transactions;
 pub mod transfers;
