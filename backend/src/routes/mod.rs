@@ -5,5 +5,7 @@ pub mod login;
 pub mod logout;
 pub mod me;
 pub mod ready;
+#[allow(dead_code)]
+pub mod savings;
 pub mod transactions;
 pub mod transfers;
