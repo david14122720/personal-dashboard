@@ -1,5 +1,7 @@
 pub mod accounts;
 pub mod budgets;
+#[allow(dead_code)]
+pub mod debts;
 pub mod health;
 pub mod login;
 pub mod logout;
