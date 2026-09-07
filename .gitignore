@@ -28,3 +28,7 @@ Thumbs.db
 .idea/
 # Local Pi runtime state
 .atl/
+
+# Playwright smoke artifacts (skip-clean without live backend; never commit runs)
+frontend/test-results/
+frontend/playwright-report/
