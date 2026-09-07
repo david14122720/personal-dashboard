@@ -2,6 +2,14 @@
   "name": "personal-dashboard-frontend",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.23.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "msw",
+      "sharp"
+    ]
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

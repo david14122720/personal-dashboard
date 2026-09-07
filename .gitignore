@@ -10,7 +10,7 @@
 /frontend/out/
 package-lock.json
 yarn.lock
-pnpm-lock.yaml
+# pnpm-lock.yaml IS committed (reproducible frontend builds)
 
 # Environment
 .env

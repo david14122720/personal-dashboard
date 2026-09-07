@@ -22,13 +22,18 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
-      - run: npm test
-      - run: npm run build
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm run build
       # Smoke specs skip cleanly without E2E_SMOKE_LIVE; this step validates
       # spec discovery and loading on every push. The live run happens
       # against a deployed backend (see frontend/playwright.config.ts).
-      - run: npx playwright test --list
+      - run: pnpm exec playwright test --list
