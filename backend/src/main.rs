@@ -225,14 +225,18 @@ fn build_router(state: AppState, static_dir: Option<String>) -> Router {
 
     if let Some(dir) = static_dir {
         tracing::info!("serving static dir: {dir}");
-        // Unknown /api/* suffixes already hit the API 404 above; every other
-        // miss serves index.html for the SPA router. NOTE: this must be
-        // `fallback`, not `not_found_service` — the latter wraps the fallback
-        // in `SetStatus(404)` and would rewrite every API status to 404
-        // whenever static serving is enabled.
-        let routes = with_cors.fallback_service(ServeFile::new(format!("{dir}/index.html")));
-        let svc = ServeDir::new(dir).fallback(routes);
-        Router::new().fallback_service(svc)
+        // The API router must be MERGED, not parked in a fallback chain:
+        // `tower_http::ServeDir` answers 405 (allow: GET, HEAD) for POST/PUT/
+        // DELETE/PATCH without ever consulting its own fallback, so wiring
+        // the API under ServeDir's fallback silently breaks every mutating
+        // endpoint when static serving is on. Merged routes win over the
+        // fallback for /api/* (unknown /api/* suffixes still hit the JSON
+        // 404 in `api_routes`), and ServeDir's own `fallback` serves
+        // `index.html` (200) for the SPA router on non-API misses.
+        let svc = ServeDir::new(&dir).fallback(ServeFile::new(format!("{dir}/index.html")));
+        Router::new()
+            .merge(with_cors)
+            .fallback_service(svc)
     } else {
         with_cors
     }
