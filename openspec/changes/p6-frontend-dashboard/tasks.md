@@ -61,14 +61,14 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: Slice 2 — Dashboard Home
 
-- [ ] 2.1 RED: `TelemetryStrip` doesn't map `alert_level` to `alert` color
-- [ ] 2.2 GREEN: Implement `components/ui/TelemetryStrip` with LED mapping
-- [ ] 2.3 Implement Dashboard home Bento grid layout
-- [ ] 2.4 RED: Recharts wrappers crash on empty data
-- [ ] 2.5 GREEN: Implement `components/ui/FlowChart` and `CategoryDonut` with shared `EmptyState`
-- [ ] 2.6 Wire aggregates-driven charts to SWR hooks
-- [ ] 2.7 Implement mobile bottom tab bar
-- [ ] 2.8 Verify Slice 2: `npm test` returns green
+- [x] 2.1 RED: `TelemetryStrip` doesn't map `alert_level` to `alert` color
+- [x] 2.2 GREEN: Implement `components/ui/TelemetryStrip` with LED mapping
+- [x] 2.3 Implement Dashboard home Bento grid layout
+- [x] 2.4 RED: Recharts wrappers crash on empty data
+- [x] 2.5 GREEN: Implement `components/ui/FlowChart` and `CategoryDonut` with shared `EmptyState`
+- [x] 2.6 Wire aggregates-driven charts to SWR hooks
+- [x] 2.7 Implement mobile bottom tab bar
+- [x] 2.8 Verify Slice 2: `npm test` returns green
 
 ## Phase 4: Slice 3 — Finance Screens
 

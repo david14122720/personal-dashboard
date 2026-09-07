@@ -1,0 +1,284 @@
+"use client";
+
+import dynamic from "next/dynamic";
+import { useSWRConfig } from "swr";
+import AppShell from "@/components/layout/AppShell";
+import EmptyState from "@/components/ui/EmptyState";
+import type { BudgetBarDatum } from "@/components/ui/BudgetBars";
+import MetricCard from "@/components/ui/MetricCard";
+import TelemetryStrip, { type TelemetryItem } from "@/components/ui/TelemetryStrip";
+import {
+  useAccounts,
+  useBudgets,
+  useHabitsToday,
+  useMonthlyFlow,
+  useNetWorth,
+  usePreferences,
+  useSpendByCategory,
+} from "@/lib/api/dashboard";
+import { formatMoney, toNumber } from "@/lib/api/money";
+import {
+  currentMonthKey,
+  longestStreak,
+  monthBalance,
+  monthsAgoStart,
+  savingsRate,
+  toDonutSlices,
+  toFlowPoints,
+  toISODate,
+  worstAlertLevel,
+  worstBudgetStatus,
+} from "@/lib/dashboard/transforms";
+import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
+
+/**
+ * Dashboard home container. Owns all SWR reads (fired in parallel) and
+ * coercion at the boundary; `components/ui/*` stay pure. Heavy Recharts
+ * wrappers are code-split per route via `next/dynamic` (bundle rule:
+ * dynamic imports for heavy components; no barrel files).
+ */
+
+const FlowChart = dynamic(() => import("@/components/ui/FlowChart"), {
+  ssr: false,
+  loading: () => <ChartSkeleton label="Loading flow chart" />,
+});
+
+const CategoryDonut = dynamic(() => import("@/components/ui/CategoryDonut"), {
+  ssr: false,
+  loading: () => <ChartSkeleton label="Loading category chart" />,
+});
+
+const BudgetBars = dynamic(() => import("@/components/ui/BudgetBars"), {
+  ssr: false,
+  loading: () => <ChartSkeleton label="Loading budget bars" />,
+});
+
+function ChartSkeleton({ label }: { label: string }) {
+  return (
+    <div role="status" aria-label={label} className="flex h-40 items-center justify-center">
+      <p className="text-sm text-instrument/50">{label}…</p>
+    </div>
+  );
+}
+
+function WidgetShell({
+  title,
+  hint,
+  children,
+  span,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+  span: string;
+}) {
+  return (
+    <section aria-label={title} className={`rounded-xl border border-hull bg-hull/40 p-5 ${span}`}>
+      <h2 className="font-display text-base font-semibold tracking-wide">{title}</h2>
+      {hint ? <p className="mt-1 text-sm text-instrument/60">{hint}</p> : null}
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+export default function DashboardHome() {
+  const reducedMotion = usePrefersReducedMotion();
+  const { mutate } = useSWRConfig();
+
+  const now = new Date();
+  const flowFrom = monthsAgoStart(now, 11);
+  const flowTo = toISODate(now);
+  const monthStart = `${currentMonthKey(now)}-01`;
+
+  const netWorth = useNetWorth();
+  const flow = useMonthlyFlow(flowFrom, flowTo);
+  const categories = useSpendByCategory(monthStart, flowTo);
+  const budgets = useBudgets();
+  const habits = useHabitsToday();
+  const accounts = useAccounts();
+  const prefs = usePreferences();
+
+  const queries = [netWorth, flow, categories, budgets, habits, accounts, prefs];
+  const isLoading = queries.some((q) => q.isLoading);
+  const failed = queries.filter((q) => q.error);
+
+  if (isLoading) {
+    return (
+      <div role="status" aria-label="Loading dashboard" aria-busy="true">
+        <h1 className="font-display text-2xl font-semibold tracking-wide">Overview</h1>
+        <div className="mt-6 grid grid-cols-12 gap-4">
+          {[0, 1, 2].map((n) => (
+            <div
+              key={n}
+              className="col-span-12 animate-pulse rounded-xl border border-hull bg-hull/40 p-5 md:col-span-6 xl:col-span-4"
+            >
+              <div className="h-4 w-24 rounded bg-hull" />
+              <div className="mt-3 h-8 w-32 rounded bg-hull" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (failed.length > 0) {
+    return (
+      <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
+        <h1 className="font-display text-lg font-semibold">Dashboard failed to load</h1>
+        <p className="mt-1 text-sm text-instrument/70">
+          {failed.length} of {queries.length} sections failed. Check your connection and retry.
+        </p>
+        <button
+          type="button"
+          onClick={() => void mutate((key) => typeof key === "string" && key.startsWith("dashboard/"))}
+          className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const locale = prefs.data?.preferences.locale ?? "es-CO";
+  const currency = prefs.data?.preferences.currency_code ?? "COP";
+  const fmt = (value: string | number | null | undefined) =>
+    formatMoney(value, { locale, currency });
+
+  const worthEntry =
+    netWorth.data?.per_currency.find((e) => e.currency === currency) ??
+    netWorth.data?.per_currency[0];
+  const netWorthValue = worthEntry ? toNumber(worthEntry.net_worth) : 0;
+
+  const points = toFlowPoints(flow.data);
+  const monthKey = currentMonthKey(now);
+  const balance = monthBalance(points, monthKey);
+  const current = points.find((p) => p.month === monthKey);
+  const rate = current ? savingsRate(current.income, current.expense) : null;
+
+  const budgetRows: BudgetBarDatum[] = (budgets.data ?? []).map((b) => ({
+    id: b.id,
+    label: `${b.currency} ${toNumber(b.amount).toFixed(0)} · ${b.period_start}`,
+    pct: Number.isFinite(b.pct) ? b.pct : 0,
+    status: b.status,
+  }));
+  const budgetLed = worstBudgetStatus((budgets.data ?? []).map((b) => b.status));
+  const cardLed = worstAlertLevel((accounts.data ?? []).map((a) => a.alert_level ?? null));
+  const streak = longestStreak(habits.data);
+
+  const strip: TelemetryItem[] = [
+    { id: "net-worth", label: "Net worth", display: fmt(netWorthValue) },
+    {
+      id: "month-balance",
+      label: "Month balance",
+      display: fmt(balance),
+      status: balance >= 0 ? "ok" : "warn",
+    },
+    {
+      id: "savings-rate",
+      label: "Savings rate",
+      display: rate === null ? "—" : `${(rate * 100).toFixed(1)}%`,
+      status: rate === null ? null : rate >= 0.2 ? "ok" : rate >= 0 ? "warn" : "over",
+    },
+    { id: "streak", label: "Longest streak", display: `${streak}d` },
+    {
+      id: "budgets",
+      label: "Budgets",
+      display: budgetLed === "none" ? "No budgets" : budgetLed === "ok" ? "On track" : budgetLed,
+      status: budgetLed === "none" ? null : budgetLed,
+    },
+    {
+      id: "cards",
+      label: "Cards",
+      display: cardLed === "none" ? "No cards" : cardLed === "ok" ? "Healthy" : cardLed,
+      status: cardLed === "none" ? null : cardLed,
+    },
+  ];
+
+  const slices = toDonutSlices(categories.data);
+  const pendingHabits = (habits.data ?? []).filter((h) => h.today_status === "pending");
+
+  return (
+    <div>
+      <h1 className="font-display text-2xl font-semibold tracking-wide">Overview</h1>
+      <p className="mt-1 text-sm text-instrument/60">
+        Live telemetry from your accounts, budgets, and habits.
+      </p>
+      <div className="mt-6 grid grid-cols-12 gap-4">
+        <div className="col-span-12">
+          <TelemetryStrip items={strip} />
+        </div>
+        <div className="col-span-12 md:col-span-6 xl:col-span-4">
+          <MetricCard label="Net worth" display={fmt(netWorthValue)} hint={worthEntry?.currency} />
+        </div>
+        <div className="col-span-12 md:col-span-6 xl:col-span-4">
+          <MetricCard
+            label="Month balance"
+            display={fmt(balance)}
+            hint={monthKey}
+            status={balance >= 0 ? "ok" : "warn"}
+          />
+        </div>
+        <div className="col-span-12 md:col-span-6 xl:col-span-4">
+          <MetricCard
+            label="Pending habits"
+            display={`${pendingHabits.length}`}
+            hint={pendingHabits.length === 0 ? "All clear for today" : "Awaiting check-in"}
+            status={pendingHabits.length === 0 ? "ok" : "warn"}
+          />
+        </div>
+        <WidgetShell
+          title="Monthly flow"
+          hint="Income versus expense, last 12 months."
+          span="col-span-12 xl:col-span-7"
+        >
+          <FlowChart data={points} animate={!reducedMotion} />
+        </WidgetShell>
+        <WidgetShell
+          title="Spend by category"
+          hint="Current month expenses."
+          span="col-span-12 xl:col-span-5"
+        >
+          <CategoryDonut data={slices} animate={!reducedMotion} />
+        </WidgetShell>
+        <WidgetShell
+          title="Budgets"
+          hint="Spend fraction per active budget."
+          span="col-span-12 xl:col-span-7"
+        >
+          <BudgetBars data={budgetRows} animate={!reducedMotion} />
+        </WidgetShell>
+        <WidgetShell
+          title="Today"
+          hint="Habits awaiting check-in."
+          span="col-span-12 xl:col-span-5"
+        >
+          {pendingHabits.length === 0 ? (
+            <EmptyState title="Nothing pending" hint="Every habit is checked in for today." />
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {pendingHabits.map((habit) => (
+                <li
+                  key={habit.habit_id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
+                >
+                  <span className="truncate text-sm">{habit.name}</span>
+                  <span className="shrink-0 font-mono text-xs tabular-nums text-instrument/60">
+                    {habit.current_streak}d streak
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </WidgetShell>
+      </div>
+    </div>
+  );
+}
+
+export function DashboardHomeShell() {
+  return (
+    <AppShell>
+      <DashboardHome />
+    </AppShell>
+  );
+}
