@@ -82,7 +82,7 @@ Chain strategy: stacked-to-main
 
 ## Phase 7: Wiring & Cleanup
 
-- [ ] 7.1 Register all 5 new modules in `backend/src/routes/mod.rs`
-- [ ] 7.2 Wire routes in `backend/src/main.rs`
-- [ ] 7.3 Run full integration suite to verify cross-domain ownership and triggers
-- [ ] 7.4 Final `cargo clippy --all-targets -- -D warnings`
+- [x] 7.1 Register all 5 new modules in `backend/src/routes/mod.rs`
+- [x] 7.2 Wire routes in `backend/src/main.rs`
+- [x] 7.3 Run full integration suite to verify cross-domain ownership and triggers
+- [x] 7.4 Final `cargo clippy --all-targets -- -D warnings`
