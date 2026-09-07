@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "chart-visualization": {
+      "source": "antvis/chart-visualization-skills",
+      "sourceType": "github",
+      "skillPath": "skills/chart-visualization/SKILL.md",
+      "computedHash": "537be883849c5357f74188b13cff05fbac46a084f74034f7821bd17dac31f7d5"
+    },
     "design-system-patterns": {
       "source": "wshobson/agents",
       "sourceType": "github",
