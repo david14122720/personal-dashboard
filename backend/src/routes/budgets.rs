@@ -510,6 +510,7 @@ mod tests {
             description: None,
             notes: None,
             payment_method: None,
+            credit_card_account_id: None,
         });
         let (status, _) = create_transaction_handler(State(state.clone()), headers.clone(), body)
             .await
@@ -723,6 +724,7 @@ mod tests {
             description: None,
             notes: None,
             payment_method: None,
+            credit_card_account_id: None,
         };
         for (account_id, kind, amount) in
             [(wallet, "income", "100.00"), (wallet, "expense", "30.00")]

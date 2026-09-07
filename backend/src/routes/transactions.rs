@@ -32,10 +32,17 @@ pub const TRANSACTION_TYPES: &[&str] = &["income", "expense"];
 const MAX_TEXT_LEN: usize = 2000;
 const MAX_PAYMENT_METHOD_LEN: usize = 64;
 
-const CREATE_TRANSACTION_SQL: &str = "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on, category_id, description, notes, payment_method) VALUES ($1,$2,$3::transaction_type,$4,$5,$6,$7,$8,$9) RETURNING id, account_id, type::text, amount, currency, occurred_on, category_id, description, notes, created_at, updated_at";
+const CREATE_TRANSACTION_SQL: &str = "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on, category_id, description, notes, payment_method, credit_card_account_id) VALUES ($1,$2,$3::transaction_type,$4,$5,$6,$7,$8,$9,$10) RETURNING id, account_id, type::text, amount, currency, occurred_on, category_id, description, notes, credit_card_account_id, created_at, updated_at";
 const DELETE_TRANSACTION_SQL: &str = "DELETE FROM transactions WHERE id=$1 AND user_id=$2";
 const ACCOUNT_OWNERSHIP_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
 const CATEGORY_LOOKUP_SQL: &str = "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
+/// Card terms for linkage/over-limit checks, scoped to the caller (a
+/// foreign id yields no row; see [`require_usable_card`]).
+const CARD_LOOKUP_SQL: &str =
+    "SELECT balance, type::text, credit_limit FROM accounts WHERE id=$1 AND user_id=$2";
+/// Unscoped existence probe: distinguishes a foreign card (404) from a
+/// nonexistent id (422) without leaking which user owns it.
+const CARD_EXISTS_SQL: &str = "SELECT id FROM accounts WHERE id=$1";
 
 type TransactionRow = (
     Uuid,
@@ -47,6 +54,7 @@ type TransactionRow = (
     Option<Uuid>,
     Option<String>,
     Option<String>,
+    Option<Uuid>,
     DateTime<Utc>,
     DateTime<Utc>,
 );
@@ -65,6 +73,10 @@ pub struct CreateTransactionRequest {
     pub description: Option<String>,
     pub notes: Option<String>,
     pub payment_method: Option<String>,
+    /// Optional link to an owned `credit_card` account. Expense-only (see
+    /// [`validate_card_link_type`]); the 0002 trigger charges the card leg
+    /// alongside the primary account leg.
+    pub credit_card_account_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +101,7 @@ pub struct TransactionResponse {
     pub category_id: Option<Uuid>,
     pub description: Option<String>,
     pub notes: Option<String>,
+    pub credit_card_account_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -104,6 +117,7 @@ impl
         Option<Uuid>,
         Option<String>,
         Option<String>,
+        Option<Uuid>,
         DateTime<Utc>,
         DateTime<Utc>,
     )> for TransactionResponse
@@ -119,6 +133,7 @@ impl
             Option<Uuid>,
             Option<String>,
             Option<String>,
+            Option<Uuid>,
             DateTime<Utc>,
             DateTime<Utc>,
         ),
@@ -133,6 +148,7 @@ impl
             category_id,
             description,
             notes,
+            credit_card_account_id,
             created_at,
             updated_at,
         ) = row;
@@ -146,6 +162,7 @@ impl
             category_id,
             description,
             notes,
+            credit_card_account_id,
             created_at,
             updated_at,
         }
@@ -241,6 +258,97 @@ pub async fn ensure_finance_category(
     }
 }
 
+/// A card link is only meaningful on expenses: income linked to a card is
+/// 422 (a payment or refund travels as a transfer or a plain income, never
+/// as card-linked debt).
+pub fn validate_card_link_type(
+    transaction_type: &str,
+    has_card_link: bool,
+) -> Result<(), AppError> {
+    if has_card_link && transaction_type != "expense" {
+        return Err(AppError::Validation(
+            "only expenses can be linked to credit cards".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Card terms for the over-limit guard: `(balance, credit_limit)`.
+///
+/// - Owned `credit_card` row → its terms (`credit_limit` is NOT NULL there
+///   by `chk_card_limit_presence`; a NULL surfaces as 500, never a bypass).
+/// - Owned non-card row → 422 (a link must reference a `credit_card`).
+/// - Row owned by someone else → 404 (no existence oracle).
+/// - Id owned by nobody → 422 (orphaned-link FK guard).
+pub async fn require_usable_card(
+    pool: &sqlx::PgPool,
+    card_id: Uuid,
+    user_id: Uuid,
+) -> Result<(Decimal, Decimal), AppError> {
+    let row: Option<(Decimal, String, Option<Decimal>)> =
+        sqlx::query_as(CARD_LOOKUP_SQL)
+            .bind(card_id)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| AppError::Internal)?;
+    match row {
+        None => {
+            let exists: Option<Uuid> = sqlx::query_scalar(CARD_EXISTS_SQL)
+                .bind(card_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|_| AppError::Internal)?;
+            if exists.is_some() {
+                Err(AppError::NotFound)
+            } else {
+                Err(AppError::Validation(
+                    "credit card does not exist".into(),
+                ))
+            }
+        }
+        Some((balance, account_type, limit)) => {
+            if account_type != "credit_card" {
+                return Err(AppError::Validation(
+                    "credit_card_account_id must reference a credit_card account".into(),
+                ));
+            }
+            match limit {
+                Some(limit) => Ok((balance, limit)),
+                None => Err(AppError::Internal),
+            }
+        }
+    }
+}
+
+/// Over-limit guard: `used_balance + amount > credit_limit` → 422 before
+/// INSERT, so a rejected purchase records nothing and moves no balance.
+/// `used_balance` is the absolute debt (`GREATEST(-balance, 0)`).
+pub fn enforce_credit_limit(
+    balance: Decimal,
+    limit: Decimal,
+    amount: Decimal,
+) -> Result<(), AppError> {
+    let used = (-balance).max(Decimal::ZERO);
+    if used + amount > limit {
+        return Err(AppError::Validation(
+            "purchase exceeds the credit card limit".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Map transaction write errors: `23503` (linked card raced away) → 422;
+/// everything else is internal (never leaked).
+fn map_transaction_db_err(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db) = &e {
+        if db.code().as_deref() == Some("23503") {
+            return AppError::Validation("invalid credit card link".into());
+        }
+    }
+    AppError::Internal
+}
+
 pub async fn create_transaction_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -261,6 +369,34 @@ pub async fn create_transaction_handler(
     if let Some(category_id) = body.category_id {
         ensure_finance_category(&state.pool, category_id, user_id).await?;
     }
+    validate_card_link_type(&transaction_type, body.credit_card_account_id.is_some())?;
+    if let Some(card_id) = body.credit_card_account_id {
+        // A self-link would double-charge one row (primary leg + card leg
+        // hit the same balance in the 0002 trigger): reject it outright.
+        if card_id == body.account_id {
+            return Err(AppError::Validation(
+                "credit_card_account_id must differ from account_id".into(),
+            ));
+        }
+        let (balance, limit) =
+            require_usable_card(&state.pool, card_id, user_id).await?;
+        enforce_credit_limit(balance, limit, amount)?;
+    } else if transaction_type == "expense" {
+        // Direct purchase on the card itself (no link): same guard, so the
+        // trigger cannot push the card past its limit.
+        let row: Option<(Decimal, String, Option<Decimal>)> =
+            sqlx::query_as(CARD_LOOKUP_SQL)
+                .bind(body.account_id)
+                .bind(user_id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|_| AppError::Internal)?;
+        if let Some((balance, account_type, Some(limit))) = row {
+            if account_type == "credit_card" {
+                enforce_credit_limit(balance, limit, amount)?;
+            }
+        }
+    }
     let row = sqlx::query_as::<_, TransactionRow>(CREATE_TRANSACTION_SQL)
         .bind(user_id)
         .bind(body.account_id)
@@ -271,9 +407,10 @@ pub async fn create_transaction_handler(
         .bind(body.description.as_deref())
         .bind(body.notes.as_deref())
         .bind(body.payment_method.as_deref())
+        .bind(body.credit_card_account_id)
         .fetch_one(&state.pool)
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(map_transaction_db_err)?;
     Ok((StatusCode::CREATED, Json(TransactionResponse::from(row))))
 }
 
@@ -309,7 +446,7 @@ pub async fn patch_transaction_handler(
     qb.push_bind(id);
     qb.push(" AND user_id = ");
     qb.push_bind(user_id);
-    qb.push(" RETURNING id, account_id, type::text, amount, currency, occurred_on, category_id, description, notes, created_at, updated_at");
+    qb.push(" RETURNING id, account_id, type::text, amount, currency, occurred_on, category_id, description, notes, credit_card_account_id, created_at, updated_at");
     let row = qb
         .build_query_as::<TransactionRow>()
         .fetch_optional(&state.pool)
@@ -423,6 +560,7 @@ mod tests {
             category_id: None,
             description: None,
             notes: None,
+            credit_card_account_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -464,6 +602,7 @@ mod tests {
             DELETE_TRANSACTION_SQL,
             ACCOUNT_OWNERSHIP_SQL,
             CATEGORY_LOOKUP_SQL,
+            CARD_LOOKUP_SQL,
         ] {
             assert!(
                 sql.contains("user_id"),
@@ -553,6 +692,7 @@ mod tests {
             description: Some("groceries".into()),
             notes: None,
             payment_method: None,
+            credit_card_account_id: None,
         });
         let (status, created) =
             create_transaction_handler(State(state.clone()), headers.clone(), body)
@@ -591,6 +731,7 @@ mod tests {
             description: None,
             notes: None,
             payment_method: None,
+            credit_card_account_id: None,
         });
         let err = create_transaction_handler(State(state_b.clone()), headers_b, body)
             .await
@@ -634,6 +775,7 @@ mod tests {
             description: None,
             notes: None,
             payment_method: None,
+            credit_card_account_id: None,
         });
         let err = create_transaction_handler(State(state.clone()), headers, body)
             .await
@@ -643,5 +785,233 @@ mod tests {
             axum::http::StatusCode::UNPROCESSABLE_ENTITY
         );
         cleanup_user(&pool, user_id).await;
+    }
+
+    // -- Slice 3 (p5-credit-cards): card linkage, expense-only, over-limit --
+
+    #[test]
+    fn card_link_accepts_optional_link_on_expense() {
+        validate_card_link_type("expense", true).unwrap();
+        validate_card_link_type("expense", false).unwrap();
+        validate_card_link_type("income", false).unwrap();
+    }
+
+    #[test]
+    fn card_link_rejects_income_linkage_as_422() {
+        assert_422(validate_card_link_type("income", true).unwrap_err());
+    }
+
+    #[test]
+    fn card_link_field_deserializes_as_optional_uuid() {
+        let payload = json!({
+            "account_id": Uuid::new_v4(),
+            "type": "expense",
+            "amount": "50.00",
+            "occurred_on": "2026-09-01",
+            "credit_card_account_id": Uuid::new_v4()
+        });
+        let req: CreateTransactionRequest = serde_json::from_value(payload).unwrap();
+        assert!(req.credit_card_account_id.is_some());
+        // Backwards compatible: old clients omit the field entirely.
+        let legacy: CreateTransactionRequest = serde_json::from_value(json!({
+            "account_id": Uuid::new_v4(),
+            "type": "expense",
+            "amount": "50.00",
+            "occurred_on": "2026-09-01"
+        }))
+        .unwrap();
+        assert!(legacy.credit_card_account_id.is_none());
+    }
+
+    async fn seed_card(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        name: &str,
+        limit: &str,
+    ) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type, credit_limit, statement_day, payment_due_day) VALUES ($1,$2,'credit_card',$3,15,25) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(limit.parse::<rust_decimal::Decimal>().unwrap())
+        .fetch_one(pool)
+        .await
+        .expect("seed card")
+    }
+
+    async fn seed_cash_account(pool: &sqlx::PgPool, user_id: Uuid, name: &str) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type) VALUES ($1,$2,'cash') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .expect("seed cash account")
+    }
+
+    async fn card_balance(pool: &sqlx::PgPool, id: Uuid) -> Decimal {
+        sqlx::query_scalar("SELECT balance FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("read card balance")
+    }
+
+    async fn user_tx_count(pool: &sqlx::PgPool, user_id: Uuid) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM transactions WHERE user_id=$1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("count transactions")
+    }
+
+    fn linked_expense_body(account_id: Uuid, card_id: Uuid, amount: &str) -> Json<CreateTransactionRequest> {
+        Json(CreateTransactionRequest {
+            account_id,
+            transaction_type: "expense".into(),
+            amount: amount.into(),
+            occurred_on: "2026-09-01".into(),
+            category_id: None,
+            description: Some("card purchase".into()),
+            notes: None,
+            payment_method: None,
+            credit_card_account_id: Some(card_id),
+        })
+    }
+
+    #[tokio::test]
+    async fn income_linked_to_card_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP income_linked_to_card_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cash = seed_cash_account(&pool, user_id, "Wallet").await;
+        let card = seed_card(&pool, user_id, "Visa", "1000.00").await;
+        let body = Json(CreateTransactionRequest {
+            account_id: cash,
+            transaction_type: "income".into(),
+            amount: "50.00".into(),
+            occurred_on: "2026-09-01".into(),
+            category_id: None,
+            description: None,
+            notes: None,
+            payment_method: None,
+            credit_card_account_id: Some(card),
+        });
+        let err = create_transaction_handler(State(state.clone()), headers, body)
+            .await
+            .expect_err("income linked to card must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(user_tx_count(&pool, user_id).await, 0);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn over_limit_purchase_is_422_and_records_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP over_limit_purchase_is_422_and_records_nothing: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cash = seed_cash_account(&pool, user_id, "Wallet").await;
+        let card = seed_card(&pool, user_id, "Visa", "1000.00").await;
+        sqlx::query("UPDATE accounts SET balance = -950.00 WHERE id=$1")
+            .bind(card)
+            .execute(&pool)
+            .await
+            .expect("seed card debt");
+        let err = create_transaction_handler(
+            State(state.clone()),
+            headers,
+            linked_expense_body(cash, card, "100.00"),
+        )
+        .await
+        .expect_err("over-limit purchase must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(user_tx_count(&pool, user_id).await, 0);
+        assert_eq!(card_balance(&pool, card).await, Decimal::new(-95000, 2));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn linked_expense_is_201_and_charges_card_negative() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP linked_expense_is_201_and_charges_card_negative: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cash = seed_cash_account(&pool, user_id, "Wallet").await;
+        let card = seed_card(&pool, user_id, "Visa", "1000.00").await;
+        let (status, created) = create_transaction_handler(
+            State(state.clone()),
+            headers,
+            linked_expense_body(cash, card, "50.00"),
+        )
+        .await
+        .expect("linked expense is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created.credit_card_account_id, Some(card));
+        // The card leg carries the debt (negative balance); the cash leg is
+        // charged too, mirroring the 0002 trigger semantics.
+        assert_eq!(card_balance(&pool, card).await, Decimal::new(-5000, 2));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn link_to_non_card_account_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP link_to_non_card_account_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cash = seed_cash_account(&pool, user_id, "Wallet").await;
+        let other = seed_cash_account(&pool, user_id, "Pocket").await;
+        let err = create_transaction_handler(
+            State(state.clone()),
+            headers,
+            linked_expense_body(cash, other, "10.00"),
+        )
+        .await
+        .expect_err("link to non-card must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn link_to_foreign_card_is_404() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP link_to_foreign_card_is_404: no DATABASE_URL");
+            return;
+        };
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let cash = seed_cash_account(&pool, user_b, "Wallet").await;
+        let foreign_card = seed_card(&pool, user_a, "Visa", "1000.00").await;
+        let err = create_transaction_handler(
+            State(state_b.clone()),
+            headers_b,
+            linked_expense_body(cash, foreign_card, "10.00"),
+        )
+        .await
+        .expect_err("link to foreign card must be 404");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
     }
 }

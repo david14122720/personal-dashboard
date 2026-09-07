@@ -49,7 +49,7 @@ const LOCK_ACCOUNT_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=
 /// Insert one transfer leg. `transfer_group_id` is shared by both legs;
 /// `related_transfer_id` cross-links them (leg1 is back-linked after leg2
 /// exists, because the FK requires the counterparty row to exist first).
-const INSERT_LEG_SQL: &str = "INSERT INTO transactions (id, user_id, account_id, type, amount, occurred_on, description, transfer_group_id, related_transfer_id) VALUES ($1,$2,$3,$4::transaction_type,$5,$6,$7,$8,$9) RETURNING id, account_id, type::text, amount, currency, occurred_on, category_id, description, notes, created_at, updated_at";
+const INSERT_LEG_SQL: &str = "INSERT INTO transactions (id, user_id, account_id, type, amount, occurred_on, description, transfer_group_id, related_transfer_id) VALUES ($1,$2,$3,$4::transaction_type,$5,$6,$7,$8,$9) RETURNING id, account_id, type::text, amount, currency, occurred_on, category_id, description, notes, credit_card_account_id, created_at, updated_at";
 
 /// Back-link the first leg to the second once both rows exist.
 const LINK_COUNTERPART_SQL: &str =
@@ -63,7 +63,8 @@ const CREDIT_DEST_SQL: &str =
     "UPDATE accounts SET balance = balance + $1 WHERE id=$2 AND user_id=$3";
 
 /// One leg row, same shape as the transaction row (converted into
-/// [`TransactionResponse`] via its `From` impl).
+/// [`TransactionResponse`] via its `From` impl). Transfer legs never carry
+/// a card link, so `credit_card_account_id` reads back NULL.
 type TransferLegRow = (
     Uuid,
     Uuid,
@@ -74,6 +75,7 @@ type TransferLegRow = (
     Option<Uuid>,
     Option<String>,
     Option<String>,
+    Option<Uuid>,
     DateTime<Utc>,
     DateTime<Utc>,
 );
@@ -362,6 +364,7 @@ mod tests {
             category_id: None,
             description: None,
             notes: None,
+            credit_card_account_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

@@ -47,13 +47,13 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: Transaction Implementation (Slice 3)
 
-- [ ] 3.1 Update `backend/src/routes/transactions.rs` DTOs to include optional `credit_card_account_id`
-- [ ] 3.2 Implement ownership check and "expense-only" validation for `credit_card_account_id` in `backend/src/routes/transactions.rs`
-- [ ] 3.3 Implement over-limit guard in `backend/src/routes/transactions.rs` returning 422 if `used_balance + amount > credit_limit`
-- [ ] 3.4 Write integration tests for Transactions:
-    - [ ] 3.4.1 RED: `POST /transactions` returns 422 when linking income to credit card
-    - [ ] 3.4.2 RED: `POST /transactions` returns 422 when purchase exceeds `credit_limit`
-    - [ ] 3.4.3 GREEN: `POST /transactions` returns 201 for linked expense and verify account balance becomes negative
+- [x] 3.1 Update `backend/src/routes/transactions.rs` DTOs to include optional `credit_card_account_id`
+- [x] 3.2 Implement ownership check and "expense-only" validation for `credit_card_account_id` in `backend/src/routes/transactions.rs`
+- [x] 3.3 Implement over-limit guard in `backend/src/routes/transactions.rs` returning 422 if `used_balance + amount > credit_limit`
+- [x] 3.4 Write integration tests for Transactions:
+    - [x] 3.4.1 RED: `POST /transactions` returns 422 when linking income to credit card
+    - [x] 3.4.2 RED: `POST /transactions` returns 422 when purchase exceeds `credit_limit`
+    - [x] 3.4.3 GREEN: `POST /transactions` returns 201 for linked expense and verify account balance becomes negative
 
 ## Phase 4: Summary & Wiring (Slice 4)
 
