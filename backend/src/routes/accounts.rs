@@ -11,12 +11,17 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
+use crate::{
+    auth::helper::require_user_id,
+    error::AppError,
+    finance::money::parse_money_amount,
+    state::AppState,
+};
 
 /// Account kinds accepted at the API boundary (mirrors `account_type` enum).
 pub const ACCOUNT_TYPES: &[&str] = &[
@@ -34,16 +39,24 @@ const MAX_NOTES_LEN: usize = 2000;
 const MAX_COLOR_LEN: usize = 32;
 const MAX_ICON_LEN: usize = 64;
 
-const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, type, currency, notes, color, icon) VALUES ($1,$2,$3::account_type,$4,$5,$6,$7) RETURNING id, name, type::text, currency, balance, notes, color, icon, is_archived, created_at, updated_at";
-const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, type::text, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
-const GET_ACCOUNT_SQL: &str = "SELECT id, name, type::text, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
+const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, type, currency, credit_limit, statement_day, payment_due_day, notes, color, icon) VALUES ($1,$2,$3::account_type,$4,$5,$6,$7,$8,$9,$10) RETURNING id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at";
+const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
+const GET_ACCOUNT_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
 
+/// Account row: 11 legacy columns + 3 card columns = 14 (sqlx 0.8 FromRow
+/// tuple cap is 16). Derived card metrics (`used/available/usage/alert`)
+/// are computed in Rust from `balance` + `credit_limit` — still a single
+/// row fetch, so no N+1 — instead of SQL CASE, which would push the row
+/// past the 16-column cap.
 type AccountRow = (
     Uuid,
     String,
     String,
     String,
     Decimal,
+    Option<Decimal>,
+    Option<i16>,
+    Option<i16>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -59,6 +72,12 @@ pub struct CreateAccountRequest {
     #[serde(rename = "type")]
     pub account_type: String,
     pub currency: Option<String>,
+    /// Wire-format money string (e.g. `"5000.00"`); required iff
+    /// `type` is `credit_card`, forbidden otherwise.
+    pub credit_limit: Option<String>,
+    /// Billing-cycle days (1-31); required iff `type` is `credit_card`.
+    pub statement_day: Option<i16>,
+    pub payment_due_day: Option<i16>,
     pub notes: Option<String>,
     pub color: Option<String>,
     pub icon: Option<String>,
@@ -83,6 +102,19 @@ pub struct AccountResponse {
     /// Serialized as a string (e.g. `"50.00"`); `rust_decimal`'s serde impl
     /// renders decimals as strings, never floats.
     pub balance: Decimal,
+    /// Card limit (`None` for non-card accounts); serialized as a string.
+    pub credit_limit: Option<Decimal>,
+    /// Billing-cycle days (`None` for non-card accounts).
+    pub statement_day: Option<i16>,
+    pub payment_due_day: Option<i16>,
+    /// Derived card metrics (`None` for non-card accounts): `used` is the
+    /// absolute debt, `available` is `limit - used`, `usage_pct` is
+    /// `used / limit * 100`, and `alert_level` is `ok` (<70), `warn`
+    /// (70-90) or `high` (>=90). Computed from the same row (no extra query).
+    pub used_balance: Option<Decimal>,
+    pub available_balance: Option<Decimal>,
+    pub usage_pct: Option<Decimal>,
+    pub alert_level: Option<String>,
     pub notes: Option<String>,
     pub color: Option<String>,
     pub icon: Option<String>,
@@ -98,6 +130,9 @@ impl
         String,
         String,
         Decimal,
+        Option<Decimal>,
+        Option<i16>,
+        Option<i16>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -113,6 +148,9 @@ impl
             String,
             String,
             Decimal,
+            Option<Decimal>,
+            Option<i16>,
+            Option<i16>,
             Option<String>,
             Option<String>,
             Option<String>,
@@ -127,6 +165,9 @@ impl
             account_type,
             currency,
             balance,
+            credit_limit,
+            statement_day,
+            payment_due_day,
             notes,
             color,
             icon,
@@ -134,12 +175,27 @@ impl
             created_at,
             updated_at,
         ) = row;
+        let (used_balance, available_balance, usage_pct, alert_level) =
+            match credit_limit {
+                Some(limit) => {
+                    let (used, available, usage, alert) = compute_card_metrics(balance, limit);
+                    (Some(used), Some(available), Some(usage), Some(alert))
+                }
+                None => (None, None, None, None),
+            };
         Self {
             id,
             name,
             account_type,
             currency,
             balance,
+            credit_limit,
+            statement_day,
+            payment_due_day,
+            used_balance,
+            available_balance,
+            usage_pct,
+            alert_level,
             notes,
             color,
             icon,
@@ -187,6 +243,107 @@ pub fn validate_currency(raw: Option<&str>) -> Result<String, AppError> {
             "currency must be a 3-letter code".into(),
         ))
     }
+}
+
+/// Validate credit-card fields against the account type (pre-DB guard ahead
+/// of the `chk_card_*` CHECKs, so failures are 422 with a message).
+///
+/// - `credit_card` requires a `credit_limit` wire string (`> 0`, scale <= 2
+///   via [`parse_money_amount`]) and both cycle days (1-31); returns the
+///   parsed limit for binding.
+/// - Any other type rejects all three fields (blank limit strings count as
+///   absent, mirroring optional-field frontend behavior).
+pub fn validate_card_fields(
+    account_type: &str,
+    credit_limit: Option<&str>,
+    statement_day: Option<i16>,
+    payment_due_day: Option<i16>,
+) -> Result<Option<Decimal>, AppError> {
+    let present_limit = credit_limit.filter(|s| !s.trim().is_empty());
+    if account_type == "credit_card" {
+        let Some(raw) = present_limit else {
+            return Err(AppError::Validation(
+                "credit_limit is required for credit_card accounts".into(),
+            ));
+        };
+        let limit = parse_money_amount(raw)?;
+        for (day, field) in [
+            (statement_day, "statement_day"),
+            (payment_due_day, "payment_due_day"),
+        ] {
+            match day {
+                Some(d) if (1..=31).contains(&d) => {}
+                _ => {
+                    return Err(AppError::Validation(format!(
+                        "{field} is required for credit_card accounts and must be 1-31"
+                    )));
+                }
+            }
+        }
+        Ok(Some(limit))
+    } else {
+        if present_limit.is_some() || statement_day.is_some() || payment_due_day.is_some() {
+            return Err(AppError::Validation(
+                "credit_limit, statement_day and payment_due_day require type credit_card"
+                    .into(),
+            ));
+        }
+        Ok(None)
+    }
+}
+
+/// Days in a calendar month (proleptic Gregorian via `chrono`).
+fn days_in_month(year: i32, month: u32) -> i64 {
+    let first_of_next = if month == 12 {
+        NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1)
+    };
+    first_of_next
+        .and_then(|d| d.pred_opt())
+        .map(|d| d.day() as i64)
+        .unwrap_or(28)
+}
+
+/// Clamp a billing-cycle day to the last day of `(year, month)`: a
+/// `statement_day` of 31 in February means the 28th (29th in leap years).
+/// Pure Rust by design — SQL date/bigint arithmetic needs `::int` casts
+/// and trigger WHEN clauses reject OLD/NEW refs, so the cutoff stays a bind
+/// param, never SQL date math.
+pub fn clamp_day(day: i16, year: i32, month: u32) -> i16 {
+    let max = days_in_month(year, month);
+    (day as i64).min(max) as i16
+}
+
+/// Derive card health metrics from the cached `balance` (negative = debt)
+/// and the `credit_limit`. Returns
+/// `(used_balance, available_balance, usage_pct, alert_level)` where
+/// `alert_level` is `ok` (usage < 70), `warn` (70 <= usage < 90) or `high`
+/// (usage >= 90). `usage_pct` is rounded to 2 decimals for stable wire output.
+pub fn compute_card_metrics(
+    balance: Decimal,
+    limit: Decimal,
+) -> (Decimal, Decimal, Decimal, String) {
+    use rust_decimal::RoundingStrategy;
+    let used = (-balance).max(Decimal::ZERO);
+    let available = limit + balance;
+    let usage = if limit > Decimal::ZERO {
+        (used / limit * Decimal::new(100, 0)).round_dp_with_strategy(
+            2,
+            RoundingStrategy::MidpointAwayFromZero,
+        )
+    } else {
+        Decimal::ZERO
+    };
+    let alert = if usage >= Decimal::new(90, 0) {
+        "high"
+    } else if usage >= Decimal::new(70, 0) {
+        "warn"
+    } else {
+        "ok"
+    }
+    .to_string();
+    (used, available, usage, alert)
 }
 
 /// Validate PATCH metadata lengths (notes/color/icon caps).
@@ -253,6 +410,12 @@ pub async fn create_account_handler(
     let name = validate_account_name(&body.name)?;
     let account_type = validate_account_type(&body.account_type)?;
     let currency = validate_currency(body.currency.as_deref())?;
+    let credit_limit = validate_card_fields(
+        &account_type,
+        body.credit_limit.as_deref(),
+        body.statement_day,
+        body.payment_due_day,
+    )?;
     validate_metadata_lengths(
         body.notes.as_deref(),
         body.color.as_deref(),
@@ -263,6 +426,9 @@ pub async fn create_account_handler(
         .bind(&name)
         .bind(&account_type)
         .bind(&currency)
+        .bind(credit_limit)
+        .bind(body.statement_day)
+        .bind(body.payment_due_day)
         .bind(body.notes.as_deref())
         .bind(body.color.as_deref())
         .bind(body.icon.as_deref())
@@ -338,7 +504,7 @@ pub async fn patch_account_handler(
     qb.push_bind(id);
     qb.push(" AND user_id = ");
     qb.push_bind(user_id);
-    qb.push(" RETURNING id, name, type::text, currency, balance, notes, color, icon, is_archived, created_at, updated_at");
+    qb.push(" RETURNING id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at");
     let row = qb
         .build_query_as::<AccountRow>()
         .fetch_optional(&state.pool)
@@ -442,6 +608,13 @@ mod tests {
             account_type: "bank".into(),
             currency: "COP".into(),
             balance: Decimal::new(5000, 2),
+            credit_limit: None,
+            statement_day: None,
+            payment_due_day: None,
+            used_balance: None,
+            available_balance: None,
+            usage_pct: None,
+            alert_level: None,
             notes: None,
             color: None,
             icon: None,
@@ -572,5 +745,218 @@ mod tests {
         let _ = state_a;
         cleanup_user(&pool, user_a).await;
         cleanup_user(&pool, user_b).await;
+    }
+
+    // -- Slice 2 (p5-credit-cards): card validation, clamping, metrics --
+
+    #[test]
+    fn card_requires_limit_and_both_days() {
+        assert_422(
+            validate_card_fields("credit_card", None, Some(15), Some(25)).unwrap_err(),
+        );
+        assert_422(
+            validate_card_fields("credit_card", Some("5000.00"), None, Some(25)).unwrap_err(),
+        );
+        assert_422(
+            validate_card_fields("credit_card", Some("5000.00"), Some(15), None).unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn card_rejects_non_positive_or_bad_scale_limit_as_422() {
+        for raw in ["0.00", "0", "-10.00", "10.005", "abc", ""] {
+            assert_422(
+                validate_card_fields("credit_card", Some(raw), Some(15), Some(25)).unwrap_err(),
+            );
+        }
+    }
+
+    #[test]
+    fn card_rejects_out_of_range_days_as_422() {
+        for day in [0, 32, -1, 100] {
+            assert_422(
+                validate_card_fields("credit_card", Some("5000.00"), Some(day), Some(25))
+                    .unwrap_err(),
+            );
+            assert_422(
+                validate_card_fields("credit_card", Some("5000.00"), Some(15), Some(day))
+                    .unwrap_err(),
+            );
+        }
+    }
+
+    #[test]
+    fn non_card_rejects_any_card_field_as_422() {
+        assert_422(
+            validate_card_fields("savings", Some("5000.00"), None, None).unwrap_err(),
+        );
+        assert_422(validate_card_fields("bank", None, Some(15), None).unwrap_err());
+        assert_422(validate_card_fields("cash", None, None, Some(25)).unwrap_err());
+    }
+
+    #[test]
+    fn valid_card_fields_parse_limit() {
+        let limit =
+            validate_card_fields("credit_card", Some("5000.00"), Some(15), Some(25)).unwrap();
+        assert_eq!(limit, Some(Decimal::new(500000, 2)));
+        assert_eq!(validate_card_fields("bank", None, None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn clamp_day_clamps_to_month_end() {
+        assert_eq!(clamp_day(31, 2026, 2), 28);
+        assert_eq!(clamp_day(31, 2024, 2), 29);
+        assert_eq!(clamp_day(31, 2026, 4), 30);
+        assert_eq!(clamp_day(31, 2026, 1), 31);
+        assert_eq!(clamp_day(15, 2026, 2), 15);
+    }
+
+    #[test]
+    fn card_metrics_compute_used_available_usage() {
+        let (used, available, usage, alert) =
+            compute_card_metrics(Decimal::new(-30000, 2), Decimal::new(100000, 2));
+        assert_eq!(used, Decimal::new(30000, 2));
+        assert_eq!(available, Decimal::new(70000, 2));
+        assert_eq!(usage, Decimal::new(30, 0));
+        assert_eq!(alert, "ok");
+    }
+
+    #[test]
+    fn card_metrics_alert_thresholds() {
+        let limit = Decimal::new(100000, 2);
+        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-69000, 2), limit);
+        assert_eq!(alert, "ok");
+        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-70000, 2), limit);
+        assert_eq!(alert, "warn");
+        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-89990, 2), limit);
+        assert_eq!(alert, "warn");
+        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-90000, 2), limit);
+        assert_eq!(alert, "high");
+        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-91000, 2), limit);
+        assert_eq!(alert, "high");
+    }
+
+    #[test]
+    fn card_metrics_treat_positive_balance_as_zero_used() {
+        let (used, available, usage, alert) =
+            compute_card_metrics(Decimal::new(5000, 2), Decimal::new(100000, 2));
+        assert_eq!(used, Decimal::ZERO);
+        assert_eq!(available, Decimal::new(105000, 2));
+        assert_eq!(usage, Decimal::ZERO);
+        assert_eq!(alert, "ok");
+    }
+
+    #[test]
+    fn create_rejects_card_only_fields_as_422() {
+        // `statement_balance` is computed server-side; `used_balance` too.
+        for payload in [
+            json!({"name": "Visa", "type": "credit_card", "credit_limit": "5000.00", "statement_balance": "10.00"}),
+            json!({"name": "Visa", "type": "bank", "used_balance": "10.00"}),
+        ] {
+            assert!(
+                serde_json::from_value::<CreateAccountRequest>(payload).is_err(),
+                "computed card metric must fail deserialization"
+            );
+        }
+        let ok: CreateAccountRequest = serde_json::from_value(json!({
+            "name": "Visa", "type": "credit_card",
+            "credit_limit": "5000.00", "statement_day": 15, "payment_due_day": 25
+        }))
+        .unwrap();
+        assert_eq!(ok.credit_limit.as_deref(), Some("5000.00"));
+    }
+
+    fn card_body(name: &str, limit: Option<&str>) -> Json<CreateAccountRequest> {
+        let mut v = json!({"name": name, "type": "credit_card", "statement_day": 15, "payment_due_day": 25});
+        if let Some(limit) = limit {
+            v["credit_limit"] = json!(limit);
+        }
+        Json(serde_json::from_value(v).unwrap())
+    }
+
+    #[tokio::test]
+    async fn post_card_without_limit_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP post_card_without_limit_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let err = create_account_handler(State(state.clone()), headers, card_body("Visa", None))
+            .await
+            .expect_err("card without limit must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn post_non_card_with_limit_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP post_non_card_with_limit_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let body = Json(
+            serde_json::from_value(json!({
+                "name": "Savings", "type": "savings", "credit_limit": "5000.00"
+            }))
+            .unwrap(),
+        );
+        let err = create_account_handler(State(state.clone()), headers, body)
+            .await
+            .expect_err("non-card with limit must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn post_valid_card_is_201_with_persisted_fields() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP post_valid_card_is_201_with_persisted_fields: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (status, created) =
+            create_account_handler(State(state.clone()), headers, card_body("Visa", Some("5000.00")))
+                .await
+                .expect("valid card create is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created.account_type, "credit_card");
+        assert_eq!(created.credit_limit, Some(Decimal::new(500000, 2)));
+        assert_eq!(created.statement_day, Some(15));
+        assert_eq!(created.payment_due_day, Some(25));
+        assert_eq!(created.balance, Decimal::ZERO);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn get_card_reports_usage_pct_and_alert_level() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP get_card_reports_usage_pct_and_alert_level: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, created) =
+            create_account_handler(State(state.clone()), headers.clone(), card_body("Visa", Some("1000.00")))
+                .await
+                .expect("valid card create is 201");
+        sqlx::query("UPDATE accounts SET balance = -910.00 WHERE id=$1")
+            .bind(created.id)
+            .execute(&pool)
+            .await
+            .expect("seed card debt");
+        let got = get_account_handler(State(state.clone()), headers, Path(created.id))
+            .await
+            .expect("get own card is 200");
+        assert_eq!(got.used_balance, Some(Decimal::new(91000, 2)));
+        assert_eq!(got.available_balance, Some(Decimal::new(9000, 2)));
+        assert_eq!(got.usage_pct, Some(Decimal::new(91, 0)));
+        assert_eq!(got.alert_level.as_deref(), Some("high"));
+        cleanup_user(&pool, user_id).await;
     }
 }

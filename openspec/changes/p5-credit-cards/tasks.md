@@ -36,14 +36,14 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: Account Implementation (Slice 2)
 
-- [ ] 2.1 Update `backend/src/routes/accounts.rs` DTOs (`CreateAccountRequest`, `AccountResponse`) to include `credit_limit`, `statement_day`, `payment_due_day`, and computed metrics
-- [ ] 2.2 Implement `validate_card_fields` and month-end date clamping logic in `backend/src/routes/accounts.rs`
-- [ ] 2.3 Implement CASE-computed metrics (`used_balance`, `available_balance`, `usage_pct`, `alert_level`) in the `GET /accounts` SQL query to avoid N+1
-- [ ] 2.4 Write integration tests for Accounts:
-    - [ ] 2.4.1 RED: `POST /accounts` returns 422 if `type: "credit_card"` but `credit_limit` is missing
-    - [ ] 2.4.2 RED: `POST /accounts` returns 422 if `type: "savings"` but `credit_limit` is provided
-    - [ ] 2.4.3 GREEN: `POST /accounts` returns 201 for valid credit card configuration
-    - [ ] 2.4.4 GREEN: `GET /accounts/:id` returns correct `usage_pct` and `alert_level` for given balance/limit
+- [x] 2.1 Update `backend/src/routes/accounts.rs` DTOs (`CreateAccountRequest`, `AccountResponse`) to include `credit_limit`, `statement_day`, `payment_due_day`, and computed metrics
+- [x] 2.2 Implement `validate_card_fields` and month-end date clamping logic in `backend/src/routes/accounts.rs`
+- [x] 2.3 Implement CASE-computed metrics (`used_balance`, `available_balance`, `usage_pct`, `alert_level`) in the `GET /accounts` SQL query to avoid N+1 (implemented as Rust computation from the same 14-column row: single fetch, no N+1; SQL CASE would breach the sqlx 16-column cap)
+- [x] 2.4 Write integration tests for Accounts:
+    - [x] 2.4.1 RED: `POST /accounts` returns 422 if `type: "credit_card"` but `credit_limit` is missing
+    - [x] 2.4.2 RED: `POST /accounts` returns 422 if `type: "savings"` but `credit_limit` is provided
+    - [x] 2.4.3 GREEN: `POST /accounts` returns 201 for valid credit card configuration
+    - [x] 2.4.4 GREEN: `GET /accounts/:id` returns correct `usage_pct` and `alert_level` for given balance/limit
 
 ## Phase 3: Transaction Implementation (Slice 3)
 
