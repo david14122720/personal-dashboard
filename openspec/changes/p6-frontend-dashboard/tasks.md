@@ -90,7 +90,8 @@ Chain strategy: feature-branch-chain
 
 - [ ] 5.1 Modify `docker/backend.Dockerfile` to include node build stage for `frontend/out`
 - [ ] 5.2 Set `ENV STATIC_DIR=/app/static` in `docker/backend.Dockerfile`
-- [ ] 5.3 RED: Playwright smoke test fails login
-- [ ] 5.4 GREEN: Implement Playwright smoke tests for login, navigation, and dashboard render
-- [ ] 5.5 Wire `cargo test` and `npm test` into `.github/workflows/ci.yml`
-- [ ] 5.6 Final verification: `cargo test && npm test && npx playwright test`
+  (deferred to Dokploy deploy session — no local docker build; user decision 2026-09-07)
+- [x] 5.3 RED: Playwright smoke test fails login
+- [x] 5.4 GREEN: Implement Playwright smoke tests for login, navigation, and dashboard render
+- [x] 5.5 Wire `cargo test` and `npm test` into `.github/workflows/ci.yml`
+- [x] 5.6 Final verification: `cargo test && npm test && npx playwright test`
