@@ -72,11 +72,11 @@ Chain strategy: feature-branch-chain
 
 ## Phase 4: Slice 3 — Finance Screens
 
-- [ ] 3.1 RED: `TransactionsLedger` pagination doesn't use keyset cursor
-- [ ] 3.2 GREEN: Implement `app/dashboard/finance/page.tsx` ledger with keyset pagination
-- [ ] 3.3 Implement Budgets view using `GET /api/budgets` status data
-- [ ] 3.4 Implement Subscriptions, Debts, and Savings views
-- [ ] 3.5 Verify Slice 3: `npm test` returns green
+- [x] 3.1 RED: `TransactionsLedger` pagination doesn't use keyset cursor
+- [x] 3.2 GREEN: Implement `app/dashboard/finance/page.tsx` ledger with keyset pagination
+- [x] 3.3 Implement Budgets view using `GET /api/budgets` status data
+- [x] 3.4 Implement Subscriptions, Debts, and Savings views
+- [x] 3.5 Verify Slice 3: `npm test` returns green
 
 ## Phase 5: Slice 4 — Productivity Screens
 
