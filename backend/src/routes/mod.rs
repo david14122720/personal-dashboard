@@ -11,5 +11,6 @@ pub mod me;
 pub mod ready;
 pub mod savings;
 pub mod subscriptions;
+pub mod tasks;
 pub mod transactions;
 pub mod transfers;
