@@ -789,6 +789,295 @@ pub async fn get_streak_handler(
     }))
 }
 
+/// Today read: every caller habit with today's log state and its streak in
+/// ONE statement. `today_status` comes from a `LEFT JOIN habit_logs ON
+/// log_date = CURRENT_DATE` (`done`/`missed`/`skipped` when logged,
+/// `pending` when scheduled today with no log, `skipped` on non-scheduled
+/// days). `current_streak` reuses the [`STREAK_SQL`] gaps-and-islands shape
+/// via `CROSS JOIN LATERAL` (per-habit evaluation, no loop, no N+1); the
+/// placeholders are rebound to the outer habit row (`h.id`, `h.user_id`,
+/// `h.days_of_week`), keeping the `::int` cast and the `skipped` bridge.
+const TODAY_SQL: &str = "SELECT h.id, h.name, h.frequency::text, h.days_of_week, s.current_streak, COALESCE(l.status::text, CASE WHEN (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM CURRENT_DATE)::int = ANY(h.days_of_week)) THEN 'pending' ELSE 'skipped' END) AS today_status FROM habits h LEFT JOIN habit_logs l ON l.habit_id=h.id AND l.user_id=h.user_id AND l.log_date=CURRENT_DATE CROSS JOIN LATERAL (WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=h.id AND user_id=h.user_id AND (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY(h.days_of_week))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs skipped_bridge WHERE skipped_bridge.status='skipped' AND skipped_bridge.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak) s WHERE h.user_id=$1 ORDER BY h.created_at ASC";
+
+type HabitTodayRow = (Uuid, String, String, Vec<i16>, i64, String);
+
+#[derive(Debug, Serialize)]
+pub struct HabitTodayResponse {
+    pub habit_id: Uuid,
+    pub name: String,
+    pub habit_frequency: String,
+    pub days_of_week: Vec<i16>,
+    pub current_streak: i64,
+    /// `done` | `missed` | `skipped` | `pending` (lowercase, never NULL).
+    pub today_status: String,
+}
+
+pub async fn today_habits_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<HabitTodayResponse>>, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let rows = sqlx::query_as::<_, HabitTodayRow>(TODAY_SQL)
+        .bind(user_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(
+                |(habit_id, name, habit_frequency, days_of_week, current_streak, today_status)| {
+                    HabitTodayResponse {
+                        habit_id,
+                        name,
+                        habit_frequency,
+                        days_of_week,
+                        current_streak,
+                        today_status,
+                    }
+                },
+            )
+            .collect(),
+    ))
+}
+
+#[cfg(test)]
+mod today_read_tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    fn assert_401(err: AppError) {
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    fn lazy_state() -> AppState {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+                .expect("lazy pool construction must succeed"),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        }
+    }
+
+    fn test_pool() -> Option<sqlx::PgPool> {
+        std::env::var("DATABASE_URL")
+            .ok()
+            .map(|url| sqlx::PgPool::connect_lazy(&url).expect("lazy pool from DATABASE_URL"))
+    }
+
+    async fn db_state(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        let email = format!("habtoday-{}@example.com", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind("not-a-real-hash")
+        .bind("habit today test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        (state, headers, user_id)
+    }
+
+    async fn seed_habit(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        name: &str,
+        mask: Option<&[i16]>,
+    ) -> Uuid {
+        let frequency = if mask.is_some() { "custom" } else { "daily" };
+        let days: Vec<i16> = mask.map(|m| m.to_vec()).unwrap_or_default();
+        sqlx::query_scalar(
+            "INSERT INTO habits (user_id, name, direction, frequency, days_of_week) VALUES ($1,$2,'build',$3::habit_frequency,$4) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(frequency)
+        .bind(&days)
+        .fetch_one(pool)
+        .await
+        .expect("seed habit")
+    }
+
+    async fn seed_log(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        habit_id: Uuid,
+        date: NaiveDate,
+        status: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO habit_logs (user_id, habit_id, log_date, status) VALUES ($1,$2,$3,$4::habit_log_status)",
+        )
+        .bind(user_id)
+        .bind(habit_id)
+        .bind(date)
+        .bind(status)
+        .execute(pool)
+        .await
+        .expect("seed log");
+    }
+
+    async fn cleanup_user(pool: &sqlx::PgPool, user_id: Uuid) {
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup user");
+    }
+
+    // -- Task 0.7 RED: today read does not exist yet --
+
+    #[test]
+    fn today_sql_resolves_status_and_streak_in_one_statement() {
+        assert_eq!(TODAY_SQL.matches(';').count(), 0);
+        for fragment in [
+            "LATERAL",
+            "CURRENT_DATE",
+            "'pending'",
+            "CARDINALITY",
+            "user_id",
+        ] {
+            assert!(
+                TODAY_SQL.contains(fragment),
+                "today SQL must contain {fragment}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_today_is_401() {
+        let err = today_habits_handler(State(lazy_state()), HeaderMap::new())
+            .await
+            .expect_err("missing session must be 401");
+        assert_401(err);
+    }
+
+    #[tokio::test]
+    async fn today_with_no_habits_is_empty_array() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP today_with_no_habits_is_empty_array: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let body = today_habits_handler(State(state), headers)
+            .await
+            .expect("empty today is 200")
+            .0;
+        assert!(body.is_empty());
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn today_returns_mixed_statuses_with_streaks() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP today_returns_mixed_statuses_with_streaks: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let today = Utc::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+        // A: done yesterday + done today → streak 2, done.
+        let habit_a = seed_habit(&pool, user_id, "habit-a", None).await;
+        seed_log(&pool, user_id, habit_a, yesterday, "done").await;
+        seed_log(&pool, user_id, habit_a, today, "done").await;
+        // B: done yesterday + missed today → streak 0, missed.
+        let habit_b = seed_habit(&pool, user_id, "habit-b", None).await;
+        seed_log(&pool, user_id, habit_b, yesterday, "done").await;
+        seed_log(&pool, user_id, habit_b, today, "missed").await;
+        // C: scheduled today, no log → streak 0, pending.
+        let habit_c = seed_habit(&pool, user_id, "habit-c", None).await;
+        let body = today_habits_handler(State(state), headers)
+            .await
+            .expect("today is 200")
+            .0;
+        assert_eq!(body.len(), 3);
+        let entry = |id: Uuid| body.iter().find(|h| h.habit_id == id).expect("habit present");
+        let a = entry(habit_a);
+        assert_eq!(a.today_status, "done");
+        assert_eq!(a.current_streak, 2);
+        assert_eq!(a.habit_frequency, "daily");
+        let b = entry(habit_b);
+        assert_eq!(b.today_status, "missed");
+        assert_eq!(b.current_streak, 0);
+        let c = entry(habit_c);
+        assert_eq!(c.today_status, "pending");
+        assert_eq!(c.current_streak, 0);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn missed_day_breaks_streak_but_today_still_counts() {
+        // A missed day must break the chain: done two days ago, missed
+        // yesterday, done today → streak 1 (not 3, not 0).
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP missed_day_breaks_streak_but_today_still_counts: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let today = Utc::now().date_naive();
+        let habit = seed_habit(&pool, user_id, "habit-gap", None).await;
+        seed_log(&pool, user_id, habit, today - chrono::Duration::days(2), "done").await;
+        seed_log(&pool, user_id, habit, today - chrono::Duration::days(1), "missed").await;
+        seed_log(&pool, user_id, habit, today, "done").await;
+        let body = today_habits_handler(State(state), headers)
+            .await
+            .expect("today is 200")
+            .0;
+        assert_eq!(body.len(), 1);
+        assert_eq!(body[0].today_status, "done");
+        assert_eq!(body[0].current_streak, 1);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn non_scheduled_day_returns_skipped() {
+        // A custom habit scheduled on a weekday other than today, with no log,
+        // resolves to skipped (never pending).
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP non_scheduled_day_returns_skipped: no DATABASE_URL");
+            return;
+        };
+        use chrono::Datelike;
+        let (state, headers, user_id) = db_state(&pool).await;
+        let today_dow = Utc::now().date_naive().weekday().num_days_from_sunday() as i16;
+        let other_dow = (today_dow + 1) % 7;
+        let habit = seed_habit(&pool, user_id, "habit-custom", Some(&[other_dow])).await;
+        let body = today_habits_handler(State(state), headers)
+            .await
+            .expect("today is 200")
+            .0;
+        assert_eq!(body.len(), 1);
+        assert_eq!(body[0].today_status, "skipped");
+        let _ = habit;
+        cleanup_user(&pool, user_id).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

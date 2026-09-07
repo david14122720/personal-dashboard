@@ -32,7 +32,6 @@ use crate::{
 const MAX_NOTES_LEN: usize = 2000;
 
 const CREATE_BUDGET_SQL: &str = "INSERT INTO budgets (user_id, category_id, amount, period_start, period_end, warn_threshold, over_threshold, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, category_id, amount, currency, period_start, period_end, warn_threshold, over_threshold, notes, created_at, updated_at";
-const LIST_BUDGETS_SQL: &str = "SELECT id, category_id, amount, currency, period_start, period_end, warn_threshold, over_threshold, notes, created_at, updated_at FROM budgets WHERE user_id=$1 ORDER BY period_start DESC";
 const GET_BUDGET_SQL: &str = "SELECT id, category_id, amount, currency, period_start, period_end, warn_threshold, over_threshold, notes, created_at, updated_at FROM budgets WHERE id=$1 AND user_id=$2";
 
 /// Single-round-trip spend aggregate for one budget: every expense row in the
@@ -219,17 +218,103 @@ pub async fn create_budget_handler(
     Ok((StatusCode::CREATED, Json(BudgetResponse::from(row))))
 }
 
+/// Collection-with-status: every budget for the current caller plus its
+/// computed spend fields in ONE grouped query (`LEFT JOIN transactions ...
+/// BETWEEN period_start AND period_end GROUP BY b.id`). No per-id N+1;
+/// thresholds reuse [`map_budget_status`], following the P5 precedent of
+/// computing derived metrics from a single row fetch.
+const LIST_BUDGETS_WITH_STATUS_SQL: &str = "SELECT b.id, b.category_id, b.amount, b.currency, b.period_start, b.period_end, b.warn_threshold, b.over_threshold, b.notes, b.created_at, b.updated_at, COALESCE(SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0.00 END),0.00) AS spent FROM budgets b LEFT JOIN transactions t ON t.user_id=b.user_id AND t.category_id=b.category_id AND t.type='expense' AND t.occurred_on BETWEEN b.period_start AND b.period_end WHERE b.user_id=$1 GROUP BY b.id ORDER BY b.period_start DESC";
+
+type BudgetWithStatusRow = (
+    Uuid,
+    Uuid,
+    Decimal,
+    String,
+    NaiveDate,
+    NaiveDate,
+    Decimal,
+    Decimal,
+    Option<String>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    Decimal,
+);
+
+#[derive(Debug, Serialize)]
+pub struct BudgetWithStatusResponse {
+    #[serde(flatten)]
+    pub budget: BudgetResponse,
+    /// Total expenses in the period, as a string (e.g. `"85.00"`).
+    pub spent: Decimal,
+    /// `amount - spent` (negative when over budget), as a string.
+    pub remaining: Decimal,
+    /// `spent / amount` as a fraction (e.g. `0.85`).
+    pub pct: f64,
+    /// `ok` | `warn` | `over` (see [`map_budget_status`]).
+    pub status: String,
+}
+
 pub async fn list_budgets_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<BudgetResponse>>, AppError> {
+) -> Result<Json<Vec<BudgetWithStatusResponse>>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
-    let rows = sqlx::query_as::<_, BudgetRow>(LIST_BUDGETS_SQL)
+    let rows = sqlx::query_as::<_, BudgetWithStatusRow>(LIST_BUDGETS_WITH_STATUS_SQL)
         .bind(user_id)
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(BudgetResponse::from).collect()))
+    Ok(Json(
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    category_id,
+                    amount,
+                    currency,
+                    period_start,
+                    period_end,
+                    warn_threshold,
+                    over_threshold,
+                    notes,
+                    created_at,
+                    updated_at,
+                    spent,
+                )| {
+                    let warn = decimal_to_f64(warn_threshold);
+                    let over = decimal_to_f64(over_threshold);
+                    // Normalize to 2dp: Postgres sends exact-zero NUMERIC with
+                    // an empty digit array, which sqlx decodes to scale-0
+                    // `Decimal::ZERO` (serializes as `"0"`, not `"0.00"`).
+                    let mut spent = spent;
+                    spent.rescale(2);
+                    let mut remaining = amount - spent;
+                    remaining.rescale(2);
+                    let pct = decimal_to_f64(spent.checked_div(amount).unwrap_or(Decimal::ZERO));
+                    let status = map_budget_status(pct, warn, over).to_string();
+                    BudgetWithStatusResponse {
+                        budget: BudgetResponse {
+                            id,
+                            category_id,
+                            amount,
+                            currency,
+                            period_start,
+                            period_end,
+                            warn_threshold: warn,
+                            over_threshold: over,
+                            notes,
+                            created_at,
+                            updated_at,
+                        },
+                        spent,
+                        remaining,
+                        pct,
+                        status,
+                    }
+                },
+            )
+            .collect(),
+    ))
 }
 
 pub async fn get_budget_handler(
@@ -282,7 +367,12 @@ pub async fn budget_status_handler(
         .fetch_one(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    let remaining = amount - spent;
+    // Normalize to 2dp (see list_budgets_handler: exact-zero NUMERIC decodes
+    // to scale-0 `Decimal::ZERO`).
+    let mut spent = spent;
+    spent.rescale(2);
+    let mut remaining = amount - spent;
+    remaining.rescale(2);
     let pct = decimal_to_f64(spent.checked_div(amount).unwrap_or(Decimal::ZERO));
     let status = map_budget_status(
         pct,
@@ -296,6 +386,194 @@ pub async fn budget_status_handler(
         pct,
         status,
     }))
+}
+
+#[cfg(test)]
+mod dashboard_status_tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    fn assert_401(err: AppError) {
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    fn lazy_state() -> AppState {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+                .expect("lazy pool construction must succeed"),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        }
+    }
+
+    fn test_pool() -> Option<sqlx::PgPool> {
+        std::env::var("DATABASE_URL")
+            .ok()
+            .map(|url| sqlx::PgPool::connect_lazy(&url).expect("lazy pool from DATABASE_URL"))
+    }
+
+    async fn db_state(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        let email = format!("budlist-{}@example.com", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind("not-a-real-hash")
+        .bind("budget list test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        (state, headers, user_id)
+    }
+
+    async fn cleanup_user(pool: &sqlx::PgPool, user_id: Uuid) {
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup user");
+    }
+
+    // -- Task 0.9 RED: collection-with-status does not exist yet --
+
+    #[test]
+    fn collection_sql_is_single_grouped_statement() {
+        // One LEFT JOIN + GROUP BY per period: no per-id N+1.
+        assert_eq!(LIST_BUDGETS_WITH_STATUS_SQL.matches(';').count(), 0);
+        for fragment in [
+            "LEFT JOIN transactions",
+            "GROUP BY b.id",
+            "user_id",
+            "BETWEEN b.period_start AND b.period_end",
+        ] {
+            assert!(
+                LIST_BUDGETS_WITH_STATUS_SQL.contains(fragment),
+                "collection SQL must contain {fragment}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_collection_is_401() {
+        let err = list_budgets_handler(State(lazy_state()), HeaderMap::new())
+            .await
+            .expect_err("missing session must be 401");
+        assert_401(err);
+    }
+
+    #[tokio::test]
+    async fn empty_collection_is_empty_array() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP empty_collection_is_empty_array: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let body = list_budgets_handler(State(state), headers)
+            .await
+            .expect("empty collection is 200")
+            .0;
+        assert!(body.is_empty());
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn collection_carries_spent_and_warn_status() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP collection_carries_spent_and_warn_status: no DATABASE_URL");
+            return;
+        };
+        use crate::routes::transactions::{CreateTransactionRequest, create_transaction_handler};
+        let (state, headers, user_id) = db_state(&pool).await;
+        let food: Uuid = sqlx::query_scalar(
+            "INSERT INTO categories (user_id, kind, name) VALUES ($1,'finance','Food') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed category");
+        let transport: Uuid = sqlx::query_scalar(
+            "INSERT INTO categories (user_id, kind, name) VALUES ($1,'finance','Transport') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed category");
+        let account: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed account");
+        for cat in [food, transport] {
+            let body = Json(CreateBudgetRequest {
+                category_id: cat,
+                amount: "100.00".into(),
+                period_start: "2026-09-01".into(),
+                period_end: "2026-09-30".into(),
+                warn_threshold: None,
+                over_threshold: None,
+                notes: None,
+            });
+            let _ = create_budget_handler(State(state.clone()), headers.clone(), body)
+                .await
+                .expect("create budget is 201");
+        }
+        // 85% spend on Food → warn; Transport untouched → ok.
+        let body = Json(CreateTransactionRequest {
+            account_id: account,
+            transaction_type: "expense".into(),
+            amount: "85.00".into(),
+            occurred_on: "2026-09-10".into(),
+            category_id: Some(food),
+            description: None,
+            notes: None,
+            payment_method: None,
+            credit_card_account_id: None,
+        });
+        let _ = create_transaction_handler(State(state.clone()), headers.clone(), body)
+            .await
+            .expect("seed expense is 201");
+        let body = list_budgets_handler(State(state.clone()), headers.clone())
+            .await
+            .expect("collection is 200")
+            .0;
+        assert_eq!(body.len(), 2);
+        let v = serde_json::to_value(&body).unwrap();
+        let food_entry = v.as_array().unwrap().iter().find(|b| b["category_id"] == serde_json::Value::String(food.to_string())).expect("food budget present");
+        assert_eq!(food_entry["status"], serde_json::Value::String("warn".into()));
+        assert_eq!(food_entry["spent"], serde_json::Value::String("85.00".into()));
+        assert_eq!(food_entry["remaining"], serde_json::Value::String("15.00".into()));
+        let transport_entry = v.as_array().unwrap().iter().find(|b| b["category_id"] == serde_json::Value::String(transport.to_string())).expect("transport budget present");
+        assert_eq!(transport_entry["status"], serde_json::Value::String("ok".into()));
+        assert_eq!(transport_entry["spent"], serde_json::Value::String("0.00".into()));
+        cleanup_user(&pool, user_id).await;
+    }
 }
 
 #[cfg(test)]
@@ -400,7 +678,11 @@ mod tests {
 
     #[test]
     fn budget_sql_scopes_every_query_by_user_id() {
-        for sql in [CREATE_BUDGET_SQL, LIST_BUDGETS_SQL, GET_BUDGET_SQL] {
+        for sql in [
+            CREATE_BUDGET_SQL,
+            LIST_BUDGETS_WITH_STATUS_SQL,
+            GET_BUDGET_SQL,
+        ] {
             assert!(
                 sql.contains("user_id"),
                 "budget SQL must scope by user_id, got: {sql}"
