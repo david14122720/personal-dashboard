@@ -57,11 +57,11 @@ Chain strategy: stacked-to-main
 
 ## Phase 4: Summary & Wiring (Slice 4)
 
-- [ ] 4.1 Implement statement balance cutoff aggregate (`SUM` of transactions where `occurred_on <= cutoff`) in `backend/src/routes/accounts.rs`
-- [ ] 4.2 Update `backend/src/routes/assets.rs` to include card debt in liabilities using `SUM(GREATEST(-balance, 0))`
-- [ ] 4.3 Update `backend/src/routes/transfers.rs` with documentation and validation for bank $\to$ card payments
-- [ ] 4.4 Write integration tests for Summary & Wiring:
-    - [ ] 4.4.1 RED: Statement balance includes transactions after the billing cutoff date
-    - [ ] 4.4.2 GREEN: Statement balance correctly aggregates only transactions on or before cutoff
-    - [ ] 4.4.3 RED: Total net worth increases when a card balance becomes more negative
-    - [ ] 4.4.4 GREEN: Total net worth correctly treats card debt as a liability
+- [x] 4.1 Implement statement balance cutoff aggregate (`SUM` of transactions where `occurred_on <= cutoff`) in `backend/src/routes/accounts.rs`
+- [x] 4.2 Update `backend/src/routes/assets.rs` to include card debt in liabilities using `SUM(GREATEST(-balance, 0))`
+- [x] 4.3 Update `backend/src/routes/transfers.rs` with documentation and validation for bank $\to$ card payments
+- [x] 4.4 Write integration tests for Summary & Wiring:
+    - [x] 4.4.1 RED: Statement balance includes transactions after the billing cutoff date
+    - [x] 4.4.2 GREEN: Statement balance correctly aggregates only transactions on or before cutoff
+    - [x] 4.4.3 RED: Total net worth increases when a card balance becomes more negative
+    - [x] 4.4.4 GREEN: Total net worth correctly treats card debt as a liability

@@ -42,6 +42,10 @@ const MAX_ICON_LEN: usize = 64;
 const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, type, currency, credit_limit, statement_day, payment_due_day, notes, color, icon) VALUES ($1,$2,$3::account_type,$4,$5,$6,$7,$8,$9,$10) RETURNING id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at";
 const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
 const GET_ACCOUNT_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
+/// Statement-balance aggregate: linked expenses on or before the billing
+/// cutoff (served by `idx_tx_card_user_date`; a second query by design, so
+/// the row stays within the sqlx 16-column cap and LIST avoids N+1).
+const STATEMENT_BALANCE_SQL: &str = "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE credit_card_account_id=$1 AND user_id=$2 AND type='expense' AND occurred_on <= $3";
 
 /// Account row: 11 legacy columns + 3 card columns = 14 (sqlx 0.8 FromRow
 /// tuple cap is 16). Derived card metrics (`used/available/usage/alert`)
@@ -115,6 +119,10 @@ pub struct AccountResponse {
     pub available_balance: Option<Decimal>,
     pub usage_pct: Option<Decimal>,
     pub alert_level: Option<String>,
+    /// Cycle-to-date debt: negated `SUM` of linked expenses with
+    /// `occurred_on <= cutoff` (`None` for non-cards and for list/patch
+    /// reads, which skip the second query to avoid N+1).
+    pub statement_balance: Option<Decimal>,
     pub notes: Option<String>,
     pub color: Option<String>,
     pub icon: Option<String>,
@@ -196,6 +204,8 @@ impl
             available_balance,
             usage_pct,
             alert_level,
+            // Populated by `get_account_handler` only (second query).
+            statement_balance: None,
             notes,
             color,
             icon,
@@ -315,6 +325,46 @@ pub fn clamp_day(day: i16, year: i32, month: u32) -> i16 {
     (day as i64).min(max) as i16
 }
 
+/// Most-recent statement date at or before `today`, derived from the stored
+/// day-of-month and clamped to short months (a 31st in February means the
+/// 28th/29th). Pure Rust: the cutoff travels as a bind param, never as SQL
+/// date math.
+pub fn statement_cutoff(statement_day: i16, today: NaiveDate) -> NaiveDate {
+    let this_month = NaiveDate::from_ymd_opt(
+        today.year(),
+        today.month(),
+        clamp_day(statement_day, today.year(), today.month()) as u32,
+    )
+    .expect("clamped statement day is a valid date");
+    if this_month <= today {
+        return this_month;
+    }
+    let (year, month) = if today.month() == 1 {
+        (today.year() - 1, 12)
+    } else {
+        (today.year(), today.month() - 1)
+    };
+    NaiveDate::from_ymd_opt(year, month, clamp_day(statement_day, year, month) as u32)
+        .expect("clamped statement day is a valid date")
+}
+
+/// Statement debt for a card: negated cycle-to-date spend (`-SUM`), so it
+/// reads as debt like the cached `balance` (e.g. `-150.00`).
+pub async fn statement_balance_for_card(
+    pool: &sqlx::PgPool,
+    card_id: Uuid,
+    user_id: Uuid,
+    cutoff: NaiveDate,
+) -> Result<Decimal, AppError> {
+    let spent: Decimal = sqlx::query_scalar(STATEMENT_BALANCE_SQL)
+        .bind(card_id)
+        .bind(user_id)
+        .bind(cutoff)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    Ok(-spent)
+}
 /// Derive card health metrics from the cached `balance` (negative = debt)
 /// and the `credit_limit`. Returns
 /// `(used_balance, available_balance, usage_pct, alert_level)` where
@@ -463,8 +513,20 @@ pub async fn get_account_handler(
         .fetch_optional(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    row.map(|r| Json(AccountResponse::from(r)))
-        .ok_or(AppError::NotFound)
+    let Some(row) = row else {
+        return Err(AppError::NotFound);
+    };
+    let mut response = AccountResponse::from(row);
+    // Second, index-backed query for cards only (list/patch skip it: N+1).
+    if response.credit_limit.is_some() {
+        if let Some(day) = response.statement_day {
+            let cutoff = statement_cutoff(day, Utc::now().date_naive());
+            response.statement_balance = Some(
+                statement_balance_for_card(&state.pool, response.id, user_id, cutoff).await?,
+            );
+        }
+    }
+    Ok(Json(response))
 }
 
 pub async fn patch_account_handler(
@@ -615,6 +677,7 @@ mod tests {
             available_balance: None,
             usage_pct: None,
             alert_level: None,
+            statement_balance: None,
             notes: None,
             color: None,
             icon: None,
@@ -957,6 +1020,104 @@ mod tests {
         assert_eq!(got.available_balance, Some(Decimal::new(9000, 2)));
         assert_eq!(got.usage_pct, Some(Decimal::new(91, 0)));
         assert_eq!(got.alert_level.as_deref(), Some("high"));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    // -- Slice 4 (p5-credit-cards): statement cutoff aggregate --
+
+    #[test]
+    fn statement_cutoff_uses_this_month_once_reached() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 20).unwrap();
+        assert_eq!(
+            statement_cutoff(15, today),
+            NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()
+        );
+        // Statement day itself counts as reached.
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        assert_eq!(
+            statement_cutoff(15, today),
+            NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()
+        );
+    }
+
+    #[test]
+    fn statement_cutoff_falls_back_to_previous_month() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+        assert_eq!(
+            statement_cutoff(15, today),
+            NaiveDate::from_ymd_opt(2026, 8, 15).unwrap()
+        );
+    }
+
+    #[test]
+    fn statement_cutoff_clamps_to_month_end() {
+        // 31st in February (2026 is not a leap year): this-month candidate
+        // clamps to the 28th and is reached on the 28th itself.
+        let today = NaiveDate::from_ymd_opt(2026, 2, 28).unwrap();
+        assert_eq!(
+            statement_cutoff(31, today),
+            NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
+        );
+        // Earlier in February: previous month keeps its full 31 days.
+        let today = NaiveDate::from_ymd_opt(2026, 2, 10).unwrap();
+        assert_eq!(
+            statement_cutoff(31, today),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap()
+        );
+    }
+
+    #[test]
+    fn statement_cutoff_crosses_year_boundary() {
+        let today = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        assert_eq!(
+            statement_cutoff(20, today),
+            NaiveDate::from_ymd_opt(2025, 12, 20).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_card_reports_statement_vs_current_balance() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP get_card_reports_statement_vs_current_balance: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, card) =
+            create_account_handler(State(state.clone()), headers.clone(), card_body("Visa", Some("5000.00")))
+                .await
+                .expect("valid card create is 201");
+        let cash: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed cash account");
+        // Statement day is the 15th: seed two in-cycle purchases and one
+        // post-cutoff purchase, all anchored to the runtime cutoff so the
+        // test is date-independent. Purchases go through raw SQL; the 0002
+        // trigger still posts both legs (card debt) on INSERT.
+        let cutoff = statement_cutoff(15, Utc::now().date_naive());
+        let in_cycle = [cutoff - chrono::Duration::days(5), cutoff - chrono::Duration::days(3)];
+        let next_cycle = cutoff + chrono::Duration::days(5);
+        for (date, amount) in [(in_cycle[0], "100.00"), (in_cycle[1], "50.00"), (next_cycle, "200.00")] {
+            sqlx::query(
+                "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on, credit_card_account_id) VALUES ($1,$2,'expense',$3,$4,$5)",
+            )
+            .bind(user_id)
+            .bind(cash)
+            .bind(amount.parse::<Decimal>().unwrap())
+            .bind(date)
+            .bind(card.id)
+            .execute(&pool)
+            .await
+            .expect("seed linked expense");
+        }
+        let got = get_account_handler(State(state.clone()), headers, Path(card.id))
+            .await
+            .expect("get own card is 200");
+        assert_eq!(got.balance, Decimal::new(-35000, 2));
+        assert_eq!(got.statement_balance, Some(Decimal::new(-15000, 2)));
         cleanup_user(&pool, user_id).await;
     }
 }

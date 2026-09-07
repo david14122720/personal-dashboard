@@ -28,7 +28,11 @@
 //!
 //! Net worth is an on-demand aggregate (no trigger, no materialization):
 //! per currency, `sum(non-archived assets current_value)` minus
-//! `sum(active debts pending_amount)`.
+//! `sum(active debts pending_amount)` minus credit-card debt
+//! (`SUM(GREATEST(-balance, 0))` over the caller's non-archived
+//! `credit_card` accounts, so an overpaid card contributes 0, never credit).
+//! Card balances stay negative-as-debt: they reduce net worth through the
+//! liabilities leg, exactly like `debts.pending_amount`.
 //!
 //! Registered in `routes/mod.rs` (wiring in `main.rs` lands in Phase 6).
 
@@ -88,7 +92,7 @@ const CREATE_VALUATION_SQL: &str = "INSERT INTO asset_valuations (user_id, asset
 // Test-only probe: verifies trigger-synced current_value without going through HTTP.
 #[cfg(test)]
 const ASSET_VALUE_SQL: &str = "SELECT current_value FROM assets WHERE id=$1 AND user_id=$2";
-const NET_WORTH_SQL: &str = "SELECT COALESCE(a.currency, d.currency) AS currency, COALESCE(a.total, 0) AS assets, COALESCE(d.total, 0) AS debts FROM (SELECT currency, SUM(current_value) AS total FROM assets WHERE user_id=$1 AND NOT is_archived GROUP BY currency) a FULL OUTER JOIN (SELECT currency, SUM(pending_amount) AS total FROM debts WHERE user_id=$1 AND status='active' GROUP BY currency) d ON a.currency = d.currency ORDER BY currency ASC";
+const NET_WORTH_SQL: &str = "SELECT COALESCE(a.currency, d.currency) AS currency, COALESCE(a.total, 0) AS assets, COALESCE(d.total, 0) AS debts FROM (SELECT currency, SUM(current_value) AS total FROM assets WHERE user_id=$1 AND NOT is_archived GROUP BY currency) a FULL OUTER JOIN (SELECT currency, SUM(total) AS total FROM (SELECT currency, pending_amount AS total FROM debts WHERE user_id=$1 AND status='active' UNION ALL SELECT currency, GREATEST(-balance, 0) AS total FROM accounts WHERE user_id=$1 AND type='credit_card' AND NOT is_archived) card_debts GROUP BY currency) d ON a.currency = d.currency ORDER BY currency ASC";
 
 type AssetRow = (
     Uuid,
@@ -1210,6 +1214,48 @@ mod tests {
         assert_eq!(worth.per_currency.len(), 1);
         assert_eq!(worth.per_currency[0].assets, Decimal::ZERO);
         assert_eq!(worth.per_currency[0].net_worth, Decimal::new(-300000, 2));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    // -- Slice 4 (p5-credit-cards): card debt as a net-worth liability --
+
+    #[tokio::test]
+    async fn net_worth_treats_card_debt_as_liability() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP net_worth_treats_card_debt_as_liability: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let asset_id = seed_asset(&pool, user_id).await;
+        let (status, _) = create_valuation_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(asset_id),
+            valuation_body("10000.00", "2026-09-01"),
+        )
+        .await
+        .expect("valuation is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        let card_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type, credit_limit, statement_day, payment_due_day) VALUES ($1,'Visa','credit_card',5000,15,25) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed card");
+        sqlx::query("UPDATE accounts SET balance = -1000.00 WHERE id=$1")
+            .bind(card_id)
+            .execute(&pool)
+            .await
+            .expect("seed card debt");
+        // A more-negative card must REDUCE net worth (debt), never raise it.
+        let worth = get_net_worth_handler(State(state.clone()), headers.clone())
+            .await
+            .expect("net worth is 200");
+        assert_eq!(worth.per_currency.len(), 1);
+        assert_eq!(worth.per_currency[0].assets, Decimal::new(1000000, 2));
+        assert_eq!(worth.per_currency[0].debts, Decimal::new(100000, 2));
+        assert_eq!(worth.per_currency[0].net_worth, Decimal::new(900000, 2));
         cleanup_user(&pool, user_id).await;
     }
 }

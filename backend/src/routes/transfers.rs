@@ -19,6 +19,14 @@
 //! aggregates (`SUM ... WHERE type='expense'`) and income/expense totals
 //! never count moved money.
 //!
+//! Card payments ride this endpoint: a bank → card transfer moves funds out
+//! of the bank account and into the card account (`balance + amount`),
+//! reducing the card's negative balance toward zero. No card-specific
+//! branch exists — the destination may be any owned account, including a
+//! `credit_card`; ownership (404), distinct-legs (422) and money-string
+//! (422) validation apply unchanged, and the over-limit guard does not
+//! apply to payments (they reduce debt, never add it).
+//!
 //! Registered in `main.rs` (PR4 wiring).
 
 use axum::{
@@ -553,6 +561,49 @@ mod tests {
         );
         assert_eq!(account_balance(&pool, only).await, Decimal::new(50000, 2));
         assert_eq!(transfer_leg_count(&pool, user_id).await, 0);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn bank_to_card_payment_reduces_debt() {
+        // finance-transfers spec: paying the card bill is a plain transfer
+        // (bank → card); the card leg rises toward zero, the bank leg falls.
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP bank_to_card_payment_reduces_debt: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let bank = seed_account(&pool, user_id, "Checking").await;
+        let card: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type, credit_limit, statement_day, payment_due_day) VALUES ($1,'Visa','credit_card',5000,15,25) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed card");
+        sqlx::query("UPDATE accounts SET balance=1000.00 WHERE id=$1")
+            .bind(bank)
+            .execute(&pool)
+            .await
+            .expect("seed bank balance");
+        sqlx::query("UPDATE accounts SET balance=-500.00 WHERE id=$1")
+            .bind(card)
+            .execute(&pool)
+            .await
+            .expect("seed card debt");
+        let body = Json(CreateTransferRequest {
+            from_account_id: bank,
+            to_account_id: card,
+            amount: "500.00".into(),
+            occurred_on: "2026-09-01".into(),
+            description: Some("card payment".into()),
+        });
+        let (status, _) = create_transfer_handler(State(state.clone()), headers, body)
+            .await
+            .expect("card payment is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(account_balance(&pool, bank).await, Decimal::new(50000, 2));
+        assert_eq!(account_balance(&pool, card).await, Decimal::ZERO);
         cleanup_user(&pool, user_id).await;
     }
 

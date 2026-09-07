@@ -215,8 +215,12 @@ async fn card_queries_use_indexes_no_seq_scan() {
         eprintln!("SKIP card_queries_use_indexes_no_seq_scan: no DATABASE_URL");
         return;
     };
+    // The planner proof must run on ONE session: `SET enable_seqscan`
+    // is per-connection, and pool checkouts could otherwise land on a
+    // fresh connection where the setting never applied (parallel flake).
+    let mut conn = pool.acquire().await.expect("acquire probe connection");
     sqlx::query("SET enable_seqscan = off")
-        .execute(&pool)
+        .execute(&mut *conn)
         .await
         .expect("disable seqscan for probe");
     let user_id = seed_user(&pool).await;
@@ -232,7 +236,7 @@ async fn card_queries_use_indexes_no_seq_scan() {
             "EXPLAIN SELECT id FROM accounts WHERE user_id=$1 AND type='credit_card'",
         )
         .bind(user_id)
-        .fetch_all(&pool)
+        .fetch_all(&mut *conn)
         .await
         .expect("explain card lookup");
         rows.into_iter().map(|(line,)| line).collect::<Vec<_>>().join("\n")
@@ -252,7 +256,7 @@ async fn card_queries_use_indexes_no_seq_scan() {
         .bind(card_id)
         .bind(user_id)
         .bind(chrono::NaiveDate::from_ymd_opt(2026, 9, 15).unwrap())
-        .fetch_all(&pool)
+        .fetch_all(&mut *conn)
         .await
         .expect("explain statement aggregate");
         rows.into_iter().map(|(line,)| line).collect::<Vec<_>>().join("\n")
@@ -266,7 +270,7 @@ async fn card_queries_use_indexes_no_seq_scan() {
         "statement aggregate must use idx_tx_card_user_date, got: {tx_plan}"
     );
     sqlx::query("SET enable_seqscan = on")
-        .execute(&pool)
+        .execute(&mut *conn)
         .await
         .expect("restore seqscan");
     cleanup_user(&pool, user_id).await;
