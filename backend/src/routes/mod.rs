@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod assets;
 pub mod budgets;
 pub mod debts;
+pub mod events;
 pub mod goals;
 pub mod habits;
 pub mod health;

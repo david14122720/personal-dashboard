@@ -188,6 +188,16 @@ async fn main() {
                 .delete(routes::tasks::delete_task_handler),
         )
         .route(
+            "/events",
+            post(routes::events::create_event_handler).get(routes::events::list_events_handler),
+        )
+        .route(
+            "/events/:id",
+            get(routes::events::get_event_handler)
+                .patch(routes::events::patch_event_handler)
+                .delete(routes::events::delete_event_handler),
+        )
+        .route(
             "/subscriptions",
             post(routes::subscriptions::create_subscription_handler)
                 .get(routes::subscriptions::list_subscriptions_handler),

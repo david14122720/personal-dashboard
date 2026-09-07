@@ -63,12 +63,12 @@ Chain strategy: stacked-to-main
 
 ## Phase 5: Events Implementation (Slice 4)
 
-- [ ] 5.1 Create `backend/src/routes/events.rs` with CRUD and range queries (`from`/`to`)
-- [ ] 5.2 Implement ownership matrix probes for the 6-FKs (Habit, Goal, Task, Event, Note, User)
-- [ ] 5.3 Write integration tests for Events:
-    - [ ] 5.3.1 RED: Linked entity owned by other user returns 422
-    - [ ] 5.3.2 RED: Non-existent linked entity returns 404
-    - [ ] 5.3.3 GREEN: Date range queries filter correctly
+- [x] 5.1 Create `backend/src/routes/events.rs` with CRUD and range queries (`from`/`to`)
+- [x] 5.2 Implement ownership matrix probes for the 6-FKs (Habit, Goal, Task, Event, Note, User)
+- [x] 5.3 Write integration tests for Events:
+    - [x] 5.3.1 RED: Linked entity owned by other user returns 422
+    - [x] 5.3.2 RED: Non-existent linked entity returns 404
+    - [x] 5.3.3 GREEN: Date range queries filter correctly
 
 ## Phase 6: Notes Implementation (Slice 5)
 
