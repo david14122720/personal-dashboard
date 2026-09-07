@@ -47,17 +47,17 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Slice 1 — Foundation (Next.js)
 
-- [ ] 1.1 Scaffold Next.js with `output: 'export'` and `trailingSlash: true` in `next.config.ts`
-- [ ] 1.2 Define `@theme` tokens (deck, hull, instrument, etc.) in `app/globals.css`
-- [ ] 1.3 Configure fonts (Space Grotesk, Inter, IBM Plex Mono) via `next/font/google` in `app/layout.tsx`
-- [ ] 1.4 RED: `lib/api/client.ts` does not inject Bearer token
-- [ ] 1.5 GREEN: Implement `lib/api/client.ts` with Bearer injection and single-flight 401 redirect
-- [ ] 1.6 RED: Money string `"123.45"` not coerced to number
-- [ ] 1.7 GREEN: Implement `lib/api/money.ts` with `toNumber` and `Intl.NumberFormat`
-- [ ] 1.8 Setup Vitest + RTL + MSW; verify `npm test` runs successfully
-- [ ] 1.9 Implement `app/login/page.tsx` and `app/layout.tsx` session guard
-- [ ] 1.10 Implement App Shell and Navigation
-- [ ] 1.11 Verify Slice 1: `npm test` returns green
+- [x] 1.1 Scaffold Next.js with `output: 'export'` and `trailingSlash: true` in `next.config.ts`
+- [x] 1.2 Define `@theme` tokens (deck, hull, instrument, etc.) in `app/globals.css`
+- [x] 1.3 Configure fonts (Space Grotesk, Inter, IBM Plex Mono) via `next/font/google` in `app/layout.tsx`
+- [x] 1.4 RED: `lib/api/client.ts` does not inject Bearer token
+- [x] 1.5 GREEN: Implement `lib/api/client.ts` with Bearer injection and single-flight 401 redirect
+- [x] 1.6 RED: Money string `"123.45"` not coerced to number
+- [x] 1.7 GREEN: Implement `lib/api/money.ts` with `toNumber` and `Intl.NumberFormat`
+- [x] 1.8 Setup Vitest + RTL + MSW; verify `npm test` runs successfully
+- [x] 1.9 Implement `app/login/page.tsx` and `app/layout.tsx` session guard
+- [x] 1.10 Implement App Shell and Navigation
+- [x] 1.11 Verify Slice 1: `npm test` returns green
 
 ## Phase 3: Slice 2 — Dashboard Home
 

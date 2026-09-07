@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@custom-variant light (&:where(.light, .light *));
+
+/* Telemetry deck tokens (dark-first). Tailwind v4 CSS-first @theme. */
+@theme {
+  --color-deck: #0c1622;
+  --color-hull: #142433;
+  --color-instrument: #eaf1f7;
+  --color-signal: #f5a623;
+  --color-flow: #2dd4a7;
+  --color-alert: #f2555a;
+  --color-violet: #8b7cf6;
+  --color-sky: #56a8f5;
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  html.light {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-deck text-instrument font-body antialiased;
+  }
+
+  html.light body {
+    @apply bg-instrument text-deck;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
