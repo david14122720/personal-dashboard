@@ -80,11 +80,11 @@ Chain strategy: feature-branch-chain
 
 ## Phase 5: Slice 4 — Productivity Screens
 
-- [ ] 4.1 RED: Habits heatmap CSS grid misaligns dates
-- [ ] 4.2 GREEN: Implement `components/ui/HabitsHeatmap` with CSS grid
-- [ ] 4.3 Implement Goals, Tasks, and Events views
-- [ ] 4.4 Implement Notes search interface
-- [ ] 4.5 Verify Slice 4: `npm test` returns green
+- [x] 4.1 RED: Habits heatmap CSS grid misaligns dates
+- [x] 4.2 GREEN: Implement `components/ui/HabitsHeatmap` with CSS grid
+- [x] 4.3 Implement Goals, Tasks, and Events views
+- [x] 4.4 Implement Notes search interface
+- [x] 4.5 Verify Slice 4: `npm test` returns green
 
 ## Phase 6: Slice 5 — Deploy & Smoke
 
