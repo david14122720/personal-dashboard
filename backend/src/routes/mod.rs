@@ -9,6 +9,7 @@ pub mod health;
 pub mod login;
 pub mod logout;
 pub mod me;
+pub mod notes;
 pub mod ready;
 pub mod savings;
 pub mod subscriptions;

@@ -198,6 +198,17 @@ async fn main() {
                 .delete(routes::events::delete_event_handler),
         )
         .route(
+            "/notes",
+            post(routes::notes::create_note_handler).get(routes::notes::list_notes_handler),
+        )
+        .route("/notes/search", get(routes::notes::search_notes_handler))
+        .route(
+            "/notes/:id",
+            get(routes::notes::get_note_handler)
+                .patch(routes::notes::patch_note_handler)
+                .delete(routes::notes::delete_note_handler),
+        )
+        .route(
             "/subscriptions",
             post(routes::subscriptions::create_subscription_handler)
                 .get(routes::subscriptions::list_subscriptions_handler),

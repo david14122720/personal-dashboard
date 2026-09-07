@@ -72,13 +72,13 @@ Chain strategy: stacked-to-main
 
 ## Phase 6: Notes Implementation (Slice 5)
 
-- [ ] 6.1 Create `backend/src/routes/notes.rs` with CRUD and pin toggle
-- [ ] 6.2 Implement FTS search using `plainto_tsquery('simple', q) @@ search_tsv`
-- [ ] 6.3 Write integration tests for Notes:
-    - [ ] 6.3.1 RED: Search results ordered by `is_pinned DESC, updated_at DESC`
-    - [ ] 6.3.2 RED: Blank search query returns all notes
-    - [ ] 6.3.3 GREEN: Body size limit ($\le$ 1 MiB) returns 422
-- [ ] 6.4 Verify FTS performance with `EXPLAIN (ANALYZE, BUFFERS)`
+- [x] 6.1 Create `backend/src/routes/notes.rs` with CRUD and pin toggle
+- [x] 6.2 Implement FTS search using `plainto_tsquery('simple', q) @@ search_tsv`
+- [x] 6.3 Write integration tests for Notes:
+    - [x] 6.3.1 RED: Search results ordered by `is_pinned DESC, updated_at DESC`
+    - [x] 6.3.2 RED: Blank search query returns all notes
+    - [x] 6.3.3 GREEN: Body size limit ($\le$ 1 MiB) returns 422
+- [x] 6.4 Verify FTS performance with `EXPLAIN (ANALYZE, BUFFERS)`
 
 ## Phase 7: Wiring & Cleanup
 
