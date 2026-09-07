@@ -168,6 +168,16 @@ async fn main() {
             get(routes::habits::get_streak_handler),
         )
         .route(
+            "/goals",
+            post(routes::goals::create_goal_handler).get(routes::goals::list_goals_handler),
+        )
+        .route(
+            "/goals/:id",
+            get(routes::goals::get_goal_handler)
+                .patch(routes::goals::patch_goal_handler)
+                .delete(routes::goals::delete_goal_handler),
+        )
+        .route(
             "/subscriptions",
             post(routes::subscriptions::create_subscription_handler)
                 .get(routes::subscriptions::list_subscriptions_handler),
