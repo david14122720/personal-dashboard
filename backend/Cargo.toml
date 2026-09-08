@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "tls-rustls", "chrono", "uuid", "rust_decimal"] }
-tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs"] }
+sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "rust_decimal"] }
+tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs"] }
 tower = "0.5"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -16,10 +16,10 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-argon2 = "0.5"
-rand = "0.8"
-sha2 = "0.10"
-base64 = "0.22"
+argon2 = "0.6"
+rand = "0.10"
+sha2 = "0.11"
+base64 = "0.23"
 hex = "0.4"
 subtle = "2"
 rust_decimal = { version = "1", features = ["serde"] }

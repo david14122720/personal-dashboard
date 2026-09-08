@@ -340,8 +340,8 @@ pub fn validate_event_patch(body: &PatchEventRequest) -> Result<(), AppError> {
 /// exists-probe (exists for another user → 422, exists for nobody → 404).
 async fn ensure_event_link(
     pool: &sqlx::PgPool,
-    scoped_sql: &str,
-    exists_sql: &str,
+    scoped_sql: &'static str,
+    exists_sql: &'static str,
     id: Uuid,
     user_id: Uuid,
     field: &'static str,

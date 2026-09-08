@@ -52,7 +52,7 @@ fn api_routes() -> Router<AppState> {
                 .get(routes::accounts::list_accounts_handler),
         )
         .route(
-            "/accounts/:id",
+            "/accounts/{id}",
             get(routes::accounts::get_account_handler)
                 .patch(routes::accounts::patch_account_handler),
         )
@@ -70,7 +70,7 @@ fn api_routes() -> Router<AppState> {
             get(routes::transactions::transactions_monthly_flow_handler),
         )
         .route(
-            "/transactions/:id",
+            "/transactions/{id}",
             patch(routes::transactions::patch_transaction_handler)
                 .delete(routes::transactions::delete_transaction_handler),
         )
@@ -82,9 +82,9 @@ fn api_routes() -> Router<AppState> {
             "/budgets",
             post(routes::budgets::create_budget_handler).get(routes::budgets::list_budgets_handler),
         )
-        .route("/budgets/:id", get(routes::budgets::get_budget_handler))
+        .route("/budgets/{id}", get(routes::budgets::get_budget_handler))
         .route(
-            "/budgets/:id/status",
+            "/budgets/{id}/status",
             get(routes::budgets::budget_status_handler),
         )
         .route(
@@ -92,15 +92,15 @@ fn api_routes() -> Router<AppState> {
             post(routes::savings::create_goal_handler).get(routes::savings::list_goals_handler),
         )
         .route(
-            "/savings-goals/:id",
+            "/savings-goals/{id}",
             get(routes::savings::get_goal_handler).delete(routes::savings::delete_goal_handler),
         )
         .route(
-            "/savings-goals/:id/movements",
+            "/savings-goals/{id}/movements",
             post(routes::savings::create_movement_handler),
         )
         .route(
-            "/savings-goals/:id/movements/:mid",
+            "/savings-goals/{id}/movements/{mid}",
             delete(routes::savings::delete_movement_handler),
         )
         .route(
@@ -108,11 +108,11 @@ fn api_routes() -> Router<AppState> {
             post(routes::debts::create_debt_handler).get(routes::debts::list_debts_handler),
         )
         .route(
-            "/debts/:id",
+            "/debts/{id}",
             get(routes::debts::get_debt_handler).delete(routes::debts::delete_debt_handler),
         )
         .route(
-            "/debts/:id/payments",
+            "/debts/{id}/payments",
             post(routes::debts::create_payment_handler),
         )
         .route(
@@ -124,18 +124,18 @@ fn api_routes() -> Router<AppState> {
             get(routes::habits::today_habits_handler),
         )
         .route(
-            "/habits/:id",
+            "/habits/{id}",
             get(routes::habits::get_habit_handler)
                 .patch(routes::habits::patch_habit_handler)
                 .delete(routes::habits::delete_habit_handler),
         )
-        .route("/habits/:id/logs", post(routes::habits::create_log_handler))
+        .route("/habits/{id}/logs", post(routes::habits::create_log_handler))
         .route(
-            "/habits/:id/logs/:date",
+            "/habits/{id}/logs/{date}",
             patch(routes::habits::patch_log_handler),
         )
         .route(
-            "/habits/:id/streak",
+            "/habits/{id}/streak",
             get(routes::habits::get_streak_handler),
         )
         .route(
@@ -143,7 +143,7 @@ fn api_routes() -> Router<AppState> {
             post(routes::goals::create_goal_handler).get(routes::goals::list_goals_handler),
         )
         .route(
-            "/goals/:id",
+            "/goals/{id}",
             get(routes::goals::get_goal_handler)
                 .patch(routes::goals::patch_goal_handler)
                 .delete(routes::goals::delete_goal_handler),
@@ -153,7 +153,7 @@ fn api_routes() -> Router<AppState> {
             post(routes::tasks::create_task_handler).get(routes::tasks::list_tasks_handler),
         )
         .route(
-            "/tasks/:id",
+            "/tasks/{id}",
             get(routes::tasks::get_task_handler)
                 .patch(routes::tasks::patch_task_handler)
                 .delete(routes::tasks::delete_task_handler),
@@ -163,7 +163,7 @@ fn api_routes() -> Router<AppState> {
             post(routes::events::create_event_handler).get(routes::events::list_events_handler),
         )
         .route(
-            "/events/:id",
+            "/events/{id}",
             get(routes::events::get_event_handler)
                 .patch(routes::events::patch_event_handler)
                 .delete(routes::events::delete_event_handler),
@@ -174,7 +174,7 @@ fn api_routes() -> Router<AppState> {
         )
         .route("/notes/search", get(routes::notes::search_notes_handler))
         .route(
-            "/notes/:id",
+            "/notes/{id}",
             get(routes::notes::get_note_handler)
                 .patch(routes::notes::patch_note_handler)
                 .delete(routes::notes::delete_note_handler),
@@ -185,7 +185,7 @@ fn api_routes() -> Router<AppState> {
                 .get(routes::subscriptions::list_subscriptions_handler),
         )
         .route(
-            "/subscriptions/:id",
+            "/subscriptions/{id}",
             get(routes::subscriptions::get_subscription_handler)
                 .patch(routes::subscriptions::patch_subscription_handler)
                 .delete(routes::subscriptions::delete_subscription_handler),
@@ -195,11 +195,11 @@ fn api_routes() -> Router<AppState> {
             post(routes::assets::create_asset_handler).get(routes::assets::list_assets_handler),
         )
         .route(
-            "/assets/:id",
+            "/assets/{id}",
             get(routes::assets::get_asset_handler).delete(routes::assets::delete_asset_handler),
         )
         .route(
-            "/assets/:id/valuations",
+            "/assets/{id}/valuations",
             post(routes::assets::create_valuation_handler),
         )
         .route("/net-worth", get(routes::assets::get_net_worth_handler))
