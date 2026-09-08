@@ -15,7 +15,8 @@ RUN pnpm build
 FROM rust:1.75-slim-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-COPY backend/Cargo.toml backend/Cargo.lock* ./Cargo.toml ./Cargo.lock
+COPY backend/Cargo.toml ./
+COPY backend/Cargo.lock* ./
 RUN mkdir -p src && echo "fn main(){}" > src/main.rs && cargo build --release 2>/dev/null || true
 COPY backend/src ./src
 COPY backend/.sqlx ./.sqlx
