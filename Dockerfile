@@ -25,13 +25,14 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y libssl3 ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y libssl3 ca-certificates curl libcap2-bin && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 10001 appuser
 COPY --from=builder /app/target/release/personal-dashboard-backend ./personal-dashboard-backend
 COPY --from=frontend /app/frontend/out ./static
+RUN setcap 'cap_net_bind_service=+ep' ./personal-dashboard-backend
 ENV STATIC_DIR=/app/static
-ENV PORT=3000
+ENV PORT=80
 USER appuser
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s CMD curl -fsS http://localhost:3000/health || exit 1
+EXPOSE 80
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s CMD curl -fsS http://localhost:80/health || exit 1
 CMD ["./personal-dashboard-backend"]
