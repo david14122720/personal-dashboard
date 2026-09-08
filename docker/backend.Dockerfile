@@ -6,6 +6,8 @@ COPY backend/Cargo.toml backend/Cargo.lock* ./Cargo.toml ./Cargo.lock
 # Cache deps with dummy main
 RUN mkdir -p src && echo "fn main(){}" > src/main.rs && cargo build --release 2>/dev/null || true
 COPY backend/src ./src
+# Touch so Cargo sees the real sources as newer than the dummy build above.
+RUN find ./src -type f -exec touch {} +
 COPY backend/.sqlx ./.sqlx
 ENV SQLX_OFFLINE=true
 RUN cargo build --release

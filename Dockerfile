@@ -19,6 +19,9 @@ COPY backend/Cargo.toml ./
 COPY backend/Cargo.lock* ./
 RUN mkdir -p src && echo "fn main(){}" > src/main.rs && cargo build --release 2>/dev/null || true
 COPY backend/src ./src
+# The dummy build above is newer than the freshly copied sources, so without
+# this touch Cargo sees everything as fresh and ships the dummy binary.
+RUN find ./src -type f -exec touch {} +
 COPY backend/.sqlx ./.sqlx
 ENV SQLX_OFFLINE=true
 RUN cargo build --release
