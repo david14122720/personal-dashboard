@@ -1,3 +1,143 @@
+# Apply Progress — p8-home-pagos · PR2 (stacked-to-main, eslabón 2 de 4)
+
+> Change: `p8-home-pagos` · PR2 alcance: hooks SWR + 3 cards mes + toggles/persistencia
+> Fecha: 2026-09-09 · Modo: STRICT TDD (vitest + tsc) · Delivery: stacked-to-main eslabón 2/4, base rama `p8-pr1`
+> Budget: HARD 350 líneas — real 313 insertions + 6 deletions = 319 (ver §6) · FE-only, sin bell (PR3), sin resto widgets (PR4), sin backend, sin Fase 1
+
+## 1. Completed tasks (PR2) + persisted checkbox updates
+
+Persisted in `openspec/changes/p8-home-pagos/tasks.md` — 17/28 implementation `- [x]` acumuladas (11 PR1 + 6 PR2). Este eslabón marca:
+
+- [x] Fase B RED hooks `useDebts/useSubscriptions/useTasks(view)/useEvents(from,to)` (keys `dashboard/*`, `null` si oculto, montos `string|number`)
+- [x] Fase B GREEN wires `DebtWire/SubscriptionWire/TaskWire/EventWire` + hooks `useDebts/useSubscriptions/useTasks/useEvents`
+- [x] Fase B RED `useGoals/useSavingsGoals/usePreferences/useUpdateLayout` (envelope exacto `PATCH /me/preferences { dashboard_layout }`, optimista + rollback 422, fallback default)
+- [x] Fase B GREEN `GoalWire/SavingsGoalWire` + `useGoals/useSavingsGoals/useUpdateLayout` + re-export `NotificationItem` (sin duplicar lógica)
+- [x] Fase D 3 `MetricCard` mes separado (`month-income/10`, `month-expense/11`, `month-savings/12`) directos en `DashboardHome.tsx` + test `DashboardHome.widgets.test.tsx`
+- [x] Fase F `WidgetToggle.tsx` (switch accesible `role="switch" aria-checked`, `WidgetShell` con prop `action` opcional sin romper firma) + test `WidgetToggle.test.tsx`
+
+Verificación: `grep -c "^- \[x\]" tasks.md` = 17. Parent-owned intactas, diferidas (§7). Fase F composición completa sigue `- [ ]` (parcial PR2: solo trio mes + toggles; 9 widgets + bell quedan para PR3/PR4).
+
+## 2. Files changed (solo PR2, tracked + untracked nuevos)
+
+Tracked (`git diff HEAD --numstat`):
+
+- `frontend/lib/api/dashboard.ts` (+90/-2, wires + keys + helpers layout + 7 hooks + `useUpdateLayout` + re-export `NotificationItem`)
+- `frontend/components/containers/DashboardHome.tsx` (+38/-2, `WidgetShell.action?`, trio mes con `toMonthSummary`/`formatMoney`, toggles `buildNextLayout` + `useUpdateLayout`, `visible=null→no render`)
+- `frontend/components/containers/DashboardHome.test.tsx` (+7/-2, mock `...mod` + `useUpdateLayout` stub para no-regresión)
+
+Nuevos (untracked, líneas `wc -l`):
+
+- `frontend/lib/api/dashboard.test.ts` (106, MSW + `SWRConfig`, keys/null-key, fetch string-money, hidden skip, layout fallback/toggle, envelope + 422 rollback, triangulación)
+- `frontend/components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx` (39, 3 cards `formatMoney` + toggles + PATCH envelope + round-trip)
+- `frontend/components/ui/WidgetToggle.tsx` (17, botón `role="switch"` + `t(widgetHide/Show)` + tokens sin hex + foco visible)
+- `frontend/components/ui/WidgetToggle.test.tsx` (16, `aria-checked` + `onToggle(false)`)
+
+Total PR2: 313 insertions + 6 deletions = 319 ≤ 350 HARD. Cero diff en `backend/src/routes/*`, Fase 1 (`FinanceSections`, `ManualCapture`, `TransactionsLedger`, `TransferHistory`, `ProductivitySections`, `ProductivityForms`, `s1-capture`/`s2-crud`), notificaciones, resto widgets, e2e. `skills-lock.json` + `tsconfig.tsbuildinfo` preexistentes/no tocados por este apply (excluidos del budget).
+
+## 3. Test commands run (evidencia)
+
+Baseline pre-PR2: `tsc --noEmit` 0; `vitest run` 15 files / 150 tests verdes (heredado PR1).
+
+Ciclo PR2 (todos `pnpm --dir frontend`):
+
+- RED hooks: `exec vitest run lib/api/dashboard.test.ts` → 6 failed (`debtsKey/useDebts/... is not a function`, `useUpdateLayout is not a function`); GREEN → 6 passed; TRIANGULATE (+null view/events-all + `toNotificationCount` sin duplicar) → 7 passed; REFACTOR (compactado 156→106 líneas para budget, sin cambiar lógica) → 7 passed, `tsc` 0.
+- RED UI: `exec vitest run components/ui/WidgetToggle.test.tsx "...DashboardHome.widgets.test.tsx"` → 2 failed (`Failed to resolve ./WidgetToggle`, `Unable to find Ingreso del mes`); GREEN (`WidgetToggle.tsx` + trio mes en `DashboardHome.tsx`) → 3 passed (1 toggle + 2 widgets); `tsc` 0 tras fix `dashboard.test.ts` default-import + mock `DashboardHome.test.tsx ...mod`.
+- Final: `exec vitest run` → **18 files / 160 tests passed** (+10 vs PR1: +7 dashboard hooks, +1 toggle, +2 widgets); `exec tsc --noEmit` → **0 errores**.
+
+## 4. TDD Cycle Evidence (STRICT TDD activo)
+
+| Task | RED (failing first) | GREEN (min code, pass) | TRIANGULATE (≥2 casos) | REFACTOR (still green) |
+|------|---------------------|------------------------|------------------------|------------------------|
+| hooks keys/null-key | `debtsKey is not a function` + 5 más | `debtsKey/subscriptionsKey/tasksKey/eventsKey/goalsKey/savingsGoalsKey` + `dashboard/*` | `tasksKey(null,true)="dashboard/tasks"` + `eventsKey(null,null,true)="dashboard/events"` + hidden→null (3 ramas) | compactado imports/handlers 1-línea, re-run 7 green |
+| hooks fetch string-money | `useDebts is not a function` | MSW `/debts` `"320.00"` intacto + `/subs` `"9.99"` + `/goals` `60` + `/savings` `"1000.00"` | `d1:320.00` + `t1:e1:g1:sg1:s1` (wire string y number) | sin cambio lógica, 7 green |
+| hidden skip | `hidden` no render | `visible=false`→`"hidden"` + `seen.length 0` (sin fetch) | `DebtsProbe visible=false` + `eventsKey(...,false)=null` | re-run green |
+| layout fallback/toggle | `resolveDashboardLayout is not a function` | `[]/null→DEFAULT` + `isWidgetVisible` + `buildNextLayout` hide/show | vacío→9 ids + hide `month-income`→false + show→true | `sort(order)` estable, green |
+| `useUpdateLayout` envelope+rollback | `useUpdateLayout is not a function` | `PATCH {dashboard_layout}` exacto + `optimisticData` + `rollbackOnError:true` | ok→`done` contiene envelope + 422→`threw=true` | `satisfies PatchPreferencesBody`, green |
+| `NotificationItem` sin duplicar | tipo ausente en `dashboard.ts` | `export type { NotificationItem } from transforms` (cero lógica) | `toNotificationCount` 1→0 con mute (reúso, no reimpl) | `tsc` 0, green |
+| `revalidateOnFocus:false` | estructural (mismo `config` para 7 hooks, 1 salida) | reúso `config` existente | Triangulation skipped: purely structural shared constant, no branching (igual que PR1 `apiPatch` espejo) | `tsc` 0 |
+| WidgetToggle | `Failed to resolve ./WidgetToggle` | botón `role=switch` + `aria-checked` + `onToggle(!v)` + `t()` | `true→click→false` + `rerender false→aria false` | tokens + foco visible, 1 green |
+| Trio mes + toggles/round-trip | `Unable to find Ingreso del mes` | `toMonthSummary(flow,monthKey)` + `fmt()` + `visible?id:null` + `toggle→PATCH` | `1.000/400/600` 3 cards + `switches≥3` + envelope sin `month-income` | compactado mock 1-línea, 2 green |
+| No-regresión `DashboardHome.test` | 5 failed tras añadir `useUpdateLayout` | mock `...mod` + stub `useUpdateLayout` | error/loading/telemetry/streak intactos | 5 green |
+
+Three Laws: nunca producción antes de RED; GREEN mínimo; cada REFACTOR re-ejecutó enfocados + `tsc`.
+
+## 5. Deviations from design
+
+1. `dashboard.test.ts` en `.ts` con `createElement` (sin JSX) para respetar path exacto de tasks (`dashboard.test.ts`, no `.tsx`). JSX habría exigido `.tsx`; se evitó renombrar.
+2. `eventsKey/tasksKey/...` puros exportados para testear `null`-key sin mockear SWR. Diseño fija claves `dashboard/*` pero no los nombres de helpers; exponerlos es aditivo y facilita `null`-key por widget visible.
+3. `resolveDashboardLayout` fallback = `[]`/ausente→`DEFAULT`; validación profunda (type/size/order) delegada a BE (`deny_unknown_fields`→422) + `useUpdateLayout` rollback. Suficiente para PR2; validación FE estricta queda para REFACTOR PR4.
+4. Trio mes envuelto en `div col-span + WidgetToggle` + `MetricCard` (no `WidgetShell`), porque `MetricCard` no acepta `action`. `WidgetShell.action?` se añade igual (tarea exige extender firma) para listas PR3/PR4.
+5. `DashboardHome.test.tsx` mock pasa a `...mod` + stub. Sin esto, el mock cerrado de 7 hooks rompe al añadir `useUpdateLayout`/helpers (5 failed). Cambio mínimo no-regresión.
+6. i18n sin diff: claves mes/toggles ya existían PR1 (`monthIncome/Expense/Savings`, `widgetHide/Show`). Cero hardcode nuevo verificado; no se añadió `es.ts`.
+7. Composición Fase F parcial consciente: header `h1+Bell`, 9 widgets, loading extendido y error `dashboard/` completo quedan para PR3/PR4. PR2 solo trio mes + toggles para no superar 350.
+
+## 6. Remaining tasks (exact unchecked `- [ ]` lines)
+
+11 implementation + 2 parent (deferred, byte-for-byte):
+
+- [ ] Implementar `frontend/components/dashboard/widgets/UpcomingPayments.tsx` (lista `list/lg/20`, unión 7d ordenada, top 5–7 + link Finanzas + `EmptyState` ES) + casos en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/dashboard/widgets/PendingDebts.tsx` + `ActiveSubs.tsx` (`list/md/21`, `list/md/22`, filtros `active`/`is_active`, `pending_amount`/`price` COP) + casos en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/dashboard/widgets/PendingTasks.tsx` + `UpcomingEvents.tsx` (`list/md/23` desde `view=today+upcoming`, `list/md/24` ventana 14d visual, top 5–7 + links Productividad) + casos en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/dashboard/widgets/GoalProgress.tsx` (`chart/md/30`, 2 segmentos Metas `progress` + Ahorro `saved/goal` en el mismo widget, sin Recharts o con `ssr:false`) + casos en `DashboardHome.widgets.test.tsx` (~90 diff). <!-- sdd-owner: implementation -->
+- [ ] RED+GREEN: crear `frontend/components/notifications/useNotifications.ts` (deriva de hooks S3 + `toOverdueItems/toUpcomingPayments`, filtra `localStorage p8-notif-muted` + `visibleSources`, SSR-safe, expone `{ overdue, upcoming, count, muted, toggleMute }`) + casos en `frontend/components/notifications/__tests__/notifications.test.tsx` (badge = vencidas+7d − muteados − ocultos, bordes 7/8d) (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/notifications/NotificationBell.tsx` (botón header home, badge, `aria-label`/`aria-expanded`, teclado, `Esc`, foco visible, popover SSR-safe) + casos en `notifications.test.tsx` (~90 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/notifications/NotificationList.tsx` (secciones Vencidas/Próximos cobros ordenadas, switch por ítem con `role="switch"`, `EmptyState` ES, tokens sin hex) + casos mute persiste `p8-notif-muted` tras reload (~90 diff). <!-- sdd-owner: implementation -->
+- [ ] Componer `frontend/components/containers/DashboardHome.tsx` (header-row `h1`+`NotificationBell`, grid bento 12-col con 9 widgets + existentes, `WidgetToggle` por widget, loading `some(isLoading)` extendido, error panel + retry `dashboard/`, ocultar = `null` key + no render, round-trip `GET→PATCH→GET`, layout vacío = 9 visibles) + casos integración en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Crear `frontend/e2e/dashboard-widgets.spec.ts` (Playwright: 9 widgets con datos reales, toggle persiste tras reload, `EmptyState` ES, links ver-en-sección, Telemetría/charts intactos) (~80 diff). <!-- sdd-owner: implementation -->
+- [ ] Crear `frontend/e2e/notifications.spec.ts` (Playwright: badge vencidas+7d, panel 2 secciones, mute ítem persiste `p8-notif-muted`, mute categoría vía ocultar widget excluye del badge) (~80 diff). <!-- sdd-owner: implementation -->
+- [ ] REFACTOR: deduplicar helpers fecha/moneda entre `frontend/lib/dashboard/transforms.ts` y `frontend/lib/api/dashboard.ts`, verificar `pnpm --dir frontend test` + `tsc --noEmit` + `s1-capture`/`s2-crud` verdes y cero diff fuera de §4.1–4.2 del diseño (~50 diff). <!-- sdd-owner: implementation -->
+
+Parent (deferred, no tocar):
+
+- [ ] Start or reuse bounded review of PR1→PR4 chain before merge. <!-- sdd-owner: parent -->
+- [ ] Confirm lifecycle gate (Judgment Day + `s1-capture`/`s2-crud` green) before `main` merge. <!-- sdd-owner: parent -->
+
+Siguiente eslabón PR3: listas (payments/debts/subs/tasks/events/goal) sobre hooks PR2 ya verdes.
+
+## 7. Workload / PR boundary
+
+- Forecast original: 1150–1450 líneas, `400-line budget risk: High`, `Chained: Yes`, `Chain strategy: pending`, `Decision needed: Yes`.
+- Resolución consumida: `stacked-to-main, eslabón 2 de 4, base rama p8-pr1` (delegado PR2) → solo slice hooks + trio mes + toggles/persistencia.
+- PR2 real: 313 insertions + 6 deletions = 319 ≤ 350 HARD (tracked 135 + nuevos 178). Compactado tests 249→178 para cumplir sin perder cobertura (RED/GREEN/TRIANGULATE intactos). `DashboardHome.test` +7 líneas incluidas como no-regresión obligatoria.
+- Rollback PR2: `git checkout -- frontend/lib/api/dashboard.ts frontend/components/containers/DashboardHome.tsx frontend/components/containers/DashboardHome.test.tsx` + `rm frontend/lib/api/dashboard.test.ts frontend/components/ui/WidgetToggle.tsx frontend/components/ui/WidgetToggle.test.tsx "frontend/components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx"` (más `rm -rf frontend/components/dashboard` si queda vacío).
+- Review gate: este eslabón no inicia bounded-review ni valida gates (dueño orquestador).
+
+## 8. Structured status consumed / produced
+
+Consumed (fallback manual + global `~/.pi/agent/gentle-ai/support/sdd-status-contract.md`; `openspec/` autoritativo; sin `gentle-ai sdd-status` nativo):
+
+```yaml
+schemaName: spec-driven
+changeName: p8-home-pagos
+artifactStore: openspec
+planningHome: { root: /home/david/Nextcloud2/Ubuntu/landing_personal, changesDir: openspec/changes }
+changeRoot: openspec/changes/p8-home-pagos
+artifactPaths: { proposal: [openspec/changes/p8-home-pagos/proposal.md], specs: [openspec/changes/p8-home-pagos/specs/dashboard-widgets/spec.md, openspec/changes/p8-home-pagos/specs/notifications/spec.md], design: [openspec/changes/p8-home-pagos/design.md], tasks: [openspec/changes/p8-home-pagos/tasks.md], applyProgress: [openspec/changes/p8-home-pagos/apply-progress.md] }
+artifacts: { proposal: done, specs: done, design: done, tasks: done, applyProgress: done, verifyReport: missing, syncReport: missing }
+taskProgress: { total: 28, complete: 17, remaining: 11 }
+deferredParentActions: { total: 2, complete: 0, remaining: 2 }
+taskArtifactErrors: []
+applyState: ready
+dependencies: { apply: ready, verify: blocked, sync: blocked, archive: blocked }
+actionContext: { mode: repo-local, workspaceRoot: /home/david/Nextcloud2/Ubuntu/landing_personal, allowedEditRoots: [/home/david/Nextcloud2/Ubuntu/landing_personal], warnings: ["400-line High but stacked-to-main 2/4 approved", "strict TDD active (config strict_tdd=false overridden by parent)", "HARD 350 enforced via test compaction"] }
+nextRecommended: parent-lifecycle
+isNonAuthoritative: false
+```
+
+Produced: este `apply-progress.md` (merge acumulativo PR1+PR2) + 6 checkboxes `- [x]` en `tasks.md` (re-leídos: 17). Sin receipts, sin review, sin gate.
+
+## 9. Risks / notes
+
+- Mes trio comparte `useMonthlyFlow`; ocultar 1 card no anula fetch (correcto: otras 2 lo usan). `null`-key por widget aplica a hooks dedicados (`debts/subs/tasks/events/goals`) usados en PR3/PR4.
+- `PATCH` retorna `Preferences` plano; `useUpdateLayout` lo envuelve a `MeWire` para `dashboard/me`. 422 deja fila intacta (BE valida antes de escribir); rollback SWR + `revalidate:true` restaura.
+- `WidgetToggle` `aria-label` incluye `id` (`"Ocultar bloque: month-income"`) para distinguir 3 switches en tests/a11y; copy base sigue `t()`.
+- `DashboardHome.widgets.test` usa `currentMonthKey(new Date())` dinámico → determinista en cualquier TZ; e2e PR4 debe fijar `America/Bogota`.
+- `tsconfig.tsbuildinfo` untracked ignorado (build artifact, no parte del PR).
+
+---
+
+## PR1 history (preserved, no overwrite — contenido original íntegro debajo)
+
 # Apply Progress — p8-home-pagos · PR1 (stacked-to-main, eslabón 1 de 4)
 
 > Change: `p8-home-pagos` · PR1 alcance: transforms + apiPatch + i18n base
@@ -177,3 +317,4 @@ Produced: este `apply-progress.md` + 11 checkboxes `- [x]` persistidos en `tasks
 - `installment` es dinero, nunca fecha: deuda sin `due_date` excluida de próximos aunque tenga `installment`. Si BE añade `installment_due_date` futuro, se extenderá `UpcomingDebtLike` sin inventar.
 - `source` puro = `kind`; el mapeo a `dashboard_layout` ids se cierra en PR4. `toNotificationCount` ya acepta `Set|string[]|Record|null`.
 - i18n aditivo: `EsKey` ahora incluye `dashboard.*` + `notifications.*`; `t()` con `{n}/{date}/{amount}` verificado. Cero hardcode nuevo.
+

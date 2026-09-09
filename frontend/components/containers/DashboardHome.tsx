@@ -7,7 +7,11 @@ import EmptyState from "@/components/ui/EmptyState";
 import type { BudgetBarDatum } from "@/components/ui/BudgetBars";
 import MetricCard from "@/components/ui/MetricCard";
 import TelemetryStrip, { type TelemetryItem } from "@/components/ui/TelemetryStrip";
+import WidgetToggle from "@/components/ui/WidgetToggle";
 import {
+  buildNextLayout,
+  isWidgetVisible,
+  resolveDashboardLayout,
   useAccounts,
   useBudgets,
   useHabitsToday,
@@ -15,6 +19,7 @@ import {
   useNetWorth,
   usePreferences,
   useSpendByCategory,
+  useUpdateLayout,
 } from "@/lib/api/dashboard";
 import { formatMoney, toNumber } from "@/lib/api/money";
 import { t } from "@/lib/i18n";
@@ -27,6 +32,7 @@ import {
   toDonutSlices,
   toFlowPoints,
   toISODate,
+  toMonthSummary,
   worstAlertLevel,
   worstBudgetStatus,
 } from "@/lib/dashboard/transforms";
@@ -67,16 +73,23 @@ function WidgetShell({
   hint,
   children,
   span,
+  action,
 }: {
   title: string;
   hint?: string;
   children: React.ReactNode;
   span: string;
+  action?: React.ReactNode;
 }) {
   return (
     <section aria-label={title} className={`rounded-xl border border-hull bg-hull/40 p-5 ${span}`}>
-      <h2 className="font-display text-base font-semibold tracking-wide">{title}</h2>
-      {hint ? <p className="mt-1 text-sm text-instrument/60">{hint}</p> : null}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-base font-semibold tracking-wide">{title}</h2>
+          {hint ? <p className="mt-1 text-sm text-instrument/60">{hint}</p> : null}
+        </div>
+        {action}
+      </div>
       <div className="mt-4">{children}</div>
     </section>
   );
@@ -98,6 +111,10 @@ export default function DashboardHome() {
   const habits = useHabitsToday();
   const accounts = useAccounts();
   const prefs = usePreferences();
+  const updateLayout = useUpdateLayout();
+  const layout = resolveDashboardLayout(prefs.data);
+  const visible = (id: string) => isWidgetVisible(layout, id);
+  const toggle = (id: string, v: boolean) => void updateLayout(buildNextLayout(layout, id, v));
 
   const queries = [netWorth, flow, categories, budgets, habits, accounts, prefs];
   const isLoading = queries.some((q) => q.isLoading);
@@ -197,6 +214,7 @@ export default function DashboardHome() {
 
   const slices = toDonutSlices(categories.data);
   const pendingHabits = (habits.data ?? []).filter((h) => h.today_status === "pending");
+  const summary = toMonthSummary(flow.data, monthKey);
 
   return (
     <div>
@@ -227,6 +245,24 @@ export default function DashboardHome() {
             status={pendingHabits.length === 0 ? "ok" : "warn"}
           />
         </div>
+        {visible("month-income") ? (
+          <div className="col-span-12 md:col-span-6 xl:col-span-4">
+            <div className="mb-2 flex justify-end"><WidgetToggle id="month-income" visible onToggle={(v) => toggle("month-income", v)} /></div>
+            <MetricCard label={t("dashboard.monthIncome")} display={fmt(summary.income)} hint={monthKey} />
+          </div>
+        ) : null}
+        {visible("month-expense") ? (
+          <div className="col-span-12 md:col-span-6 xl:col-span-4">
+            <div className="mb-2 flex justify-end"><WidgetToggle id="month-expense" visible onToggle={(v) => toggle("month-expense", v)} /></div>
+            <MetricCard label={t("dashboard.monthExpense")} display={fmt(summary.expense)} hint={monthKey} />
+          </div>
+        ) : null}
+        {visible("month-savings") ? (
+          <div className="col-span-12 md:col-span-6 xl:col-span-4">
+            <div className="mb-2 flex justify-end"><WidgetToggle id="month-savings" visible onToggle={(v) => toggle("month-savings", v)} /></div>
+            <MetricCard label={t("dashboard.monthSavings")} display={fmt(summary.savings)} hint={t("dashboard.monthSavingsHint")} status={summary.savings >= 0 ? "ok" : "warn"} />
+          </div>
+        ) : null}
         <WidgetShell
           title={t("dashboard.monthlyFlow")}
           hint={t("dashboard.monthlyFlowHint")}
