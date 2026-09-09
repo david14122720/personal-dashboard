@@ -1,3 +1,209 @@
+# Verify Report — p8-home-pagos · PR3 (notificaciones in-app: useNotifications + Bell + List)
+
+> Change: `p8-home-pagos` · Scope verificado: PR3 (eslabón 3 de 4, stacked-to-main, base rama `p8-pr2`) · Fecha: 2026-09-09
+> Base: `319addd feat(p8-pr2)` (working tree actual, branch `p8-pr2`) · Modo: STRICT TDD activo (vía `apply-progress.md` + prompt delegado; `openspec/config.yaml` dice `strict_tdd: false`, override por padre — se aplican checks estrictos)
+> Verificador: solo lectura + comandos de test (única escritura: este archivo; ningún fix aplicado, ningún otro archivo mutado)
+
+## Verdict
+
+**Status: PASS (PR3 slice) — NOT READY FOR ARCHIVE/SYNC**
+
+- PR3 (tríada `useNotifications` + `NotificationBell` + `NotificationList` + 6 tests) está verde, fiel a `specs/notifications/spec.md` para su slice y sin scope-creep a resto-widgets/PR4, Fase 1 ni backend.
+- El change global NO está listo para archive ni sync: quedan 8 tareas implementation `- [ ]` (4 listas widgets + composición home + 2 e2e + refactor) + 2 parent diferidas. Esto es lo esperado en cadena 3/4 y no es un fallo de PR3, pero bloquea archive por regla de checkboxes.
+
+## Structured status / actionContext
+
+```yaml
+schemaName: spec-driven
+changeName: p8-home-pagos
+artifactStore: openspec
+planningHome:
+  root: /home/david/Nextcloud2/Ubuntu/landing_personal
+  changesDir: openspec/changes
+changeRoot: openspec/changes/p8-home-pagos
+artifactPaths:
+  proposal: [openspec/changes/p8-home-pagos/proposal.md]
+  specs: [openspec/changes/p8-home-pagos/specs/dashboard-widgets/spec.md, openspec/changes/p8-home-pagos/specs/notifications/spec.md]
+  design: [openspec/changes/p8-home-pagos/design.md]
+  tasks: [openspec/changes/p8-home-pagos/tasks.md]
+  applyProgress: [openspec/changes/p8-home-pagos/apply-progress.md]
+  verifyReport: [openspec/changes/p8-home-pagos/verify-report.md]
+  syncReport: [openspec/changes/p8-home-pagos/sync-report.md]
+artifacts:
+  proposal: done
+  specs: done
+  design: done
+  tasks: done (20/28 implementation [x], resto PR4 por diseño de cadena)
+  applyProgress: done (PR3 acumulativo PR1+PR2+PR3)
+  verifyReport: done (este archivo, sección PR3 + PR1/PR2 preservados)
+  syncReport: missing
+taskProgress:
+  total: 28
+  complete: 20
+  remaining: 8
+deferredParentActions:
+  total: 2
+  complete: 0
+  remaining: 2
+taskArtifactErrors: []
+applyState: ready (PR4 pendiente, nada bloquea el siguiente eslabón)
+dependencies:
+  apply: ready
+  verify: done (PR3 slice)
+  sync: blocked (8 implementation restantes)
+  archive: blocked (8 implementation restantes)
+actionContext:
+  mode: repo-local
+  workspaceRoot: /home/david/Nextcloud2/Ubuntu/landing_personal
+  allowedEditRoots: [/home/david/Nextcloud2/Ubuntu/landing_personal]
+  warnings: ["verificación read-only salvo este reporte; ningún fix aplicado", "strict TDD activo por override de padre (config strict_tdd=false)", "HARD 350 cumplido: 215 líneas nuevas"]
+nextRecommended: apply-PR4 (resto widgets + composición home con Bell en header + e2e + REFACTOR)
+isNonAuthoritative: false
+```
+
+- Selección de change: explícita por el delegado (`p8-home-pagos`), confirmada en disco (`openspec/changes/p8-home-pagos/` con proposal/spec/design/tasks/apply-progress).
+- Status contract resuelto vía fallback: `.pi/gentle-ai/support/sdd-status-contract.md` ausente → global `~/.pi/agent/gentle-ai/support/sdd-status-contract.md` usado como contrato (shape-compatible). `artifactStore: openspec` autoritativo en disco; no aplica carve-out `resolve-via-engram`.
+- Ownership y edit-roots verificables dentro del workspace autoritativo; no se editaron archivos de implementación (solo lectura + `vitest`/`tsc` + este reporte).
+
+## Test / validation commands (exactos, con resultado)
+
+| Comando | Resultado |
+|---|---|
+| `pnpm --dir frontend exec vitest run` | ✅ **19 files / 166 tests passed** (Duration ~39.57s, jsdom). Esperado por delegado: 166 — **coincide exacto**. Baseline PR2: 18/160 → +6 (tríada notificaciones). |
+| `pnpm --dir frontend exec vitest run components/notifications/__tests__/notifications.test.tsx` | ✅ **1 file / 6 tests passed** (Duration ~4.50s). Foco PR3: badge 3\|2\|1, ventana 7 incl/8 excl/sin-fecha excl, mute resta-persiste-reload, categoría vía layout, bell aria+dialog+Esc, lista vacíos+orden+switch+links. |
+| `pnpm --dir frontend exec tsc --noEmit` | ✅ **0 errores** (`TSC_EXIT:0`). |
+| Fallos en la corrida final | Ninguno. El RED histórico (`Failed to resolve import "../useNotifications"`) está en `apply-progress.md` §3 como evidencia del ciclo y no es reproducible ahora porque el código ya está en GREEN — esto es lo esperado. |
+
+## Diff verificado (PR3)
+
+`git status --short` (branch `p8-pr2`, HEAD=`319addd feat(p8-pr2)`) + `wc -l` untracked:
+
+- Nuevos untracked, solo `frontend/components/notifications/`: `useNotifications.ts` (49) + `NotificationBell.tsx` (29) + `NotificationList.tsx` (42) + `__tests__/notifications.test.tsx` (95) = **215 líneas nuevas ≤ 350 HARD → ✅ PASS.** Cero deletions, cero tracked modificados de código (solo `openspec/.../apply-progress.md` + `tasks.md` como artefactos SDD esperados).
+- Excluidos del budget (no código PR3): `skills-lock.json` (M preexistente `grill-me`), `tsconfig.tsbuildinfo` (build artifact untracked), `.agents/.claude/.codegraph` (artefactos entorno preexistentes).
+- Rollback documentado en apply-progress §7 (`rm -rf frontend/components/notifications`, restaura 160 tests / tsc 0 pre-PR3; `tasks.md` 3 checkboxes Fase E → `- [ ]`) coincide con este diff.
+
+### Confirmación: budget ≤350, sin backend, sin Fase 1, sin tocar DashboardHome
+
+- `git diff HEAD --name-only | grep -E "^backend/"` → **CLEAN: cero diff backend.** Requisito spec `No backend addition` y diseño §4.3 cumplido. Sin fetch directo en `notifications/` (`grep apiGet|apiPost|apiPatch|fetch(` → cero; deriva de hooks S3, cero endpoints nuevos).
+- `git diff HEAD --name-only | grep -Ei "FinanceSections|ManualCapture|TransactionsLedger|TransferHistory|ProductivitySections|ProductivityForms|s1-capture|s2-crud"` → **CLEAN: cero diff Fase 1.**
+- `git diff HEAD --name-only | grep -E "DashboardHome"` → **CLEAN: `DashboardHome.tsx` NO tocado** (header `h1+Bell` queda composición Fase F PR4, declarado en apply-progress §5.6 para no superar 350 ni mezclar bell aislado con grid 9 widgets). Confirmado además: `grep NotificationBell DashboardHome.tsx` → no integrado (esperado PR4). Bell listo para `<NotificationBell/>` en header-row.
+- Resto-widgets/e2e: `git status --short | grep -Ei "UpcomingPayments|PendingDebts|ActiveSubs|PendingTasks|UpcomingEvents|GoalProgress|e2e"` → **CLEAN**. ✅ Solo slice PR3 (Fase E), resto queda para PR4 por diseño.
+- Contenido spot-check: `MUTED_KEY=p8-notif-muted` + `readMuted` SSR-safe (`typeof window` guard + `try/catch` + filtro `v===true`) + rehidratación en efecto + `toggleMute` con persistencia; visibilidad por sección (`overdueVisible`: task→`pending-tasks`/debt→`pending-debts`/event→`upcoming-events`; `upcomingVisible` exige `upcoming-payments` + categoría) + `count=toNotificationCount(items,muted,null)`; `useEvents(null,null,eventsOn)` fetch-all + filtrado local (desviación declarada §5.2); Bell botón `bellLabel {n}` + `aria-expanded`/`haspopup=dialog` + badge `p8-badge` solo si `count>0` + panel `role=dialog` + cierre `Esc` con retorno de foco + SSR-safe; List 2 secciones ordenadas asc por `due` + `EmptyState` exacto + fila `dueOn`/`amountDue` vía `formatMoney` + switch `role="switch"` con `mute/unmute: title` + ver-en-sección por kind (debt/subscription→`/dashboard/finance/`, task/event→`/dashboard/productivity/`) + tokens sin hex + `opacity-60` muted; i18n cero diff (`es.ts` CLEAN: las 10 `notifications.*` + `viewInFinance/Productivity` ya existían PR1); `grep hex` en `notifications/` → CLEAN; `t()` en todas las copias de fuente (cero hardcode ES en `Bell/List/useNotifications` salvo comentario y `🔔` icono con `aria-hidden`).
+
+## Spec coverage (PR3 slice)
+
+PR3 cubre la tríada de notificaciones Fase E; listas-widgets, composición home con Bell en header y e2e pertenecen a PR4 por cadena y quedan pendientes (no es gap de PR3).
+
+### notifications/spec.md
+
+| Requirement / Scenario | PR3 | Evidencia |
+|---|---|---|
+| Bell Placement and Badge — bell solo header home, botón accesible (`aria-label` ES, `aria-expanded`), badge = vencidas+7d − muteados − ocultos, SSR-safe `output:export` | ✅ lógica + componente (integración header → PR4) | `NotificationBell.tsx` botón `aria-label=t(bellLabel,{n})` + `aria-expanded` + `haspopup=dialog` + badge `p8-badge` solo si `count>0` + `useNotifications` count; test bell: `/1 avisos pendientes/` + `aria-expanded false→true` + dialog `Avisos` + `Esc` cierra. Placement en header `DashboardHome` queda PR4 (declarado §5.6, consciente para budget) — el componente está listo para `<NotificationBell/>`. Escenario spec (2 overdue+3 upcoming−1 mute=4): lógica equivalente probada como 3\|2\|1 y 2\|0\|2 y 1\|1\|0/0\|1\|0. |
+| Item Contract — FE-only cero endpoints, `NotificationItem{id,kind,title,due,amount?,source}`, vencidas = `tasks?view=overdue` + deudas `due_date<hoy AND active` + events `payment_due AND starts_at<ahora`, próximos = unión `upcoming-payments` 7d inclusiva `[hoy00:00,hoy+7 23:59]` local asc + desempate, wire string→number en borde, display `formatMoney es-CO/COP` | ✅ | `useNotifications` deriva `useDebts/useSubscriptions/useTasks("overdue")/useEvents(null,null)` (cero fetch propio) + `toOverdueItems/toUpcomingPayments` (misma ventana 7d que S3) + `toNotificationItems/Count`; `formatMoney` en `Row` (`amountDue {amount} · vence {date}` / `dueOn`); tests: overdue task+debt (`3\|2\|1`), upcoming=sub 7d (`2\|0\|2`), bordes hoy/+7 incl +8 excl + sin-fecha excluida. `now` inyectable con default runtime (desviación declarada §5.1, facilita determinismo sin cambiar firma de consumo). |
+| Panel Sections and Empty States — 2 secciones etiquetadas ordenadas asc por `due`, `EmptyState` ES exactos, copy solo `t(notifications.*)`, tokens `--color-*` sin hex, foco visible, `prefers-reduced-motion` | ✅ | `NotificationList` secciones `aria-label=t(overdue/upcomingCharges)` + sort `byDueAsc` + `EmptyState title=t(noOverdue/noUpcoming)`; test: `Sin vencidas 🎉` + `Nada por vencer en 7 días` exactos + orden 5d>1d vía `compareDocumentPosition & FOLLOWING` + `t()` en títulos/filas/switches/links; tokens `border-hull/text-instrument/hover:border-signal/bg-signal/text-hull` sin hex (grep CLEAN); `focus-visible:outline-signal` en botón/switch/link. |
+| Mute Semantics — switch propio por fila, mute categoría vía toggle widget (`dashboard_layout`), ítem mute → `localStorage p8-notif-muted {[id]:true}` solo local nunca BE, muted listado con estado visual pero sin contar, unmute restaura, cero tabla/campo/migración/`backend/src/routes/*` | ✅ | `Row` switch `role="switch" aria-checked={!muted}` + `aria-label mute/unmute: title` + `opacity-60` muted; `toggleMute` persiste `MUTED_KEY` + rehidrata en efecto; categoría vía `overdueVisible/upcomingVisible` sobre `resolveDashboardLayout/isWidgetVisible`; tests: click resta `1\|1\|0→0\|1\|0` + `localStorage={d-old:true}` + reload `0\|1\|0` + sigue listado + layout sin `active-subs`+`upcoming-payments` → `1\|1\|0` (upcoming sub excluido, overdue debt intacto); backend CLEAN. |
+| Delivery Constraints — sin push/email/SMS/sonido/websocket/polling, revalidación SWR existente (`revalidateOnFocus:false`, keys `dashboard/*`), compone solo de hooks S3, hereda `frontend-dashboard`/`frontend-i18n`, COP/ES-only, sin Fase 1/BE/rutas | ✅ para este slice | Sin polling ni canal push (cero fetch propio, solo deriva + `localStorage` en evento/efecto); `revalidateOnFocus:false` + `dashboard/*` heredados de los hooks S3 PR2 (sin redefinir); `t()` con claves tipadas + `lang` heredado; COP-only (`formatMoney` default es-CO/COP, desviación declarada §9); cero diff BE/Fase1/rutas (CLEAN arriba). |
+
+Desviaciones `apply-progress.md` §5 (7 ítems: `now` inyectable, `useEvents(null,null)` fetch-all + filtro local, visibilidad por sección en vez de `Set` único, `List` presentacional por props + `Bell` compone, links por fila según kind, `DashboardHome` no tocado, i18n cero diff): revisadas, coherentes con spec/diseño, declaradas explícitamente. Ninguna rompe aceptación; rango estrecho `from/to` queda optimización PR4 si e2e lo exige.
+
+## Task completion (checkboxes)
+
+- Completadas acumuladas: **20/28 implementation `- [x]`** (11 PR1 + 6 PR2 + 3 PR3 Fase E). `grep -c "^- \[x\]" tasks.md` = 20 (verificado; coincide con apply-progress §1). ✅ Ninguna tarea PR3 queda sin marcar; resto widgets + composición + e2e siguen `- [ ]` correctamente para PR4.
+- Restantes (bloquean archive, esperadas en cadena 3/4) — 8 implementation + 2 parent, líneas exactas byte-for-byte:
+
+```text
+- [ ] Implementar `frontend/components/dashboard/widgets/UpcomingPayments.tsx` (lista `list/lg/20`, unión 7d ordenada, top 5–7 + link Finanzas + `EmptyState` ES) + casos en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/dashboard/widgets/PendingDebts.tsx` + `ActiveSubs.tsx` (`list/md/21`, `list/md/22`, filtros `active`/`is_active`, `pending_amount`/`price` COP) + casos en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/dashboard/widgets/PendingTasks.tsx` + `UpcomingEvents.tsx` (`list/md/23` desde `view=today+upcoming`, `list/md/24` ventana 14d visual, top 5–7 + links Productividad) + casos en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Implementar `frontend/components/dashboard/widgets/GoalProgress.tsx` (`chart/md/30`, 2 segmentos Metas `progress` + Ahorro `saved/goal` en el mismo widget, sin Recharts o con `ssr:false`) + casos en `DashboardHome.widgets.test.tsx` (~90 diff). <!-- sdd-owner: implementation -->
+- [ ] Componer `frontend/components/containers/DashboardHome.tsx` (header-row `h1`+`NotificationBell`, grid bento 12-col con 9 widgets + existentes, `WidgetToggle` por widget, loading `some(isLoading)` extendido, error panel + retry `dashboard/`, ocultar = `null` key + no render, round-trip `GET→PATCH→GET`, layout vacío = 9 visibles) + casos integración en `DashboardHome.widgets.test.tsx` (~95 diff). <!-- sdd-owner: implementation -->
+- [ ] Crear `frontend/e2e/dashboard-widgets.spec.ts` (Playwright: 9 widgets con datos reales, toggle persiste tras reload, `EmptyState` ES, links ver-en-sección, Telemetría/charts intactos) (~80 diff). <!-- sdd-owner: implementation -->
+- [ ] Crear `frontend/e2e/notifications.spec.ts` (Playwright: badge vencidas+7d, panel 2 secciones, mute ítem persiste `p8-notif-muted`, mute categoría vía ocultar widget excluye del badge) (~80 diff). <!-- sdd-owner: implementation -->
+- [ ] REFACTOR: deduplicar helpers fecha/moneda entre `frontend/lib/dashboard/transforms.ts` y `frontend/lib/api/dashboard.ts`, verificar `pnpm --dir frontend test` + `tsc --noEmit` + `s1-capture`/`s2-crud` verdes y cero diff fuera de §4.1–4.2 del diseño (~50 diff). <!-- sdd-owner: implementation -->
+- [ ] Start or reuse bounded review of PR1→PR4 chain before merge. <!-- sdd-owner: parent -->
+- [ ] Confirm lifecycle gate (Judgment Day + `s1-capture`/`s2-crud` green) before `main` merge. <!-- sdd-owner: parent -->
+```
+
+Archivo: `openspec/changes/p8-home-pagos/tasks.md` (`grep -n "^- \[ \]"` verificado: líneas 63–66, 77, 81–83, 87–88).
+
+## TDD Compliance (Strict TDD activo por override)
+
+Soporte leído: global `~/.pi/agent/gentle-ai/support/strict-tdd-verify.md` (proyecto `.pi/.../strict-tdd-verify.md` ausente → se usa global sin override). Tabla `TDD Cycle Evidence` presente en `apply-progress.md` §4 (6 filas PR3). Verificación fila por fila:
+
+| Check | Result | Details |
+|---|---|---|
+| TDD Evidence reported | ✅ | Tabla §4 con 6 filas (badge/ventana, mute ítem, mute categoría, Bell a11y, List secciones, i18n estructural cero-diff). |
+| All tasks have tests | ✅ | 3/3 tareas PR3 con test file (`notifications.test.tsx` 6 casos; i18n cero-diff justificado estructuralmente con claves PR1 ya testeadas). |
+| RED confirmed (tests exist) | ✅ | Test file existe con los casos RED citados (`Failed to resolve ../useNotifications` / `../NotificationBell` / `../NotificationList`); cross-ref paths exactos de tasks (`frontend/components/notifications/__tests__/notifications.test.tsx`). |
+| GREEN confirmed (tests pass) | ✅ | Foco 6/6 passed + suite 19/166 passed en ejecución propia; `tsc` 0. Ningún GREEN reportado falla ahora. |
+| Triangulation adequate | ✅ | ≥2 casos por comportamiento: badge (`3\|2\|1` + `2\|0\|2` + `1\|1\|0`), ventana (hoy incl + 7 incl + 8 excl + sin-fecha excl), mute (resta 1→0 + sigue listado 1 + reload 0\|1\|0), categoría (upcoming sub excluido + overdue debt intacto `1\|1\|0`), bell (click abre + `Esc` cierra + foco retorna), lista (vacíos ×2 + orden 5d>1d + 3 switches + `onToggle(b)` + Finanzas+Productividad). Skip justificado solo para i18n estructural cero-diff (sin branching, claves ya resuelven vía tests PR1 — aceptable). |
+| Safety Net for modified files | ✅ | Baseline pre-PR3 citado (tsc 0 + 18/160 verdes heredado PR2); los 4 archivos PR3 son NUEVOS untracked (no modifican existentes, safety net = suite previa intacta 160→166 sin regresión); `es.ts`/`dashboard.ts`/`transforms.ts` reutilizados sin diff (cero riesgo). |
+
+**TDD Compliance**: 6/6 checks passed (6/6 filas con RED→GREEN→TRIANGULATE/skip-justificado→REFACTOR re-green; Three Laws respetada según reporte).
+
+## Test Layer Distribution
+
+| Layer | Tests | Files | Tools |
+|---|---|---|---|
+| Unit (funciones puras sin render: visibilidad `overdueVisible/upcomingVisible`, `readMuted`, sort `byDueAsc` — ejercitadas vía hook/lista) | ~0 directos (lógica delegada a `transforms.ts` PR1 ya cubierta) | 0 (reúso, no reimpl) | vitest |
+| Integration (render Testing Library + mocks hooks: badge, ventana, mute+reload, categoría layout, bell dialog+Esc, lista orden+switch+links) | 6 | 1 (`notifications.test.tsx`) | vitest + @testing-library/react + `vi.mock(@/lib/api/dashboard)` (sigue patrón existente) |
+| E2E | 0 | 0 | no aplica en PR3 (Playwright reservado a PR4) |
+| **Total (foco PR3)** | **6** | **1** | |
+| **Total (suite FE)** | **166** | **19** | |
+
+Capas coherentes con el slice: tríada UI derivada de hooks con Testing Library, puros ya cubiertos en PR1, sin E2E todavía. Sin warnings de capabilities.
+
+## Changed File Coverage
+
+Coverage analysis skipped — no coverage tool detected (no se invocó `--coverage`; `openspec/config.yaml` no define umbral). Los 4 artefactos código PR3 (3 fuentes + 1 test, todos nuevos) están ejercitados por los 6 tests del foco (cada export nuevo — `useNotifications/MUTED_KEY`, `NotificationBell`, `NotificationList`, `toggleMute` — tiene al menos un caso directo), pero sin porcentajes instrumentados.
+
+## Assertion Quality
+
+| File | Line | Assertion | Issue | Severity |
+|---|---|---|---|---|
+| `notifications.test.tsx` | badge block | `toHaveTextContent("3\|2\|1")` / `("2\|0\|2")` | Badge = vencidas+7d−muteados−ocultos con valores reales; sin tautología | — |
+| `notifications.test.tsx` | ventana block | bordes hoy/+7 incl, +8 excl, sin-fecha excluida en un solo `2\|0\|2` | Ventana 7d inclusiva + exclusión dateless; compañero non-empty/order por setup — no es `toEqual([])` huérfano | — |
+| `notifications.test.tsx` | mute block | `toHaveTextContent("1\|1\|0"→"0\|1\|0")` + `toEqual({"d-old":true})` + reload `0\|1\|0` | Resta del badge + persistencia exacta `p8-notif-muted` + reload + sigue listado; no solo `toBeDefined` | — |
+| `notifications.test.tsx` | categoría block | `toHaveTextContent("1\|1\|0")` con layout sin `active-subs`+`upcoming-payments` | upcoming sub excluido + overdue debt intacto; valores reales | — |
+| `notifications.test.tsx` | bell block | `toHaveAttribute("aria-expanded","false"/"true")` + `findByRole("dialog",{name:"Avisos"})` + `Esc` cierra | Conducta accesible + teclado + foco; no smoke-only, no CSS | — |
+| `notifications.test.tsx` | lista block | `getByText("Sin vencidas 🎉"/"Nada por vencer en 7 días")` + `getAllByRole("switch") length 3` + `compareDocumentPosition & FOLLOWING` + `toHaveBeenCalledWith("b")` + Finanzas/Productividad `≥1` | Vacíos exactos + orden real + switch con callback exacto + links duales; `compareDocumentPosition` es indirecta pero válida para orden (aceptable) | INFO (no bloquea) |
+| general | — | `expect(true).toBe(true)` / tautologías | No encontradas | — |
+| general | — | Ghost loops (`forEach`/`queryAll` con asserts) | No encontrados (`getAllByText` con `length ≥1` tiene asserts directos, no loop fantasma) | — |
+| general | — | Smoke-only (`render` + `toBeInTheDocument` sin conducta) | No: cada render sigue con badge/mute/layout/Esc/orden/callback | — |
+| general | — | CSS/implementation-detail (`className`, `mock.calls.length`) | No encontrados (solo `aria-checked`/`aria-expanded`/`role=switch/dialog`, conducta pública) | — |
+| general | — | Mock-heavy | 1 `vi.fn` (onToggle) + mock hooks sigue patrón existente (`...mod`, `next/dynamic→null`) vs ~20 `expect()` en foco — ratio sano | — |
+
+**Assertion quality**: 0 CRITICAL, 0 WARNING (1 INFO por orden vía `compareDocumentPosition` aceptada). ✅ Todas las aserciones verifican conducta real (badge, ventana, persistencia, categoría, a11y, copy ES exacta, orden, montos/links).
+
+## Quality Metrics
+
+- **Type Checker**: ✅ 0 errores (`tsc --noEmit`, `TSC_EXIT:0` en ejecución propia).
+- **Linter**: ➖ No ejecutado (el delegado pidió solo vitest + tsc).
+
+## Review Workload / PR boundary
+
+- Forecast (`tasks.md`): 1150–1450 líneas, `400-line budget risk: High`, `Chained PRs: Yes`, `Chain strategy: pending`, `Decision needed: Yes`.
+- Resolución consumida: `stacked-to-main, eslabón 3 de 4, base rama p8-pr2 actual` (delegado PR3, citado en apply-progress) → solo slice notificaciones Fase E (3 tareas), sin widgets/composición/e2e. ✅ Estrategia cerrada, ya no `pending`.
+- Slice implementado: SOLO PR3. ✅ Sin resto-widgets/composición/e2e (CLEAN arriba), sin backend/Fase 1 (CLEAN), sin reabrir PR1/PR2 salvo reutilización sin diff (`transforms`, `dashboard.ts` hooks, `es.ts` claves, `formatMoney`, `EmptyState`). Sin scope-creep.
+- Tamaño: ✅ **215 líneas nuevas ≤ 350 HARD** (49+29+42+95; cero deletions, solo `frontend/components/notifications/` nuevo). Sin compactación forzada. No hay marcador `size:exception` en `tasks.md` y no se necesita (dentro de budget). Rollback por archivo documentado y coincide con el diff.
+- `skills-lock.json` (M preexistente `grill-me`) + `tsconfig.tsbuildinfo` + `.agents/.claude/.codegraph`: ajenos al change, preexistentes, excluidos del budget. Señalado para que el orquestador los excluya del merge de la cadena.
+
+## Blockers (exactos)
+
+1. **CRITICAL — Archive/sync bloqueados por 8 tareas implementation `- [ ]` restantes** (listas PR4 ×4, composición completa ×1, e2e ×2, refactor ×1; líneas exactas en §Task completion). Esperado en cadena 3/4; el siguiente paso es apply-PR4, no archive. No se retorna PASS limpio ni ready-for-archive.
+2. **INFO — 2 tareas `sdd-owner: parent` diferidas** (bounded review PR1→PR4, lifecycle gate Judgment Day + `s1-capture`/`s2-crud` green). Dueño orquestador, intactas.
+3. Sin otros bloqueadores: specs/diseño/tasks/apply-progress presentes y coherentes; suite 166 verde; `tsc` 0; cero diff BE/Fase1/DashboardHome; budget cumplido; TDD 6/6; assertions 0 CRITICAL.
+
+## Recomendación
+
+- **Merge del slice PR3 dentro de la cadena stacked-to-main: SÍ** (verde, acotado a 215, con evidencia TDD completa y rollback documentado).
+- **Merge a `main` / archive del change: NO** hasta PR4 + `s1-capture`/`s2-crud` verdes + Judgment Day (dueño orquestador).
+- PR4 debe: construir resto-widgets sobre hooks PR2 ya verdes + componer home con Bell en header + e2e + REFACTOR, mantener budget ≤350, y no reabrir la tríada PR3 salvo REFACTOR final previsto.
+
+---
+
+## PR2 history (preserved, no overwrite — contenido original íntegro debajo)
+
 # Verify Report — p8-home-pagos · PR2 (hooks SWR dashboard/* + 3 cards mes + toggles PATCH optimista/rollback)
 
 > Change: `p8-home-pagos` · Scope verificado: PR2 (eslabón 2 de 4, stacked-to-main, base `p8-pr1`) · Fecha: 2026-09-09
