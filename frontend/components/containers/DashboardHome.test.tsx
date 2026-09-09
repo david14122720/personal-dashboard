@@ -32,6 +32,7 @@ vi.mock("@/lib/api/dashboard", async (importOriginal) => {
   useHabitsToday: () => (globalThis as Record<string, unknown>).__HABITS__ ?? loadedData.habits,
   useAccounts: () => loadedData.accounts,
   usePreferences: () => loadedData.prefs,
+  useDebts: () => q([]), useSubscriptions: () => q([]), useTasks: () => q([]), useEvents: () => q([]), useGoals: () => q([]), useSavingsGoals: () => q([]),
   useUpdateLayout: () => async () => {},
   };
 });

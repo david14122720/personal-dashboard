@@ -8,17 +8,30 @@ import type { BudgetBarDatum } from "@/components/ui/BudgetBars";
 import MetricCard from "@/components/ui/MetricCard";
 import TelemetryStrip, { type TelemetryItem } from "@/components/ui/TelemetryStrip";
 import WidgetToggle from "@/components/ui/WidgetToggle";
+import NotificationBell from "@/components/notifications/NotificationBell";
+import ActiveSubs from "@/components/dashboard/widgets/ActiveSubs";
+import GoalProgress from "@/components/dashboard/widgets/GoalProgress";
+import PendingDebts from "@/components/dashboard/widgets/PendingDebts";
+import PendingTasks from "@/components/dashboard/widgets/PendingTasks";
+import UpcomingEvents from "@/components/dashboard/widgets/UpcomingEvents";
+import UpcomingPayments from "@/components/dashboard/widgets/UpcomingPayments";
 import {
   buildNextLayout,
   isWidgetVisible,
   resolveDashboardLayout,
   useAccounts,
   useBudgets,
+  useDebts,
+  useEvents,
+  useGoals,
   useHabitsToday,
   useMonthlyFlow,
   useNetWorth,
   usePreferences,
+  useSavingsGoals,
   useSpendByCategory,
+  useSubscriptions,
+  useTasks,
   useUpdateLayout,
 } from "@/lib/api/dashboard";
 import { formatMoney, toNumber } from "@/lib/api/money";
@@ -115,8 +128,13 @@ export default function DashboardHome() {
   const layout = resolveDashboardLayout(prefs.data);
   const visible = (id: string) => isWidgetVisible(layout, id);
   const toggle = (id: string, v: boolean) => void updateLayout(buildNextLayout(layout, id, v));
-
-  const queries = [netWorth, flow, categories, budgets, habits, accounts, prefs];
+  const debtsQ = useDebts(visible("pending-debts") || visible("upcoming-payments"));
+  const subsQ = useSubscriptions(visible("active-subs") || visible("upcoming-payments"));
+  const tasksQ = useTasks(null, visible("pending-tasks"));
+  const eventsQ = useEvents(null, null, visible("upcoming-events") || visible("upcoming-payments"));
+  const goalsQ = useGoals(visible("goal-progress"));
+  const savingsQ = useSavingsGoals(visible("goal-progress"));
+  const queries = [netWorth, flow, categories, budgets, habits, accounts, prefs, debtsQ, subsQ, tasksQ, eventsQ, goalsQ, savingsQ];
   const isLoading = queries.some((q) => q.isLoading);
   const failed = queries.filter((q) => q.error);
 
@@ -218,10 +236,10 @@ export default function DashboardHome() {
 
   return (
     <div>
-      <h1 className="font-display text-2xl font-semibold tracking-wide">{t("dashboard.overview")}</h1>
-      <p className="mt-1 text-sm text-instrument/60">
-        {t("dashboard.overviewSubtitle")}
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <div><h1 className="font-display text-2xl font-semibold tracking-wide">{t("dashboard.overview")}</h1><p className="mt-1 text-sm text-instrument/60">{t("dashboard.overviewSubtitle")}</p></div>
+        <NotificationBell />
+      </div>
       <div className="mt-6 grid grid-cols-12 gap-4">
         <div className="col-span-12">
           <TelemetryStrip items={strip} />
@@ -263,6 +281,12 @@ export default function DashboardHome() {
             <MetricCard label={t("dashboard.monthSavings")} display={fmt(summary.savings)} hint={t("dashboard.monthSavingsHint")} status={summary.savings >= 0 ? "ok" : "warn"} />
           </div>
         ) : null}
+        {visible("upcoming-payments") ? (<WidgetShell title={t("dashboard.upcomingPayments")} hint={t("dashboard.upcomingPaymentsHint")} span="col-span-12 xl:col-span-7" action={<WidgetToggle id="upcoming-payments" visible onToggle={(v) => toggle("upcoming-payments", v)} />}><UpcomingPayments /></WidgetShell>) : null}
+        {visible("pending-debts") ? (<WidgetShell title={t("dashboard.pendingDebts")} hint={t("dashboard.pendingDebtsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="pending-debts" visible onToggle={(v) => toggle("pending-debts", v)} />}><PendingDebts /></WidgetShell>) : null}
+        {visible("active-subs") ? (<WidgetShell title={t("dashboard.activeSubs")} hint={t("dashboard.activeSubsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="active-subs" visible onToggle={(v) => toggle("active-subs", v)} />}><ActiveSubs /></WidgetShell>) : null}
+        {visible("pending-tasks") ? (<WidgetShell title={t("dashboard.pendingTasks")} hint={t("dashboard.pendingTasksHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="pending-tasks" visible onToggle={(v) => toggle("pending-tasks", v)} />}><PendingTasks /></WidgetShell>) : null}
+        {visible("upcoming-events") ? (<WidgetShell title={t("dashboard.upcomingEvents")} hint={t("dashboard.upcomingEventsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="upcoming-events" visible onToggle={(v) => toggle("upcoming-events", v)} />}><UpcomingEvents /></WidgetShell>) : null}
+        {visible("goal-progress") ? (<WidgetShell title={t("dashboard.goalProgress")} hint={t("dashboard.goalProgressHint")} span="col-span-12 xl:col-span-5" action={<WidgetToggle id="goal-progress" visible onToggle={(v) => toggle("goal-progress", v)} />}><GoalProgress /></WidgetShell>) : null}
         <WidgetShell
           title={t("dashboard.monthlyFlow")}
           hint={t("dashboard.monthlyFlowHint")}
