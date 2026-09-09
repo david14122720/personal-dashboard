@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import TelemetryStrip from "./TelemetryStrip";
 
 describe("TelemetryStrip enum mapping", () => {
+  it("announces the strip region in Spanish", () => {
+    render(<TelemetryStrip items={[{ id: "worth", label: "Patrimonio", display: "$ 5" }]} />);
+    expect(screen.getByRole("region", { name: "Telemetría" })).toBeInTheDocument();
+  });
+
   it("renders warn and over LEDs with their visual states", () => {
     render(
       <TelemetryStrip
@@ -14,8 +19,8 @@ describe("TelemetryStrip enum mapping", () => {
       />,
     );
 
-    const warnLed = screen.getByRole("img", { name: "Cards status warn" });
-    const overLed = screen.getByRole("img", { name: "Budgets status over" });
+    const warnLed = screen.getByRole("img", { name: "Cards, estado warn" });
+    const overLed = screen.getByRole("img", { name: "Budgets, estado over" });
     expect(warnLed.className).toContain("bg-signal");
     expect(overLed.className).toContain("bg-alert");
   });
@@ -30,8 +35,8 @@ describe("TelemetryStrip enum mapping", () => {
       />,
     );
 
-    expect(screen.getByRole("img", { name: "Cards status high" }).className).toContain("bg-alert");
-    expect(screen.getByRole("img", { name: "Month balance status ok" }).className).toContain(
+    expect(screen.getByRole("img", { name: "Cards, estado high" }).className).toContain("bg-alert");
+    expect(screen.getByRole("img", { name: "Month balance, estado ok" }).className).toContain(
       "bg-flow",
     );
   });

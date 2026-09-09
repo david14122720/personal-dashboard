@@ -1,6 +1,7 @@
 "use client";
 
-import { Bar, BarChart, Cell, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, Cell, LabelList, Tooltip, XAxis, YAxis } from "recharts";
+import { chartToken } from "@/lib/i18n";
 import EmptyState from "@/components/ui/EmptyState";
 
 export interface BudgetBarDatum {
@@ -11,14 +12,15 @@ export interface BudgetBarDatum {
   status: string;
 }
 
-const BAR_FILL: Record<string, string> = {
-  ok: "#2DD4A7",
-  warn: "#F5A623",
-  over: "#F2555A",
-};
-
-function barFill(status: string): string {
-  return BAR_FILL[status] ?? "#EAF1F7";
+/** Token-driven bar fill by budget status (ok→flow, warn→signal, over→alert). */
+/** Direct bar value label: spend fraction → "120%". Rendered via LabelList. */
+export function budgetBarLabel(pct: number): string {
+  return `${Math.round(Number(pct ?? 0) * 100)}%`;
+}
+const BAR_TOKEN: Record<string, `--color-${string}`> = { ok: "--color-flow", warn: "--color-signal", over: "--color-alert" };
+export function budgetBarFill(status: string): string {
+  const prop = BAR_TOKEN[status] ?? "--color-instrument";
+  return chartToken(prop) || `var(${prop})`;
 }
 
 /**
@@ -36,6 +38,7 @@ export default function BudgetBars({
     return <EmptyState title="No budgets yet" hint="Create a budget to track spend against it." />;
   }
   const plotted = data.map((row) => ({ ...row, plotted: Math.min(row.pct, 1) }));
+  const tok = (prop: `--color-${string}`): string => chartToken(prop) || `var(${prop})`;
   return (
     <div className="w-full overflow-x-auto">
       <BarChart
@@ -51,16 +54,16 @@ export default function BudgetBars({
           type="category"
           dataKey="label"
           width={140}
-          tick={{ fill: "#EAF1F7", fontSize: 12 }}
+          tick={{ fill: tok("--color-instrument"), fontSize: 12 }}
           tickLine={false}
           axisLine={false}
         />
         <Tooltip
           contentStyle={{
-            backgroundColor: "#142433",
-            border: "1px solid #142433",
+            backgroundColor: tok("--color-hull"),
+            border: `1px solid ${tok("--color-hull")}`,
             borderRadius: 8,
-            color: "#EAF1F7",
+            color: tok("--color-instrument"),
             fontSize: 12,
           }}
           formatter={(value, name, entry) => {
@@ -70,14 +73,15 @@ export default function BudgetBars({
         />
         <Bar dataKey="plotted" name="Spent" radius={[0, 4, 4, 0]} isAnimationActive={animate}>
           {plotted.map((row) => (
-            <Cell key={row.id} fill={barFill(row.status)} />
+            <Cell key={row.id} fill={budgetBarFill(row.status)} />
           ))}
+          <LabelList dataKey="pct" position="right" formatter={(label) => budgetBarLabel(Number(label ?? 0))} />
         </Bar>
       </BarChart>
       <ul className="sr-only">
         {data.map((row) => (
           <li key={row.id}>
-            {row.label}: {Math.round(row.pct * 100)} percent, status {row.status}
+            {row.label}: {Math.round(row.pct * 100)} por ciento, estado {row.status}
           </li>
         ))}
       </ul>

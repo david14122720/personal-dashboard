@@ -1,3 +1,4 @@
+import { t } from "@/lib/i18n";
 import { ledDotClass } from "@/lib/dashboard/transforms";
 
 /**
@@ -17,14 +18,14 @@ export interface TelemetryItem {
 
 export default function TelemetryStrip({ items }: { items: TelemetryItem[] }) {
   return (
-    <section aria-label="Telemetry strip" className="rounded-xl border border-hull bg-deck p-4">
+    <section aria-label={t("dashboard.telemetryStrip")} className="rounded-xl border border-hull bg-deck p-4">
       <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
         {items.map((item) => (
           <li key={item.id} className="flex min-w-0 items-start gap-2.5">
             {item.status ? (
               <span
                 role="img"
-                aria-label={`${item.label} status ${item.status}`}
+                aria-label={t("dashboard.telemetryStatus", { label: item.label, status: item.status })}
                 title={item.status}
                 className={`mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${ledDotClass(item.status)}`}
               />
