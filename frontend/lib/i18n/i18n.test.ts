@@ -30,6 +30,42 @@ describe("i18n foundation", () => {
   });
 });
 
+describe("p8 dashboard + notifications copy (PR1 RED)", () => {
+  it("resolves 9 widget titles and hints", () => {
+    expect(t("dashboard.monthIncome")).toBeTruthy();
+    expect(t("dashboard.monthExpense")).toBeTruthy();
+    expect(t("dashboard.monthSavings")).toBeTruthy();
+    expect(t("dashboard.upcomingPayments")).toBeTruthy();
+    expect(t("dashboard.pendingDebts")).toBeTruthy();
+    expect(t("dashboard.activeSubs")).toBeTruthy();
+    expect(t("dashboard.pendingTasks")).toBeTruthy();
+    expect(t("dashboard.upcomingEvents")).toBeTruthy();
+    expect(t("dashboard.goalProgress")).toBeTruthy();
+  });
+
+  it("resolves toggles, links and empties", () => {
+    expect(t("dashboard.widgetHide")).toBeTruthy();
+    expect(t("dashboard.widgetShow")).toBeTruthy();
+    expect(t("dashboard.viewInFinance")).toBeTruthy();
+    expect(t("dashboard.viewInProductivity")).toBeTruthy();
+    expect(t("dashboard.upcomingPaymentsEmpty")).toBeTruthy();
+  });
+
+  it("resolves bell, sections and empty states", () => {
+    expect(t("notifications.bell")).toBeTruthy();
+    expect(t("notifications.overdue")).toBeTruthy();
+    expect(t("notifications.upcomingCharges")).toBeTruthy();
+    expect(t("notifications.noOverdue")).toBe("Sin vencidas 🎉");
+    expect(t("notifications.noUpcoming")).toBe("Nada por vencer en 7 días");
+  });
+
+  it("interpolates {n} and {date}", () => {
+    expect(t("notifications.bellLabel", { n: 4 })).toContain("4");
+    expect(t("notifications.dueOn", { date: "12 sept" })).toContain("12 sept");
+    expect(t("notifications.amountDue", { amount: "$ 500", date: "12 sept" })).toBe("$ 500 · vence 12 sept");
+  });
+});
+
 describe("chartToken", () => {
   it("reads CSS custom properties via getComputedStyle", () => {
     document.documentElement.style.setProperty(
