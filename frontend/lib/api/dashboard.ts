@@ -6,8 +6,10 @@
  * and never inside UI components.
  */
 
-import useSWR, { type SWRConfiguration } from "swr";
-import { apiGet } from "@/lib/api/client";
+import useSWR, { useSWRConfig, type SWRConfiguration } from "swr";
+import { apiGet, apiPatch } from "@/lib/api/client";
+
+export type { NotificationItem } from "@/lib/dashboard/transforms";
 
 export interface NetWorthEntryWire {
   currency: string;
@@ -157,4 +159,90 @@ export function useAccounts() {
 
 export function usePreferences() {
   return useSWR<MeWire>("dashboard/me", () => apiGet<MeWire>("/me"), config);
+}
+
+/* -- p8-home-pagos PR2: wires + hooks SWR (montos string|number, coercion solo en transforms) -- */
+
+export interface DebtWire { id: string; name?: string | null; pending_amount?: string | number | null; status?: string | null; due_date?: string | null; }
+export interface SubscriptionWire { id: string; name: string; price?: string | number | null; is_active?: boolean | null; next_billing_on?: string | null; frequency?: string | null; }
+export interface TaskWire { id: string; title: string; status?: string | null; priority?: string | null; due_date?: string | null; goal_id?: string | null; }
+export interface EventWire { id: string; title: string; kind: string; starts_at: string; ends_at?: string | null; }
+export interface GoalWire { id: string; name?: string | null; progress?: number | null; status?: string | null; }
+export interface SavingsGoalWire { id: string; name?: string | null; goal?: string | number | null; saved?: string | number | null; target_amount?: string | number | null; saved_amount?: string | number | null; completed?: boolean | null; is_completed?: boolean | null; }
+
+export const debtsKey = (v: boolean): string | null => (v ? "dashboard/debts" : null);
+export const subscriptionsKey = (v: boolean): string | null => (v ? "dashboard/subscriptions" : null);
+export const tasksKey = (view: string | null, v: boolean): string | null => (!v ? null : view ? `dashboard/tasks?view=${view}` : "dashboard/tasks");
+export function eventsKey(from: string | null, to: string | null, v: boolean): string | null {
+  if (!v) return null;
+  const p = new URLSearchParams();
+  if (from) p.set("from", from);
+  if (to) p.set("to", to);
+  const qs = p.toString();
+  return qs ? `dashboard/events?${qs}` : "dashboard/events";
+}
+export const goalsKey = (v: boolean): string | null => (v ? "dashboard/goals" : null);
+export const savingsGoalsKey = (v: boolean): string | null => (v ? "dashboard/savings-goals" : null);
+
+export function resolveDashboardLayout(me: MeWire | null | undefined): DashboardLayout {
+  const w = me?.preferences?.dashboard_layout?.widgets;
+  if (!Array.isArray(w) || w.length === 0) return DEFAULT_DASHBOARD_LAYOUT;
+  return { widgets: w };
+}
+export const isWidgetVisible = (l: DashboardLayout | null | undefined, id: string): boolean =>
+  !l ? true : l.widgets.some((w) => w.id === id);
+export function buildNextLayout(cur: DashboardLayout, id: string, visible: boolean): DashboardLayout {
+  if (visible && !isWidgetVisible(cur, id)) {
+    const def = DEFAULT_DASHBOARD_LAYOUT.widgets.find((w) => w.id === id);
+    if (!def) return cur;
+    return { widgets: [...cur.widgets, def].sort((a, b) => a.order - b.order) };
+  }
+  if (!visible) return { widgets: cur.widgets.filter((w) => w.id !== id) };
+  return cur;
+}
+
+export function useDebts(v = true) {
+  const key = debtsKey(v);
+  return useSWR<DebtWire[]>(key, () => apiGet<DebtWire[]>("/debts"), config);
+}
+export function useSubscriptions(v = true) {
+  const key = subscriptionsKey(v);
+  return useSWR<SubscriptionWire[]>(key, () => apiGet<SubscriptionWire[]>("/subscriptions"), config);
+}
+export function useTasks(view: string | null, v = true) {
+  const key = tasksKey(view, v);
+  return useSWR<TaskWire[]>(key, () => apiGet<TaskWire[]>(view ? `/tasks?view=${view}` : "/tasks"), config);
+}
+export function useEvents(from: string | null, to: string | null, v = true) {
+  const key = eventsKey(from, to, v);
+  const p = new URLSearchParams();
+  if (from) p.set("from", from);
+  if (to) p.set("to", to);
+  const qs = p.toString();
+  return useSWR<EventWire[]>(key, () => apiGet<EventWire[]>(qs ? `/events?${qs}` : "/events"), config);
+}
+export function useGoals(v = true) {
+  const key = goalsKey(v);
+  return useSWR<GoalWire[]>(key, () => apiGet<GoalWire[]>("/goals"), config);
+}
+export function useSavingsGoals(v = true) {
+  const key = savingsGoalsKey(v);
+  return useSWR<SavingsGoalWire[]>(key, () => apiGet<SavingsGoalWire[]>("/savings-goals"), config);
+}
+/** Optimistic `PATCH /me/preferences { dashboard_layout }` with rollback on 422. */
+export function useUpdateLayout() {
+  const { mutate } = useSWRConfig();
+  return async (next: DashboardLayout): Promise<void> => {
+    const key = "dashboard/me";
+    await mutate(key,
+      async (cur: MeWire | undefined) => {
+        const patched = await apiPatch<PreferencesWire>("/me/preferences", { dashboard_layout: next } satisfies PatchPreferencesBody);
+        return { preferences: patched } as MeWire;
+      },
+      {
+        optimisticData: (cur: MeWire | undefined) => ({ preferences: { ...(cur?.preferences ?? { currency_code: "COP", locale: "es-CO" }), dashboard_layout: next } } as MeWire),
+        rollbackOnError: true,
+        revalidate: true,
+      });
+  };
 }

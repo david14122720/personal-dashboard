@@ -17,7 +17,10 @@ const loadedData = {
   prefs: q({ preferences: { currency_code: "COP", locale: "es-CO" } }),
 };
 
-vi.mock("@/lib/api/dashboard", () => ({
+vi.mock("@/lib/api/dashboard", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/api/dashboard")>();
+  return {
+    ...mod,
   useNetWorth: () => (globalThis as Record<string, unknown>).__DH__ === "error"
     ? { data: undefined, error: new Error("boom"), isLoading: false }
     : (globalThis as Record<string, unknown>).__DH__ === "loading"
@@ -29,7 +32,9 @@ vi.mock("@/lib/api/dashboard", () => ({
   useHabitsToday: () => (globalThis as Record<string, unknown>).__HABITS__ ?? loadedData.habits,
   useAccounts: () => loadedData.accounts,
   usePreferences: () => loadedData.prefs,
-}));
+  useUpdateLayout: () => async () => {},
+  };
+});
 
 describe("DashboardHome ES copy", () => {
   it("shows Spanish error with retry", () => {
