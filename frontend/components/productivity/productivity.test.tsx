@@ -178,20 +178,20 @@ function renderScreens() {
 describe("productivity screens", () => {
   it("renders habits with streak counts, LED status, and a CSS-grid heatmap", async () => {
     renderScreens();
-    const habits = await screen.findByRole("region", { name: "Habits" });
+    const habits = await screen.findByRole("region", { name: "Hábitos" });
     expect(within(habits).getByText("Morning Run")).toBeInTheDocument();
-    expect(within(habits).getByText("5 day streak · done")).toBeInTheDocument();
-    expect(within(habits).getByRole("img", { name: "Morning Run status done" })).toHaveClass("bg-flow");
+    expect(within(habits).getByText("racha de 5 días · hecho")).toBeInTheDocument();
+    expect(within(habits).getByRole("img", { name: "Morning Run, estado hecho" })).toHaveClass("bg-flow");
     expect(
       within(habits).getByRole("img", { name: "Morning Run recent completions" }),
     ).toBeInTheDocument();
-    expect(within(habits).getByText("0 day streak · pending")).toBeInTheDocument();
+    expect(within(habits).getByText("racha de 0 días · pendiente")).toBeInTheDocument();
   });
 
   it("logs a habit as done through POST with today's date", async () => {
     renderScreens();
-    const habits = await screen.findByRole("region", { name: "Habits" });
-    fireEvent.click(within(habits).getByRole("button", { name: "Log Read as done" }));
+    const habits = await screen.findByRole("region", { name: "Hábitos" });
+    fireEvent.click(within(habits).getByRole("button", { name: "Registrar Read como hecho" }));
     await waitFor(() => {
       expect(seenLogPosts).toHaveLength(1);
     });
@@ -201,13 +201,15 @@ describe("productivity screens", () => {
     expect(body.log_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
-  it("renders goals with auto-derived progress bars", async () => {
+  it("renders goals with auto-derived progress bars and Spanish status", async () => {
     renderScreens();
-    const section = await screen.findByRole("region", { name: "Goals" });
+    const section = await screen.findByRole("region", { name: "Metas" });
     expect(within(section).getByText("Run a marathon")).toBeInTheDocument();
-    const bar = within(section).getByRole("progressbar", { name: "Run a marathon progress" });
+    expect(within(section).getByText("activa")).toBeInTheDocument();
+    expect(within(section).getByText("completada")).toBeInTheDocument();
+    const bar = within(section).getByRole("progressbar", { name: "Progreso de Run a marathon" });
     expect(bar).toHaveAttribute("aria-valuenow", "50");
-    expect(within(section).getByRole("progressbar", { name: "Ship dashboard progress" })).toHaveAttribute(
+    expect(within(section).getByRole("progressbar", { name: "Progreso de Ship dashboard" })).toHaveAttribute(
       "aria-valuenow",
       "100",
     );
@@ -215,13 +217,14 @@ describe("productivity screens", () => {
 
   it("groups tasks by status and toggles completion through PATCH", async () => {
     renderScreens();
-    const section = await screen.findByRole("region", { name: "Tasks" });
+    const section = await screen.findByRole("region", { name: "Tareas" });
     expect(await within(section).findByText("Buy shoes")).toBeInTheDocument();
-    expect(within(section).getByText("pending · 1")).toBeInTheDocument();
-    expect(within(section).getByText("in progress · 1")).toBeInTheDocument();
-    expect(within(section).getByText("completed · 1")).toBeInTheDocument();
+    expect(within(section).getByText("alta · vence 2026-09-10")).toBeInTheDocument();
+    expect(within(section).getByText("pendiente · 1")).toBeInTheDocument();
+    expect(within(section).getByText("en curso · 1")).toBeInTheDocument();
+    expect(within(section).getByText("completada · 1")).toBeInTheDocument();
 
-    fireEvent.click(within(section).getByRole("button", { name: "Complete Buy shoes" }));
+    fireEvent.click(within(section).getByRole("button", { name: "Completar Buy shoes" }));
     await waitFor(() => {
       expect(seenTaskPatches).toHaveLength(1);
     });
@@ -229,24 +232,26 @@ describe("productivity screens", () => {
     expect((seenTaskPatches[0].body as { status: string }).status).toBe("completed");
   });
 
-  it("renders the upcoming events list compactly", async () => {
+  it("renders the upcoming events list compactly in Spanish", async () => {
     renderScreens();
-    const section = await screen.findByRole("region", { name: "Events" });
+    const section = await screen.findByRole("region", { name: "Eventos" });
     expect(await within(section).findByText("Dentist")).toBeInTheDocument();
     expect(within(section).getByText("Pay rent")).toBeInTheDocument();
-    expect(within(section).getByText(/appointment · clinic/)).toBeInTheDocument();
+    expect(within(section).getByText(/cita · clinic/)).toBeInTheDocument();
+    expect(within(section).getByText(/todo el día/)).toBeInTheDocument();
   });
 
   it("debounces the notes search before hitting the FTS endpoint", async () => {
     renderScreens();
-    const section = await screen.findByRole("region", { name: "Notes" });
+    const section = await screen.findByRole("region", { name: "Notas" });
     expect(await within(section).findByText("Shopping list")).toBeInTheDocument();
 
     seenNotesQueries.length = 0;
-    fireEvent.change(within(section).getByRole("searchbox", { name: "Search notes" }), {
+    fireEvent.change(within(section).getByRole("searchbox", { name: "Buscar notas" }), {
       target: { value: "project" },
     });
     expect(await within(section).findByText("Project plan")).toBeInTheDocument();
+    expect(within(section).getByText("fijada")).toBeInTheDocument();
     await waitFor(() => {
       expect(within(section).queryByText("Shopping list")).not.toBeInTheDocument();
     });
@@ -266,11 +271,11 @@ describe("productivity screens", () => {
         <ProductivityScreens />
       </SWRConfig>,
     );
-    expect(await screen.findByText("No habits yet")).toBeInTheDocument();
-    expect(await screen.findByText("No goals yet")).toBeInTheDocument();
-    expect(await screen.findByText("No tasks yet")).toBeInTheDocument();
-    expect(await screen.findByText("No upcoming events")).toBeInTheDocument();
-    expect(await screen.findByText("No notes found")).toBeInTheDocument();
+    expect(await screen.findByText("Sin hábitos aún")).toBeInTheDocument();
+    expect(await screen.findByText("Sin metas aún")).toBeInTheDocument();
+    expect(await screen.findByText("Sin tareas aún")).toBeInTheDocument();
+    expect(await screen.findByText("Sin próximos eventos")).toBeInTheDocument();
+    expect(await screen.findByText("Sin notas")).toBeInTheDocument();
   });
 
   it("shows an error alert with retry when productivity reads fail", async () => {
@@ -282,7 +287,7 @@ describe("productivity screens", () => {
         <ProductivityScreens />
       </SWRConfig>,
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Productivity sections failed to load");
-    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar las secciones de productividad");
+    expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
   });
 });

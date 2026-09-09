@@ -1,4 +1,5 @@
 import EmptyState from "@/components/ui/EmptyState";
+import { t } from "@/lib/i18n";
 import { formatMoney } from "@/lib/api/money";
 import { ledDotClass } from "@/lib/dashboard/transforms";
 import type {
@@ -39,7 +40,7 @@ function LedDot({ label, status }: { label: string; status: string }) {
   return (
     <span
       role="img"
-      aria-label={`${label} status ${status}`}
+      aria-label={t("finance.ledStatus", { label, status })}
       title={status}
       className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${ledDotClass(status)}`}
     />
@@ -63,7 +64,7 @@ function ProgressBar({ pct, status, label }: { pct: number; status: string; labe
 
 export function BudgetsList({ budgets, locale }: { budgets: BudgetView[]; locale: string }) {
   if (budgets.length === 0) {
-    return <EmptyState title="No budgets yet" hint="Create a budget to track spend against it." />;
+    return <EmptyState title={t("finance.noBudgets")} hint={t("finance.noBudgetsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-3">
@@ -77,15 +78,15 @@ export function BudgetsList({ budgets, locale }: { budgets: BudgetView[]; locale
                 <p className="font-mono text-sm tabular-nums">
                   {formatMoney(budget.spent, { locale, currency: budget.currency })}
                   <span className="text-instrument/50">
-                    {" "}· {formatMoney(budget.remaining, { locale, currency: budget.currency })} left
+                    {" "}· {t("finance.budgetRemaining", { amount: formatMoney(budget.remaining, { locale, currency: budget.currency }) })}
                   </span>
                 </p>
               </div>
               <div className="mt-2">
-                <ProgressBar pct={budget.pct} status={budget.status} label={`${budget.label} spend`} />
+                <ProgressBar pct={budget.pct} status={budget.status} label={t("finance.budgetSpendLabel", { label: budget.label })} />
               </div>
               <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
-                {Math.round(budget.pct * 100)}% spent · {budget.status}
+                {t("finance.spentDetail", { n: Math.round(budget.pct * 100), status: budget.status })}
               </p>
             </div>
           </div>
@@ -97,7 +98,7 @@ export function BudgetsList({ budgets, locale }: { budgets: BudgetView[]; locale
 
 export function AccountsList({ accounts, locale }: { accounts: AccountCardView[]; locale: string }) {
   if (accounts.length === 0) {
-    return <EmptyState title="No accounts yet" hint="Add an account to see balances here." />;
+    return <EmptyState title={t("finance.noAccounts")} hint={t("finance.noAccountsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-3">
@@ -120,14 +121,16 @@ export function AccountsList({ accounts, locale }: { accounts: AccountCardView[]
                   <ProgressBar
                     pct={Math.min(1, Math.max(0, (account.usagePct ?? 0) / 100))}
                     status={account.alertLevel ?? "ok"}
-                    label={`${account.name} card usage`}
+                    label={t("finance.cardUsageLabel", { name: account.name })}
                   />
                   <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
-                    {formatMoney(account.used, { locale, currency: account.currency })} used ·{" "}
-                    {formatMoney(account.available ?? 0, { locale, currency: account.currency })}{" "}
-                    available · {(account.usagePct ?? 0).toFixed(1)}%
+                    {t("finance.usedAvailable", {
+                      used: formatMoney(account.used, { locale, currency: account.currency }),
+                      available: formatMoney(account.available ?? 0, { locale, currency: account.currency }),
+                      pct: (account.usagePct ?? 0).toFixed(1),
+                    })}
                     {account.statementBalance !== null
-                      ? ` · statement ${formatMoney(account.statementBalance, { locale, currency: account.currency })}`
+                      ? ` · ${t("finance.statementBalance", { amount: formatMoney(account.statementBalance, { locale, currency: account.currency }) })}`
                       : ""}
                   </p>
                 </div>
@@ -176,7 +179,7 @@ export function CompactMoneyList({
 
 export function SavingsList({ goals, locale }: { goals: SavingsView[]; locale: string }) {
   if (goals.length === 0) {
-    return <EmptyState title="No savings goals yet" hint="Create a goal to track progress here." />;
+    return <EmptyState title={t("finance.noSavings")} hint={t("finance.noSavingsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-3">
@@ -187,7 +190,7 @@ export function SavingsList({ goals, locale }: { goals: SavingsView[]; locale: s
               {goal.title}
               {goal.completed ? (
                 <span className="ml-2 rounded-full border border-flow/40 px-2 py-0.5 font-display text-[11px] text-flow">
-                  completed
+                  {t("finance.completedBadge")}
                 </span>
               ) : null}
             </p>
@@ -200,11 +203,11 @@ export function SavingsList({ goals, locale }: { goals: SavingsView[]; locale: s
             <ProgressBar
               pct={goal.progress}
               status={goal.completed ? "ok" : goal.progress >= 0.7 ? "warn" : "ok"}
-              label={`${goal.title} progress`}
+              label={t("finance.goalProgressLabel", { title: goal.title })}
             />
           </div>
           <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
-            {Math.round(goal.progress * 100)}% saved
+            {t("finance.savedPct", { n: Math.round(goal.progress * 100) })}
           </p>
         </li>
       ))}

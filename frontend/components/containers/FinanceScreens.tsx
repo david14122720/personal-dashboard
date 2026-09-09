@@ -2,6 +2,7 @@
 
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
+import { t } from "@/lib/i18n";
 import TransactionsLedger from "@/components/finance/TransactionsLedger";
 import {
   AccountsList,
@@ -28,7 +29,7 @@ import {
 
 function AggregatesSkeleton() {
   return (
-    <div role="status" aria-label="Loading finance sections" aria-busy="true" className="grid grid-cols-12 gap-4">
+    <div role="status" aria-label={t("finance.loadingSections")} aria-busy="true" className="grid grid-cols-12 gap-4">
       {[0, 1, 2].map((n) => (
         <div
           key={n}
@@ -61,9 +62,9 @@ export default function FinanceScreens() {
 
   return (
     <div>
-      <h1 className="font-display text-2xl font-semibold tracking-wide">Finance</h1>
+      <h1 className="font-display text-2xl font-semibold tracking-wide">{t("finance.title")}</h1>
       <p className="mt-1 text-sm text-instrument/60">
-        Ledger, budgets, accounts, and recurring money in {currency}.
+        {t("finance.subtitle", { currency })}
       </p>
       <div className="mt-6 grid grid-cols-12 gap-4">
         <div className="col-span-12">
@@ -76,9 +77,9 @@ export default function FinanceScreens() {
         ) : failed.length > 0 ? (
           <div className="col-span-12">
             <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
-              <h2 className="font-display text-lg font-semibold">Finance sections failed to load</h2>
+              <h2 className="font-display text-lg font-semibold">{t("finance.loadFailed")}</h2>
               <p className="mt-1 text-sm text-instrument/70">
-                {failed.length} of {queries.length} sections failed. Check your connection and retry.
+                {t("finance.loadFailedDetail", { failed: failed.length, total: queries.length })}
               </p>
               <button
                 type="button"
@@ -91,53 +92,53 @@ export default function FinanceScreens() {
                 }
                 className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
               >
-                Retry
+                {t("common.retry")}
               </button>
             </div>
           </div>
         ) : (
           <>
             <SectionShell
-              title="Budgets"
-              hint="Spend against each active budget."
+              title={t("finance.budgets")}
+              hint={t("finance.budgetsHint")}
               span="col-span-12 xl:col-span-7"
             >
               <BudgetsList budgets={toBudgetViews(budgets.data)} locale={locale} />
             </SectionShell>
             <SectionShell
-              title="Accounts"
-              hint="Balances and credit-card usage."
+              title={t("finance.accounts")}
+              hint={t("finance.accountsHint")}
               span="col-span-12 xl:col-span-5"
             >
               <AccountsList accounts={toAccountCards(accounts.data)} locale={locale} />
             </SectionShell>
             <SectionShell
-              title="Subscriptions"
-              hint="Active recurring charges."
+              title={t("finance.subscriptions")}
+              hint={t("finance.subscriptionsHint")}
               span="col-span-12 md:col-span-6 xl:col-span-4"
             >
               <CompactMoneyList
                 rows={toSubscriptionRows(subscriptions.data)}
                 locale={locale}
-                emptyTitle="No active subscriptions"
-                emptyHint="Recurring charges will appear here."
+                emptyTitle={t("finance.noSubscriptions")}
+                emptyHint={t("finance.noSubscriptionsHint")}
               />
             </SectionShell>
             <SectionShell
-              title="Debts"
-              hint="Remaining balances."
+              title={t("finance.debts")}
+              hint={t("finance.debtsHint")}
               span="col-span-12 md:col-span-6 xl:col-span-4"
             >
               <CompactMoneyList
                 rows={toDebtRows(debts.data)}
                 locale={locale}
-                emptyTitle="No debts"
-                emptyHint="Owed balances will appear here."
+                emptyTitle={t("finance.noDebts")}
+                emptyHint={t("finance.noDebtsHint")}
               />
             </SectionShell>
             <SectionShell
-              title="Savings"
-              hint="Goal progress."
+              title={t("finance.savings")}
+              hint={t("finance.savingsHint")}
               span="col-span-12 xl:col-span-4"
             >
               <SavingsList goals={toSavingsViews(savings.data)} locale={locale} />

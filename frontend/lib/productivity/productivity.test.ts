@@ -57,9 +57,9 @@ describe("productivity transforms", () => {
     expect(goalProgressFraction(null)).toBe(0);
   });
 
-  it("labels event times compactly", () => {
-    expect(eventWhenLabel("2026-09-07T10:00:00Z", false)).toContain("Sep 7");
-    expect(eventWhenLabel("2026-09-07T10:00:00Z", true)).toContain("all day");
+  it("labels event times compactly in Spanish", () => {
+    expect(eventWhenLabel("2026-09-07T10:00:00Z", false)).toContain("sept");
+    expect(eventWhenLabel("2026-09-07T10:00:00Z", true)).toContain("todo el día");
     expect(eventWhenLabel("not-a-date", false)).toBe("not-a-date");
   });
 

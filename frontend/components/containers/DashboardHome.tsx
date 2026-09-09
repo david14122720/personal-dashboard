@@ -17,6 +17,7 @@ import {
   useSpendByCategory,
 } from "@/lib/api/dashboard";
 import { formatMoney, toNumber } from "@/lib/api/money";
+import { t } from "@/lib/i18n";
 import {
   currentMonthKey,
   longestStreak,
@@ -40,17 +41,17 @@ import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 
 const FlowChart = dynamic(() => import("@/components/ui/FlowChart"), {
   ssr: false,
-  loading: () => <ChartSkeleton label="Loading flow chart" />,
+  loading: () => <ChartSkeleton label={t("dashboard.loadingFlow")} />,
 });
 
 const CategoryDonut = dynamic(() => import("@/components/ui/CategoryDonut"), {
   ssr: false,
-  loading: () => <ChartSkeleton label="Loading category chart" />,
+  loading: () => <ChartSkeleton label={t("dashboard.loadingCategory")} />,
 });
 
 const BudgetBars = dynamic(() => import("@/components/ui/BudgetBars"), {
   ssr: false,
-  loading: () => <ChartSkeleton label="Loading budget bars" />,
+  loading: () => <ChartSkeleton label={t("dashboard.loadingBudgets")} />,
 });
 
 function ChartSkeleton({ label }: { label: string }) {
@@ -104,8 +105,8 @@ export default function DashboardHome() {
 
   if (isLoading) {
     return (
-      <div role="status" aria-label="Loading dashboard" aria-busy="true">
-        <h1 className="font-display text-2xl font-semibold tracking-wide">Overview</h1>
+      <div role="status" aria-label={t("dashboard.loadingDashboard")} aria-busy="true">
+        <h1 className="font-display text-2xl font-semibold tracking-wide">{t("dashboard.overview")}</h1>
         <div className="mt-6 grid grid-cols-12 gap-4">
           {[0, 1, 2].map((n) => (
             <div
@@ -124,16 +125,16 @@ export default function DashboardHome() {
   if (failed.length > 0) {
     return (
       <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
-        <h1 className="font-display text-lg font-semibold">Dashboard failed to load</h1>
+        <h1 className="font-display text-lg font-semibold">{t("dashboard.loadFailed")}</h1>
         <p className="mt-1 text-sm text-instrument/70">
-          {failed.length} of {queries.length} sections failed. Check your connection and retry.
+          {t("dashboard.loadFailedDetail", { failed: failed.length, total: queries.length })}
         </p>
         <button
           type="button"
           onClick={() => void mutate((key) => typeof key === "string" && key.startsWith("dashboard/"))}
           className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
         >
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     );
@@ -166,30 +167,30 @@ export default function DashboardHome() {
   const streak = longestStreak(habits.data);
 
   const strip: TelemetryItem[] = [
-    { id: "net-worth", label: "Net worth", display: fmt(netWorthValue) },
+    { id: "net-worth", label: t("dashboard.netWorth"), display: fmt(netWorthValue) },
     {
       id: "month-balance",
-      label: "Month balance",
+      label: t("dashboard.monthBalance"),
       display: fmt(balance),
       status: balance >= 0 ? "ok" : "warn",
     },
     {
       id: "savings-rate",
-      label: "Savings rate",
+      label: t("dashboard.savingsRate"),
       display: rate === null ? "—" : `${(rate * 100).toFixed(1)}%`,
       status: rate === null ? null : rate >= 0.2 ? "ok" : rate >= 0 ? "warn" : "over",
     },
-    { id: "streak", label: "Longest streak", display: `${streak}d` },
+    { id: "streak", label: t("dashboard.longestStreak"), display: t("dashboard.streakDays", { n: streak }) },
     {
       id: "budgets",
-      label: "Budgets",
-      display: budgetLed === "none" ? "No budgets" : budgetLed === "ok" ? "On track" : budgetLed,
+      label: t("dashboard.budgets"),
+      display: budgetLed === "none" ? t("dashboard.noBudgets") : budgetLed === "ok" ? t("dashboard.onTrack") : budgetLed,
       status: budgetLed === "none" ? null : budgetLed,
     },
     {
       id: "cards",
-      label: "Cards",
-      display: cardLed === "none" ? "No cards" : cardLed === "ok" ? "Healthy" : cardLed,
+      label: t("dashboard.cards"),
+      display: cardLed === "none" ? t("dashboard.noCards") : cardLed === "ok" ? t("dashboard.healthy") : cardLed,
       status: cardLed === "none" ? null : cardLed,
     },
   ];
@@ -199,20 +200,20 @@ export default function DashboardHome() {
 
   return (
     <div>
-      <h1 className="font-display text-2xl font-semibold tracking-wide">Overview</h1>
+      <h1 className="font-display text-2xl font-semibold tracking-wide">{t("dashboard.overview")}</h1>
       <p className="mt-1 text-sm text-instrument/60">
-        Live telemetry from your accounts, budgets, and habits.
+        {t("dashboard.overviewSubtitle")}
       </p>
       <div className="mt-6 grid grid-cols-12 gap-4">
         <div className="col-span-12">
           <TelemetryStrip items={strip} />
         </div>
         <div className="col-span-12 md:col-span-6 xl:col-span-4">
-          <MetricCard label="Net worth" display={fmt(netWorthValue)} hint={worthEntry?.currency} />
+          <MetricCard label={t("dashboard.netWorth")} display={fmt(netWorthValue)} hint={worthEntry?.currency} />
         </div>
         <div className="col-span-12 md:col-span-6 xl:col-span-4">
           <MetricCard
-            label="Month balance"
+            label={t("dashboard.monthBalance")}
             display={fmt(balance)}
             hint={monthKey}
             status={balance >= 0 ? "ok" : "warn"}
@@ -220,40 +221,40 @@ export default function DashboardHome() {
         </div>
         <div className="col-span-12 md:col-span-6 xl:col-span-4">
           <MetricCard
-            label="Pending habits"
+            label={t("dashboard.pendingHabits")}
             display={`${pendingHabits.length}`}
-            hint={pendingHabits.length === 0 ? "All clear for today" : "Awaiting check-in"}
+            hint={pendingHabits.length === 0 ? t("dashboard.allClear") : t("dashboard.awaitingCheckin")}
             status={pendingHabits.length === 0 ? "ok" : "warn"}
           />
         </div>
         <WidgetShell
-          title="Monthly flow"
-          hint="Income versus expense, last 12 months."
+          title={t("dashboard.monthlyFlow")}
+          hint={t("dashboard.monthlyFlowHint")}
           span="col-span-12 xl:col-span-7"
         >
           <FlowChart data={points} animate={!reducedMotion} />
         </WidgetShell>
         <WidgetShell
-          title="Spend by category"
-          hint="Current month expenses."
+          title={t("dashboard.spendByCategory")}
+          hint={t("dashboard.spendByCategoryHint")}
           span="col-span-12 xl:col-span-5"
         >
           <CategoryDonut data={slices} animate={!reducedMotion} />
         </WidgetShell>
         <WidgetShell
-          title="Budgets"
-          hint="Spend fraction per active budget."
+          title={t("dashboard.budgets")}
+          hint={t("dashboard.budgetsHint")}
           span="col-span-12 xl:col-span-7"
         >
           <BudgetBars data={budgetRows} animate={!reducedMotion} />
         </WidgetShell>
         <WidgetShell
-          title="Today"
-          hint="Habits awaiting check-in."
+          title={t("dashboard.today")}
+          hint={t("dashboard.todayHint")}
           span="col-span-12 xl:col-span-5"
         >
           {pendingHabits.length === 0 ? (
-            <EmptyState title="Nothing pending" hint="Every habit is checked in for today." />
+            <EmptyState title={t("dashboard.nothingPending")} hint={t("dashboard.allCheckedIn")} />
           ) : (
             <ul className="flex flex-col gap-2">
               {pendingHabits.map((habit) => (
@@ -263,7 +264,7 @@ export default function DashboardHome() {
                 >
                   <span className="truncate text-sm">{habit.name}</span>
                   <span className="shrink-0 font-mono text-xs tabular-nums text-instrument/60">
-                    {habit.current_streak}d streak
+                    {t("dashboard.habitStreak", { n: habit.current_streak })}
                   </span>
                 </li>
               ))}

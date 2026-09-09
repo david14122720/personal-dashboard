@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { logout } from "@/lib/api/client";
+import { t } from "@/lib/i18n";
 
 const NAV_ITEMS = [
-  { href: "/dashboard/", label: "Overview" },
-  { href: "/dashboard/finance/", label: "Finance" },
-  { href: "/dashboard/wealth/", label: "Wealth" },
-  { href: "/dashboard/productivity/", label: "Productivity" },
+  { href: "/dashboard/", labelKey: "nav.overview" },
+  { href: "/dashboard/finance/", labelKey: "nav.finance" },
+  { href: "/dashboard/productivity/", labelKey: "nav.productivity" },
 ] as const;
 
 function isActive(pathname: string, href: string): boolean {
@@ -43,7 +43,7 @@ function NavLinks({ orientation }: { orientation: "rail" | "tabs" }) {
                   }`
             }
           >
-            {item.label}
+            {t(item.labelKey)}
           </Link>
         );
       })}
@@ -72,7 +72,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               onClick={logout}
               className="w-full rounded-md border border-hull px-3 py-2 font-display text-sm text-instrument/70 transition-colors hover:border-alert hover:text-alert"
             >
-              Sign out
+              {t("nav.signOut")}
             </button>
           </div>
         </aside>

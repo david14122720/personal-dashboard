@@ -89,13 +89,13 @@ export function goalProgressFraction(progress: number | null | undefined): numbe
   return Math.min(1, Math.max(0, (progress as number) / 100));
 }
 
-/** Compact label for an event start (`Mar 4, 10:30` or `Mar 4` all-day). */
+/** Compact label for an event start (`7 sept, 10:30` or `7 sept` all-day). Spanish only. */
 export function eventWhenLabel(startsAt: string, allDay: boolean): string {
   const date = new Date(startsAt);
   if (Number.isNaN(date.getTime())) return startsAt;
-  const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  if (allDay) return `${day} · all day`;
-  const time = date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const day = date.toLocaleDateString("es", { month: "short", day: "numeric" });
+  if (allDay) return `${day} · todo el día`;
+  const time = date.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" });
   return `${day}, ${time}`;
 }
 

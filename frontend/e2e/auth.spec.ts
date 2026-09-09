@@ -8,12 +8,12 @@ test("login with valid credentials redirects to the dashboard", async ({ page })
   test.skip(!email || !password, "Set E2E_USER and E2E_PASSWORD to run the login smoke.");
 
   await page.goto("/login/");
-  await page.getByLabel("Email").fill(email as string);
-  await page.getByLabel("Password").fill(password as string);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByLabel("Correo electrónico").fill(email as string);
+  await page.getByLabel("Contraseña").fill(password as string);
+  await page.getByRole("button", { name: "Iniciar sesión" }).click();
 
   await expect(page).toHaveURL(/\/dashboard\/?$/);
-  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
 
   const token = await page.evaluate(() => localStorage.getItem("dashboard-token"));
   expect(token, "bearer token persisted in localStorage").toBeTruthy();

@@ -7,7 +7,7 @@ test("dashboard home renders telemetry strip and charts container", async ({ pag
   await loginViaApi(page);
 
   await page.goto("/dashboard/");
-  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
-  await expect(page.getByLabel("Telemetry strip", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Monthly flow", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
+  await expect(page.getByText("Patrimonio neto").first()).toBeVisible();
+  await expect(page.getByLabel("Flujo mensual", { exact: true })).toBeVisible();
 });

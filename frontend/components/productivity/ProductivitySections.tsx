@@ -2,6 +2,7 @@
 
 import EmptyState from "@/components/ui/EmptyState";
 import HabitsHeatmap from "@/components/ui/HabitsHeatmap";
+import { t } from "@/lib/i18n";
 import type { EventWire, GoalWire, HabitTodayWire, NoteWire, TaskWire } from "@/lib/api/productivity";
 import { ledDotClass } from "@/lib/dashboard/transforms";
 import {
@@ -54,6 +55,46 @@ function ProgressBar({ pct, status, label }: { pct: number; status: string; labe
   );
 }
 
+function habitStatusText(status: string): string {
+  if (status === "done") return t("productivity.habitStatusDone");
+  if (status === "missed") return t("productivity.habitStatusMissed");
+  if (status === "skipped") return t("productivity.habitStatusSkipped");
+  return t("productivity.habitStatusPending");
+}
+
+function taskStatusText(status: string): string {
+  if (status === "in_progress") return t("productivity.taskStatusInProgress");
+  if (status === "completed") return t("productivity.taskStatusCompleted");
+  if (status === "cancelled") return t("productivity.taskStatusCancelled");
+  if (status === "pending") return t("productivity.taskStatusPending");
+  return status;
+}
+
+function taskPriorityText(priority: string): string {
+  if (priority === "high") return t("productivity.taskPriorityHigh");
+  if (priority === "medium") return t("productivity.taskPriorityMedium");
+  if (priority === "low") return t("productivity.taskPriorityLow");
+  return priority;
+}
+
+function eventKindText(kind: string): string {
+  if (kind === "appointment") return t("productivity.eventKindAppointment");
+  if (kind === "reminder") return t("productivity.eventKindReminder");
+  if (kind === "payment_due") return t("productivity.eventKindPaymentDue");
+  if (kind === "goal_milestone") return t("productivity.eventKindGoalMilestone");
+  if (kind === "habit_reminder") return t("productivity.eventKindHabitReminder");
+  if (kind === "event") return t("productivity.eventKindEvent");
+  return kind;
+}
+
+function goalStatusText(status: string): string {
+  if (status === "active") return t("productivity.goalStatusActive");
+  if (status === "completed") return t("productivity.goalStatusCompleted");
+  if (status === "paused") return t("productivity.goalStatusPaused");
+  if (status === "cancelled") return t("productivity.goalStatusCancelled");
+  return status;
+}
+
 export function HabitsList({
   habits,
   loggingId,
@@ -64,7 +105,7 @@ export function HabitsList({
   onLog: (habitId: string, status: "done" | "missed" | "skipped") => void;
 }) {
   if (habits.length === 0) {
-    return <EmptyState title="No habits yet" hint="Create a habit to track streaks here." />;
+    return <EmptyState title={t("productivity.noHabits")} hint={t("productivity.noHabitsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-3">
@@ -77,8 +118,11 @@ export function HabitsList({
               {led ? (
                 <span
                   role="img"
-                  aria-label={`${habit.name} status ${habit.today_status}`}
-                  title={habit.today_status}
+                  aria-label={t("productivity.habitStatusLabel", {
+                    name: habit.name,
+                    status: habitStatusText(habit.today_status),
+                  })}
+                  title={habitStatusText(habit.today_status)}
                   className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${ledDotClass(led)}`}
                 />
               ) : null}
@@ -86,7 +130,10 @@ export function HabitsList({
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <p className="truncate text-sm font-medium">{habit.name}</p>
                   <p className="font-mono text-xs tabular-nums text-instrument/60">
-                    {habit.current_streak} day streak · {habit.today_status}
+                    {t("productivity.streakDetail", {
+                      n: habit.current_streak,
+                      status: habitStatusText(habit.today_status),
+                    })}
                   </p>
                 </div>
                 <div className="mt-2">
@@ -98,11 +145,14 @@ export function HabitsList({
                       key={status}
                       type="button"
                       disabled={isLogging}
-                      aria-label={`Log ${habit.name} as ${status}`}
+                      aria-label={t("productivity.logHabitAs", {
+                        name: habit.name,
+                        status: habitStatusText(status),
+                      })}
                       onClick={() => onLog(habit.habit_id, status)}
                       className="rounded-md border border-hull px-2.5 py-1 font-display text-xs capitalize transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
                     >
-                      {status}
+                      {habitStatusText(status)}
                     </button>
                   ))}
                 </div>
@@ -124,7 +174,7 @@ function goalLed(status: string): string {
 
 export function GoalsList({ goals }: { goals: GoalWire[] }) {
   if (goals.length === 0) {
-    return <EmptyState title="No goals yet" hint="Create a goal to track progress here." />;
+    return <EmptyState title={t("productivity.noGoals")} hint={t("productivity.noGoalsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-3">
@@ -135,7 +185,7 @@ export function GoalsList({ goals }: { goals: GoalWire[] }) {
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="truncate text-sm font-medium">
                 {goal.name}
-                <span className="ml-2 text-xs font-normal text-instrument/50">{goal.status}</span>
+                <span className="ml-2 text-xs font-normal text-instrument/50">{goalStatusText(goal.status)}</span>
               </p>
               <p className="font-mono text-xs tabular-nums text-instrument/60">
                 {Math.round(fraction * 100)}% · {goal.area}
@@ -145,10 +195,10 @@ export function GoalsList({ goals }: { goals: GoalWire[] }) {
               <p className="mt-0.5 truncate text-xs text-instrument/60">{goal.description}</p>
             ) : null}
             <div className="mt-2">
-              <ProgressBar pct={fraction} status={goalLed(goal.status)} label={`${goal.name} progress`} />
+              <ProgressBar pct={fraction} status={goalLed(goal.status)} label={t("productivity.goalProgressOf", { name: goal.name })} />
             </div>
             {goal.due_date ? (
-              <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">due {goal.due_date}</p>
+              <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">{t("productivity.dueOn", { date: goal.due_date })}</p>
             ) : null}
           </li>
         );
@@ -167,7 +217,7 @@ export function TasksList({
   onToggle: (task: TaskWire) => void;
 }) {
   if (tasks.length === 0) {
-    return <EmptyState title="No tasks yet" hint="Create a task to see it grouped here." />;
+    return <EmptyState title={t("productivity.noTasks")} hint={t("productivity.noTasksHint")} />;
   }
   const groups = groupTasksByStatus(tasks);
   return (
@@ -175,7 +225,7 @@ export function TasksList({
       {groups.map((group) => (
         <div key={group.status}>
           <h3 className="font-display text-xs font-semibold uppercase tracking-widest text-instrument/50">
-            {group.status.replace("_", " ")} · {group.items.length}
+            {t("productivity.taskGroupCount", { status: taskStatusText(group.status), n: group.items.length })}
           </h3>
           <ul className="mt-2 flex flex-col gap-2">
             {group.items.map((task) => {
@@ -188,19 +238,19 @@ export function TasksList({
                   <div className="min-w-0">
                     <p className="truncate text-sm">{task.title}</p>
                     <p className="truncate text-xs text-instrument/60">
-                      {task.priority}
-                      {task.due_date ? ` · due ${task.due_date}` : ""}
+                      {taskPriorityText(task.priority)}
+                      {task.due_date ? ` · ${t("productivity.dueOn", { date: task.due_date })}` : ""}
                     </p>
                   </div>
                   <button
                     type="button"
                     disabled={togglingId === task.id}
-                    aria-label={done ? `Reopen ${task.title}` : `Complete ${task.title}`}
+                    aria-label={done ? t("productivity.reopenTask", { title: task.title }) : t("productivity.completeTask", { title: task.title })}
                     aria-pressed={done}
                     onClick={() => onToggle(task)}
                     className="shrink-0 rounded-md border border-hull px-2.5 py-1 font-display text-xs transition-colors hover:border-flow hover:text-flow disabled:opacity-50"
                   >
-                    {done ? "Reopen" : "Done"}
+                    {done ? t("productivity.markReopen") : t("productivity.markDone")}
                   </button>
                 </li>
               );
@@ -214,7 +264,7 @@ export function TasksList({
 
 export function EventsList({ events }: { events: EventWire[] }) {
   if (events.length === 0) {
-    return <EmptyState title="No upcoming events" hint="Scheduled events will appear here." />;
+    return <EmptyState title={t("productivity.noEvents")} hint={t("productivity.noEventsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-2">
@@ -226,7 +276,7 @@ export function EventsList({ events }: { events: EventWire[] }) {
           <div className="min-w-0">
             <p className="truncate text-sm">{event.title}</p>
             <p className="truncate text-xs text-instrument/60">
-              {event.kind}
+              {eventKindText(event.kind)}
               {event.location ? ` · ${event.location}` : ""}
             </p>
           </div>
@@ -242,12 +292,12 @@ export function EventsList({ events }: { events: EventWire[] }) {
 export function NotesSearchBox({ query, onQuery }: { query: string; onQuery: (value: string) => void }) {
   return (
     <label className="block">
-      <span className="sr-only">Search notes</span>
+      <span className="sr-only">{t("productivity.searchNotes")}</span>
       <input
         type="search"
         role="searchbox"
-        aria-label="Search notes"
-        placeholder="Search notes…"
+        aria-label={t("productivity.searchNotes")}
+        placeholder={t("productivity.searchNotes")}
         value={query}
         onChange={(event) => onQuery(event.target.value)}
         className="w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm placeholder:text-instrument/40 focus:border-signal focus:outline-none"
@@ -258,7 +308,7 @@ export function NotesSearchBox({ query, onQuery }: { query: string; onQuery: (va
 
 export function NotesResults({ notes }: { notes: NoteWire[] }) {
   if (notes.length === 0) {
-    return <EmptyState title="No notes found" hint="Try a different search term." />;
+    return <EmptyState title={t("productivity.noNotes")} hint={t("productivity.noNotesHint")} />;
   }
   return (
     <ul className="mt-3 flex flex-col gap-2">
@@ -268,7 +318,7 @@ export function NotesResults({ notes }: { notes: NoteWire[] }) {
             {note.title}
             {note.is_pinned ? (
               <span className="ml-2 rounded-full border border-signal/40 px-2 py-0.5 font-display text-[11px] text-signal">
-                pinned
+                {t("productivity.pinnedBadge")}
               </span>
             ) : null}
           </p>

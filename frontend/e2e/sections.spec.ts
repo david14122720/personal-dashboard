@@ -7,12 +7,12 @@ test("finance page renders its heading", async ({ page }) => {
   await loginViaApi(page);
 
   await page.goto("/dashboard/finance/");
-  await expect(page.getByRole("heading", { name: "Finance" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Finanzas" })).toBeVisible();
 });
 
 test("productivity page renders its heading", async ({ page }) => {
   await loginViaApi(page);
 
   await page.goto("/dashboard/productivity/");
-  await expect(page.getByRole("heading", { name: "Productivity" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Productividad" })).toBeVisible();
 });

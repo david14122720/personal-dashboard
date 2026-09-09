@@ -9,6 +9,7 @@ import {
   type TransactionWire,
 } from "@/lib/api/finance";
 import { formatMoney } from "@/lib/api/money";
+import { t } from "@/lib/i18n";
 import { ledgerKey, toLedgerRows, type LedgerRow } from "@/lib/finance/finance";
 
 /**
@@ -61,7 +62,7 @@ function LedgerFilters({
 }) {
   return (
     <form
-      aria-label="Transaction filters"
+      aria-label={t("finance.ledgerFilters")}
       className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6"
       onSubmit={(event) => {
         event.preventDefault();
@@ -69,42 +70,42 @@ function LedgerFilters({
       }}
     >
       <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        From
+        {t("finance.from")}
         <input
           type="date"
-          aria-label="From date"
+          aria-label={t("finance.from")}
           className={inputClass}
           value={draft.from}
           onChange={(event) => onChange({ ...draft, from: event.target.value })}
         />
       </label>
       <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        To
+        {t("finance.to")}
         <input
           type="date"
-          aria-label="To date"
+          aria-label={t("finance.to")}
           className={inputClass}
           value={draft.to}
           onChange={(event) => onChange({ ...draft, to: event.target.value })}
         />
       </label>
       <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        Type
+        {t("finance.txType")}
         <select
-          aria-label="Transaction type"
+          aria-label={t("finance.txType")}
           className={inputClass}
           value={draft.type}
           onChange={(event) => onChange({ ...draft, type: event.target.value })}
         >
-          <option value="">All types</option>
-          <option value="income">Income</option>
-          <option value="expense">Expense</option>
+          <option value="">{t("finance.allTypes")}</option>
+          <option value="income">{t("finance.income")}</option>
+          <option value="expense">{t("finance.expense")}</option>
         </select>
       </label>
       <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        Account ID
+        {t("finance.accountId")}
         <input
-          aria-label="Account ID"
+          aria-label={t("finance.accountId")}
           placeholder="uuid"
           className={inputClass}
           value={draft.account_id}
@@ -112,9 +113,9 @@ function LedgerFilters({
         />
       </label>
       <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        Category ID
+        {t("finance.categoryId")}
         <input
-          aria-label="Category ID"
+          aria-label={t("finance.categoryId")}
           placeholder="uuid"
           className={inputClass}
           value={draft.category_id}
@@ -126,14 +127,14 @@ function LedgerFilters({
           type="submit"
           className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
         >
-          Apply
+          {t("finance.apply")}
         </button>
         <button
           type="button"
           onClick={onClear}
           className="rounded-md border border-transparent px-3 py-2 text-sm text-instrument/60 transition-colors hover:text-instrument"
         >
-          Clear
+          {t("finance.clear")}
         </button>
       </div>
     </form>
@@ -146,10 +147,10 @@ function LedgerTable({ rows, locale }: { rows: LedgerRow[]; locale: string }) {
       <table className="w-full min-w-xl border-collapse text-sm">
         <thead>
           <tr className="border-b border-hull text-left font-display text-[11px] uppercase tracking-widest text-instrument/60">
-            <th scope="col" className="px-3 py-2 font-medium">Date</th>
-            <th scope="col" className="px-3 py-2 font-medium">Description</th>
-            <th scope="col" className="px-3 py-2 font-medium">Type</th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">Amount</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("finance.date")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("finance.description")}</th>
+            <th scope="col" className="px-3 py-2 font-medium">{t("finance.txType")}</th>
+            <th scope="col" className="px-3 py-2 text-right font-medium">{t("finance.amount")}</th>
           </tr>
         </thead>
         <tbody>
@@ -183,7 +184,7 @@ function LedgerTable({ rows, locale }: { rows: LedgerRow[]; locale: string }) {
 
 function LedgerSkeleton() {
   return (
-    <div role="status" aria-label="Loading transactions" aria-busy="true" className="flex flex-col gap-2">
+    <div role="status" aria-label={t("finance.loadingTransactions")} aria-busy="true" className="flex flex-col gap-2">
       {[0, 1, 2].map((n) => (
         <div key={n} className="h-10 animate-pulse rounded-md bg-hull/60" />
       ))}
@@ -212,7 +213,7 @@ function LedgerPages({ filters, locale }: { filters: TransactionFilters; locale:
       setExtraItems((prev) => [...prev, ...page.items]);
       setTailCursor(page.next_cursor);
     } catch {
-      setLoadError("Could not load more transactions. Try again.");
+      setLoadError(t("finance.loadMoreFailed"));
     } finally {
       setLoadingMore(false);
     }
@@ -225,14 +226,14 @@ function LedgerPages({ filters, locale }: { filters: TransactionFilters; locale:
   if (first.error || !firstPage) {
     return (
       <div role="alert" className="rounded-lg border border-alert/50 bg-alert/10 p-4">
-        <p className="font-display text-sm font-semibold">Transactions failed to load</p>
-        <p className="mt-1 text-xs text-instrument/70">Check your connection and retry.</p>
+        <p className="font-display text-sm font-semibold">{t("finance.ledgerLoadFailed")}</p>
+        <p className="mt-1 text-xs text-instrument/70">{t("finance.ledgerLoadFailedHint")}</p>
         <button
           type="button"
           onClick={() => void first.mutate()}
           className="mt-3 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
         >
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     );
@@ -241,8 +242,8 @@ function LedgerPages({ filters, locale }: { filters: TransactionFilters; locale:
   if (items.length === 0) {
     return (
       <EmptyState
-        title="No transactions yet"
-        hint="Adjust the filters or record your first entry."
+        title={t("finance.noTransactions")}
+        hint={t("finance.noTransactionsHint")}
       />
     );
   }
@@ -250,7 +251,7 @@ function LedgerPages({ filters, locale }: { filters: TransactionFilters; locale:
   return (
     <div>
       <p aria-live="polite" className="mb-3 text-xs text-instrument/60">
-        Showing {items.length} of {total} transactions
+        {t("finance.showingCount", { shown: items.length, total })}
       </p>
       <LedgerTable rows={toLedgerRows(items)} locale={locale} />
       {loadError ? (
@@ -263,7 +264,7 @@ function LedgerPages({ filters, locale }: { filters: TransactionFilters; locale:
           disabled={loadingMore}
           className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
         >
-          {loadingMore ? "Loading…" : "Load more"}
+          {loadingMore ? t("common.loading") : t("finance.loadMore")}
         </button>
       ) : null}
     </div>
@@ -275,9 +276,9 @@ export default function TransactionsLedger({ locale }: { locale: string }) {
   const [applied, setApplied] = useState<TransactionFilters>({ limit: 50 });
 
   return (
-    <section aria-label="Transactions ledger" className="rounded-xl border border-hull bg-hull/40 p-5">
-      <h2 className="font-display text-base font-semibold tracking-wide">Transactions</h2>
-      <p className="mt-1 text-sm text-instrument/60">Newest first. Pages stay stable as new entries arrive.</p>
+    <section aria-label={t("finance.ledgerRegion")} className="rounded-xl border border-hull bg-hull/40 p-5">
+      <h2 className="font-display text-base font-semibold tracking-wide">{t("finance.ledgerTitle")}</h2>
+      <p className="mt-1 text-sm text-instrument/60">{t("finance.ledgerSubtitle")}</p>
       <div className="mt-4">
         <LedgerFilters
           draft={draft}

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
+import { t } from "@/lib/i18n";
 import {
   EventsList,
   GoalsList,
@@ -36,7 +37,7 @@ import { toISODate } from "@/lib/dashboard/transforms";
 
 function SectionsSkeleton() {
   return (
-    <div role="status" aria-label="Loading productivity sections" aria-busy="true" className="grid grid-cols-12 gap-4">
+    <div role="status" aria-label={t("productivity.loadingSections")} aria-busy="true" className="grid grid-cols-12 gap-4">
       {[0, 1, 2].map((n) => (
         <div
           key={n}
@@ -105,8 +106,8 @@ export default function ProductivityScreens() {
 
   return (
     <div>
-      <h1 className="font-display text-2xl font-semibold tracking-wide">Productivity</h1>
-      <p className="mt-1 text-sm text-instrument/60">Habits, goals, tasks, events, and notes.</p>
+      <h1 className="font-display text-2xl font-semibold tracking-wide">{t("productivity.title")}</h1>
+      <p className="mt-1 text-sm text-instrument/60">{t("productivity.subtitle")}</p>
       <div className="mt-6 grid grid-cols-12 gap-4">
         {isLoading ? (
           <div className="col-span-12">
@@ -115,46 +116,46 @@ export default function ProductivityScreens() {
         ) : failed.length > 0 ? (
           <div className="col-span-12">
             <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
-              <h2 className="font-display text-lg font-semibold">Productivity sections failed to load</h2>
+              <h2 className="font-display text-lg font-semibold">{t("productivity.loadFailed")}</h2>
               <p className="mt-1 text-sm text-instrument/70">
-                {failed.length} of {queries.length} sections failed. Check your connection and retry.
+                {t("productivity.loadFailedDetail", { failed: failed.length, total: queries.length })}
               </p>
               <button
                 type="button"
                 onClick={retry}
                 className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
               >
-                Retry
+                {t("common.retry")}
               </button>
             </div>
           </div>
         ) : (
           <>
             <SectionShell
-              title="Habits"
-              hint="Today's status, streaks, and quick log actions."
+              title={t("productivity.habits")}
+              hint={t("productivity.habitsHint")}
               span="col-span-12 xl:col-span-7"
             >
               <HabitsList habits={habits.data ?? []} loggingId={loggingId} onLog={(id, s) => void handleLog(id, s)} />
             </SectionShell>
             <SectionShell
-              title="Goals"
-              hint="Progress derives from linked tasks."
+              title={t("productivity.goals")}
+              hint={t("productivity.goalsHint")}
               span="col-span-12 xl:col-span-5"
             >
               <GoalsList goals={goals.data ?? []} />
             </SectionShell>
             <SectionShell
-              title="Tasks"
-              hint="Grouped by status; toggling a task refreshes goal progress."
+              title={t("productivity.tasks")}
+              hint={t("productivity.tasksHint")}
               span="col-span-12 md:col-span-6 xl:col-span-4"
             >
               <TasksList tasks={tasks.data ?? []} togglingId={togglingId} onToggle={(t) => void handleToggle(t)} />
             </SectionShell>
-            <SectionShell title="Events" hint="Upcoming schedule." span="col-span-12 md:col-span-6 xl:col-span-4">
+            <SectionShell title={t("productivity.events")} hint={t("productivity.eventsHint")} span="col-span-12 md:col-span-6 xl:col-span-4">
               <EventsList events={events.data ?? []} />
             </SectionShell>
-            <SectionShell title="Notes" hint="Full-text search." span="col-span-12 xl:col-span-4">
+            <SectionShell title={t("productivity.notes")} hint={t("productivity.notesHint")} span="col-span-12 xl:col-span-4">
               <NotesSearchBox query={query} onQuery={setQuery} />
               <NotesResults notes={notes.data ?? []} />
             </SectionShell>

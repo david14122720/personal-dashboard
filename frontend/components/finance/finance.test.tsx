@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import FinanceScreens from "@/components/containers/FinanceScreens";
+import { SavingsList } from "@/components/finance/FinanceSections";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
@@ -181,7 +182,7 @@ function renderScreens() {
 }
 
 function ledgerSection(): HTMLElement {
-  return screen.getByRole("region", { name: "Transactions ledger" });
+  return screen.getByRole("region", { name: "Libro de transacciones" });
 }
 
 describe("finance screens", () => {
@@ -190,8 +191,8 @@ describe("finance screens", () => {
     const ledger = ledgerSection();
     expect(await within(ledger).findByText("salary")).toBeInTheDocument();
     expect(await within(ledger).findByText("groceries")).toBeInTheDocument();
-    expect(await within(ledger).findByText("Showing 2 of 3 transactions")).toBeInTheDocument();
-    expect(within(ledger).getByRole("button", { name: "Load more" })).toBeInTheDocument();
+    expect(await within(ledger).findByText("Mostrando 2 de 3 transacciones")).toBeInTheDocument();
+    expect(within(ledger).getByRole("button", { name: "Cargar más" })).toBeInTheDocument();
   });
 
   it("appends page 2 through the opaque keyset cursor and hides Load more at the end", async () => {
@@ -199,29 +200,33 @@ describe("finance screens", () => {
     const ledger = ledgerSection();
     await within(ledger).findByText("groceries");
 
-    fireEvent.click(within(ledger).getByRole("button", { name: "Load more" }));
+    fireEvent.click(within(ledger).getByRole("button", { name: "Cargar más" }));
     expect(await within(ledger).findByText("coffee")).toBeInTheDocument();
-    expect(await within(ledger).findByText("Showing 3 of 3 transactions")).toBeInTheDocument();
+    expect(await within(ledger).findByText("Mostrando 3 de 3 transacciones")).toBeInTheDocument();
     await waitFor(() => {
-      expect(within(ledger).queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+      expect(within(ledger).queryByRole("button", { name: "Cargar más" })).not.toBeInTheDocument();
     });
     expect(seenTxUrls.some((url) => url.includes("cursor=CURSOR-PAGE-2"))).toBe(true);
   });
 
   it("reuses the shared LED mapping for budget status and card alert levels", async () => {
     renderScreens();
-    expect(await screen.findByRole("img", { name: "COP 100 · 2026-09-01 status warn" })).toHaveClass("bg-signal");
-    expect(await screen.findByRole("img", { name: "COP 50 · 2026-09-01 status over" })).toHaveClass("bg-alert");
-    expect(await screen.findByRole("img", { name: "Visa status warn" })).toHaveClass("bg-signal");
+    expect(await screen.findByRole("img", { name: "COP 100 · 2026-09-01, estado warn" })).toHaveClass("bg-signal");
+    expect(await screen.findByRole("img", { name: "COP 50 · 2026-09-01, estado over" })).toHaveClass("bg-alert");
+    expect(await screen.findByRole("img", { name: "Visa, estado warn" })).toHaveClass("bg-signal");
+    expect(await screen.findByRole("progressbar", { name: "Gasto de COP 100 · 2026-09-01" })).toBeInTheDocument();
+    expect(await screen.findByText("Gasto frente a cada presupuesto activo.")).toBeInTheDocument();
   });
 
   it("shows card usage metrics and the statement balance when present", async () => {
     renderScreens();
-    const accounts = await screen.findByRole("region", { name: "Accounts" });
+    const accounts = await screen.findByRole("region", { name: "Cuentas" });
     expect(within(accounts).getByText("Visa")).toBeInTheDocument();
     expect(within(accounts).getByText(/25\.0%/)).toBeInTheDocument();
-    expect(within(accounts).getByText(/statement/)).toBeInTheDocument();
+    expect(within(accounts).getByText(/extracto/)).toBeInTheDocument();
     expect(within(accounts).getByText("Wallet")).toBeInTheDocument();
+    expect(await screen.findByRole("progressbar", { name: "Uso de tarjeta de Visa" })).toBeInTheDocument();
+    expect(await screen.findByText("Saldos y uso de tarjetas de crédito.")).toBeInTheDocument();
   });
 
   it("renders subscriptions, debts, and savings with money detail", async () => {
@@ -229,7 +234,27 @@ describe("finance screens", () => {
     expect(await screen.findByText("Music")).toBeInTheDocument();
     expect(await screen.findByText("Loan · Bank")).toBeInTheDocument();
     expect(await screen.findByText("Trip")).toBeInTheDocument();
-    expect(await screen.findByText("25% saved")).toBeInTheDocument();
+    expect(await screen.findByText("25% ahorrado")).toBeInTheDocument();
+    expect(await screen.findByRole("progressbar", { name: "Progreso de Trip" })).toBeInTheDocument();
+    expect(await screen.findByText("Cargos recurrentes activos.")).toBeInTheDocument();
+    expect(await screen.findByText("Saldos restantes.")).toBeInTheDocument();
+    expect(await screen.findByText("Progreso de las metas.")).toBeInTheDocument();
+  });
+
+  it("renders ledger filters, headers, and money details in Spanish", async () => {
+    renderScreens();
+    const ledger = ledgerSection();
+    const filters = within(ledger).getByRole("form", { name: "Filtros de transacciones" });
+    expect(within(filters).getByText("Desde")).toBeInTheDocument();
+    expect(within(filters).getByText("Hasta")).toBeInTheDocument();
+    expect(within(filters).getByRole("button", { name: "Aplicar" })).toBeInTheDocument();
+    expect(within(filters).getByRole("button", { name: "Limpiar" })).toBeInTheDocument();
+    expect(await within(ledger).findByRole("columnheader", { name: "Fecha" })).toBeInTheDocument();
+    expect(await within(ledger).findByRole("columnheader", { name: "Descripción" })).toBeInTheDocument();
+    expect((await screen.findAllByText(/restantes$/)).length).toBe(2);
+    expect((await screen.findAllByText(/% gastado/)).length).toBe(2);
+    expect(await screen.findByText(/usados/)).toBeInTheDocument();
+    expect(await screen.findByText(/extracto/)).toBeInTheDocument();
   });
 
   it("shows empty states when every finance endpoint returns nothing", async () => {
@@ -249,9 +274,33 @@ describe("finance screens", () => {
       </SWRConfig>,
     );
     const ledger = ledgerSection();
-    expect(await within(ledger).findByText("No transactions yet")).toBeInTheDocument();
-    expect(await screen.findByText("No budgets yet")).toBeInTheDocument();
-    expect(await screen.findByText("No accounts yet")).toBeInTheDocument();
+    expect(await within(ledger).findByText("Sin transacciones aún")).toBeInTheDocument();
+    expect(await screen.findByText("Sin presupuestos aún")).toBeInTheDocument();
+    expect(await screen.findByText("Sin cuentas aún")).toBeInTheDocument();
+    expect(await screen.findByText("Sin suscripciones activas")).toBeInTheDocument();
+    expect(await screen.findByText("Sin deudas")).toBeInTheDocument();
+    expect(await screen.findByText("Sin metas de ahorro aún")).toBeInTheDocument();
+    expect(await screen.findByText("Crea una meta para seguir tu progreso aquí.")).toBeInTheDocument();
+  });
+
+  it("marks completed savings goals with a Spanish badge", () => {
+    render(
+      <SavingsList
+        goals={[
+          {
+            id: "g1",
+            title: "Trip",
+            detail: null,
+            amount: 1000,
+            currency: "COP",
+            progress: 1,
+            completed: true,
+          },
+        ]}
+        locale="es-CO"
+      />,
+    );
+    expect(screen.getByText("Completada")).toBeInTheDocument();
   });
 
   it("shows an error alert with retry when aggregate reads fail", async () => {
@@ -263,7 +312,36 @@ describe("finance screens", () => {
         <FinanceScreens />
       </SWRConfig>,
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Finance sections failed to load");
-    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar las secciones de finanzas");
+    expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
+  });
+
+  it("shows a Spanish ledger alert with retry when transactions fail to load", async () => {
+    server.use(http.get("http://test.local/api/transactions", () => HttpResponse.error()));
+    render(
+      <SWRConfig
+        value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}
+      >
+        <FinanceScreens />
+      </SWRConfig>,
+    );
+    const ledger = ledgerSection();
+    expect(await within(ledger).findByRole("alert")).toHaveTextContent("No se pudieron cargar las transacciones");
+    expect(within(ledger).getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
+  });
+
+  it("shows a Spanish alert when loading more transactions fails", async () => {
+    server.use(
+      http.get("http://test.local/api/transactions", ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get("cursor")) return HttpResponse.error();
+        return HttpResponse.json(txPage1);
+      }),
+    );
+    renderScreens();
+    const ledger = ledgerSection();
+    await within(ledger).findByText("groceries");
+    fireEvent.click(within(ledger).getByRole("button", { name: "Cargar más" }));
+    expect(await within(ledger).findByRole("alert")).toHaveTextContent("No se pudieron cargar más transacciones");
   });
 });
