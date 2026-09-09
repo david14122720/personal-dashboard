@@ -1770,7 +1770,7 @@ mod tests {
             .expect("analyze habit_logs");
         let mask: Vec<i16> = vec![];
         let plan_rows: Vec<(String,)> =
-            sqlx::query_as(&format!("EXPLAIN (ANALYZE, BUFFERS) {STREAK_SQL}"))
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("EXPLAIN (ANALYZE, BUFFERS) {STREAK_SQL}")))
                 .bind(habit_id)
                 .bind(user_id)
                 .bind(&mask)

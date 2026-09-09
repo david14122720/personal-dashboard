@@ -1048,7 +1048,7 @@ mod tests {
             .await
             .expect("analyze notes");
         let plan_rows: Vec<(String,)> =
-            sqlx::query_as(&format!("EXPLAIN (ANALYZE, BUFFERS) {SEARCH_NOTES_SQL}"))
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("EXPLAIN (ANALYZE, BUFFERS) {SEARCH_NOTES_SQL}")))
                 .bind(user_id)
                 .bind(&token)
                 .fetch_all(&state.pool)
