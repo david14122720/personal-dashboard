@@ -180,7 +180,7 @@ describe("overdue items (PR1 RED)", () => {
     return `${d.getFullYear()}-${m}-${day}`;
   };
 
-  it("derives task+debt+event overdue", () => {
+  it("derives task+debt overdue; event-today stays upcoming (JD-A-001)", () => {
     const tasks = [{ id: "t1", title: "Vencida", status: "pending", due_date: isoDay(-1) }];
     const debts = [{ id: "d1", name: "Deuda", pending_amount: "200.00", status: "active", due_date: isoDay(-1) }];
     const events = [
@@ -192,7 +192,8 @@ describe("overdue items (PR1 RED)", () => {
       },
     ];
     const items = toOverdueItems(tasks, debts, events, now);
-    expect(items.map((i) => i.id).sort()).toEqual(["d1", "e1", "t1"]);
+        // JD-A-001: evento de hoy (hora pasada, dia vigente) va solo a Proximos.
+    expect(items.map((i) => i.id).sort()).toEqual(["d1", "t1"]);
   });
 
   it("excludes future and completed", () => {
@@ -204,6 +205,40 @@ describe("overdue items (PR1 RED)", () => {
     expect(toOverdueItems(tasks, debts, [], now)).toEqual([]);
   });
 });
+
+describe("payment_due hoy sin doble conteo (JD-A-001)", () => {
+      const now = new Date(2026, 8, 7, 12, 0, 0); // hoy 12:00 local
+      const atToday = (h: number, m = 0) => new Date(2026, 8, 7, h, m, 0).toISOString(); // hoy HH:MM local
+      const event = (id: string, starts_at: string) => ({
+        id,
+        title: `E${id}`,
+        kind: "payment_due" as const,
+        starts_at,
+      });
+
+      it("evento hoy 09:00 (ya pasó la hora, no el día) no cae en Vencidas; badge total = 1", () => {
+        const e = event("e1", atToday(9));
+        const overdue = toOverdueItems([], [], [e], now);
+        const upcoming = toUpcomingPayments([], [], [e], now);
+        expect(overdue).toEqual([]);
+        expect(upcoming.map((i) => i.id)).toEqual(["e1"]);
+        const items = toNotificationItems(overdue, upcoming);
+        expect(items).toHaveLength(1);
+        expect(toNotificationCount(items, {}, null)).toBe(1);
+      });
+
+      it("evento de ayer 23:00 (día anterior) sigue en Vencidas", () => {
+        const e = event("e2", new Date(2026, 8, 6, 23, 0, 0).toISOString());
+        expect(toOverdueItems([], [], [e], now).map((i) => i.id)).toEqual(["e2"]);
+        expect(toUpcomingPayments([], [], [e], now)).toEqual([]);
+      });
+
+      it("evento hoy 23:59 futuro queda solo en Próximos", () => {
+        const e = event("e3", atToday(23, 59));
+        expect(toOverdueItems([], [], [e], now)).toEqual([]);
+        expect(toUpcomingPayments([], [], [e], now).map((i) => i.id)).toEqual(["e3"]);
+      });
+    });
 
 describe("pending lists + goal progress + notifications (PR1 RED)", () => {
   const now = new Date(2026, 8, 7, 12, 0, 0);

@@ -1,3 +1,134 @@
+# Apply Progress — p8-home-pagos · PR4 FINAL (stacked-to-main, eslabón 4 de 4)
+
+> Change: `p8-home-pagos` · PR4 alcance: resto widgets (6) + composición home 9 widgets con Bell + e2e + REFACTOR
+> Fecha: 2026-09-09 · Modo: STRICT TDD (vitest + tsc) · Delivery: stacked-to-main eslabón 4/4, base rama `p8-pr3` actual
+> Budget: HARD 350 líneas — real 224 líneas nuevas (tracked 71 + untracked 153, ver §7) · FE-only, sin backend, sin Fase 1, AppShell NO tocado
+
+## 1. Completed tasks (PR4) + persisted checkbox updates
+
+Persisted in `openspec/changes/p8-home-pagos/tasks.md` — 28/28 implementation `- [x]` acumuladas (20 PR1+PR2+PR3 + 8 PR4). Este eslabón marca:
+
+- [x] Implementar `frontend/components/dashboard/widgets/UpcomingPayments.tsx` (lista `list/lg/20`, unión 7d ordenada, top 5–7 + link Finanzas + `EmptyState` ES) + casos en `DashboardHome.widgets.test.tsx` (~95 diff).
+- [x] Implementar `frontend/components/dashboard/widgets/PendingDebts.tsx` + `ActiveSubs.tsx` (`list/md/21`, `list/md/22`, filtros `active`/`is_active`, `pending_amount`/`price` COP) + casos en `DashboardHome.widgets.test.tsx` (~95 diff).
+- [x] Implementar `frontend/components/dashboard/widgets/PendingTasks.tsx` + `UpcomingEvents.tsx` (`list/md/23` desde `view=today+upcoming`, `list/md/24` ventana 14d visual, top 5–7 + links Productividad) + casos en `DashboardHome.widgets.test.tsx` (~95 diff).
+- [x] Implementar `frontend/components/dashboard/widgets/GoalProgress.tsx` (`chart/md/30`, 2 segmentos Metas `progress` + Ahorro `saved/goal` en el mismo widget, sin Recharts o con `ssr:false`) + casos en `DashboardHome.widgets.test.tsx` (~90 diff).
+- [x] Componer `frontend/components/containers/DashboardHome.tsx` (header-row `h1`+`NotificationBell`, grid bento 12-col con 9 widgets + existentes, `WidgetToggle` por widget, loading `some(isLoading)` extendido, error panel + retry `dashboard/`, ocultar = `null` key + no render, round-trip `GET→PATCH→GET`, layout vacío = 9 visibles) + casos integración en `DashboardHome.widgets.test.tsx` (~95 diff).
+- [x] Crear `frontend/e2e/dashboard-widgets.spec.ts` (Playwright: 9 widgets con datos reales, toggle persiste tras reload, `EmptyState` ES, links ver-en-sección, Telemetría/charts intactos) (~80 diff).
+- [x] Crear `frontend/e2e/notifications.spec.ts` (Playwright: badge vencidas+7d, panel 2 secciones, mute ítem persiste `p8-notif-muted`, mute categoría vía ocultar widget excluye del badge) (~80 diff).
+- [x] REFACTOR: deduplicar helpers fecha/moneda entre `frontend/lib/dashboard/transforms.ts` y `frontend/lib/api/dashboard.ts`, verificar `pnpm --dir frontend test` + `tsc --noEmit` + `s1-capture`/`s2-crud` verdes y cero diff fuera de §4.1–4.2 del diseño (~50 diff).
+
+Verificación: `grep -c "^- \\[x\\]" tasks.md` = 28. Parent-owned intactas, diferidas (§6). Cero `sdd-owner` malformados (solo terminal `implementation`/`parent`).
+
+## 2. Files changed (solo PR4)
+
+Nuevos (untracked, `wc -l`):
+
+- `frontend/components/dashboard/widgets/UpcomingPayments.tsx` (17, 3 hooks + `toUpcomingPayments` + `EmptyState upcomingPaymentsEmpty` + retry `dashboard/` + link Finanzas, top 7)
+- `frontend/components/dashboard/widgets/PendingDebts.tsx` (16, `useDebts` + `toPendingDebts` + `formatMoney` + `finance.noDebts` + retry + link Finanzas)
+- `frontend/components/dashboard/widgets/ActiveSubs.tsx` (16, `useSubscriptions` + `toActiveSubs` + `formatMoney` + `finance.noSubscriptions` + retry + link Finanzas)
+- `frontend/components/dashboard/widgets/PendingTasks.tsx` (15, `useTasks(null)` fetch-all + `toPendingTasks` + `productivity.noTasks` + retry + link Productividad)
+- `frontend/components/dashboard/widgets/UpcomingEvents.tsx` (15, `useEvents(null,null)` + `toUpcomingEvents(...,14)` + `productivity.noEvents` + retry + link Productividad)
+- `frontend/components/dashboard/widgets/GoalProgress.tsx` (17, `useGoals/useSavingsGoals` + `toGoalProgress` + 2 segmentos `productivity.goals`/`savingsSegment` + `goalVsSavings` + `formatMoney(saved)` + barras div sin Recharts + `productivity.noGoals` vacío + link Productividad)
+- `frontend/e2e/dashboard-widgets.spec.ts` (25, `timezoneId America/Bogota`, 9 títulos exactos, links exactos, telemetría/charts intactos, toggle `pending-debts` persiste tras reload)
+- `frontend/e2e/notifications.spec.ts` (32, `timezoneId America/Bogota`, badge/panel 2 secciones exactas, mute persiste `p8-notif-muted` tras reload, ocultar `active-subs` excluye categoría)
+
+Tracked (`git diff HEAD --numstat`, sin `skills-lock.json` preexistente):
+
+- `frontend/components/containers/DashboardHome.tsx` (+30/-6, imports Bell+6 widgets + 6 hooks visibles para loading extendido + header-row flex + 6 `WidgetShell` con `WidgetToggle` + grid bento 12-col, sin tocar AppShell)
+- `frontend/components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx` (+40/-1, mocks `useDebts/subs/tasks/events/goals/savings` + 2 tests PR4: unión/orden/segmentos+bell+9 switches+links duales y vacío exacto con 8d/sin-fecha solo fuera de próximos)
+- `frontend/components/containers/DashboardHome.test.tsx` (+1, stubs `useDebts/subs/tasks/events/goals/savings → q([])` para no-regresión; Bell real con count 0 no rompe asserts ES)
+
+Total PR4: tracked código 71 insertions + untracked 153 = 224 ≤ 350 HARD. Cero diff en `backend/src/routes/*`, Fase 1, `AppShell`, `client.ts`, `transforms.ts`, `es.ts` (claves ya existían PR1). `skills-lock.json` + `tsconfig.tsbuildinfo` + `.agents/.codegraph` preexistentes excluidos.
+
+## 3. Test commands run (evidencia)
+
+Baseline pre-PR4 (safety net): `vitest run` 19 files / 166 passed; `tsc --noEmit` 0.
+
+Ciclo PR4 (todos `pnpm --dir frontend`):
+
+- RED: `exec vitest run components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx` → 2 failed (`Unable to find Próximos pagos` ×2, garantiza test-first) + 2 passed (trio PR2 intacto).
+- GREEN (mínimo real, sin Fake It): 6 widgets + composición home → 4 passed en enfocado; `tsc --noEmit` → 0.
+- TRIANGULATE (mismo archivo, ≥2 casos por comportamiento): `Deuda×2` (union+pending) vs `Pagada/Off` ausentes, `Agenda` 10d solo en events-14d, `Metas×2/Ahorro×2` (título+segmentos+`goalVsSavings`), vacío `Nada por vencer...` + `SinFecha/Lejos` presentes en pendientes pero fuera de próximos + `Sin metas aún` → 4 passed.
+- REFACTOR: sin cambios lógica (reúso `toUpcomingPayments/toPendingDebts/toActiveSubs/toPendingTasks/toUpcomingEvents/toGoalProgress`, `formatMoney`, `EmptyState`, `WidgetToggle`, `NotificationBell`); re-run enfocado 4 passed + `tsc` 0; full `vitest run` → **19 files / 168 tests passed** (+2 vs PR3); `tsc --noEmit` → **0**; `playwright test --list` → 11 tests en 6 files (2 nuevos listados, skip sin `E2E_SMOKE_LIVE=1`); grep hex en `widgets/*` → cero; `git diff HEAD --name-only` → solo §4.1–4.2.
+
+## 4. TDD Cycle Evidence (STRICT TDD activo)
+
+| Task | RED (failing first) | GREEN (min code, pass) | TRIANGULATE (≥2 casos) | REFACTOR (still green) |
+|------|---------------------|------------------------|------------------------|------------------------|
+| UpcomingPayments 7d union | `Unable to find Próximos pagos` | `toUpcomingPayments` + slice 7 + `upcomingPaymentsEmpty` + link Finanzas → `Deuda` presente | `Deuda×2` (próximos+pendientes) + `Nada...` vacío + `Lejos` 8d/`SinFecha` fuera de próximos pero en pendientes (3 ramas) | hooks PR2 + transform PR1 sin duplicar, 4 green |
+| PendingDebts/ActiveSubs filtros | mismo RED (ausencia widgets) | `toPendingDebts/toActiveSubs` + `formatMoney` + `noDebts/noSubscriptions` → `Deuda` sí/`Pagada` no | `Pagada/Off` ausentes + `SinFecha/Lejos` presentes en pendientes/subs (filtros `active`/`is_active`, no ventana) | `useDebts/useSubscriptions` con visible default, green |
+| PendingTasks/UpcomingEvents | mismo RED | `useTasks(null)+toPendingTasks` + `useEvents+toUpcomingEvents(14)` + `noTasks/noEvents` → `Tarea`+`Agenda` | `Agenda` 10d en events-14d pero fuera de bell 7d (ventana independiente) + vacío con links | fetch-all + filtro local (misma ventana que `useNotifications`), green |
+| GoalProgress 2 segmentos | mismo RED | `toGoalProgress` + `goals/savingsSegment/goalVsSavings` + barras div (sin Recharts) → `Metas×2/Ahorro×2` | 60%+50% con `formatMoney(saved)` + vacío `Sin metas aún` (2 estados) | sin `ssr:false` necesario (divs), green |
+| DashboardHome composición | `Unable to find Próximos pagos` + bell ausente | header flex + Bell + 6 `WidgetShell` + 6 hooks visibles + `queries` extendido → 9 switches + badge `/avisos pendientes/` | layout vacío→9 visibles + `Ver en Finanzas×3/Productividad×3` + toggles `pending-debts/active-subs` | Bell/header sin `AppShell`, `tsc` 0 |
+| e2e TZ exacta | estructural (archivos ausentes, 1 salida) | `timezoneId America/Bogota` + títulos/links exactos + skip `liveSmoke` | toggle reload + mute `p8-notif-muted` reload + categoría oculta (≥2 caminos c/u, skip sin live) | `playwright --list` 11 tests, green |
+| REFACTOR dedup | estructural (cero duplicación, 1 salida) | cero diff prod (transforms ya centraliza `toNumber`, dashboard sin helpers fecha) | Triangulation skipped: purely structural zero-diff, verified via `git diff --name-only` §4.1–4.2 + full suite 168 + `tsc` 0 | full green |
+
+Three Laws: nunca producción antes de RED; GREEN mínimo real; cada REFACTOR re-ejecutó enfocados + `tsc`. Sin tautologías/clases CSS como asserts; vacíos solo válidos con companion no-vacío (triangulado).
+
+## 5. Deviations from design
+
+1. Widgets con error `role=alert` + retry `mutate(dashboard/)` por widget (diseño exige panel+retry; se implementa mínimo 1 línea por widget con `useSWRConfig`, sin helper compartido para no superar 350).
+2. `PendingTasks` usa `useTasks(null)` (fetch-all `/tasks` + `toPendingTasks` local) en vez de `today+upcoming` doble query. Válido por BE (`None`→todas) y evita N+1; orden asc + top 7 idénticos a spec. `UpcomingEvents` usa `useEvents(null,null)` + `toUpcomingEvents(14)` local (misma razón, comparte caché con `useNotifications`).
+3. `GoalProgress` con barras div (`bg-flow`/`bg-signal` tokens + `style width%`) en vez de Recharts. Diseño permite "sin Recharts o con `ssr:false`"; divs cumplen 2 segmentos etiquetados sin costo bundle/SSR.
+4. `DashboardHome` duplica hooks visibles para `isLoading` extendido aunque widgets ya fetchean (misma key `dashboard/*`, dedup SWR, cero fetch extra). Sin esto `some(isLoading)` no cubriría nuevas queries visibles como exige Fase F.
+5. `DashboardHome.test.tsx` solo +1 línea stubs (no mock Bell). Bell real con mocks `[]` da count 0 y no rompe asserts ES legacy; mockear Bell habría ocultado integración header.
+6. `useEvents(null,null)` fetch-all se mantiene (optimización `-7d/+7d` diferida queda NO aplicada: e2e skipped sin live no la exige; documentado para verify con backend real).
+7. i18n cero diff: vacíos reutilizan `finance.noDebts/noSubscriptions` + `productivity.noTasks/noEvents/noGoals` + `dashboard.upcomingPaymentsEmpty` exactos; segmentos `productivity.goals/savingsSegment/goalVsSavings` ya existían PR1.
+
+## 6. Remaining tasks (exact unchecked `- [ ]` lines)
+
+0 implementation + 2 parent (deferred, byte-for-byte):
+
+- [ ] Start or reuse bounded review of PR1→PR4 chain before merge. <!-- sdd-owner: parent -->
+- [ ] Confirm lifecycle gate (Judgment Day + `s1-capture`/`s2-crud` green) before `main` merge. <!-- sdd-owner: parent -->
+
+Cadena completa: PR1 transforms+apiPatch+i18n → PR2 hooks+toggles+mes → PR3 bell+lista → PR4 resto+home+e2e. Todo implementation a `[x]` (28/28).
+
+## 7. Workload / PR boundary
+
+- Forecast original: 1150–1450 líneas, `400-line budget risk: High`, `Chained: Yes`, `Chain strategy: pending`, `Decision needed: Yes`.
+- Resolución consumida: `stacked-to-main, eslabón 4 de 4, base rama p8-pr3 actual` (delegado PR4 FINAL) → solo slice resto-widgets+home+e2e+refactor.
+- PR4 real: tracked 71 insertions (30 DashboardHome + 40 widgets.test + 1 DashboardHome.test) + untracked 153 (96 widgets + 57 e2e) = **224 ≤ 350 HARD** (docs `tasks/apply-progress` excluidos como PR3). Sin compactación forzada (widgets 15–17 líneas c/u, e2e 25+32).
+- Rollback PR4: `git checkout -- frontend/components/containers/DashboardHome.tsx frontend/components/containers/DashboardHome.test.tsx "frontend/components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx" openspec/changes/p8-home-pagos/tasks.md` + `rm frontend/components/dashboard/widgets/{UpcomingPayments,PendingDebts,ActiveSubs,PendingTasks,UpcomingEvents,GoalProgress}.tsx frontend/e2e/dashboard-widgets.spec.ts frontend/e2e/notifications.spec.ts` (restaura 166 tests / tsc 0 pre-PR4). `tasks.md` rollback: 8 checkboxes Fase D/F/G → `- [ ]`.
+- Review gate: este eslabón no inicia bounded-review ni valida gates (dueño orquestador/parent).
+
+## 8. Structured status consumed / produced
+
+Consumed (global `~/.pi/agent/gentle-ai/support/sdd-status-contract.md`; `openspec/` autoritativo; `repo-local`):
+
+```yaml
+schemaName: spec-driven
+changeName: p8-home-pagos
+artifactStore: openspec
+planningHome: { root: /home/david/Nextcloud2/Ubuntu/landing_personal, changesDir: openspec/changes }
+changeRoot: openspec/changes/p8-home-pagos
+artifactPaths: { proposal: [openspec/changes/p8-home-pagos/proposal.md], specs: [openspec/changes/p8-home-pagos/specs/dashboard-widgets/spec.md, openspec/changes/p8-home-pagos/specs/notifications/spec.md], design: [openspec/changes/p8-home-pagos/design.md], tasks: [openspec/changes/p8-home-pagos/tasks.md], applyProgress: [openspec/changes/p8-home-pagos/apply-progress.md] }
+artifacts: { proposal: done, specs: done, design: done, tasks: done, applyProgress: done, verifyReport: missing, syncReport: missing }
+taskProgress: { total: 28, complete: 20, remaining: 8 }
+deferredParentActions: { total: 2, complete: 0, remaining: 2 }
+taskArtifactErrors: []
+applyState: ready
+dependencies: { apply: ready, verify: blocked, sync: blocked, archive: blocked }
+actionContext: { mode: repo-local, workspaceRoot: /home/david/Nextcloud2/Ubuntu/landing_personal, allowedEditRoots: [/home/david/Nextcloud2/Ubuntu/landing_personal], warnings: ["400-line High but stacked-to-main 4/4 approved", "strict TDD active (parent override, config strict_tdd=false)", "HARD 350 enforced"] }
+nextRecommended: parent-lifecycle
+isNonAuthoritative: false
+```
+
+Produced: este `apply-progress.md` (merge acumulativo PR1+PR2+PR3+PR4) + 8 checkboxes `- [x]` Fase D/F/G en `tasks.md` (re-leídos: 28). Sin receipts, sin review, sin gate. Retorna `parent-lifecycle`.
+
+## 9. Risks / notes
+
+- `useEvents(null,null)` trae historial completo; con muchos eventos puede pesar. Mitigación diferida: pasar `from=-7d/to=+14d` si verify con live lo pide, sin cambiar tests (mocks ignoran args) ni Bell (misma ventana 7d en transforms).
+- `PendingTasks` fetch-all `/tasks` incluye `overdue`+`today`+`upcoming`; `toPendingTasks` filtra completadas/canceladas y ordena asc. Si producto exige solo `today+upcoming` sin vencidas, cambiar a doble `useTasks(today)+useTasks(upcoming)` sin cambiar tests (mismo output salvo vencidas).
+- `GoalProgress` barras div usan `style width%` (no hex, tokens `bg-flow/bg-signal`); `prefers-reduced-motion` no aplica (sin animación). Si diseño exige donut, migrar a `next/dynamic(ssr:false)` Recharts sin cambiar transforms.
+- E2E skipped sin `E2E_SMOKE_LIVE=1` (exit 0, 11 listados). Con live, toggle/mute tests restauran estado (re-click) para no ensuciar `dashboard_layout`/`p8-notif-muted` del usuario smoke.
+- `DashboardHome.test` legacy no aserta nuevos widgets (solo `widgets.test` lo hace); ambos verdes (168) sin duplicar asserts.
+- `tsconfig.tsbuildinfo` + `skills-lock.json` + `.agents/.codegraph` preexistentes/ignorados, fuera del budget y del PR.
+
+---
+
+## PR3 history (preserved, no overwrite — contenido original íntegro debajo)
+
 # Apply Progress — p8-home-pagos · PR3 (stacked-to-main, eslabón 3 de 4)
 
 > Change: `p8-home-pagos` · PR3 alcance: notificaciones in-app (tríada useNotifications + Bell + List)
