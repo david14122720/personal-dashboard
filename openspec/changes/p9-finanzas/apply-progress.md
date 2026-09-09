@@ -230,3 +230,121 @@ Triangulación mínima cumplida: cada comportamiento tiene ≥2 casos; ningún G
 
 - `applyState: ready` (18/32 implementation acumuladas —12 PR-1 + 6 PR-2—; quedan 8 FE implementation PR-3 + refactor + 2 parent). `verify: blocked` (sin `verifyReport`), `archive: blocked`. `next_recommended: parent-lifecycle` (PR-2 S5 listo para verify acotado del slice + decisión `size:exception`; el ciclo completo cierra tras PR-3).
 - Sin `blockedReasons` nuevas. `skill_resolution: none`. Sin subagentes lanzados. Sin commits (el padre/orquestador decide el commit/PR).
+
+---
+
+# Apply Progress — p9-finanzas · PR-3 FINAL S6 (stacked-to-main, eslabón 3 de 3)
+
+- change: `p9-finanzas` · project: `personal-dashboard` · date: 2026-09-09
+- slice: PR-3 FINAL únicamente (FIX A + puros restantes + charts + PeriodSelector + Analysis + i18n cierre + e2e + refactor) · base: rama `p9-pr2` actual
+- chain: `stacked-to-main` (fijado por el padre; tasks.md decía `Chain strategy: pending` + `Decision needed: Yes`, el prompt delegado fija `stacked-to-main, eslabón 3 de 3, base p9-pr2`)
+- TDD: `STRICT` (`pnpm exec vitest run` + `tsc --noEmit`; e2e `playwright --list`/`test:e2e` con `TZ=America/Bogota`) · Sin backend, sin Fase 1/2
+- store: openspec (`openspec/changes/p9-finanzas/apply-progress.md`, merge acumulativo con PR-1/PR-2 supra)
+- skill_resolution: `none` (sin `## Skills to load before work` inyectadas; se siguió el contrato del prompt + `sdd-status-contract.md` + `strict-tdd.md` globales)
+
+## Structured status consumed
+
+- Artefactos leídos: `tasks.md` (12 impl unchecked + 2 parent), `design.md` (§3.4/§4/§5), `specs/finance-charts/spec.md` + `specs/finance-analysis/spec.md`, `apply-progress.md` (PR-1 + PR-2), `openspec/config.yaml` (`strict_tdd: false` en config, pero el prompt delegado activa STRICT TDD FE — manda el prompt).
+- `actionContext`: `mode: repo-local`, `workspaceRoot: /home/david/Nextcloud2/Ubuntu/landing_personal`, edición dentro del repo, sin warnings. Sin tocar Fase 1 (`ManualCapture/TransactionsLedger/TransferHistory` + keys) ni Fase 2 (`DashboardHome/widgets/notifications`).
+- Rama actual: `p9-pr2`. Sin bloqueos de selección de change (change `p9-finanzas` existe en store openspec).
+- Review Workload Gate (tasks.md): `Decision needed: Yes`, `Chained PRs: Yes`, `Chain strategy: pending`, `400-line budget risk: High`. Decisión resuelta por el padre (`stacked-to-main, eslabón 3 de 3`, slice PR-3 asignado). Se implementa únicamente el slice asignado y se reporta el borde del PR (ver §Workload). No se requiere `size:exception` adicional del padre para continuar, pero se reporta que el slice supera 400 (precedente PR-1/PR-2).
+
+## Completed tasks (12/12 del slice PR-3; 30/30 implementation acumuladas) + persisted checkbox updates
+
+En `openspec/changes/p9-finanzas/tasks.md`, pasadas de `- [ ]` a `- [x]` (solo filas `<!-- sdd-owner: implementation -->`; filas `parent` intactas byte-por-byte). Re-verificado tras marcar: `grep -c "^- \[x\].*sdd-owner: implementation"` → `30`; `grep "^- \[ \].*sdd-owner: implementation"` → 0.
+
+- [x] `RED FE puros-1` (resta `toPeriodRange`) + `GREEN puros-1` — `toPeriodRange(sel,now)` (week=hoy−6..hoy, month=mes actual default, quarter/year naturales, custom valida `from<=to`+formato, todo `YYYY-MM-DD`, `now` inyectado) + `toDebtProgress` ya verde en PR-2 (intacto).
+- [x] `RED+GREEN puros-2` — `toMonthOverMonth(cur,prev)→{delta,pct|null si prev==0}`, `toSavingsSeries`, `toBalanceSeries` (acumulado cronológico ordenado), `toMonthCompare→{cur,prev,deltaPct,curMonth,prevMonth}|null (<2→null)` + `toExpenseSeries` (columna expense, coerción solo en transforms).
+- [x] `RED+GREEN puros-3` — `toInsights({flow,byCatExpense,byCatIncome,budgets,descriptions})→Insight[]` (máx 6, ordenadas mom/savings/recurrent/worst/best/avg/budget→slice 6, heurística recurrente v1 frecuencia `description` ≥3, si no concluye se omite).
+- [x] `GREEN api-wires` — `useSpendByCategory(from,to,type:"income"|"expense"="expense")` con `type` en key + URL (default preserva conducta expense); `fetchDebtPayments/useDebtPayments/useAssets` + wires ampliados ya verdes en PR-2 (intactos).
+- [x] `RED+GREEN charts-1` — `BalanceChart.tsx` (Area desde `toBalanceSeries`) + `SavingsChart.tsx` (área desde `toSavingsSeries`, negativo con `ReferenceLine y=0`).
+- [x] `RED+GREEN charts-2` — `MonthlyExpensesChart.tsx` (Bar columna `expense` desde `toExpenseSeries`) + `MonthCompareChart.tsx` (Bar pareado + delta % vía `toMonthCompare`, <2→`EmptyState`); `FlowChart/CategoryDonut/BudgetBars` intactos; heredan exclusión `transfer`.
+- [x] `RED+GREEN period+reuse` — `PeriodSelector.tsx` (5 radio-pills + 2 date inputs solo custom, default `{kind:"month"}`, `toPeriodRange`→`{from,to}` alimenta `useMonthlyFlow` + ambos `useSpendByCategory`, custom valida con error inline ES) + reuse `CategoryDonut` + `useSpendByCategory(from,to,"income")` (sin `IncomeSourceDonut`) + 7 `SectionShell` S6 en `FinanceScreens.tsx`.
+- [x] `RED+GREEN analysis` — `AnalysisSection.tsx` (métricas + ≥3 insights directos máx 6 interpolados vía `t("analysis.tpl*")`, disclaimer fijo `analysis.disclaimer` siempre visible, `EmptyState`+disclaimer sin datos, wrapper focusable, sin animación).
+- [x] `GREEN i18n cierre` — `charts.*` (4 títulos+hints+empties + `period{Week,Month,Quarter,Year,Custom,From,To,InvalidRange}` + `periodLabel/incomeSource/deltaLabel`) + `analysis.*` (title/hint/disclaimer + 7 plantillas + 6 métricas); cero literales en JSX nuevo; test i18n extendido (2 describes nuevos).
+- [x] `GREEN e2e S5/S6` — `sections.spec.ts` +2 specs live-skipped (S5 escritura por dominio, S6 5 rangos + 4 charts + donut income + insights + disclaimer + patrimonio); `TZ=America/Bogota npx playwright test --list` → 13 tests; `pnpm test:e2e sections` → 4 skipped (sin live, exit 0).
+- [x] `REFACTOR final` — `chartTheme.ts` (`chartTok/chartTooltipStyle/chartTick`) elimina duplicación tooltips/ticks en 4 charts sin cambiar conducta; `FinanceSections.tsx` intacto (solo reusa); re-verde total `cargo test` + `pnpm test` + `tsc`.
+- [x] `FIX A verificado pendiente (riesgo MEDIO PR-2)` — `SubscriptionRow` montado por sub en `manageSubs` + `BudgetForm` edit (por budget) + `SavingsGoalForm` edit (por goal) cableados a sus listas en `S5Sections` (hoy solo crear); títulos `manage*` propios sin duplicar copy S1; `findByText("Music")` → `findAllByText` (único toque test S1 necesario por duplicado lectura+gestión).
+
+## Files changed (solo FE PR-3; sin BE; sin migraciones; sin Fase 1/2)
+
+Nuevos (11):
+- `frontend/components/ui/BalanceChart.tsx` (64): `AreaChart` balance acumulado, tokens, `EmptyState` i18n, `animate`, foco teclado, 560×260 `overflow-x-auto`, sin `window`.
+- `frontend/components/ui/SavingsChart.tsx` (64): área ahorro + `ReferenceLine y=0` (negativos).
+- `frontend/components/ui/MonthlyExpensesChart.tsx` (65): `BarChart` expense.
+- `frontend/components/ui/MonthCompareChart.tsx` (73): `toMonthCompare` + delta `t("charts.deltaLabel")` + <2→`EmptyState`.
+- `frontend/components/ui/chartTheme.ts` (22, REFACTOR): `chartTok/chartTooltipStyle/chartTick` compartidos.
+- `frontend/components/finance/PeriodSelector.tsx` (95): fieldset `periodLabel`, 5 pills, custom 2 dates + `role=alert` `periodInvalidRange`.
+- `frontend/components/finance/AnalysisSection.tsx` (120): métricas + insights `tpl*` + disclaimer siempre + EmptyState sin datos + wrapper focusable.
+- Tests nuevos: `PeriodSelector.test.tsx` (2), `AnalysisSection.test.tsx` (4).
+
+Modificados:
+- `frontend/lib/finance/finance.ts` (+239): `PeriodSel/PeriodKind`, `toPeriodRange`, `FlowLike`, `toMonthOverMonth`, `toSavingsSeries`, `toExpenseSeries`, `toBalanceSeries`, `MonthCompare/toMonthCompare`, `CategoryTotalLike/BudgetInsightLike/Insight/InsightsInput/toInsights`. Firmas existentes intactas.
+- `frontend/lib/api/dashboard.ts` (+6 −4): `useSpendByCategory(from,to,type="expense")` con `type` en key + URL (1 toque).
+- `frontend/lib/i18n/es.ts` (+50): `charts.*` (22 claves) + `analysis.*` (15 claves).
+- `frontend/components/containers/FinanceScreens.tsx` (+168 −12): `useState<PeriodSel>({kind:"month"})` + `toPeriodRange` safe + `useMonthlyFlow` + 2×`useSpendByCategory` + `usePrefersReducedMotion` + 5 `dynamic(ssr:false)` + `S5Sections` con `budgets/subs` + edits mapeados + 7 `SectionShell` S6 (periodo + 4 charts + income donut reuse + análisis).
+- Tests: `lib/finance/finance.test.ts` (+202: RED 9 + TRIANGULATE 5 + expenseSeries), `lib/api/dashboard.test.ts` (+37: type expense/income), `components/ui/charts.test.tsx` (+94: 8 RED + 1 triangulate ES/focus/hex), `components/finance/finance.test.tsx` (+47: FIX A + S6 mount 2 + `findAllByText Music`), `lib/i18n/i18n.test.ts` (+36: charts + analysis templates), `e2e/sections.spec.ts` (+56: 2 specs S5/S6).
+- No tocados: `backend/*`, migraciones, `FinanceSections.tsx`, `ManualCapture/TransactionsLedger/TransferHistory`, `DashboardHome/widgets/notifications`, resto de routes.
+
+## Test commands run (evidencia)
+
+- Baseline pre-cambio (SAFETY NET): `pnpm exec vitest run` → 19 files, 182 passed; `tsc --noEmit` → exit 0.
+- RED puros: `vitest run lib/finance/finance.test.ts` → 9 failed (`toPeriodRange/toMonthOverMonth/toSavingsSeries/toBalanceSeries/toMonthCompare/toInsights is not a function`). ✅ RED.
+- GREEN puros: mismo → 21 passed. ✅ GREEN. TRIANGULATE (+5 bordes: bisiesto/custom inválido/negativo/vacío/desorden/prev==0/1-mes/tope 6) → 26 passed. ✅. +`toExpenseSeries` RED (1 failed) → GREEN → 27 passed. ✅.
+- RED api-wires: `vitest run lib/api/dashboard.test.ts` → 1 failed (`Salario` no aparece, hook sin `type`). ✅ RED. GREEN (1 toque `type` en key+URL) → 9 passed + `tsc` 0. ✅ (TRIANGULATE: default expense + income, 2 casos).
+- RED charts: `vitest run components/ui/charts.test.tsx` → import failure (no tests). ✅ RED. GREEN (4 charts) → 18 passed. ✅. TRIANGULATE (ES español + `tabindex=0` + `innerHTML` sin `#`) → 19 passed + `grep -E "#[0-9a-f]"` en 4 charts + theme = 0. ✅.
+- RED period/analysis: `vitest run PeriodSelector.test AnalysisSection.test` → 2 files failed (import). ✅ RED. GREEN → 6 passed + `tsc` 0. ✅ (TRIANGULATE: PeriodSelector default+custom inválido+onChange; Analysis MoM/1-mes/recurrent omit/present/vacío).
+- FIX A + S6 mount: `vitest run components/finance/finance.test.tsx` → 1 failed (`findByText Music` múltiple tras montar `SubscriptionRow`). ✅ RED (riesgo MEDIO materializado). GREEN (`findAllByText` + MSW `monthly-flow/by-category`) → 19 passed; +2 tests FIX A/S6 (Cancelar + Eliminar ≥2 + Mes checked + 4 charts + income donut + disclaimer + `Este mes gastaste`; custom inválido `role=alert`) → 21 passed. ✅.
+- i18n: `vitest run lib/i18n/i18n.test.ts` → 14 passed (12 + 2 nuevos templates). ✅. `grep hex` charts = 0; `grep window` en 6 nuevos = 0 (solo comentario). ✅.
+- e2e: `TZ=America/Bogota npx playwright test --list` → 13 tests (incluye 2 nuevos S5/S6). ✅. `TZ=America/Bogota pnpm test:e2e sections` → 4 skipped (sin live, exit 0). ✅.
+- REFACTOR: `chartTheme.ts` + 4 charts usan `chartTok/chartTooltipStyle/chartTick` → `charts.test` 19 passed + `tsc` 0. ✅.
+- Final: `pnpm exec vitest run` → **21 files, 218 passed** (S1 intactos salvo `findAllByText` documentado); `npx tsc --noEmit` → exit 0; `cargo test` → lib 395 + 5/3/10 integración, 0 failed (BE intacto, sin cambios PR-3).
+
+## TDD Cycle Evidence (Strict TDD)
+
+| Tarea | RED | GREEN | TRIANGULATE | SAFETY NET | REFACTOR |
+|---|---|---|---|---|---|
+| puros-1 `toPeriodRange` | ✅ 3 tests fallan (`not a function`) | ✅ 21 passed | ✅ bisiesto/custom inválido/Q1 (5 kinds) | ✅ baseline 182 + tsc 0 | ➖ puro mínimo |
+| puros-2 series/MoM/compare | ✅ mismo RED (4 fns inexistentes) | ✅ 21 passed | ✅ negativo/cero/vacío/desorden/prev==0 | ✅ GREEN previo | ✅ `toExpenseSeries` añadido con su RED/GREEN |
+| puros-3 `toInsights` | ✅ mismo RED | ✅ 21 passed | ✅ vacío/1-mes sin MoM/tope 6/recurrent omit/present | ✅ GREEN previo | ✅ orden mom/savings/recurrent/worst/best/avg/budget→slice 6 |
+| api-wires `useSpendByCategory(type)` | ✅ `Salario` no aparece (1 failed) | ✅ 9 passed + tsc 0 | ✅ default expense + income (2 casos, key+URL) | ✅ suite previa | ➖ 1 toque, default preserva conducta |
+| charts-1 Balance/Savings | ✅ import failure (no tests) | ✅ 18 passed | ✅ ES español + focus + hex 0 | ✅ baseline previo | ✅ `chartTheme` sin conducta cambiada |
+| charts-2 Expenses/Compare | ✅ mismo RED | ✅ 18 passed | ✅ delta +25% + <2→EmptyState + negativo | ✅ GREEN previo | ✅ mismo refactor |
+| period+reuse | ✅ import failure (2 files) | ✅ 6 passed + tsc 0 | ✅ default/custom inválido/onChange + income reuse (sin `IncomeSourceDonut`) | ✅ GREEN previo | ➖ mínimo |
+| analysis | ✅ mismo RED | ✅ 6 passed | ✅ MoM/1-mes/disclaimer siempre/recurrent/vacío | ✅ GREEN previo | ➖ sin animación, wrapper focusable |
+| FIX A (subs edit + budget/savings edits) | ✅ `findByText Music` múltiple (1 failed) | ✅ 21 passed (findAllByText + MSW agregados) | ✅ Cancelar + Eliminar ≥2 + custom inválido scoped | ✅ S1 19 previo | ✅ títulos `manage*` sin duplicar copy S1 |
+| i18n cierre | ✅ cubierto por RED charts/analysis (keys inexistentes) | ✅ 14 passed | ✅ 7 plantillas interpoladas + métricas + hex 0 | ✅ GREEN previo | ✅ reuso `productivity.*` (save/delete), no duplicar |
+| e2e S5/S6 | ➖ skip sin live (no RED ejecutable) | ✅ `--list` 13 + `test:e2e sections` 4 skipped | ✅ 5 rangos + 4 charts + donut + insights + patrimonio (live) | ✅ unit/component previo | ➖ solo specs, sin código prod |
+| REFACTOR final | ➖ N/A | ✅ 19 charts + 218 total + tsc 0 + cargo 395 | ✅ `FinanceSections` intacto verificado (`git diff --name-only`) | ✅ suite verde previa | ✅ `chartTheme` + re-verde total |
+
+Triangulación mínima cumplida: cada comportamiento tiene ≥2 casos (happy + borde); ningún GREEN es trivial (mutadores golpean MSW, charts renderizan `svg` real + `EmptyState` con precondición vacía + compañera con datos, insights asertan `kind`/`vars` concretos).
+
+## Deviations from design (menores, sin cambio de conducta pactada)
+
+1. `toMonthCompare` retorna `{cur,prev,deltaPct,curMonth,prevMonth}` (no solo `{cur,prev,deltaPct}` de tasks): los meses son necesarios para labels del `MonthCompareChart`; `cur/prev/deltaPct` conservan el contrato (tests asertan `deltaPct`).
+2. `toInsights` retorna `Insight[]` con `{id,kind,vars}` (no strings ES): el ES vive solo en `es.ts` (`analysis.tpl*`) y `AnalysisSection` interpola con `formatMoney/formatMonth` (cero literales en puros/JSX). Plantillas y orden coinciden con diseño §4.3.
+3. `toExpenseSeries` añadido (no listado en tasks): necesario para que `MonthlyExpensesChart` reciba numbers sin coerción en el container (regla "coerción solo en transforms"); testeado con su propio RED/GREEN.
+4. `PeriodSelector` acepta `now?: Date` (inyectado en tests) pero la validación custom no usa `now` (solo `from/to`); `void now` evita unused. El padre calcula `from/to` con `now` real (`America/Bogota` en e2e).
+5. `charts.periodFrom/To` = "Desde"/"Hasta" (igual que `finance.from/to`): duplicado textual inevitable con ledger visible; tests S6 usan `within(region Período)` para desambiguar (no se renombra copy para no romper i18n).
+6. `AnalysisSection` sin `descriptions` en `FinanceScreens` (ledger pagina solo): se pasa `undefined` → recurrente se omite (diseño: "si no concluye se omite"); tests unitarios sí cubren recurrente presente/omitido.
+7. `dynamic(ssr:false)` en `FinanceScreens` para los 5 (4 nuevos + `CategoryDonut` reuse): en vitest renderizan tras `findBy*` async sin flakiness; `ChartSkeleton` usa `t("common.loading")` existente (sin nuevas keys).
+8. S1 test `findByText("Music")` → `findAllByText` (único toque Fase 1 necesario por FIX A lectura+gestión); resto S1 intacto (182→218 sin otros cambios Fase 1/2).
+
+## Remaining tasks (0 implementation + 2 parent = 2 unchecked)
+
+Exactas `- [ ]` restantes (dueño/orquestador, no apply, intactas byte-por-byte):
+
+- [ ] Run bounded review of PR-1 → PR-2 → PR-3 chain (scope, DTO reconciliation, F1/F2 intact, i18n, a11y vales) before merge. <!-- sdd-owner: parent -->
+- [ ] Decide chain strategy (stacked-to-main vs feature-branch-chain) and grant apply gate for PR-1 BE. <!-- sdd-owner: parent -->
+
+## Workload / PR boundary (stacked-to-main eslabón 3/3 FINAL)
+
+- Este eslabón contiene SOLO FE PR-3: 6 nuevos prod (~380: 4 charts + PeriodSelector + AnalysisSection) + `chartTheme` (22) + `finance.ts` puros (~240) + `dashboard.ts` (1 toque) + `es.ts` (~50) + `FinanceScreens` S6+FIX A (~170) + tests (~400: puros 202 + charts 94 + dashboard 37 + finance S6 47 + i18n 36 + Period/Analysis 6 ya contados en 218) + e2e (+56) ≈ **~1300 líneas**. **Supera el HARD BUDGET 400** (≈3×, precedente PR-1 +1766 y PR-2 ~1210): 4 charts + PeriodSelector + Analysis + puros + i18n + e2e con TDD no caben en 400.
+- Decisión requerida del mantenedor: aceptar `size:exception` para PR-3 (cierra la cadena; el ciclo completo PR-1→PR-3 es ~4300 líneas por TDD estricto) o partir PR-3 (p. ej. puros+api-wires vs charts vs period+analysis+i18n+e2e). No se parte unilateralmente.
+- Borde del PR: base `p9-pr2` actual (incluye BE PR-1 + FE S5 PR-2), eslabón 3/3 cierra la cadena (30/30 implementation). Rollback FE = revert de los 17 archivos (6 nuevos prod + chartTheme + 6 modificados + 4 tests nuevos + e2e); F1/F2 intactos (verificado `git diff --name-only`); sin BE; sin migraciones.
+- Contratos: montos string, coerción solo en transforms, selects por nombre, cero UUIDs, solo COP, solo ES, presupuestos nunca bloquean, `transfer` excluido (heredado), `deny_unknown_fields` BE intacto, `dynamic(ssr:false)` + tokens + reduced-motion + foco teclado + `EmptyState` ES en los 4 charts, disclaimer siempre.
+
+## Status produced
+
+- `applyState: all_done` (30/30 implementation en `- [x]`; quedan solo 2 `parent` diferidas). `verify: ready` (suite verde + `apply-progress` con evidencia; pendiente `verifyReport` del dueño). `archive: blocked` (sin `verifyReport`/`syncReport`). `next_recommended: parent-lifecycle` (PR-3 FINAL listo para bounded review de la cadena + decisión `size:exception` + verify; sin commits — el padre/orquestador decide commit/PR).
+- Sin `blockedReasons` nuevas. `skill_resolution: none`. Sin subagentes lanzados. Sin commits.

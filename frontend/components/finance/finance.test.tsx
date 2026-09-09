@@ -262,7 +262,8 @@ describe("finance screens", () => {
 
   it("renders subscriptions, debts, and savings with money detail", async () => {
     renderScreens();
-    expect(await screen.findByText("Music")).toBeInTheDocument();
+    // PR-3 FIX A: SubscriptionRow duplica el nombre (lectura + gestión); ambas visibles.
+    expect((await screen.findAllByText("Music")).length).toBeGreaterThanOrEqual(1);
     expect(await screen.findByText("Loan · Bank")).toBeInTheDocument();
     expect(await screen.findByText("Trip")).toBeInTheDocument();
     expect(await screen.findByText("25% ahorrado")).toBeInTheDocument();
@@ -592,5 +593,49 @@ describe("finance S5 forms", () => {
     fireEvent.change(screen.getByLabelText(/Valor/), { target: { value: "1200" } });
     fireEvent.click(screen.getByRole("button", { name: /Valuar/ }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
+  });
+});
+
+// -- PR-3 FIX A + S6 mount (GREEN: SubscriptionRow + ediciones + PeriodSelector/charts/analysis) --
+describe("finance PR-3 FIX A + S6", () => {
+  it("monta SubscriptionRow cancelar/reactivar y ediciones Budget/Savings en sus listas", async () => {
+    server.use(
+      http.get("http://test.local/api/transactions/stats/monthly-flow", () =>
+        HttpResponse.json([
+          { month: "2026-07", income: "2000.00", expense: "800.00" },
+          { month: "2026-08", income: "2000.00", expense: "1000.00" },
+          { month: "2026-09", income: "2000.00", expense: "1200.00" },
+        ]),
+      ),
+      http.get("http://test.local/api/transactions/stats/by-category", ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get("type") === "income")
+          return HttpResponse.json([{ category_id: "c9", name: "Salario", total: "2000000.00" }]);
+        return HttpResponse.json([{ category_id: "c1", name: "Mercado", total: "1500.00" }]);
+      }),
+    );
+    renderScreens();
+    expect(await screen.findByRole("button", { name: /Cancelar/ })).toBeInTheDocument();
+    expect((await screen.findAllByRole("button", { name: "Eliminar" })).length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByRole("radio", { name: "Mes" })).toBeChecked();
+    expect(await screen.findByText("Balance")).toBeInTheDocument();
+    expect(await screen.findByText("Ahorro")).toBeInTheDocument();
+    expect(await screen.findByText("Gastos mensuales")).toBeInTheDocument();
+    expect(await screen.findByText("Mes actual frente al anterior")).toBeInTheDocument();
+    expect(await screen.findByText("Ingresos por fuente")).toBeInTheDocument();
+    expect(await screen.findByText("Análisis personal, no asesoramiento financiero.")).toBeInTheDocument();
+    expect(await screen.findByText(/Este mes gastaste/)).toBeInTheDocument();
+  });
+
+  it("PeriodSelector custom invalido bloquea agregados sin romper", async () => {
+    renderScreens();
+    const periodRegion = await screen.findByRole("region", { name: "Per\u00edodo" });
+    const custom = within(periodRegion).getByRole("radio", { name: "Personalizado" });
+    fireEvent.click(custom);
+    const from = within(periodRegion).getByLabelText("Desde");
+    fireEvent.change(from, { target: { value: "2026-09-10" } });
+    const to = within(periodRegion).getByLabelText("Hasta");
+    fireEvent.change(to, { target: { value: "2026-09-01" } });
+    expect(await within(periodRegion).findByRole("alert")).toHaveTextContent("no es v\u00e1lido");
   });
 });

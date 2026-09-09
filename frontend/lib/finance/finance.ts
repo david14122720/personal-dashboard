@@ -287,3 +287,242 @@ export function normalizeManualAmount(raw: string | null | undefined): string | 
   if (!Number.isFinite(value) || value <= 0) return null;
   return compact;
 }
+
+// -- PR-3 S6 puros (periodo + series + MoM + insights, sin JSX, sin fetch) --
+
+export type PeriodKind = "week" | "month" | "quarter" | "year" | "custom";
+export interface PeriodSel {
+  kind: PeriodKind;
+  from?: string;
+  to?: string;
+}
+
+function pad2(n: number): string {
+  return `${n}`.padStart(2, "0");
+}
+
+function toISODateLocal(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function isValidDayStr(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(y, m - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+}
+
+/** Periodo selector → rango from/to YYYY-MM-DD. custom valida from<=to y formato. */
+export function toPeriodRange(sel: PeriodSel, now: Date = new Date()): { from: string; to: string } {
+  const today = toISODateLocal(now);
+  switch (sel.kind) {
+    case "week": {
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const start = new Date(end);
+      start.setDate(end.getDate() - 6);
+      return { from: toISODateLocal(start), to: toISODateLocal(end) };
+    }
+    case "month": {
+      const y = now.getFullYear();
+      const m = now.getMonth();
+      const last = new Date(y, m + 1, 0).getDate();
+      return { from: `${y}-${pad2(m + 1)}-01`, to: `${y}-${pad2(m + 1)}-${pad2(last)}` };
+    }
+    case "quarter": {
+      const y = now.getFullYear();
+      const qStart = Math.floor(now.getMonth() / 3) * 3;
+      const last = new Date(y, qStart + 3, 0).getDate();
+      const endMonth = qStart + 2;
+      return {
+        from: `${y}-${pad2(qStart + 1)}-01`,
+        to: `${y}-${pad2(endMonth + 1)}-${pad2(last)}`,
+      };
+    }
+    case "year": {
+      const y = now.getFullYear();
+      return { from: `${y}-01-01`, to: `${y}-12-31` };
+    }
+    case "custom": {
+      const from = (sel.from ?? "").trim();
+      const to = (sel.to ?? "").trim();
+      if (!isValidDayStr(from) || !isValidDayStr(to) || from > to) {
+        throw new Error(`Invalid custom range: ${from}..${to}`);
+      }
+      return { from, to };
+    }
+    default:
+      void today;
+      throw new Error(`Unknown period kind: ${(sel as PeriodSel).kind}`);
+  }
+}
+
+export interface FlowLike {
+  month: string;
+  income: string | number;
+  expense: string | number;
+}
+
+/** Variación intermensual: delta=cur-prev, pct=null si prev==0. */
+export function toMonthOverMonth(cur: number, prev: number): { delta: number; pct: number | null } {
+  const delta = cur - prev;
+  if (prev === 0) return { delta, pct: null };
+  return { delta, pct: delta / prev };
+}
+
+/** Ahorro por mes income-expense (admite negativo, coerción solo aquí). */
+export function toSavingsSeries(flow: FlowLike[] | null | undefined): { month: string; savings: number }[] {
+  if (!flow) return [];
+  return [...flow]
+    .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0))
+    .map((row) => ({ month: row.month, savings: toNumber(row.income) - toNumber(row.expense) }));
+}
+
+/** Balance acumulado cronológico desde monthly-flow. */
+export function toBalanceSeries(flow: FlowLike[] | null | undefined): { month: string; balance: number }[] {
+  if (!flow) return [];
+  const sorted = [...flow].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  let acc = 0;
+  return sorted.map((row) => {
+    acc += toNumber(row.income) - toNumber(row.expense);
+    return { month: row.month, balance: acc };
+  });
+}
+
+/** Gasto por mes (columna expense) con coerción solo aquí. */
+export function toExpenseSeries(flow: FlowLike[] | null | undefined): { month: string; expense: number }[] {
+  if (!flow) return [];
+  return [...flow]
+    .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0))
+    .map((row) => ({ month: row.month, expense: toNumber(row.expense) }));
+}
+
+export interface MonthCompare {
+  cur: number;
+  prev: number;
+  deltaPct: number | null;
+  curMonth: string;
+  prevMonth: string;
+}
+
+/** Últimos 2 meses con datos (gasto): <2 → null. */
+export function toMonthCompare(flow: FlowLike[] | null | undefined): MonthCompare | null {
+  if (!flow || flow.length < 2) return null;
+  const sorted = [...flow].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  const prevRow = sorted[sorted.length - 2];
+  const curRow = sorted[sorted.length - 1];
+  const prev = toNumber(prevRow.expense);
+  const cur = toNumber(curRow.expense);
+  return {
+    cur,
+    prev,
+    deltaPct: prev === 0 ? null : (cur - prev) / prev,
+    curMonth: curRow.month,
+    prevMonth: prevRow.month,
+  };
+}
+
+export interface CategoryTotalLike {
+  name: string;
+  total: string | number;
+}
+
+export interface BudgetInsightLike {
+  id: string;
+  label: string;
+  spent: number;
+  amount: number;
+  pct: number;
+  status: string;
+}
+
+export interface Insight {
+  id: string;
+  kind: "mom-expense" | "savings-rate" | "recurrent" | "worst-month" | "best-month" | "avg-expense" | "budget";
+  vars: Record<string, string | number>;
+}
+
+export interface InsightsInput {
+  flow: FlowLike[] | null | undefined;
+  byCatExpense: CategoryTotalLike[] | null | undefined;
+  byCatIncome?: CategoryTotalLike[] | null | undefined;
+  budgets?: BudgetInsightLike[] | null | undefined;
+  descriptions?: string[] | null | undefined;
+}
+
+/** Insights directos (máx 6, ordenados). Recurrente v1: frecuencia description ≥3, si no concluye se omite. */
+export function toInsights(input: InsightsInput): Insight[] {
+  const flow = input.flow ? [...input.flow].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0)) : [];
+  if (flow.length === 0) return [];
+  const out: Insight[] = [];
+  const topExpense = (input.byCatExpense ?? []).reduce<CategoryTotalLike | null>((best, row) => {
+    if (!best) return row;
+    return toNumber(row.total) > toNumber(best.total) ? row : best;
+  }, null);
+  const topName = topExpense?.name ?? "—";
+  if (flow.length >= 2) {
+    const cur = toNumber(flow[flow.length - 1].expense);
+    const prev = toNumber(flow[flow.length - 2].expense);
+    const { pct } = toMonthOverMonth(cur, prev);
+    out.push({
+      id: "insight-mom-expense",
+      kind: "mom-expense",
+      vars: { pct: pct === null ? 0 : Math.round(pct * 100), cat: topName, cur, prev },
+    });
+  }
+  const last = flow[flow.length - 1];
+  const lastIncome = toNumber(last.income);
+  const lastExpense = toNumber(last.expense);
+  if (lastIncome > 0) {
+    const saved = lastIncome - lastExpense;
+    out.push({
+      id: "insight-savings-rate",
+      kind: "savings-rate",
+      vars: { n: Math.round((saved / lastIncome) * 100), saved, income: lastIncome },
+    });
+  }
+  const descs = (input.descriptions ?? []).map((d) => d.trim()).filter(Boolean);
+  if (descs.length > 0) {
+    const freq = new Map<string, number>();
+    for (const d of descs) freq.set(d, (freq.get(d) ?? 0) + 1);
+    let bestName = "";
+    let bestCount = 0;
+    for (const [name, count] of freq) {
+      if (count > bestCount) {
+        bestCount = count;
+        bestName = name;
+      }
+    }
+    if (bestCount >= 3) {
+      out.push({ id: "insight-recurrent", kind: "recurrent", vars: { name: bestName, count: bestCount } });
+    }
+  }
+  let worst = flow[0];
+  let best = flow[0];
+  let bestSaving = toNumber(flow[0].income) - toNumber(flow[0].expense);
+  let sum = 0;
+  for (const row of flow) {
+    const exp = toNumber(row.expense);
+    sum += exp;
+    if (exp > toNumber(worst.expense)) worst = row;
+    const saving = toNumber(row.income) - toNumber(row.expense);
+    if (saving > bestSaving) {
+      bestSaving = saving;
+      best = row;
+    }
+  }
+  out.push({ id: "insight-worst-month", kind: "worst-month", vars: { mes: worst.month, amount: toNumber(worst.expense) } });
+  out.push({ id: "insight-best-month", kind: "best-month", vars: { mes: best.month, amount: bestSaving } });
+  out.push({ id: "insight-avg-expense", kind: "avg-expense", vars: { amount: Math.round(sum / flow.length) } });
+  const flagged = (input.budgets ?? [])
+    .filter((b) => b.status === "over" || b.status === "warn")
+    .sort((a, b) => b.pct - a.pct)[0];
+  if (flagged) {
+    out.push({
+      id: "insight-budget",
+      kind: "budget",
+      vars: { n: Math.round(flagged.pct * 100), label: flagged.label, spent: flagged.spent, amount: flagged.amount },
+    });
+  }
+  return out.slice(0, 6);
+}

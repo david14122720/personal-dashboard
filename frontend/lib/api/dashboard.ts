@@ -125,13 +125,13 @@ export function useMonthlyFlow(from: string | null, to: string | null) {
   );
 }
 
-export function useSpendByCategory(from: string | null, to: string | null) {
-  const key = from && to ? `dashboard/by-category?from=${from}&to=${to}` : null;
+export function useSpendByCategory(from: string | null, to: string | null, type: "income" | "expense" = "expense") {
+  const key = from && to ? `dashboard/by-category?from=${from}&to=${to}&type=${type}` : null;
   return useSWR<CategoryTotalWire[]>(
     key,
     () =>
       apiGet<CategoryTotalWire[]>(
-        `/transactions/stats/by-category?from=${from}&to=${to}&type=expense`,
+        `/transactions/stats/by-category?from=${from}&to=${to}&type=${type}`,
       ),
     config,
   );
