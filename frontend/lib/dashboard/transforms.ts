@@ -346,7 +346,8 @@ export function toUpcomingPayments(
 
 /**
  * Vencidas: tasks `due_date < hoy` no completadas + deudas `active` con `due_date < hoy`
- * + events `payment_due` con `starts_at < ahora`. Orden asc, desempate deudas>events>tasks.
+ * + events `payment_due` con `starts_at` en día anterior a hoy (pasado estricto por día,
+ * igual que tasks/debts: hoy queda solo en Próximos, nunca en ambas). Orden asc, desempate deudas>events>tasks.
  */
 export function toOverdueItems(
   tasks: OverdueTaskLike[] | null | undefined,
@@ -395,7 +396,8 @@ export function toOverdueItems(
     if (event.kind !== "payment_due") continue;
     const at = parseDueDate(event.starts_at);
     if (!at) continue;
-    if (at.getTime() >= now.getTime()) continue;
+    // Pasado estricto por día: hoy (aunque la hora ya pasó) queda en Próximos, no en Vencidas.
+    if (at >= start) continue;
     out.push({
       id: event.id,
       kind: "event",
