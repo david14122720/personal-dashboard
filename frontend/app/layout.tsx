@@ -22,15 +22,15 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Personal Dashboard",
-  description: "Private personal control center: finance, habits, goals, and notes.",
+  title: "Panel Personal",
+  description: "Centro de control personal privado: finanzas, hábitos, metas y notas.",
 };
 
 const FOUC_GUARD = `(function(){try{var t=localStorage.getItem("dashboard-theme");if(t==="light"){document.documentElement.classList.add("light");}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${display.variable} ${body.variable} ${mono.variable}`}>
+    <html lang="es" className={`${display.variable} ${body.variable} ${mono.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: FOUC_GUARD }} />
       </head>

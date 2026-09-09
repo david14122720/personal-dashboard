@@ -37,13 +37,13 @@ describe("login screen auth flow", () => {
   it("signs in, stores the token, and routes to the dashboard", async () => {
     render(<LoginPage />);
 
-    fireEvent.change(screen.getByLabelText(/email/i), {
+    fireEvent.change(screen.getByLabelText("Correo electrónico"), {
       target: { value: "you@example.com" },
     });
-    fireEvent.change(screen.getByLabelText(/password/i), {
+    fireEvent.change(screen.getByLabelText("Contraseña"), {
       target: { value: "secret" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar sesión" }));
 
     await waitFor(() => {
       expect(localStorage.getItem("dashboard-token")).toBe("tok-123");
@@ -54,13 +54,13 @@ describe("login screen auth flow", () => {
   it("shows an alert on invalid credentials without storing a token", async () => {
     render(<LoginPage />);
 
-    fireEvent.change(screen.getByLabelText(/email/i), {
+    fireEvent.change(screen.getByLabelText("Correo electrónico"), {
       target: { value: "you@example.com" },
     });
-    fireEvent.change(screen.getByLabelText(/password/i), {
+    fireEvent.change(screen.getByLabelText("Contraseña"), {
       target: { value: "wrong" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar sesión" }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert")).toBeInTheDocument();

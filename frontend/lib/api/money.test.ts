@@ -34,7 +34,8 @@ describe("formatMoney (locale/currency preferences)", () => {
     expect(rendered).toContain("123.45");
   });
 
-  it("falls back gracefully for unknown currency codes", () => {
-    expect(() => formatMoney("10.00", { locale: "en-US", currency: "XX1" })).not.toThrow();
+  it("falls back to Spanish (es-CO/COP) when Intl throws", () => {
+    const rendered = formatMoney("1500000.00", { locale: "xx-YY", currency: "XX1" });
+    expect(rendered).toContain("1.500.000");
   });
 });

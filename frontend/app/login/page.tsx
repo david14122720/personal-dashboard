@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getToken, login } from "@/lib/api/client";
+import { t } from "@/lib/i18n";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -25,7 +26,7 @@ export default function LoginPage() {
       await login(email.trim(), password);
       router.replace("/dashboard/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed. Try again.");
+      setError(err instanceof Error ? err.message : t("login.error"));
     } finally {
       setPending(false);
     }
@@ -40,10 +41,10 @@ export default function LoginPage() {
         <h1 id="login-heading" className="font-display text-2xl font-semibold tracking-wide">
           Control <span className="text-signal">Deck</span>
         </h1>
-        <p className="mt-1 text-sm text-instrument/70">Sign in to your personal dashboard.</p>
+        <p className="mt-1 text-sm text-instrument/70">{t("login.subtitle")}</p>
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
           <label className="flex flex-col gap-1 text-sm">
-            Email
+            {t("login.email")}
             <input
               type="email"
               autoComplete="email"
@@ -55,7 +56,7 @@ export default function LoginPage() {
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            Password
+            {t("login.password")}
             <input
               type="password"
               autoComplete="current-password"
@@ -76,7 +77,7 @@ export default function LoginPage() {
             disabled={pending}
             className="rounded-md bg-signal px-3 py-2 font-display text-sm font-semibold tracking-wide text-deck transition-opacity disabled:opacity-60"
           >
-            {pending ? "Signing in…" : "Sign in"}
+            {pending ? t("login.pending") : t("login.submit")}
           </button>
         </form>
       </section>
