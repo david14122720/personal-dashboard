@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
-import { buildNextLayout, debtsKey, eventsKey, isWidgetVisible, resolveDashboardLayout, subscriptionsKey, tasksKey, useDebts, useEvents, useGoals, useSavingsGoals, useSubscriptions, useTasks, useUpdateLayout } from "./dashboard";
+import { buildNextLayout, debtsKey, eventsKey, isWidgetVisible, resolveDashboardLayout, subscriptionsKey, tasksKey, useDebts, useEvents, useGoals, useSavingsGoals, useSpendByCategory, useSubscriptions, useTasks, useUpdateLayout } from "./dashboard";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 const seen: string[] = [];
@@ -102,5 +102,40 @@ describe("dashboard hooks p8-pr2", () => {
     shell(h(Failer, null));
     fireEvent.click(screen.getByRole("button", { name: "fail" }));
     await waitFor(() => expect(threw).toBe(true));
+  });
+});
+
+// -- PR-3 S6 api-wires RED: useSpendByCategory(from,to,type) con type en key --
+describe("useSpendByCategory type param (PR-3 RED)", () => {
+  const byCatUrls: string[] = [];
+  const byCatServer = setupServer(
+    http.get("http://test.local/api/transactions/stats/by-category", ({ request }) => {
+      byCatUrls.push(request.url);
+      const url = new URL(request.url);
+      const type = url.searchParams.get("type");
+      if (type === "income") return HttpResponse.json([{ category_id: "c9", name: "Salario", total: "2000000.00" }]);
+      return HttpResponse.json([{ category_id: "c1", name: "Mercado", total: "500.00" }]);
+    }),
+  );
+  beforeAll(() => byCatServer.listen());
+  afterEach(() => { byCatServer.resetHandlers(); byCatUrls.length = 0; });
+  afterAll(() => byCatServer.close());
+  function ExpenseProbe() {
+    const { data } = useSpendByCategory("2026-09-01", "2026-09-30");
+    return h("output", null, data ? data[0].name : "loading");
+  }
+  function IncomeProbe() {
+    const { data } = useSpendByCategory("2026-09-01", "2026-09-30", "income");
+    return h("output", null, data ? data[0].name : "loading");
+  }
+  it("defaults to expense preserving legacy behavior", async () => {
+    shell(h(ExpenseProbe, null));
+    expect(await screen.findByText("Mercado")).toBeInTheDocument();
+    expect(byCatUrls.some((u) => u.includes("type=expense"))).toBe(true);
+  });
+  it("fetches income slice with type in key and URL", async () => {
+    shell(h(IncomeProbe, null));
+    expect(await screen.findByText("Salario")).toBeInTheDocument();
+    expect(byCatUrls.some((u) => u.includes("type=income"))).toBe(true);
   });
 });
