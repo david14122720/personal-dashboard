@@ -8,5 +8,5 @@ testing:
       layer: unit/integration
     - name: frontend
       path: frontend
-      command: npm test
+      command: pnpm test
       layer: unit/component

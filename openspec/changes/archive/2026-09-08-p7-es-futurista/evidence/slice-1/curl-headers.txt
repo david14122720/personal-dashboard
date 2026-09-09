@@ -1,0 +1,15 @@
+curl -sI --max-time 15 http://192.168.50.120:8055/
+captured: 2026-09-09T00:43:59Z (UTC)
+exit: 0
+
+HTTP/1.1 200 OK
+content-type: text/html
+accept-ranges: bytes
+last-modified: Tue, 08 Sep 2026 23:28:25 GMT
+content-length: 8124
+x-request-id: 5b957251-f2c7-437c-b627-dcbd314cb175
+date: Wed, 09 Sep 2026 00:43:59 GMT
+
+banned-token grep (case-insensitive) over header block:
+  attribution-reporting|browsing-topics|private-aggregation|private-state-token-issuance|private-state-token-redemption|join-ad-interest-group|run-ad-auction -> 0 matches
+permissions-policy grep -> 0 matches (header ABSENT, not pruned value)
