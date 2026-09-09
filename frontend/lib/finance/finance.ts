@@ -10,11 +10,14 @@
 
 import { toNumber } from "@/lib/api/money";
 import type {
+  CategoryWire,
   DebtWire,
   SavingsGoalWire,
   SubscriptionWire,
   TransactionFilters,
   TransactionWire,
+  TransferFilters,
+  TransferHistoryWire,
 } from "@/lib/api/finance";
 import type { AccountWire } from "@/lib/api/dashboard";
 
@@ -195,4 +198,81 @@ export function toSavingsViews(rows: SavingsGoalWire[] | null | undefined): Savi
       completed: row.is_completed,
     };
   });
+}
+
+// -- S1 (captura manual en COP, sin UUIDs visibles) --
+
+export interface TransferRow {
+  id: string;
+  occurred_on: string;
+  from_account_id: string;
+  to_account_id: string;
+  description: string;
+  amount: number;
+  currency: string;
+}
+
+/** Coerce one transfer-history page to render-ready rows (numbers only). */
+export function toTransferRows(
+  items: TransferHistoryWire[] | null | undefined,
+): TransferRow[] {
+  if (!items) return [];
+  return items.map((item) => ({
+    id: item.transfer_group_id,
+    occurred_on: item.occurred_on,
+    from_account_id: item.from_account_id,
+    to_account_id: item.to_account_id,
+    description: item.description ?? "—",
+    amount: toNumber(item.amount),
+    currency: item.currency,
+  }));
+}
+
+/** Stable React key that resets transfer pagination when filters change. */
+export function transferKey(filters: TransferFilters): string {
+  return [filters.from ?? "", filters.to ?? "", String(filters.limit ?? "")].join("|");
+}
+
+export interface NamedOption {
+  id: string;
+  name: string;
+}
+
+/** Accounts/categories as name-sorted selector options (never raw UUID inputs). */
+export function toAccountOptions(
+  rows: { id: string; name: string }[] | null | undefined,
+): NamedOption[] {
+  if (!rows) return [];
+  return [...rows]
+    .map((row) => ({ id: row.id, name: row.name }))
+    .sort((a, b) => a.name.localeCompare(b.name, "es"));
+}
+
+export function toCategoryOptions(
+  rows: CategoryWire[] | null | undefined,
+): NamedOption[] {
+  if (!rows) return [];
+  return [...rows]
+    .map((row) => ({ id: row.id, name: row.name }))
+    .sort((a, b) => a.name.localeCompare(b.name, "es"));
+}
+
+/**
+ * Normalize a hand-typed COP amount to a wire string. Accepts digits with an
+ * optional decimal part of up to 2 places (e.g. `"150000"`, `"150000.50"`).
+ * Returns the trimmed string for the API, or null when the input is not a
+ * positive amount (the form then shows a Spanish inline error).
+ */
+export function normalizeManualAmount(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim().replace(/\s+/g, "");
+  if (!trimmed) return null;
+  // Allow thousand separators the user may type by hand (dots/commas) only
+  // when they are unambiguous: strip plain thousand dots for COP, keep the
+  // decimal part. Keep it simple: remove commas, then validate shape.
+  const compact = trimmed.replace(/,/g, "");
+  if (!/^\d+(\.\d{1,2})?$/.test(compact)) return null;
+  const value = Number(compact);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return compact;
 }

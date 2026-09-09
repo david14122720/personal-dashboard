@@ -167,3 +167,31 @@ export async function apiGet<T>(path: string, init: RequestInit = {}): Promise<T
   }
   return (await res.json()) as T;
 }
+
+/**
+ * Authenticated POST with a JSON body. Reuses `apiFetch` (Bearer injection
+ * + single-flight 401) and `toApiError` for failures. Money travels as
+ * decimal strings; this helper never coerces amounts.
+ */
+export async function apiPost<T>(path: string, body: unknown, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await apiFetch(path, { ...init, method: "POST", headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    throw await toApiError(res);
+  }
+  return (await res.json()) as T;
+}
+
+/**
+ * Authenticated DELETE. Reuses `apiFetch` + `toApiError`. A 204 (no content)
+ * resolves to void without parsing a body.
+ */
+export async function apiDelete(path: string, init: RequestInit = {}): Promise<void> {
+  const res = await apiFetch(path, { ...init, method: "DELETE" });
+  if (!res.ok) {
+    throw await toApiError(res);
+  }
+}

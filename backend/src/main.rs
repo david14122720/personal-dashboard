@@ -54,7 +54,8 @@ fn api_routes() -> Router<AppState> {
         .route(
             "/accounts/{id}",
             get(routes::accounts::get_account_handler)
-                .patch(routes::accounts::patch_account_handler),
+                .patch(routes::accounts::patch_account_handler)
+                .delete(routes::accounts::delete_account_handler),
         )
         .route(
             "/transactions",
@@ -76,7 +77,12 @@ fn api_routes() -> Router<AppState> {
         )
         .route(
             "/transfers",
-            post(routes::transfers::create_transfer_handler),
+            post(routes::transfers::create_transfer_handler)
+                .get(routes::transfers::list_transfers_handler),
+        )
+        .route(
+            "/categories",
+            get(routes::categories::list_categories_handler),
         )
         .route(
             "/budgets",

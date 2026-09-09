@@ -4,13 +4,21 @@ import { useState } from "react";
 import EmptyState from "@/components/ui/EmptyState";
 import {
   fetchTransactionsPage,
+  useFinanceCategories,
   useTransactionsPage,
   type TransactionFilters,
   type TransactionWire,
 } from "@/lib/api/finance";
+import { useAccounts } from "@/lib/api/dashboard";
 import { formatMoney } from "@/lib/api/money";
 import { t } from "@/lib/i18n";
-import { ledgerKey, toLedgerRows, type LedgerRow } from "@/lib/finance/finance";
+import {
+  ledgerKey,
+  toAccountOptions,
+  toCategoryOptions,
+  toLedgerRows,
+  type LedgerRow,
+} from "@/lib/finance/finance";
 
 /**
  * Transactions ledger: filterable table with keyset cursor pagination.
@@ -54,11 +62,19 @@ function LedgerFilters({
   onChange,
   onApply,
   onClear,
+  accounts,
+  categories,
+  accountsLoading,
+  categoriesLoading,
 }: {
   draft: LedgerDraft;
   onChange: (next: LedgerDraft) => void;
   onApply: () => void;
   onClear: () => void;
+  accounts: { id: string; name: string }[];
+  categories: { id: string; name: string }[];
+  accountsLoading: boolean;
+  categoriesLoading: boolean;
 }) {
   return (
     <form
@@ -103,24 +119,38 @@ function LedgerFilters({
         </select>
       </label>
       <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        {t("finance.accountId")}
-        <input
-          aria-label={t("finance.accountId")}
-          placeholder="uuid"
+        {t("finance.account")}
+        <select
+          aria-label={t("finance.account")}
           className={inputClass}
           value={draft.account_id}
           onChange={(event) => onChange({ ...draft, account_id: event.target.value })}
-        />
+        >
+          <option value="">{t("finance.allAccounts")}</option>
+          {accountsLoading ? <option value="" disabled>{t("common.loading")}</option> : null}
+          {accounts.map((account) => (
+            <option key={account.id} value={account.id}>
+              {account.name}
+            </option>
+          ))}
+        </select>
       </label>
       <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        {t("finance.categoryId")}
-        <input
-          aria-label={t("finance.categoryId")}
-          placeholder="uuid"
+        {t("finance.category")}
+        <select
+          aria-label={t("finance.category")}
           className={inputClass}
           value={draft.category_id}
           onChange={(event) => onChange({ ...draft, category_id: event.target.value })}
-        />
+        >
+          <option value="">{t("finance.allCategories")}</option>
+          {categoriesLoading ? <option value="" disabled>{t("common.loading")}</option> : null}
+          {categories.map((category) => (
+            <option key={category.id} value={category.id}>
+              {category.name}
+            </option>
+          ))}
+        </select>
       </label>
       <div className="flex items-end gap-2">
         <button
@@ -274,6 +304,12 @@ function LedgerPages({ filters, locale }: { filters: TransactionFilters; locale:
 export default function TransactionsLedger({ locale }: { locale: string }) {
   const [draft, setDraft] = useState<LedgerDraft>(EMPTY_DRAFT);
   const [applied, setApplied] = useState<TransactionFilters>({ limit: 50 });
+  const accountsQuery = useAccounts();
+  const categoriesQuery = useFinanceCategories();
+  const accounts = toAccountOptions(
+    (accountsQuery.data ?? []).map((row) => ({ id: row.id, name: row.name })),
+  );
+  const categories = toCategoryOptions(categoriesQuery.data ?? []);
 
   return (
     <section aria-label={t("finance.ledgerRegion")} className="rounded-xl border border-hull bg-hull/40 p-5">
@@ -288,6 +324,10 @@ export default function TransactionsLedger({ locale }: { locale: string }) {
             setDraft(EMPTY_DRAFT);
             setApplied({ limit: 50 });
           }}
+          accounts={accounts}
+          categories={categories}
+          accountsLoading={accountsQuery.isLoading}
+          categoriesLoading={categoriesQuery.isLoading}
         />
       </div>
       <div className="mt-4">

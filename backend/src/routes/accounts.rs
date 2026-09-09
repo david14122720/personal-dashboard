@@ -576,6 +576,70 @@ pub async fn patch_account_handler(
         .ok_or(AppError::NotFound)
 }
 
+// -- S1 (captura manual): borrado fisico de cuentas sin movimientos --
+
+const DELETE_ACCOUNT_SQL: &str = "DELETE FROM accounts WHERE id=$1 AND user_id=$2";
+const ACCOUNT_OWNERSHIP_CHECK_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
+/// Movements that block a physical delete: primary legs plus card-linked
+/// purchases. Scoped by `user_id` so foreign activity never blocks.
+const ACCOUNT_MOVEMENT_COUNT_SQL: &str = "SELECT COUNT(*) FROM transactions WHERE user_id=$1 AND (account_id=$2 OR credit_card_account_id=$2)";
+
+fn map_account_delete_err(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db) = &e {
+        // `account_id` is ON DELETE RESTRICT: a movement created between the
+        // pre-check and the DELETE surfaces here. Map it to the same clear
+        // 409 as the pre-check instead of leaking a 500.
+        if db.code().as_deref() == Some("23503") {
+            return AppError::Conflict(
+                "account has movements and cannot be deleted".into(),
+            );
+        }
+    }
+    AppError::Internal
+}
+
+/// Delete an owned account (204). Physical delete only when the account has
+/// no movements; otherwise 409 with a clear message (mirrors the
+/// debts/savings physical-delete convention: owned id missing -> 404, never
+/// leaking foreign existence). Only COP is used; no conversion applies.
+pub async fn delete_account_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let owned: Option<Uuid> = sqlx::query_scalar(ACCOUNT_OWNERSHIP_CHECK_SQL)
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if owned.is_none() {
+        return Err(AppError::NotFound);
+    }
+    let movements: i64 = sqlx::query_scalar(ACCOUNT_MOVEMENT_COUNT_SQL)
+        .bind(user_id)
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if movements > 0 {
+        return Err(AppError::Conflict(
+            "account has movements and cannot be deleted".into(),
+        ));
+    }
+    let res = sqlx::query(DELETE_ACCOUNT_SQL)
+        .bind(id)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(map_account_delete_err)?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,6 +768,28 @@ mod tests {
         assert!(
             GET_ACCOUNT_SQL.contains("id=$1 AND user_id=$2"),
             "detail lookup must scope id+user_id, got: {GET_ACCOUNT_SQL}"
+        );
+    }
+
+    #[test]
+    fn delete_sql_scopes_and_blocks_movements() {
+        for sql in [
+            DELETE_ACCOUNT_SQL,
+            ACCOUNT_OWNERSHIP_CHECK_SQL,
+            ACCOUNT_MOVEMENT_COUNT_SQL,
+        ] {
+            assert!(
+                sql.contains("user_id"),
+                "account delete SQL must scope by user_id, got: {sql}"
+            );
+        }
+        assert!(
+            DELETE_ACCOUNT_SQL.contains("id=$1 AND user_id=$2"),
+            "delete must scope id+user_id, got: {DELETE_ACCOUNT_SQL}"
+        );
+        assert!(
+            ACCOUNT_MOVEMENT_COUNT_SQL.contains("credit_card_account_id"),
+            "movement guard must cover card-linked purchases, got: {ACCOUNT_MOVEMENT_COUNT_SQL}"
         );
     }
 
@@ -1120,4 +1206,99 @@ mod tests {
         assert_eq!(got.statement_balance, Some(Decimal::new(-15000, 2)));
         cleanup_user(&pool, user_id).await;
     }
+
+        #[tokio::test]
+        async fn delete_empty_account_is_204() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP delete_empty_account_is_204: no DATABASE_URL");
+                return;
+            };
+            let (state, headers, user_id) = db_state(&pool).await;
+            let account_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Temp','cash') RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed account");
+            let status = delete_account_handler(State(state.clone()), headers.clone(), Path(account_id))
+                .await
+                .expect("delete empty is 204");
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let gone: Option<Uuid> =
+                sqlx::query_scalar("SELECT id FROM accounts WHERE id=$1")
+                    .bind(account_id)
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("probe delete");
+            assert!(gone.is_none());
+            cleanup_user(&pool, user_id).await;
+        }
+
+        #[tokio::test]
+        async fn delete_account_with_movements_is_409() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP delete_account_with_movements_is_409: no DATABASE_URL");
+                return;
+            };
+            let (state, headers, user_id) = db_state(&pool).await;
+            let account_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed account");
+            sqlx::query(
+                "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on) VALUES ($1,$2,'expense',10,'2026-09-01')",
+            )
+            .bind(user_id)
+            .bind(account_id)
+            .execute(&pool)
+            .await
+            .expect("seed movement");
+            let err = delete_account_handler(State(state.clone()), headers.clone(), Path(account_id))
+                .await
+                .expect_err("account with movements must be 409");
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::CONFLICT
+            );
+            let still: Option<Uuid> =
+                sqlx::query_scalar("SELECT id FROM accounts WHERE id=$1 AND user_id=$2")
+                    .bind(account_id)
+                    .bind(user_id)
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("account must survive blocked delete");
+            assert!(still.is_some());
+            cleanup_user(&pool, user_id).await;
+        }
+
+        #[tokio::test]
+        async fn delete_foreign_account_is_404() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP delete_foreign_account_is_404: no DATABASE_URL");
+                return;
+            };
+            let (state_a, _, user_a) = db_state(&pool).await;
+            let (state_b, headers_b, user_b) = db_state(&pool).await;
+            let account_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Mine','cash') RETURNING id",
+            )
+            .bind(user_a)
+            .fetch_one(&pool)
+            .await
+            .expect("seed account");
+            let err = delete_account_handler(State(state_b.clone()), headers_b, Path(account_id))
+                .await
+                .expect_err("foreign delete must be 404");
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::NOT_FOUND
+            );
+            let _ = state_a;
+            cleanup_user(&pool, user_a).await;
+            cleanup_user(&pool, user_b).await;
+        }
 }

@@ -11,7 +11,7 @@
  */
 
 import useSWR, { type SWRConfiguration } from "swr";
-import { apiFetch, apiGet, toApiError } from "@/lib/api/client";
+import { apiDelete, apiFetch, apiGet, apiPost, toApiError } from "@/lib/api/client";
 
 export type HabitLogStatus = "done" | "missed" | "skipped";
 
@@ -149,4 +149,144 @@ export async function patchTaskStatus(taskId: string, status: string): Promise<T
   });
   if (!res.ok) throw await toApiError(res);
   return (await res.json()) as TaskWire;
+}
+
+/* -- S2 (Hoy accionable): CRUD mínimo sobre apiPost/apiDelete/apiFetch -- */
+
+
+function stripEmptyStrings<T extends Record<string, unknown>>(input: T): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && value.trim() === "") continue;
+    body[key] = value;
+  }
+  return body;
+}
+
+export interface CreateTaskInput {
+  title: string;
+  description?: string | null;
+  priority?: string;
+  status?: string;
+  due_date?: string | null;
+  goal_id?: string | null;
+  sort_order?: number;
+}
+
+export type UpdateTaskInput = Partial<CreateTaskInput>;
+
+/** Create a task (`POST /tasks`). Title is required; goal travels as id. */
+export function createTask(input: CreateTaskInput): Promise<TaskWire> {
+  return apiPost<TaskWire>("/tasks", stripEmptyStrings({ ...input }));
+}
+
+/** Patch a task (`PATCH /tasks/{id}`). Rejects empty patches upstream (422). */
+export async function updateTask(taskId: string, patch: UpdateTaskInput): Promise<TaskWire> {
+  const res = await apiFetch(`/tasks/${taskId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(stripEmptyStrings({ ...patch })),
+  });
+  if (!res.ok) throw await toApiError(res);
+  return (await res.json()) as TaskWire;
+}
+
+/** Delete a task (`DELETE /tasks/{id}`). */
+export function deleteTask(taskId: string): Promise<void> {
+  return apiDelete(`/tasks/${taskId}`);
+}
+
+export interface CreateEventInput {
+  title: string;
+  description?: string | null;
+  kind?: string;
+  starts_at: string;
+  ends_at?: string | null;
+  all_day?: boolean;
+  location?: string | null;
+}
+
+export type UpdateEventInput = Partial<CreateEventInput>;
+
+/** Create an event (`POST /events`). `starts_at` must be RFC 3339. */
+export function createEvent(input: CreateEventInput): Promise<EventWire> {
+  return apiPost<EventWire>("/events", stripEmptyStrings({ ...input }));
+}
+
+/** Patch an event (`PATCH /events/{id}`). */
+export async function updateEvent(eventId: string, patch: UpdateEventInput): Promise<EventWire> {
+  const res = await apiFetch(`/events/${eventId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(stripEmptyStrings({ ...patch })),
+  });
+  if (!res.ok) throw await toApiError(res);
+  return (await res.json()) as EventWire;
+}
+
+/** Delete an event (`DELETE /events/{id}`). */
+export function deleteEvent(eventId: string): Promise<void> {
+  return apiDelete(`/events/${eventId}`);
+}
+
+export interface CreateNoteInput {
+  title: string;
+  body?: string | null;
+  is_pinned?: boolean;
+}
+
+export type UpdateNoteInput = Partial<CreateNoteInput>;
+
+/** Create a note (`POST /notes`). */
+export function createNote(input: CreateNoteInput): Promise<NoteWire> {
+  return apiPost<NoteWire>("/notes", stripEmptyStrings({ ...input }));
+}
+
+/** Patch a note (`PATCH /notes/{id}`) — also backs pin/unpin. */
+export async function updateNote(noteId: string, patch: UpdateNoteInput): Promise<NoteWire> {
+  const res = await apiFetch(`/notes/${noteId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(stripEmptyStrings({ ...patch })),
+  });
+  if (!res.ok) throw await toApiError(res);
+  return (await res.json()) as NoteWire;
+}
+
+/** Delete a note (`DELETE /notes/{id}`). */
+export function deleteNote(noteId: string): Promise<void> {
+  return apiDelete(`/notes/${noteId}`);
+}
+
+export interface CreateGoalInput {
+  name: string;
+  description?: string | null;
+  area: string;
+  due_date?: string | null;
+  status?: string;
+  color?: string | null;
+}
+
+export type UpdateGoalInput = Partial<CreateGoalInput>;
+
+/** Create a goal (`POST /goals`). `area` picks the category by name. */
+export function createGoal(input: CreateGoalInput): Promise<GoalWire> {
+  return apiPost<GoalWire>("/goals", stripEmptyStrings({ ...input }));
+}
+
+/** Patch a goal (`PATCH /goals/{id}`). Never sends trigger-owned `progress`. */
+export async function updateGoal(goalId: string, patch: UpdateGoalInput): Promise<GoalWire> {
+  const res = await apiFetch(`/goals/${goalId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(stripEmptyStrings({ ...patch })),
+  });
+  if (!res.ok) throw await toApiError(res);
+  return (await res.json()) as GoalWire;
+}
+
+/** Delete a goal (`DELETE /goals/{id}`). */
+export function deleteGoal(goalId: string): Promise<void> {
+  return apiDelete(`/goals/${goalId}`);
 }

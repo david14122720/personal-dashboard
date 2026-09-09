@@ -38,7 +38,7 @@ Debe poder mostrar:
 * Próximos eventos.
 * Progreso de metas.
 
-También debe existir una sección de gráficos que permita visualizar rápidamente la evolución de mis finanzas y progreso personal.
+También debe existir una sección de gráficos que permita visualizar rápidamente la evolución de mis finanzas y progreso personal. Decisión: dashboard completo desde el arranque con los 14 widgets listados más gráficos, sin versión recortada inicial.
 
 El dashboard debe poder personalizarse para mostrar u ocultar diferentes secciones.
 
@@ -47,6 +47,8 @@ El dashboard debe poder personalizarse para mostrar u ocultar diferentes seccion
 # Finanzas personales
 
 Debe existir un módulo completo para gestionar mis finanzas personales.
+
+Decisión: todo se maneja solo en pesos colombianos (COP), sin multi-moneda ni conversiones. Toda carga es 100% manual: los montos se escriben a mano y cuentas/categorías/métodos se eligen por nombre en selectores simples, sin UUIDs ni IDs técnicos visibles.
 
 ## Cuentas
 
@@ -62,13 +64,13 @@ Por ejemplo:
 * Inversiones.
 * Otras cuentas.
 
-Cada cuenta debe mostrar su saldo actual.
+Cada cuenta debe mostrar su saldo actual. Decisión: el saldo inicial se carga manual y luego se mueve con los movimientos, pero el saldo es editable libre y el usuario puede corregirlo directo cuando quiera.
 
 Debe poder consultar el historial de movimientos de cada cuenta.
 
 ## Ingresos
 
-Debe permitir registrar ingresos.
+Debe permitir registrar ingresos de forma manual y simple. Yo mismo ingreso a mano el monto que gané. Nunca debe pedirse ni mostrarse UUIDs ni IDs técnicos: la cuenta y la categoría se eligen por nombre en un selector simple.
 
 Cada ingreso puede incluir:
 
@@ -90,7 +92,7 @@ Por ejemplo:
 
 ## Gastos
 
-Debe permitir registrar gastos.
+Debe permitir registrar gastos de forma manual y simple. Yo mismo ingreso a mano el monto que gasté. Nunca debe pedirse ni mostrarse UUIDs ni IDs técnicos: la cuenta, la categoría y el método de pago se eligen por nombre en selectores simples.
 
 Cada gasto debe incluir:
 
@@ -120,7 +122,7 @@ Por ejemplo:
 
 ## Transferencias
 
-Debe existir una forma de registrar transferencias entre mis propias cuentas.
+Debe existir una forma simple y manual de registrar transferencias entre mis propias cuentas. Elijo origen y destino por nombre y escribo el monto a mano. Nunca debe pedirse ni mostrarse UUIDs ni IDs técnicos.
 
 Una transferencia no debe contabilizarse como un ingreso o gasto real.
 
@@ -147,7 +149,7 @@ El sistema debe mostrar:
 * Dinero restante.
 * Porcentaje utilizado.
 
-Debe advertir cuando me esté acercando o superando un presupuesto.
+Debe advertir cuando me esté acercando o superando un presupuesto. Decisión: el presupuesto es solo aviso visual (barras/colores), nunca bloquea ni impide registrar gastos.
 
 ---
 
@@ -251,7 +253,7 @@ Cada deuda puede incluir:
 
 Debe mostrar gráficamente el progreso de pago.
 
-También debe poder registrar abonos y actualizar automáticamente el saldo pendiente.
+También debe poder registrar abonos y actualizar automáticamente el saldo pendiente. Decisión: modelo simple — debo, aboné, falta. Sin cuotas enredadas ni intereses compuestos.
 
 ---
 
@@ -269,7 +271,7 @@ Debe permitir registrar:
 * Compras.
 * Pagos.
 
-Debe mostrar visualmente cuánto del límite estoy utilizando.
+Debe mostrar visualmente cuánto del límite estoy utilizando. Decisión: la tarjeta se maneja como una cuenta con límite, saldo usado/disponible, fecha de corte y pago, y alerta de uso alto.
 
 También debe advertir cuando el uso de una tarjeta esté alcanzando niveles elevados.
 
@@ -302,7 +304,7 @@ Cada suscripción debe incluir:
 
 Debe calcular cuánto gasto mensualmente y anualmente en suscripciones.
 
-Debe mostrar los próximos cobros.
+Debe mostrar los próximos cobros. Decisión: todo lo recurrente es manual, nada se genera ni se cobra automático; el usuario confirma cada movimiento a mano.
 
 ---
 
@@ -326,7 +328,9 @@ Debe mostrar:
 
 **Patrimonio neto = activos - obligaciones**
 
-Debe existir un gráfico para visualizar la evolución del patrimonio a través del tiempo.
+Decisión: patrimonio simple, solo el número (activos - deudas) con carga manual de activos. Sin desglose complejo ni evolución por ahora; el gráfico de evolución no es requerido en esta versión.
+
+Gráfico de evolución del patrimonio: NO requerido en esta versión (patrimonio simple, solo el número).
 
 ---
 
@@ -373,7 +377,7 @@ La interfaz debe permitir marcar:
 * No cumplido.
 * Omitido, cuando corresponda.
 
-Debe ser extremadamente rápido registrar los hábitos del día.
+Debe ser extremadamente rápido registrar los hábitos del día. Decisión: check diario simple (cumplido / no cumplido / omitido).
 
 ---
 
@@ -403,7 +407,7 @@ Debe permitir visualizar:
 * Cantidad de recaídas o días no cumplidos.
 * Evolución a lo largo del tiempo.
 
-No debe utilizar un lenguaje que genere culpa o vergüenza cuando no se cumpla un objetivo.
+No debe utilizar un lenguaje que genere culpa o vergüenza cuando no se cumpla un objetivo. Decisión: se mantiene así, solo progreso y patrones, con días cumplidos, racha, mejor racha y porcentaje de cumplimiento.
 
 Debe enfocarse en mostrar progreso y ayudarme a identificar patrones.
 
@@ -421,7 +425,7 @@ Cada día debe indicar visualmente:
 
 Debe poder consultar cualquier fecha anterior.
 
-También debe existir una vista de calendario mensual similar a un "heatmap" para identificar patrones de constancia.
+También debe existir una vista de calendario mensual similar a un "heatmap" para identificar patrones de constancia. Decisión: el heatmap mensual es parte del alcance inicial.
 
 ---
 
@@ -440,7 +444,7 @@ Debe mostrar:
 * Evolución mensual.
 * Evolución anual.
 
-Debe poder comparar diferentes hábitos.
+Debe poder comparar diferentes hábitos. Decisión: stats base (racha actual, mejor racha, % cumplimiento) desde el arranque.
 
 ---
 
@@ -543,13 +547,15 @@ La plataforma debe permitir configurar recordatorios para:
 * Metas.
 * Fechas importantes.
 
-Los recordatorios deben poder activarse o desactivarse individualmente.
+Los recordatorios deben poder activarse o desactivarse individualmente. Decisión: solo dentro de la app (campanita, lista de vencidas y próximos pagos). Sin push ni email en esta versión.
 
 ---
 
 # Búsqueda global
 
-Debe existir una búsqueda global que permita encontrar rápidamente:
+Decisión del dueño: no se implementa, la navegación debe hacer todo encontrable. Sin buscador global en esta versión; todo debe estar bien distribuido y fácil de encontrar por navegación.
+
+Referencia de lo que NO se hará por ahora (se conserva solo como contexto):
 
 * Movimientos financieros.
 * Cuentas.
@@ -574,9 +580,9 @@ Debe permitir generar resúmenes de:
 * Metas.
 * Actividad personal.
 
-Los reportes financieros deben poder exportarse en PDF y Excel.
+Exportación a PDF/Excel: NO requerida en esta versión. Decisión: solo visualización en pantalla por período.
 
-Debe ser posible seleccionar períodos específicos.
+Debe ser posible seleccionar períodos específicos. Decisión: reportes solo en pantalla por período.
 
 ---
 
@@ -670,7 +676,7 @@ La versión móvil debe ser completamente funcional.
 
 Debe poder personalizar:
 
-* Moneda.
+* Moneda: solo COP (pesos colombianos), sin multi-moneda ni conversiones.
 * Categorías financieras.
 * Categorías de hábitos.
 * Categorías de metas.

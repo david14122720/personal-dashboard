@@ -106,3 +106,137 @@ export function noteExcerpt(body: string | null | undefined, max: number = 140):
   if (flat.length <= max) return flat;
   return `${flat.slice(0, max - 1).trimEnd()}…`;
 }
+
+/* -- S2 (Hoy accionable): vistas por fecha + opciones de formularios -- */
+
+/** Priorities accepted by `POST /tasks` (backend `task_priority` enum). */
+export const TASK_PRIORITY_OPTIONS = ["low", "medium", "high", "urgent"] as const;
+
+/**
+ * Goal areas offered in the goal form selector. The backend stores `area` as
+ * free-form text; these presets mirror the areas listed in `objetivo.md`
+ * (finanzas, estudios, trabajo, salud, productividad, proyectos, lectura,
+ * aprendizaje, otras) so the user picks by name instead of typing.
+ */
+export const GOAL_AREA_OPTIONS = [
+  "finanzas",
+  "estudios",
+  "trabajo",
+  "salud",
+  "productividad",
+  "proyectos",
+  "lectura",
+  "aprendizaje",
+  "otras",
+] as const;
+
+/**
+ * Event kinds offered in the event form selector (subset of the backend
+ * `event_kind` enum scoped by S2: evento/cita/pago/recordatorio).
+ */
+export const EVENT_KIND_OPTIONS = ["event", "appointment", "payment_due", "reminder"] as const;
+
+/** Date-based task views: Hoy / Próximas / Vencidas / Completadas (+ Todas). */
+export type TaskDateView = "all" | "today" | "upcoming" | "overdue" | "done";
+
+export const TASK_DATE_VIEWS: TaskDateView[] = ["all", "today", "upcoming", "overdue", "done"];
+
+/** Local `YYYY-MM-DD` for day comparisons (same wall-clock rule as `toISODate`). */
+export function todayYmdLocal(now: Date = new Date()): string {
+  const month = `${now.getMonth() + 1}`.padStart(2, "0");
+  const day = `${now.getDate()}`.padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+export interface TaskDateViewInput {
+  status: string;
+  due_date: string | null;
+  completed_at: string | null;
+}
+
+/**
+ * Classify one task into its date view. Completed tasks (status or
+ * `completed_at`) are always `done`; dateless open tasks wait in `upcoming`;
+ * dated open tasks compare `due_date` (`YYYY-MM-DD`) against `todayYmd`.
+ */
+export function taskDateView(task: TaskDateViewInput, todayYmd: string): Exclude<TaskDateView, "all"> {
+  if (task.status === "completed" || task.completed_at) return "done";
+  const due = (task.due_date ?? "").trim();
+  if (!due) return "upcoming";
+  if (due < todayYmd) return "overdue";
+  if (due === todayYmd) return "today";
+  return "upcoming";
+}
+
+/** Filter tasks to one date view (`all` returns a copy of the input). */
+export function filterTasksByDateView<T extends TaskDateViewInput>(
+  tasks: T[] | null | undefined,
+  view: TaskDateView,
+  todayYmd: string,
+): T[] {
+  if (!tasks) return [];
+  if (view === "all") return [...tasks];
+  return tasks.filter((task) => taskDateView(task, todayYmd) === view);
+}
+
+/** Count tasks per date view (including `all` = total). */
+export function countTasksByDateView<T extends TaskDateViewInput>(
+  tasks: T[] | null | undefined,
+  todayYmd: string,
+): Record<TaskDateView, number> {
+  const counts: Record<TaskDateView, number> = { all: 0, today: 0, upcoming: 0, overdue: 0, done: 0 };
+  if (!tasks) return counts;
+  counts.all = tasks.length;
+  for (const task of tasks) {
+    counts[taskDateView(task, todayYmd)] += 1;
+  }
+  return counts;
+}
+
+/** Time-based event views: próximos (incl. hoy) / vencidos (+ todos). */
+export type EventTimeView = "all" | "upcoming" | "overdue";
+
+export const EVENT_TIME_VIEWS: EventTimeView[] = ["all", "upcoming", "overdue"];
+
+export interface EventTimeViewInput {
+  starts_at: string;
+  ends_at: string | null;
+}
+
+/**
+ * Classify one event by time. The end (or start when dateless-end) decides:
+ * anything ending before `nowMs` is `overdue`, the rest is `upcoming`.
+ * Unparseable dates stay `upcoming` so they never vanish into vencidos.
+ */
+export function eventTimeView(event: EventTimeViewInput, nowMs: number): Exclude<EventTimeView, "all"> {
+  const start = Date.parse(event.starts_at);
+  const end = event.ends_at ? Date.parse(event.ends_at) : NaN;
+  const ref = Number.isNaN(end) ? start : end;
+  if (Number.isNaN(ref)) return "upcoming";
+  return ref < nowMs ? "overdue" : "upcoming";
+}
+
+/** Filter events to one time view (`all` returns a copy of the input). */
+export function filterEventsByTimeView<T extends EventTimeViewInput>(
+  events: T[] | null | undefined,
+  view: EventTimeView,
+  nowMs: number,
+): T[] {
+  if (!events) return [];
+  if (view === "all") return [...events];
+  return events.filter((event) => eventTimeView(event, nowMs) === view);
+}
+
+/** Count events per time view (including `all` = total). */
+export function countEventsByTimeView<T extends EventTimeViewInput>(
+  events: T[] | null | undefined,
+  nowMs: number,
+): Record<EventTimeView, number> {
+  const counts: Record<EventTimeView, number> = { all: 0, upcoming: 0, overdue: 0 };
+  if (!events) return counts;
+  counts.all = events.length;
+  for (const event of events) {
+    counts[eventTimeView(event, nowMs)] += 1;
+  }
+  return counts;
+}

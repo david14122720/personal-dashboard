@@ -164,6 +164,31 @@ const server = setupServer(
   http.get("http://test.local/api/me", () => {
     return HttpResponse.json({ preferences: { currency_code: "COP", locale: "es-CO" } });
   }),
+  http.get("http://test.local/api/categories", () => {
+    return HttpResponse.json([
+      {
+        id: "c1",
+        kind: "finance",
+        name: "Alimentación",
+        color: null,
+        icon: null,
+        is_archived: false,
+        created_at: "2026-09-01T00:00:00Z",
+      },
+      {
+        id: "c2",
+        kind: "finance",
+        name: "Transporte",
+        color: null,
+        icon: null,
+        is_archived: false,
+        created_at: "2026-09-01T00:00:00Z",
+      },
+    ]);
+  }),
+  http.get("http://test.local/api/transfers", () => {
+    return HttpResponse.json({ items: [], next_cursor: null, total_count: 0 });
+  }),
 );
 
 beforeAll(() => server.listen());

@@ -12,6 +12,8 @@ import {
   habitStatusLed,
   heatmapCells,
   noteExcerpt,
+  type EventTimeView,
+  type TaskDateView,
 } from "@/lib/productivity/productivity";
 
 /**
@@ -19,6 +21,113 @@ import {
  * owns all SWR reads, debounced search state, and log/toggle mutations;
  * these components receive plain views and callbacks only.
  */
+
+const rowActionClass =
+  "shrink-0 rounded-md border border-hull px-2 py-1 font-display text-[11px] transition-colors hover:border-signal hover:text-signal disabled:opacity-50";
+
+function DeleteButton({
+  label,
+  pending,
+  onDelete,
+}: {
+  label: string;
+  pending: boolean;
+  onDelete: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      aria-label={label}
+      onClick={onDelete}
+      className={rowActionClass}
+    >
+      {pending ? t("productivity.deleting") : t("productivity.delete")}
+    </button>
+  );
+}
+
+function EditButton({ label, onEdit }: { label: string; onEdit: () => void }) {
+  return (
+    <button type="button" aria-label={label} onClick={onEdit} className={rowActionClass}>
+      {t("productivity.edit")}
+    </button>
+  );
+}
+
+/** Date-view tabs (Hoy / Próximas / Vencidas / Completadas). Counts in parens. */
+export function TaskViewTabs({
+  view,
+  counts,
+  onView,
+}: {
+  view: TaskDateView;
+  counts: Record<TaskDateView, number>;
+  onView: (next: TaskDateView) => void;
+}) {
+  const options: Array<{ value: TaskDateView; label: string }> = [
+    { value: "all", label: t("productivity.viewAll") },
+    { value: "today", label: t("productivity.viewToday") },
+    { value: "upcoming", label: t("productivity.viewUpcoming") },
+    { value: "overdue", label: t("productivity.viewOverdue") },
+    { value: "done", label: t("productivity.viewDone") },
+  ];
+  return (
+    <div role="group" aria-label={t("productivity.tasks")} className="mb-3 flex flex-wrap gap-2">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={view === option.value}
+          onClick={() => onView(option.value)}
+          className={`rounded-full border px-3 py-1 font-display text-xs transition-colors ${
+            view === option.value
+              ? "border-signal text-signal"
+              : "border-hull hover:border-signal hover:text-signal"
+          }`}
+        >
+          {`${option.label} (${counts[option.value] ?? 0})`}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Time-view tabs (Próximos / Vencidos) for the events list. */
+export function EventViewTabs({
+  view,
+  counts,
+  onView,
+}: {
+  view: EventTimeView;
+  counts: Record<EventTimeView, number>;
+  onView: (next: EventTimeView) => void;
+}) {
+  const options: Array<{ value: EventTimeView; label: string }> = [
+    { value: "all", label: t("productivity.viewAll") },
+    { value: "upcoming", label: t("productivity.viewUpcomingEvents") },
+    { value: "overdue", label: t("productivity.viewOverdueEvents") },
+  ];
+  return (
+    <div role="group" aria-label={t("productivity.events")} className="mb-3 flex flex-wrap gap-2">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={view === option.value}
+          onClick={() => onView(option.value)}
+          className={`rounded-full border px-3 py-1 font-display text-xs transition-colors ${
+            view === option.value
+              ? "border-signal text-signal"
+              : "border-hull hover:border-signal hover:text-signal"
+          }`}
+        >
+          {`${option.label} (${counts[option.value] ?? 0})`}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function SectionShell({
   title,
@@ -172,7 +281,17 @@ function goalLed(status: string): string {
   return "ok";
 }
 
-export function GoalsList({ goals }: { goals: GoalWire[] }) {
+export function GoalsList({
+  goals,
+  onEdit,
+  onDelete,
+  deletingId,
+}: {
+  goals: GoalWire[];
+  onEdit?: (goal: GoalWire) => void;
+  onDelete?: (goal: GoalWire) => void;
+  deletingId?: string | null;
+}) {
   if (goals.length === 0) {
     return <EmptyState title={t("productivity.noGoals")} hint={t("productivity.noGoalsHint")} />;
   }
@@ -200,6 +319,23 @@ export function GoalsList({ goals }: { goals: GoalWire[] }) {
             {goal.due_date ? (
               <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">{t("productivity.dueOn", { date: goal.due_date })}</p>
             ) : null}
+            {onEdit || onDelete ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {onEdit ? (
+                  <EditButton
+                    label={t("productivity.editGoalLabel", { name: goal.name })}
+                    onEdit={() => onEdit(goal)}
+                  />
+                ) : null}
+                {onDelete ? (
+                  <DeleteButton
+                    label={t("productivity.deleteGoalLabel", { name: goal.name })}
+                    pending={deletingId === goal.id}
+                    onDelete={() => onDelete(goal)}
+                  />
+                ) : null}
+              </div>
+            ) : null}
           </li>
         );
       })}
@@ -211,10 +347,18 @@ export function TasksList({
   tasks,
   togglingId,
   onToggle,
+  onEdit,
+  onDelete,
+  deletingId,
+  goalNameById,
 }: {
   tasks: TaskWire[];
   togglingId: string | null;
   onToggle: (task: TaskWire) => void;
+  onEdit?: (task: TaskWire) => void;
+  onDelete?: (task: TaskWire) => void;
+  deletingId?: string | null;
+  goalNameById?: Record<string, string>;
 }) {
   if (tasks.length === 0) {
     return <EmptyState title={t("productivity.noTasks")} hint={t("productivity.noTasksHint")} />;
@@ -235,12 +379,32 @@ export function TasksList({
                   key={task.id}
                   className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
                 >
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-sm">{task.title}</p>
                     <p className="truncate text-xs text-instrument/60">
                       {taskPriorityText(task.priority)}
                       {task.due_date ? ` · ${t("productivity.dueOn", { date: task.due_date })}` : ""}
                     </p>
+                    {task.goal_id && goalNameById?.[task.goal_id] ? (
+                      <p className="truncate text-xs text-instrument/50">{goalNameById[task.goal_id]}</p>
+                    ) : null}
+                    {onEdit || onDelete ? (
+                      <div className="mt-1.5 flex flex-wrap gap-2">
+                        {onEdit ? (
+                          <EditButton
+                            label={t("productivity.editTaskLabel", { title: task.title })}
+                            onEdit={() => onEdit(task)}
+                          />
+                        ) : null}
+                        {onDelete ? (
+                          <DeleteButton
+                            label={t("productivity.deleteTaskLabel", { title: task.title })}
+                            pending={deletingId === task.id}
+                            onDelete={() => onDelete(task)}
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <button
                     type="button"
@@ -262,7 +426,17 @@ export function TasksList({
   );
 }
 
-export function EventsList({ events }: { events: EventWire[] }) {
+export function EventsList({
+  events,
+  onEdit,
+  onDelete,
+  deletingId,
+}: {
+  events: EventWire[];
+  onEdit?: (event: EventWire) => void;
+  onDelete?: (event: EventWire) => void;
+  deletingId?: string | null;
+}) {
   if (events.length === 0) {
     return <EmptyState title={t("productivity.noEvents")} hint={t("productivity.noEventsHint")} />;
   }
@@ -273,12 +447,29 @@ export function EventsList({ events }: { events: EventWire[] }) {
           key={event.id}
           className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
         >
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="truncate text-sm">{event.title}</p>
             <p className="truncate text-xs text-instrument/60">
               {eventKindText(event.kind)}
               {event.location ? ` · ${event.location}` : ""}
             </p>
+            {onEdit || onDelete ? (
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                {onEdit ? (
+                  <EditButton
+                    label={t("productivity.editEventLabel", { title: event.title })}
+                    onEdit={() => onEdit(event)}
+                  />
+                ) : null}
+                {onDelete ? (
+                  <DeleteButton
+                    label={t("productivity.deleteEventLabel", { title: event.title })}
+                    pending={deletingId === event.id}
+                    onDelete={() => onDelete(event)}
+                  />
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <p className="shrink-0 font-mono text-xs tabular-nums text-instrument/70">
             {eventWhenLabel(event.starts_at, event.all_day)}
@@ -306,7 +497,21 @@ export function NotesSearchBox({ query, onQuery }: { query: string; onQuery: (va
   );
 }
 
-export function NotesResults({ notes }: { notes: NoteWire[] }) {
+export function NotesResults({
+  notes,
+  onEdit,
+  onDelete,
+  onTogglePin,
+  deletingId,
+  pinningId,
+}: {
+  notes: NoteWire[];
+  onEdit?: (note: NoteWire) => void;
+  onDelete?: (note: NoteWire) => void;
+  onTogglePin?: (note: NoteWire) => void;
+  deletingId?: string | null;
+  pinningId?: string | null;
+}) {
   if (notes.length === 0) {
     return <EmptyState title={t("productivity.noNotes")} hint={t("productivity.noNotesHint")} />;
   }
@@ -324,6 +529,39 @@ export function NotesResults({ notes }: { notes: NoteWire[] }) {
           </p>
           {note.body ? (
             <p className="mt-0.5 truncate text-xs text-instrument/60">{noteExcerpt(note.body)}</p>
+          ) : null}
+          {onEdit || onDelete || onTogglePin ? (
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {onTogglePin ? (
+                <button
+                  type="button"
+                  disabled={pinningId === note.id}
+                  aria-pressed={note.is_pinned}
+                  aria-label={
+                    note.is_pinned
+                      ? t("productivity.unpinNoteLabel", { title: note.title })
+                      : t("productivity.pinNoteLabel", { title: note.title })
+                  }
+                  onClick={() => onTogglePin(note)}
+                  className="shrink-0 rounded-md border border-hull px-2 py-1 font-display text-[11px] transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
+                >
+                  {t("productivity.notePinned")}
+                </button>
+              ) : null}
+              {onEdit ? (
+                <EditButton
+                  label={t("productivity.editNoteLabel", { title: note.title })}
+                  onEdit={() => onEdit(note)}
+                />
+              ) : null}
+              {onDelete ? (
+                <DeleteButton
+                  label={t("productivity.deleteNoteLabel", { title: note.title })}
+                  pending={deletingId === note.id}
+                  onDelete={() => onDelete(note)}
+                />
+              ) : null}
+            </div>
           ) : null}
         </li>
       ))}
