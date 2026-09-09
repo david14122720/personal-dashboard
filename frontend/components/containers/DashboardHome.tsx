@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
 import EmptyState from "@/components/ui/EmptyState";
@@ -21,18 +22,13 @@ import {
   resolveDashboardLayout,
   useAccounts,
   useBudgets,
-  useDebts,
-  useEvents,
-  useGoals,
   useHabitsToday,
   useMonthlyFlow,
   useNetWorth,
   usePreferences,
-  useSavingsGoals,
   useSpendByCategory,
-  useSubscriptions,
-  useTasks,
   useUpdateLayout,
+  type DashboardLayout,
 } from "@/lib/api/dashboard";
 import { formatMoney, toNumber } from "@/lib/api/money";
 import { t } from "@/lib/i18n";
@@ -81,6 +77,33 @@ function ChartSkeleton({ label }: { label: string }) {
   );
 }
 
+function SectionSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label={t("dashboard.loadingDashboard")}
+      className="flex h-40 items-center justify-center rounded-xl border border-hull bg-hull/40"
+    >
+      <p className="text-sm text-instrument/50">{t("dashboard.loadingDashboard")}…</p>
+    </div>
+  );
+}
+
+function SectionError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
+      <p className="mt-1 text-sm text-instrument/70">{t("dashboard.sectionLoadFailed")}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+      >
+        {t("common.retry")}
+      </button>
+    </div>
+  );
+}
+
 function WidgetShell({
   title,
   hint,
@@ -111,6 +134,7 @@ function WidgetShell({
 export default function DashboardHome() {
   const reducedMotion = usePrefersReducedMotion();
   const { mutate } = useSWRConfig();
+  const [layoutOverride, setLayoutOverride] = useState<DashboardLayout | null>(null);
 
   const now = new Date();
   const flowFrom = monthsAgoStart(now, 11);
@@ -125,55 +149,27 @@ export default function DashboardHome() {
   const accounts = useAccounts();
   const prefs = usePreferences();
   const updateLayout = useUpdateLayout();
-  const layout = resolveDashboardLayout(prefs.data);
+  const baseLayout = resolveDashboardLayout(prefs.data);
+  const layout = layoutOverride ?? baseLayout;
   const visible = (id: string) => isWidgetVisible(layout, id);
-  const toggle = (id: string, v: boolean) => void updateLayout(buildNextLayout(layout, id, v));
-  const debtsQ = useDebts(visible("pending-debts") || visible("upcoming-payments"));
-  const subsQ = useSubscriptions(visible("active-subs") || visible("upcoming-payments"));
-  const tasksQ = useTasks(null, visible("pending-tasks"));
-  const eventsQ = useEvents(null, null, visible("upcoming-events") || visible("upcoming-payments"));
-  const goalsQ = useGoals(visible("goal-progress"));
-  const savingsQ = useSavingsGoals(visible("goal-progress"));
-  const queries = [netWorth, flow, categories, budgets, habits, accounts, prefs, debtsQ, subsQ, tasksQ, eventsQ, goalsQ, savingsQ];
-  const isLoading = queries.some((q) => q.isLoading);
-  const failed = queries.filter((q) => q.error);
+  const toggle = (id: string, v: boolean) => {
+    const next = buildNextLayout(layout, id, v);
+    setLayoutOverride(next);
+    void updateLayout(next);
+  };
+  const retryDashboards = () =>
+    void mutate((key) => typeof key === "string" && key.startsWith("dashboard/"));
 
-  if (isLoading) {
-    return (
-      <div role="status" aria-label={t("dashboard.loadingDashboard")} aria-busy="true">
-        <h1 className="font-display text-2xl font-semibold tracking-wide">{t("dashboard.overview")}</h1>
-        <div className="mt-6 grid grid-cols-12 gap-4">
-          {[0, 1, 2].map((n) => (
-            <div
-              key={n}
-              className="col-span-12 animate-pulse rounded-xl border border-hull bg-hull/40 p-5 md:col-span-6 xl:col-span-4"
-            >
-              <div className="h-4 w-24 rounded bg-hull" />
-              <div className="mt-3 h-8 w-32 rounded bg-hull" />
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (failed.length > 0) {
-    return (
-      <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
-        <h1 className="font-display text-lg font-semibold">{t("dashboard.loadFailed")}</h1>
-        <p className="mt-1 text-sm text-instrument/70">
-          {t("dashboard.loadFailedDetail", { failed: failed.length, total: queries.length })}
-        </p>
-        <button
-          type="button"
-          onClick={() => void mutate((key) => typeof key === "string" && key.startsWith("dashboard/"))}
-          className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
-        >
-          {t("common.retry")}
-        </button>
-      </div>
-    );
-  }
+  const telemetryLoading = Boolean(netWorth.isLoading || accounts.isLoading);
+  const telemetryError = Boolean(netWorth.error || accounts.error);
+  const flowLoading = Boolean(flow.isLoading);
+  const flowError = Boolean(flow.error);
+  const categoriesLoading = Boolean(categories.isLoading);
+  const categoriesError = Boolean(categories.error);
+  const budgetsLoading = Boolean(budgets.isLoading);
+  const budgetsError = Boolean(budgets.error);
+  const habitsLoading = Boolean(habits.isLoading);
+  const habitsError = Boolean(habits.error);
 
   const locale = prefs.data?.preferences.locale ?? "es-CO";
   const currency = prefs.data?.preferences.currency_code ?? "COP";
@@ -234,6 +230,18 @@ export default function DashboardHome() {
   const pendingHabits = (habits.data ?? []).filter((h) => h.today_status === "pending");
   const summary = toMonthSummary(flow.data, monthKey);
 
+  const customizeRows = [
+    { id: "month-income", label: t("dashboard.monthIncome") },
+    { id: "month-expense", label: t("dashboard.monthExpense") },
+    { id: "month-savings", label: t("dashboard.monthSavings") },
+    { id: "upcoming-payments", label: t("dashboard.upcomingPayments") },
+    { id: "pending-debts", label: t("dashboard.pendingDebts") },
+    { id: "active-subs", label: t("dashboard.activeSubs") },
+    { id: "pending-tasks", label: t("dashboard.pendingTasks") },
+    { id: "upcoming-events", label: t("dashboard.upcomingEvents") },
+    { id: "goal-progress", label: t("dashboard.goalProgress") },
+  ];
+
   return (
     <div>
       <div className="flex items-start justify-between gap-4">
@@ -242,7 +250,13 @@ export default function DashboardHome() {
       </div>
       <div className="mt-6 grid grid-cols-12 gap-4">
         <div className="col-span-12">
-          <TelemetryStrip items={strip} />
+          {telemetryLoading ? (
+            <SectionSkeleton />
+          ) : telemetryError ? (
+            <SectionError onRetry={retryDashboards} />
+          ) : (
+            <TelemetryStrip items={strip} />
+          )}
         </div>
         <div className="col-span-12 md:col-span-6 xl:col-span-4">
           <MetricCard label={t("dashboard.netWorth")} display={fmt(netWorthValue)} hint={worthEntry?.currency} />
@@ -263,24 +277,36 @@ export default function DashboardHome() {
             status={pendingHabits.length === 0 ? "ok" : "warn"}
           />
         </div>
-        {visible("month-income") ? (
-          <div className="col-span-12 md:col-span-6 xl:col-span-4">
-            <div className="mb-2 flex justify-end"><WidgetToggle id="month-income" visible onToggle={(v) => toggle("month-income", v)} /></div>
-            <MetricCard label={t("dashboard.monthIncome")} display={fmt(summary.income)} hint={monthKey} />
+        {flowLoading ? (
+          <div className="col-span-12">
+            <SectionSkeleton />
           </div>
-        ) : null}
-        {visible("month-expense") ? (
-          <div className="col-span-12 md:col-span-6 xl:col-span-4">
-            <div className="mb-2 flex justify-end"><WidgetToggle id="month-expense" visible onToggle={(v) => toggle("month-expense", v)} /></div>
-            <MetricCard label={t("dashboard.monthExpense")} display={fmt(summary.expense)} hint={monthKey} />
+        ) : flowError ? (
+          <div className="col-span-12">
+            <SectionError onRetry={retryDashboards} />
           </div>
-        ) : null}
-        {visible("month-savings") ? (
-          <div className="col-span-12 md:col-span-6 xl:col-span-4">
-            <div className="mb-2 flex justify-end"><WidgetToggle id="month-savings" visible onToggle={(v) => toggle("month-savings", v)} /></div>
-            <MetricCard label={t("dashboard.monthSavings")} display={fmt(summary.savings)} hint={t("dashboard.monthSavingsHint")} status={summary.savings >= 0 ? "ok" : "warn"} />
-          </div>
-        ) : null}
+        ) : (
+          <>
+            {visible("month-income") ? (
+              <div className="col-span-12 md:col-span-6 xl:col-span-4">
+                <div className="mb-2 flex justify-end"><WidgetToggle id="month-income" visible onToggle={(v) => toggle("month-income", v)} /></div>
+                <MetricCard label={t("dashboard.monthIncome")} display={fmt(summary.income)} hint={monthKey} />
+              </div>
+            ) : null}
+            {visible("month-expense") ? (
+              <div className="col-span-12 md:col-span-6 xl:col-span-4">
+                <div className="mb-2 flex justify-end"><WidgetToggle id="month-expense" visible onToggle={(v) => toggle("month-expense", v)} /></div>
+                <MetricCard label={t("dashboard.monthExpense")} display={fmt(summary.expense)} hint={monthKey} />
+              </div>
+            ) : null}
+            {visible("month-savings") ? (
+              <div className="col-span-12 md:col-span-6 xl:col-span-4">
+                <div className="mb-2 flex justify-end"><WidgetToggle id="month-savings" visible onToggle={(v) => toggle("month-savings", v)} /></div>
+                <MetricCard label={t("dashboard.monthSavings")} display={fmt(summary.savings)} hint={t("dashboard.monthSavingsHint")} status={summary.savings >= 0 ? "ok" : "warn"} />
+              </div>
+            ) : null}
+          </>
+        )}
         {visible("upcoming-payments") ? (<WidgetShell title={t("dashboard.upcomingPayments")} hint={t("dashboard.upcomingPaymentsHint")} span="col-span-12 xl:col-span-7" action={<WidgetToggle id="upcoming-payments" visible onToggle={(v) => toggle("upcoming-payments", v)} />}><UpcomingPayments /></WidgetShell>) : null}
         {visible("pending-debts") ? (<WidgetShell title={t("dashboard.pendingDebts")} hint={t("dashboard.pendingDebtsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="pending-debts" visible onToggle={(v) => toggle("pending-debts", v)} />}><PendingDebts /></WidgetShell>) : null}
         {visible("active-subs") ? (<WidgetShell title={t("dashboard.activeSubs")} hint={t("dashboard.activeSubsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="active-subs" visible onToggle={(v) => toggle("active-subs", v)} />}><ActiveSubs /></WidgetShell>) : null}
@@ -292,28 +318,50 @@ export default function DashboardHome() {
           hint={t("dashboard.monthlyFlowHint")}
           span="col-span-12 xl:col-span-7"
         >
-          <FlowChart data={points} animate={!reducedMotion} />
+          {flowLoading ? (
+            <SectionSkeleton />
+          ) : flowError ? (
+            <SectionError onRetry={retryDashboards} />
+          ) : (
+            <FlowChart data={points} animate={!reducedMotion} />
+          )}
         </WidgetShell>
         <WidgetShell
           title={t("dashboard.spendByCategory")}
           hint={t("dashboard.spendByCategoryHint")}
           span="col-span-12 xl:col-span-5"
         >
-          <CategoryDonut data={slices} animate={!reducedMotion} />
+          {categoriesLoading ? (
+            <SectionSkeleton />
+          ) : categoriesError ? (
+            <SectionError onRetry={retryDashboards} />
+          ) : (
+            <CategoryDonut data={slices} animate={!reducedMotion} />
+          )}
         </WidgetShell>
         <WidgetShell
           title={t("dashboard.budgets")}
           hint={t("dashboard.budgetsHint")}
           span="col-span-12 xl:col-span-7"
         >
-          <BudgetBars data={budgetRows} animate={!reducedMotion} />
+          {budgetsLoading ? (
+            <SectionSkeleton />
+          ) : budgetsError ? (
+            <SectionError onRetry={retryDashboards} />
+          ) : (
+            <BudgetBars data={budgetRows} animate={!reducedMotion} />
+          )}
         </WidgetShell>
         <WidgetShell
           title={t("dashboard.today")}
           hint={t("dashboard.todayHint")}
           span="col-span-12 xl:col-span-5"
         >
-          {pendingHabits.length === 0 ? (
+          {habitsLoading ? (
+            <SectionSkeleton />
+          ) : habitsError ? (
+            <SectionError onRetry={retryDashboards} />
+          ) : pendingHabits.length === 0 ? (
             <EmptyState title={t("dashboard.nothingPending")} hint={t("dashboard.allCheckedIn")} />
           ) : (
             <ul className="flex flex-col gap-2">
@@ -330,6 +378,23 @@ export default function DashboardHome() {
               ))}
             </ul>
           )}
+        </WidgetShell>
+        <WidgetShell
+          title={t("dashboard.customize")}
+          hint={t("dashboard.customizeHint")}
+          span="col-span-12"
+        >
+          <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {customizeRows.map((row) => (
+              <li
+                key={row.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
+              >
+                <span className="truncate text-sm">{row.label}</span>
+                <WidgetToggle id={row.id} visible={visible(row.id)} onToggle={(v) => toggle(row.id, v)} />
+              </li>
+            ))}
+          </ul>
         </WidgetShell>
       </div>
     </div>

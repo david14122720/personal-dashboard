@@ -38,11 +38,19 @@ vi.mock("@/lib/api/dashboard", async (importOriginal) => {
 });
 
 describe("DashboardHome ES copy", () => {
-  it("shows Spanish error with retry", () => {
+  it("error en un hook: panel de error localizado y el resto sigue renderizando (JD-B-002)", () => {
     (globalThis as Record<string, unknown>).__DH__ = "error";
     render(<DashboardHome />);
-    expect(screen.getByText("No se pudo cargar el panel")).toBeInTheDocument();
+    // Panel de error SOLO en la sección que falló (Patrimonio neto), no toda la home.
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.getByText("No se pudo cargar esta sección")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
+    // El resto (telemetría, widgets, gráficos, secciones) sigue vivo.
+    expect(screen.getByRole("heading", { name: "Resumen" })).toBeInTheDocument();
+    expect(screen.getByText("Telemetría en vivo de tus cuentas, presupuestos y hábitos.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Próximos pagos" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Flujo mensual" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Hoy" })).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__DH__;
   });
 
@@ -68,11 +76,14 @@ describe("DashboardHome ES copy", () => {
     expect(screen.getByText("0 días")).toBeInTheDocument();
   });
 
-  it("shows Spanish loading state", () => {
+  it("loading en un hook: skeleton localizado y el resto sigue renderizando (JD-B-002)", () => {
     (globalThis as Record<string, unknown>).__DH__ = "loading";
     render(<DashboardHome />);
     expect(screen.getByRole("status", { name: "Cargando panel" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Resumen" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Próximos pagos" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Deudas pendientes" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Flujo mensual" })).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__DH__;
   });
 

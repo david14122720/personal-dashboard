@@ -17,6 +17,7 @@ export const es = {
   dashboard: {
     loadFailed: "No se pudo cargar el panel",
     loadFailedDetail: "{failed} de {total} secciones fallaron. Revisa tu conexión e inténtalo de nuevo.",
+    sectionLoadFailed: "No se pudo cargar esta sección",
     netWorth: "Patrimonio neto",
     monthBalance: "Balance del mes",
     savingsRate: "Tasa de ahorro",
@@ -71,6 +72,8 @@ export const es = {
     widgetHide: "Ocultar bloque",
     widgetShow: "Mostrar bloque",
     widgetHidden: "Bloque oculto",
+    customize: "Personalizar",
+    customizeHint: "Muestra u oculta los bloques de esta página.",
     viewInFinance: "Ver en Finanzas",
     viewInProductivity: "Ver en Productividad",
     showMore: "Ver en sección",

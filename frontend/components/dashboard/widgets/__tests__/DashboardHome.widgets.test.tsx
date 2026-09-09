@@ -28,16 +28,16 @@ beforeEach(() => { seenPatch.length = 0; layoutWidgets = null; fixDates(); goals
 describe("DashboardHome month trio + toggles p8-pr2", () => {
   it("renders 3 independent month cards with formatMoney", async () => {
     render(<DashboardHome />);
-    expect(await screen.findByText("Ingreso del mes")).toBeInTheDocument();
-    expect(screen.getByText("Gasto del mes")).toBeInTheDocument();
-    expect(screen.getByText("Ahorro del mes")).toBeInTheDocument();
+    expect((await screen.findAllByText("Ingreso del mes")).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Gasto del mes").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Ahorro del mes").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/1\.000/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/400/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/600/).length).toBeGreaterThanOrEqual(1);
   });
   it("toggles hide one card with exact PATCH envelope and round-trips", async () => {
     render(<DashboardHome />);
-    await screen.findByText("Ingreso del mes");
+    await screen.findAllByText("Ingreso del mes");
     const switches = screen.getAllByRole("switch");
     expect(switches.length).toBeGreaterThanOrEqual(3);
     fireEvent.click(switches[0]);
@@ -45,16 +45,44 @@ describe("DashboardHome month trio + toggles p8-pr2", () => {
     expect(seenPatch[0]).toEqual({ dashboard_layout: expect.objectContaining({ widgets: expect.any(Array) }) });
     expect((seenPatch[0] as { dashboard_layout: { widgets: Array<{ id: string }> } }).dashboard_layout.widgets.some((w) => w.id === "month-income")).toBe(false);
   });
+  it("ocultar conserva su toggle en Personalizar y round-trip muestra de nuevo (JD-B-001)", async () => {
+    render(<DashboardHome />);
+    await screen.findAllByText("Ingreso del mes");
+    // Mientras está visible, el toggle existe en el header del widget y en Personalizar.
+    expect(screen.getAllByRole("switch", { name: "Ocultar bloque: month-income" }).length).toBe(2);
+    fireEvent.click(screen.getAllByRole("switch", { name: "Ocultar bloque: month-income" })[0]);
+    await waitFor(() =>
+      expect(
+        (seenPatch[0] as { dashboard_layout: { widgets: Array<{ id: string }> } }).dashboard_layout.widgets.some(
+          (w) => w.id === "month-income",
+        ),
+      ).toBe(false),
+    );
+    // El widget desaparece, pero queda su label en Personalizar…
+    expect(screen.getAllByText("Ingreso del mes")).toHaveLength(1);
+    // …y su toggle sigue vivo para volver a mostrarlo.
+    const show = screen.getByRole("switch", { name: "Mostrar bloque: month-income" });
+    expect(show).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(show);
+    await waitFor(() =>
+      expect(
+        (seenPatch[1] as { dashboard_layout: { widgets: Array<{ id: string }> } }).dashboard_layout.widgets.some(
+          (w) => w.id === "month-income",
+        ),
+      ).toBe(true),
+    );
+    expect((await screen.findAllByText("Ingreso del mes")).length).toBeGreaterThanOrEqual(2);
+  });
 });
 describe("DashboardHome resto widgets p8-pr4", () => {
   it("renders 6 widgets union/orden/segmentos + bell header", async () => {
     render(<DashboardHome />);
-    expect(await screen.findByText("Próximos pagos")).toBeInTheDocument();
-    expect(screen.getByText("Deudas pendientes")).toBeInTheDocument();
-    expect(screen.getByText("Suscripciones activas")).toBeInTheDocument();
-    expect(screen.getByText("Tareas pendientes")).toBeInTheDocument();
-    expect(screen.getByText("Próximos eventos")).toBeInTheDocument();
-    expect(screen.getByText("Progreso de metas")).toBeInTheDocument();
+    expect((await screen.findAllByText("Próximos pagos")).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Deudas pendientes").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Suscripciones activas").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Tareas pendientes").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Próximos eventos").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Progreso de metas").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Deuda").length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByText("Pagada")).not.toBeInTheDocument();
     expect(screen.queryByText("Off")).not.toBeInTheDocument();
@@ -69,7 +97,7 @@ describe("DashboardHome resto widgets p8-pr4", () => {
   it("empty ES exacto + 8d/sin-fecha solo fuera de proximos", async () => {
     debts = [{ id: "dx", name: "SinFecha", pending_amount: "10", status: "active" }]; subs = [{ id: "s8", name: "Lejos", price: "5", is_active: true, next_billing_on: day(8) }]; tasks = []; events = []; goals = []; savings = [];
     render(<DashboardHome />);
-    expect(await screen.findByText("Próximos pagos")).toBeInTheDocument();
+    expect((await screen.findAllByText("Próximos pagos")).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Nada por vencer en 7 días")).toBeInTheDocument();
     expect(screen.getByText("SinFecha")).toBeInTheDocument();
     expect(screen.getByText("Lejos")).toBeInTheDocument();
