@@ -257,6 +257,17 @@ export function toCategoryOptions(
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
 }
 
+export interface DebtProgress { paid: number; remaining: number; pct: number; status: "ok" | "warn" | "paid"; }
+
+/** Debo/aboné/falta desde montos ya coercionados. pct clamp [0,1]; paid si pending<=0, warn si pct>=0.7. */
+export function toDebtProgress(d: { original: number; pending: number }): DebtProgress {
+  const paid = d.original - d.pending;
+  const raw = d.original > 0 ? paid / d.original : 0;
+  const pct = Math.min(1, Math.max(0, raw));
+  const status = d.pending <= 0 ? "paid" : pct >= 0.7 ? "warn" : "ok";
+  return { paid, remaining: d.pending, pct, status };
+}
+
 /**
  * Normalize a hand-typed COP amount to a wire string. Accepts digits with an
  * optional decimal part of up to 2 places (e.g. `"150000"`, `"150000.50"`).

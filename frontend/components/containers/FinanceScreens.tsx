@@ -13,15 +13,25 @@ import {
   SavingsList,
   SectionShell,
 } from "@/components/finance/FinanceSections";
-import { useAccounts, useBudgets, usePreferences } from "@/lib/api/dashboard";
-import { useDebts, useSavingsGoals, useSubscriptions } from "@/lib/api/finance";
+import { useAccounts, useBudgets, useNetWorth, usePreferences } from "@/lib/api/dashboard";
+import { useAssets, useDebts, useFinanceCategories, useSavingsGoals, useSubscriptions } from "@/lib/api/finance";
 import {
   toAccountCards,
+  toAccountOptions,
   toBudgetViews,
+  toCategoryOptions,
   toDebtRows,
   toSavingsViews,
   toSubscriptionRows,
 } from "@/lib/finance/finance";
+import { formatMoney } from "@/lib/api/money";
+import BudgetForm from "@/components/finance/BudgetForm";
+import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
+import { DebtEditForm, DebtPayForm, DebtPaymentHistory, DebtProgressBar } from "@/components/finance/DebtPayments";
+import { SubscriptionCreateForm } from "@/components/finance/SubscriptionForms";
+import CardForm from "@/components/finance/CardForm";
+import { CardDetail } from "@/components/finance/CardDetail";
+import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
 /**
  * Finance screens container. Owns all aggregate SWR reads (fired in
@@ -54,6 +64,10 @@ export default function FinanceScreens() {
   const debts = useDebts();
   const savings = useSavingsGoals();
   const prefs = usePreferences();
+  // S5 (no bloquean el skeleton ni el alert de agregados S1).
+  const categories = useFinanceCategories();
+  const assets = useAssets();
+  const netWorth = useNetWorth();
 
   const queries = [budgets, accounts, subscriptions, debts, savings, prefs];
   const isLoading = queries.some((q) => q.isLoading);
@@ -151,10 +165,47 @@ export default function FinanceScreens() {
             >
               <SavingsList goals={toSavingsViews(savings.data)} locale={locale} />
             </SectionShell>
+            <S5Sections categories={toCategoryOptions(categories.data ?? [])} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} debts={debts.data ?? []} savings={savings.data ?? []} cards={toAccountCards(accounts.data)} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
           </>
         )}
       </div>
     </div>
+  );
+}
+
+/* S5 escritura: 6 SectionShell ocultables tras las F1 intactas + patrimonio-número. */
+/* Títulos propios (sin hints de lectura) para no duplicar copy S1; subs monta solo crear. */
+function S5Sections({ categories, accounts, debts, savings, cards, assets, netWorth, currency, locale }: { categories: { id: string; name: string }[]; accounts: { id: string; name: string }[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: { id: string; name: string; saved_amount: string | number; currency: string }[]; cards: { id: string; name: string; type: string; currency: string; balance: number; isCard: boolean; used: number | null; available: number | null; usagePct: number | null; alertLevel: string | null; statementBalance: number | null }[]; assets: { id: string; name: string }[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
+  const noop = (): void => undefined;
+  const firstDebt = debts[0];
+  const firstGoal = savings[0];
+  const firstCard = cards.find((c) => c.isCard);
+  const firstAsset = assets[0];
+  const worth = netWorth?.per_currency.find((e) => e.currency === currency) ?? netWorth?.per_currency[0];
+  return (
+    <>
+      <SectionShell title={t("finance.manageBudgets")} span="col-span-12 xl:col-span-6">
+        <BudgetForm categories={categories} onDone={noop} />
+      </SectionShell>
+      <SectionShell title={t("finance.manageSavings")} span="col-span-12 xl:col-span-6">
+        <SavingsGoalForm categories={categories} onDone={noop} />
+        {firstGoal ? (<div className="mt-4"><SavingsDepositForm goalId={firstGoal.id} saved={Number(firstGoal.saved_amount) || 0} currency={firstGoal.currency} onDone={noop} /></div>) : null}
+      </SectionShell>
+      <SectionShell title={t("finance.manageDebts")} span="col-span-12 xl:col-span-6">
+        {firstDebt ? (<><DebtProgressBar original={Number(firstDebt.original_amount) || 0} pendingAmount={Number(firstDebt.pending_amount) || 0} /><div className="mt-4"><DebtPayForm debtId={firstDebt.id} pending={Number(firstDebt.pending_amount) || 0} currency={firstDebt.currency} onDone={noop} /></div><div className="mt-4"><DebtPaymentHistory debtId={firstDebt.id} onCorrect={noop} /></div><div className="mt-4"><DebtEditForm debtId={firstDebt.id} onDone={noop} /></div></>) : null}
+      </SectionShell>
+      <SectionShell title={t("finance.manageSubs")} span="col-span-12 xl:col-span-6">
+        <SubscriptionCreateForm categories={categories} onDone={noop} />
+      </SectionShell>
+      <SectionShell title={t("finance.manageCards")} span="col-span-12 xl:col-span-6">
+        <CardForm onDone={noop} />
+        {firstCard ? (<div className="mt-4"><CardDetail card={firstCard} locale={locale} /></div>) : null}
+      </SectionShell>
+      <SectionShell title={t("finance.manageAssets")} span="col-span-12 xl:col-span-6">
+        {firstAsset ? (<><AssetEditForm assetId={firstAsset.id} accounts={accounts} onDone={noop} /><div className="mt-4"><AssetValuationForm assetId={firstAsset.id} onDone={noop} /></div></>) : null}
+        <p className="mt-4 font-mono text-sm tabular-nums">{t("dashboard.netWorth")}: {worth ? formatMoney(worth.net_worth, { locale, currency: worth.currency }) : "—"}</p>
+      </SectionShell>
+    </>
   );
 }
 
