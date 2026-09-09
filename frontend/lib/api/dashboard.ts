@@ -63,14 +63,49 @@ export interface AccountWire {
   alert_level?: string | null;
 }
 
+export type DashboardWidgetType = "metric" | "chart" | "list" | "ledger" | "heatmap";
+export type DashboardWidgetSize = "sm" | "md" | "lg";
+
+export interface DashboardWidgetPref {
+  id: string;
+  type: DashboardWidgetType;
+  order: number;
+  size: DashboardWidgetSize;
+}
+
+export interface DashboardLayout {
+  widgets: DashboardWidgetPref[];
+}
+
+/** Default 9-widget layout (first run / empty / invalid → all visible). Order per design §5.1. */
+export const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
+  widgets: [
+    { id: "month-income", type: "metric", order: 10, size: "sm" },
+    { id: "month-expense", type: "metric", order: 11, size: "sm" },
+    { id: "month-savings", type: "metric", order: 12, size: "sm" },
+    { id: "upcoming-payments", type: "list", order: 20, size: "lg" },
+    { id: "pending-debts", type: "list", order: 21, size: "md" },
+    { id: "active-subs", type: "list", order: 22, size: "md" },
+    { id: "pending-tasks", type: "list", order: 23, size: "md" },
+    { id: "upcoming-events", type: "list", order: 24, size: "md" },
+    { id: "goal-progress", type: "chart", order: 30, size: "md" },
+  ],
+};
+
 export interface PreferencesWire {
   currency_code: string;
   locale: string;
-  timezone?: string;
+  timezone?: string | null;
+  dashboard_layout?: DashboardLayout | null;
 }
 
 export interface MeWire {
   preferences: PreferencesWire;
+}
+
+/** Exact envelope for `PATCH /me/preferences` (`deny_unknown_fields` → 422 otherwise). */
+export interface PatchPreferencesBody {
+  dashboard_layout: DashboardLayout;
 }
 
 const config: SWRConfiguration = { revalidateOnFocus: false };

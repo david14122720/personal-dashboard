@@ -186,6 +186,24 @@ export async function apiPost<T>(path: string, body: unknown, init: RequestInit 
 }
 
 /**
+ * Authenticated PATCH with a JSON body. Mirrors `apiPost` (Bearer injection
+ * + single-flight 401 via `apiFetch`, `toApiError` for failures). Used for
+ * `PATCH /me/preferences { dashboard_layout }`. Money travels as decimal
+ * strings; this helper never coerces amounts.
+ */
+export async function apiPatch<T>(path: string, body: unknown, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await apiFetch(path, { ...init, method: "PATCH", headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    throw await toApiError(res);
+  }
+  return (await res.json()) as T;
+}
+
+/**
  * Authenticated DELETE. Reuses `apiFetch` + `toApiError`. A 204 (no content)
  * resolves to void without parsing a body.
  */
