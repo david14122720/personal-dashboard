@@ -424,6 +424,8 @@ export const es = {
     bestMonth: "Mejor mes",
     worstMonth: "Mes de mayor gasto",
     tplMom: "Este mes gastaste {pct}% más en {cat} que el mes anterior ({cur} frente a {prev}).",
+    tplMomDown: "Este mes gastaste {pct}% menos en {cat} que el mes anterior ({cur} frente a {prev}).",
+    tplMomFlat: "Este mes mantuviste tu gasto en {cat} igual que el mes anterior ({cur} frente a {prev}).",
     tplSavings: "Tu tasa de ahorro del mes es {n}% ({saved} de {income}).",
     tplWorst: "Tu mayor gasto fue en {mes}: {amount}.",
     tplBest: "Tu mayor ahorro fue en {mes}: {amount}.",

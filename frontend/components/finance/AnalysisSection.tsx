@@ -54,12 +54,39 @@ export default function AnalysisSection({
     const v = insight.vars;
     switch (insight.kind) {
       case "mom-expense":
+      case "mom-expense-up":
+      case "mom-expense-down":
+      case "mom-expense-flat": {
+        // JD-INSIGHT: plantilla por dirección (dir o kind); up → tplMom intacta.
+        const dir =
+          v.dir !== undefined
+            ? String(v.dir)
+            : insight.kind === "mom-expense-down"
+              ? "down"
+              : insight.kind === "mom-expense-flat"
+                ? "flat"
+                : "up";
+        if (dir === "down")
+          return t("analysis.tplMomDown", {
+            pct: String(v.pct),
+            cat: String(v.cat),
+            cur: fmt(v.cur),
+            prev: fmt(v.prev),
+          });
+        if (dir === "flat")
+          return t("analysis.tplMomFlat", {
+            pct: String(v.pct),
+            cat: String(v.cat),
+            cur: fmt(v.cur),
+            prev: fmt(v.prev),
+          });
         return t("analysis.tplMom", {
           pct: String(v.pct),
           cat: String(v.cat),
           cur: fmt(v.cur),
           prev: fmt(v.prev),
         });
+      }
       case "savings-rate":
         return t("analysis.tplSavings", { n: String(v.n), saved: fmt(v.saved), income: fmt(v.income) });
       case "worst-month":

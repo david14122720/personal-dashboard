@@ -50,7 +50,7 @@ import {
 import { toDonutSlices } from "@/lib/dashboard/transforms";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 import { formatMoney, toNumber } from "@/lib/api/money";
-import BudgetForm from "@/components/finance/BudgetForm";
+import BudgetForm, { type BudgetFormValue } from "@/components/finance/BudgetForm";
 import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
 import { DebtEditForm, DebtPayForm, DebtPaymentHistory, DebtProgressBar } from "@/components/finance/DebtPayments";
 import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
@@ -289,10 +289,58 @@ export default function FinanceScreens() {
   );
 }
 
+/** JD-THRESH: ensanche local — el GET runtime ya trae warn/over/notes aunque BudgetWire base no los tipa. */
+export type BudgetWireWithThresholds = BudgetWire & {
+  warn_threshold?: number | null;
+  over_threshold?: number | null;
+  notes?: string | null;
+};
+
+/** Mapeo GET → BudgetForm preservando thresholds/notas (editar solo notes no resetea 0.5/1.3). */
+export function toBudgetFormValue(b: BudgetWireWithThresholds): BudgetFormValue {
+  return {
+    id: b.id,
+    category_id: b.category_id,
+    amount: b.amount,
+    period_start: b.period_start,
+    period_end: b.period_end,
+    warn_threshold: b.warn_threshold ?? null,
+    over_threshold: b.over_threshold ?? null,
+    notes: b.notes ?? null,
+  };
+}
+
+/** JD-ASSET: ensanche local — AssetWire ya trae la categoría almacenada. */
+export type AssetWireWithDetails = {
+  id: string;
+  name: string;
+  category?: string | null;
+  account_id?: string | null;
+  acquired_on?: string | null;
+  notes?: string | null;
+};
+
+/** Mapeo AssetWire → initial de AssetEditForm (renombrar preserva categoría). */
+export function toAssetEditInitial(a: AssetWireWithDetails): {
+  name?: string | null;
+  category?: string | null;
+  account_id?: string | null;
+  acquired_on?: string | null;
+  notes?: string | null;
+} {
+  return {
+    name: a.name ?? null,
+    category: a.category ?? null,
+    account_id: a.account_id ?? null,
+    acquired_on: a.acquired_on ?? null,
+    notes: a.notes ?? null,
+  };
+}
+
 /* S5 escritura: 6 SectionShell ocultables tras las F1 intactas + patrimonio-número. */
 /* Títulos propios (sin hints de lectura) para no duplicar copy S1. PR-3 FIX: filas */
 /* SubscriptionRow + edición/borrado BudgetForm/SavingsGoalForm cableados a listas. */
-function S5Sections({ categories, accounts, budgets, subs, debts, savings, cards, assets, netWorth, currency, locale }: { categories: { id: string; name: string }[]; accounts: { id: string; name: string }[]; budgets: BudgetWire[]; subs: SubscriptionWire[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: SavingsGoalWire[]; cards: { id: string; name: string; type: string; currency: string; balance: number; isCard: boolean; used: number | null; available: number | null; usagePct: number | null; alertLevel: string | null; statementBalance: number | null }[]; assets: { id: string; name: string }[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
+function S5Sections({ categories, accounts, budgets, subs, debts, savings, cards, assets, netWorth, currency, locale }: { categories: { id: string; name: string }[]; accounts: { id: string; name: string }[]; budgets: BudgetWireWithThresholds[]; subs: SubscriptionWire[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: SavingsGoalWire[]; cards: { id: string; name: string; type: string; currency: string; balance: number; isCard: boolean; used: number | null; available: number | null; usagePct: number | null; alertLevel: string | null; statementBalance: number | null }[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
   const noop = (): void => undefined;
   const firstDebt = debts[0];
   const firstGoal = savings[0];
@@ -307,13 +355,7 @@ function S5Sections({ categories, accounts, budgets, subs, debts, savings, cards
           <div key={b.id} className="mt-4 border-t border-hull pt-4">
             <BudgetForm
               categories={categories}
-              budget={{
-                id: b.id,
-                category_id: b.category_id,
-                amount: b.amount,
-                period_start: b.period_start,
-                period_end: b.period_end,
-              }}
+              budget={toBudgetFormValue(b)}
               onDone={noop}
             />
           </div>
@@ -356,7 +398,7 @@ function S5Sections({ categories, accounts, budgets, subs, debts, savings, cards
         {firstCard ? (<div className="mt-4"><CardDetail card={firstCard} locale={locale} /></div>) : null}
       </SectionShell>
       <SectionShell title={t("finance.manageAssets")} span="col-span-12 xl:col-span-6">
-        {firstAsset ? (<><AssetEditForm assetId={firstAsset.id} accounts={accounts} onDone={noop} /><div className="mt-4"><AssetValuationForm assetId={firstAsset.id} onDone={noop} /></div></>) : null}
+        {firstAsset ? (<><AssetEditForm assetId={firstAsset.id} accounts={accounts} initial={toAssetEditInitial(firstAsset)} onDone={noop} /><div className="mt-4"><AssetValuationForm assetId={firstAsset.id} onDone={noop} /></div></>) : null}
         <p className="mt-4 font-mono text-sm tabular-nums">{t("dashboard.netWorth")}: {worth ? formatMoney(worth.net_worth, { locale, currency: worth.currency }) : "—"}</p>
       </SectionShell>
     </>

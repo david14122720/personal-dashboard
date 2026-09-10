@@ -436,9 +436,11 @@ export interface BudgetInsightLike {
   status: string;
 }
 
+export type MomDirection = "up" | "down" | "flat";
+
 export interface Insight {
   id: string;
-  kind: "mom-expense" | "savings-rate" | "recurrent" | "worst-month" | "best-month" | "avg-expense" | "budget";
+  kind: "mom-expense" | "mom-expense-up" | "mom-expense-down" | "mom-expense-flat" | "savings-rate" | "recurrent" | "worst-month" | "best-month" | "avg-expense" | "budget";
   vars: Record<string, string | number>;
 }
 
@@ -464,10 +466,13 @@ export function toInsights(input: InsightsInput): Insight[] {
     const cur = toNumber(flow[flow.length - 1].expense);
     const prev = toNumber(flow[flow.length - 2].expense);
     const { pct } = toMonthOverMonth(cur, prev);
+    // JD-INSIGHT: dirección por comparación directa + pct absoluto (cero neutro).
+    const dir: MomDirection = cur > prev ? "up" : cur < prev ? "down" : "flat";
+    const absPct = pct === null ? 0 : Math.abs(Math.round(pct * 100));
     out.push({
       id: "insight-mom-expense",
       kind: "mom-expense",
-      vars: { pct: pct === null ? 0 : Math.round(pct * 100), cat: topName, cur, prev },
+      vars: { pct: absPct, dir, cat: topName, cur, prev },
     });
   }
   const last = flow[flow.length - 1];

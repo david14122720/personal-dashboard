@@ -14,16 +14,25 @@ const btnClass =
 
 const ASSET_CATEGORIES = ["cash", "account", "investment", "equipment", "vehicle", "property", "other"];
 
+export interface AssetEditInitial {
+  name?: string | null;
+  category?: string | null;
+  account_id?: string | null;
+  acquired_on?: string | null;
+  notes?: string | null;
+}
+
 /** Editar metadatos (allowlist real); archivar con confirmación vía DELETE existente. */
 export function AssetEditForm({
-  assetId, accounts, onDone,
-}: { assetId: string; accounts: NamedOption[]; onDone: () => void }) {
+  assetId, accounts, initial, onDone,
+}: { assetId: string; accounts: NamedOption[]; initial?: AssetEditInitial | null; onDone: () => void }) {
   const { mutate } = useSWRConfig();
-  const [name, setName] = useState("");
-  const [category, setCategory] = useState("other");
-  const [accountId, setAccountId] = useState("");
-  const [acquiredOn, setAcquiredOn] = useState("");
-  const [notes, setNotes] = useState("");
+  // JD-ASSET: precarga opcional con la categoría almacenada (AssetWire ya la trae).
+  const [name, setName] = useState(initial?.name ?? "");
+  const [category, setCategory] = useState(initial?.category ?? "other");
+  const [accountId, setAccountId] = useState(initial?.account_id ?? "");
+  const [acquiredOn, setAcquiredOn] = useState(initial?.acquired_on ?? "");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
