@@ -1,3 +1,147 @@
+# Verify Report — p9-finanzas · FINAL PR-3 (change COMPLETO PR-1+PR-2+PR-3, stacked-to-main)
+
+- change: `p9-finanzas` · project: `personal-dashboard` · date: 2026-09-09
+- slice: FINAL — change completo (PR-1 BE 7 endpoints + PR-2 FE S5 7 forms + PR-3 S6 charts/period/analysis/i18n/e2e + FIX A) · worktree: `/home/david/Nextcloud2/Ubuntu/landing_personal` (rama con PR-1/PR-2 commiteados `008a3dd`/`797a4af` + PR-3 en working tree sin commitear)
+- store: openspec (`openspec/changes/p9-finanzas/verify-report.md`, sección FINAL arriba, historial PR-2/PR-1 preservado abajo)
+- skill_resolution: `none` (el padre no inyectó `## Skills to load before work`; sin descubrimiento adicional; se siguió el contrato del prompt)
+- veredicto change completo: **PASS (implementation 30/30) con 2 WARNINGs + 1 WARNING menor — NOT READY for archive hasta revisión parent** (2 tareas `parent` sin hacer; sin defectos CRITICAL de código)
+- mutaciones: NINGUNA (solo-lectura + escritura de este reporte; sin commits, sin subagentes)
+
+## Structured status consumed + produced
+
+```yaml
+schemaName: spec-driven
+changeName: p9-finanzas
+artifactStore: openspec
+planningHome:
+  root: /home/david/Nextcloud2/Ubuntu/landing_personal
+  changesDir: openspec/changes
+changeRoot: openspec/changes/p9-finanzas
+artifactPaths:
+  proposal: [openspec/changes/p9-finanzas/proposal.md]
+  specs: [openspec/changes/p9-finanzas/specs/budgets-write/spec.md, openspec/changes/p9-finanzas/specs/savings-write/spec.md, openspec/changes/p9-finanzas/specs/debts-write/spec.md, openspec/changes/p9-finanzas/specs/subscriptions-write/spec.md, openspec/changes/p9-finanzas/specs/cards-write/spec.md, openspec/changes/p9-finanzas/specs/assets-write/spec.md, openspec/changes/p9-finanzas/specs/finance-charts/spec.md, openspec/changes/p9-finanzas/specs/finance-analysis/spec.md]
+  design: [openspec/changes/p9-finanzas/design.md]
+  tasks: [openspec/changes/p9-finanzas/tasks.md]
+  applyProgress: [openspec/changes/p9-finanzas/apply-progress.md]
+  verifyReport: [openspec/changes/p9-finanzas/verify-report.md]
+artifacts:
+  proposal: done
+  specs: done
+  design: done
+  tasks: done
+  applyProgress: done
+  verifyReport: done  # esta sección FINAL; historial PR-2/PR-1 abajo
+  syncReport: missing
+taskProgress:
+  total: 30  # implementation-owned
+  complete: 30
+  remaining: 0
+  unchecked: []
+deferredParentActions:
+  total: 2
+  complete: 0
+  remaining: 2
+  unchecked: [tasks.md parent ×2 — ver § Task completion]
+applyState: all_done
+dependencies:
+  apply: done  # 30/30 implementation
+  verify: ready  # este reporte FINAL
+  sync: blocked  # pendiente bounded review parent + decisión size
+  archive: blocked  # 2 parent sin completar (no son implementation)
+actionContext:
+  mode: repo-local
+  workspaceRoot: /home/david/Nextcloud2/Ubuntu/landing_personal
+  allowedEditRoots: [/home/david/Nextcloud2/Ubuntu/landing_personal]
+  warnings: []
+nextRecommended: parent-lifecycle
+isNonAuthoritative: false
+```
+
+Notas `actionContext`: `mode: repo-local` (autoritativo, store openspec con directorio `openspec/` presente); change selection inequívoca (`p9-finanzas` fijado por el prompt, existe en `openspec/changes/`). Ownership probado dentro del workspace. Esta fase no mutó código ni lanzó subagentes ni hizo commits.
+
+## Scope verificado (change COMPLETO)
+
+- PR-1 BE (commiteado `008a3dd`): `backend/src/routes/{budgets,savings,debts,assets}.rs` + `backend/src/main.rs` wiring 7 rutas. Sin re-diff en working tree (BE intacto desde PR-1; `cargo test` lo re-verifica en verde).
+- PR-2 FE S5 (commiteado `797a4af`): 7 forms `BudgetForm/SavingsForms/DebtPayments/SubscriptionForms/CardForm/CardDetail/AssetForms` + mutadores + `toDebtProgress` + 6 `SectionShell` S5 + patrimonio-número.
+- PR-3 FINAL (working tree sin commitear, verificado línea por línea): tracked `git diff --stat HEAD` 13 archivos `1059 insertions(+), 24 deletions(-)` (`FinanceScreens.tsx` +168/−12, `finance.ts` +239, `finance.test.ts` +202, `charts.test.tsx` +94, `sections.spec.ts` +56, `dashboard.ts` +6/−4, `dashboard.test.ts` +37, `es.ts` +50, `i18n.test.ts` +36, `finance.test.tsx` +47, `tasks.md` 24, `apply-progress.md` 118, `skills-lock.json` +6 ajeno) + untracked 9 archivos (`BalanceChart/SavingsChart/MonthlyExpensesChart/MonthCompareChart/chartTheme/PeriodSelector(+test)/AnalysisSection(+test)`, más `tsconfig.tsbuildinfo` y directoros ajenos `.agents/.claude/.codegraph`).
+- Sin migraciones: `git diff --name-only HEAD` + `git ls-files --others` filtrados por `migra` → vacío. ✅
+- Sin Fase 1/2 rotas: mismo filtro por `ManualCapture|TransactionsLedger|TransferHistory|DashboardHome|widgets|notifications|Productivity` en nombres de archivo → vacío; único toque a test S1 documentado (`findByText("Music")` → `findAllByText`, necesario por FIX A lectura+gestión, resto S1 intacto); `FinanceSections.tsx` sin diff; `DashboardHome/widgets/notifications` sin diff. ✅
+
+## Test / validation commands (ejecutados en esta fase, tal cual, con fallos incluidos)
+
+- `cargo test --manifest-path backend/Cargo.toml` → `395 passed` (lib, `running 395 tests`) + integración `5/3/10 passed`, `0 failed`. `DATABASE_URL` unset (verificado `<empty>`); sin fallos que reportar. ✅ coincide con baseline PR-1/PR-3 (395).
+- `pnpm --dir frontend exec vitest run` → PRIMERA corrida full: `Test Files 1 failed | 20 passed (21)` / `Tests 2 failed | 216 passed (218)` — fallan `components/finance/finance.test.tsx > finance screens > renders the ledger first page...` y `> finance PR-3 FIX A + S6 > monta SubscriptionRow...` (tiempos 5463ms/9304ms, file 35028ms; MSW warnings de `monthly-flow/by-category/debt-payments` sin handler en ese run). SEGUNDA corrida full (mismo comando, sin cambios): `Test Files 21 passed (21)` / `Tests 218 passed (218)`, exit 0. ✅ **218/218 verificado en re-verde**; el fallo inicial es flaky por contención paralela (los mismos 2 tests pasan aislados: `vitest run components/finance/finance.test.tsx` → `21 passed`; `vitest run components/finance/finance.test.tsx lib/finance/finance.test.ts` → `48 passed`). Se reporta el fallo tal cual por contrato (no se oculta), con su re-verde determinista.
+- `pnpm --dir frontend exec tsc --noEmit` → exit 0 (solo WARN ajeno pnpm `onlyBuiltDependencies`). ✅
+- `TZ=America/Bogota pnpm --dir frontend exec playwright test --list` → `Total: 13 tests in 6 files` (incluye 2 nuevos S5/S6 en `sections.spec.ts:21/:44`). ✅
+- `TZ=America/Bogota pnpm --dir frontend exec playwright test e2e/sections.spec.ts` → `4 skipped` (sin live, exit 0; `test.skip(!liveSmoke)`). ✅
+
+## Spec coverage (change COMPLETO)
+
+### BE PR-1 (7 endpoints, re-verificado por suite verde + wiring commiteado) → PASS
+- Suite `cargo test` 395 en verde con BE intacto; wiring 7 rutas commiteado en `008a3dd`; sin diff BE en PR-3. Se heredan los PASS PR-1 (budgets/savings/debts/assets-write BE) sin regresión. ✅
+
+### FE S5 (6 dominios + patrimonio, commiteado PR-2 + FIX A en PR-3) → PASS
+- FIX A verificado en código: `FinanceScreens.tsx:56` importa `{ SubscriptionCreateForm, SubscriptionRow }`; `S5Sections` monta `subs.map(sub => <SubscriptionRow sub={sub} />)` (`:350`), `budgets.map(b => <BudgetForm budget={...}>)` (edit+borrar por budget), `savings.map(g => <SavingsGoalForm goal={...}>)` (edit por goal). Test `finance.test.tsx:601` (`monta SubscriptionRow cancelar/reactivar y ediciones Budget/Savings`) pasa (21/21 aislado, 218/218 full en re-verde) asertando Cancelar + Eliminar ≥2. El RIESGO MEDIO PR-2 queda CERRADO. ✅
+
+### finance-charts (4 charts + PeriodSelector + reuse) → PASS
+- 4 charts existen y montan en `FinanceScreens` vía `next/dynamic(ssr:false)` (`:69-90`, 4 nuevos + `CategoryDonut` reuse; grep `dynamic/ssr` confirma, el patrón `ssr:false` está en minúsculas exactas del import `next/dynamic`). `PeriodSelector` default `{kind:"month"}` (`FinanceScreens:134` + pills `PeriodSelector:35`); `toPeriodRange` alimenta `useMonthlyFlow` + ambos `useSpendByCategory(from,to,type)`. Reuse ingresos-por-fuente = `CategoryDonut` existente + `useSpendByCategory(..."income")` (sin `IncomeSourceDonut`, según diseño). `FlowChart/CategoryDonut/BudgetBars` intactos; exclusión `transfer` heredada. Val visual/a11y: tokens `--color-*` (grep hex en 4 charts + theme = 0), `window` solo en comentario (`BalanceChart:17`), `prefers-reduced-motion` + foco teclado + `EmptyState` ES cubiertos por `charts.test.tsx` (19 tests). ✅
+
+### finance-analysis (AnalysisSection + disclaimer + heurística) → PASS
+- `AnalysisSection.tsx:37,117` renderiza `disclaimer` en ambas ramas (con datos y `EmptyState` sin datos); `es.ts:417` fija `"Análisis personal, no asesoramiento financiero."`. Insights ≥3/máx 6 vía `toInsights` + plantillas `analysis.tpl*` (7 plantillas `:426-432` + 6 métricas); MoM correcto y nulo con 1 mes; heurística recurrente v1 omitida si no concluye (sin `descriptions` en `FinanceScreens` → `undefined` → omitida por diseño; tests cubren presente/omitido). Tests `AnalysisSection.test.tsx` (4) + `finance.test.ts` + e2e assertions. ✅
+
+### e2e TZ → PASS con WARNING menor
+- Specs S5/S6 en `sections.spec.ts:21/:44` cubren 5 rangos + 4 charts + donut income + insights + disclaimer + patrimonio; `TZ=America/Bogota` en ejecución (`--list` 13 + `sections` 4 skipped exit 0). WARNING menor: `sections.spec.ts` no declara `test.use({ timezoneId: "America/Bogota" })` en archivo (sus hermanas `notifications.spec.ts:3` y `dashboard-widgets.spec.ts:3` sí); la TZ queda solo en variable de entorno de ejecución. No bloquea (specs live-skipped), pero se recomienda alinear el archivo con sus hermanas. ⚠️
+
+## Strict TDD compliance (STRICT activo vía tasks.md + apply-progress; `openspec/config.yaml` trae `strict_tdd: false` pero el change se trabajó en STRICT por prompt delegado — manda el prompt)
+
+1. Guía: sin override local `.pi/gentle-ai/support/strict-tdd-verify.md`; se aplican los 6 checks del contrato (tabla TDD + cross-ref + re-GREEN + auditoría de asserts). ✅
+2. `apply-progress.md` contiene tablas `TDD Cycle Evidence` PR-1 (12 filas) + PR-2 (7 filas) + PR-3 (13 filas incl. FIX A/i18n/e2e/REFACTOR) con RED/GREEN/TRIANGULATE/SAFETY/REFACTOR por tarea. ✅
+3. Test files cross-referenciados y existentes en disco: `backend/src/routes/{budgets,savings,debts,assets}.rs` (mods `patch_tests` 7/5/6/4), `frontend/lib/finance/finance.test.ts` (+202 PR-3), `frontend/components/ui/charts.test.tsx` (+94), `frontend/components/finance/{PeriodSelector,AnalysisSection}.test.tsx` (2+4), `frontend/lib/api/dashboard.test.ts` (+37), `frontend/components/finance/finance.test.tsx` (+47 FIX A/S6), `frontend/lib/i18n/i18n.test.ts` (+36), `frontend/e2e/sections.spec.ts` (+56). ✅
+4. GREEN vigente: `cargo test` 395 + `vitest` 218/218 (re-verde) + `tsc` exit 0 ejecutados en esta fase. ✅ (con el flaky inicial reportado y re-verdecido, no oculto).
+5. Auditoría de asserts (muestreo PR-3): puros comparan valores exactos (`toPeriodRange` bisiesto/Q1, `toMonthCompare deltaPct +25%`, `toBalanceSeries` acumulado 600→1300, `toInsights` `kind/vars` + tope 6); charts asertan `svg` real + `EmptyState` ES + `tabindex=0` + hex 0 vía `innerHTML`; api-wires asertan `Salario` por `type` en key+URL (default expense preservado); FIX A aserta `Cancelar + Eliminar ≥2` + `Mes checked` + custom inválido `role=alert` scoped con `within(Período)`; i18n aserta 7 plantillas interpoladas. Sin tautologías, sin ghost-loops, sin asserts solo-de-tipo aislados, sin smoke-only (cada GREEN tiene borde: negativo/vacío/desorden/prev==0/1-mes/tope-6), sin asserts CSS de implementación. ✅
+6. Sin faltantes CRITICAL de evidencia TDD en el change completo. ✅
+
+## Assertion quality findings
+
+- PASS: asserts concretos y triangulares en BE (status/montos-string/SQL/reversión trigger) + FE S5 (MSW método/URL/cuerpo + `role=alert`) + PR-3 (series/MoM/delta/charts-ES/i18n-templates/FIX A/e2e-live). Sin hallazgos de tautología/ghost-loop/type-only/smoke-only/CSS-implementation-detail. ✅
+
+## Review workload / PR boundary findings
+
+- Forecast (tasks.md): `Chained PRs: Yes`, `Chain strategy: pending`, `Decision needed: Yes`, `400-line budget risk: High`, split PR-1 BE → PR-2 S5 → PR-3 S6.
+- Resolución: el padre fijó `stacked-to-main` (eslabones 1/2/3 registrados en apply-progress). Esta verificación confirma que **solo el slice asignado por eslabón fue implementado**: PR-1 BE, PR-2 S5, PR-3 puros+charts+period+analysis+i18n+e2e+FIX A. Sin scope creep (lo implementado es exactamente las 30 tareas implementation `[x]`; `FinanceSections.tsx` intacto; BE/F1/F2/prohibidos sin toques fuera de slice). ✅
+- `size:exception` NO registrada: PR-3 suma ~1059 tracked + ~380 untracked prod + tests; cadena completa ~4300 líneas por TDD estricto (precedentes PR-1 +1766, PR-2 ~1210). El volumen es tests+charts con TDD, no alcance extra — pero si el mantenedor exige ≤400 por PR, debe aceptar `size:exception` o partir antes del merge. **WARNING: decisión parent pendiente (pre-merge).**
+- `Chain strategy` coincide con el borde retornado: base `p9-pr2` (incluye PR-1+PR-2), PR-3 cierra la cadena (30/30). Rollback = revert working tree PR-3 (17 archivos) + reverts commiteados PR-2/PR-1 por separado (BE aditivo, triggers intactos; FE compositivo tras F1). ✅
+- `skills-lock.json` (+6 `grill-me`) sigue modificado en el working tree, ajeno al change. WARNING menor: excluirlo del PR o justificarlo. ⚠️
+- Desviaciones aceptadas PR-3 (documentadas en apply-progress, sin cambio de conducta): `toMonthCompare` añade `curMonth/prevMonth` para labels; `toInsights` retorna `{id,kind,vars}` (ES solo en `es.ts`); `toExpenseSeries` añadido con su RED/GREEN; `PeriodSelector now?` inyectado; `charts.periodFrom/To` duplican `finance.from/to` (desambiguado con `within`); `AnalysisSection` sin `descriptions` (omitida por diseño); `dynamic(ssr:false)` ×5 con `ChartSkeleton` (`common.loading` reusado); único toque S1 `findAllByText Music`. ✅
+
+## Task completion status
+
+**30/30 implementation en `- [x]`** — verificado por grep: `grep -c "^- \\[x\\].*sdd-owner: implementation" tasks.md` → `30`; `grep "^- \\[ \\[].*sdd-owner: implementation"` → vacío (0 restantes). ✅ No hay líneas `- [ ]` de implementation que citar (confirmación de cero pendientes en lugar de verbatim).
+
+Restantes: **2 unchecked `parent`** (dueño/orquestador, intactas, no bloquean el PASS de implementation pero sí el archive):
+
+```text
+- [ ] Run bounded review of PR-1 → PR-2 → PR-3 chain (scope, DTO reconciliation, F1/F2 intact, i18n, a11y vales) before merge. <!-- sdd-owner: parent -->
+- [ ] Decide chain strategy (stacked-to-main vs feature-branch-chain) and grant apply gate for PR-1 BE. <!-- sdd-owner: parent -->
+```
+
+## Blockers (exactos)
+
+1. **Archive bloqueado por 2 tareas parent (no por código):** bounded review de la cadena + decisión chain-gate/`size:exception`. Ninguna es archive-exception (son decisiones reales pendientes, no checkboxes obsoletos). Implementation 30/30 lista; sync (fusión de los 8 deltas a canónicos) procede tras esas decisiones.
+2. **WARNING — decisión de tamaño pre-merge:** cadena ~4300 líneas / PR-3 ~1059+untracked superan el HARD BUDGET 400 sin `size:exception` registrada. El padre debe aceptarla o partir antes del merge.
+3. **WARNING menor — e2e TZ solo en env:** `sections.spec.ts` sin `timezoneId: America/Bogota` en archivo (sus hermanas sí lo tienen). Alinear antes del merge.
+4. **WARNING menor — `skills-lock.json` (+6) ajeno al change:** excluirlo del PR o justificarlo.
+5. **Nota de flakiness (no bloqueante):** primera corrida full `vitest` 2 failed/216 passed por contención paralela; re-verde inmediato 218/218 + aislados 21/21 y 48/48. Sin defecto de código; si reaparece en CI con workers limitados, reintentar o fijar `--pool=forks --poolOptions.forks.singleFork` solo para diagnóstico (sin cambiar tests).
+6. Sin bloqueos de código: cero defectos CRITICAL; FIX A cierra el RIESGO MEDIO PR-2; nada que corregir antes del bounded review parent.
+
+## Readiness sync/archive
+
+- `sync`: READY-en-espera — los 8 deltas (`budgets/savings/debts/subscriptions/cards/assets-write`, `finance-charts`, `finance-analysis`) están completos y trazables a canónicos (mapa en tasks.md); el archivador puede fusionarlos una vez el padre complete el bounded review y la decisión `size:exception`.
+- `archive`: NOT READY hasta que las 2 parent se completen (entonces `archive: ready`).
+- `next_recommended: parent-lifecycle` (bounded review + decisión tamaño/chain + commit/PR por el padre; sin commits desde esta fase).
+
+---
+
 # Verify Report — p9-finanzas · PR-2 FE S5 (eslabón 2 de 3, stacked-to-main)
 
 - change: `p9-finanzas` · project: `personal-dashboard` · date: 2026-09-09
