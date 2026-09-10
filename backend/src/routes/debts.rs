@@ -39,6 +39,10 @@ const CREATE_DEBT_SQL: &str = "INSERT INTO debts (user_id, name, creditor, origi
 const LIST_DEBTS_SQL: &str = "SELECT id, name, creditor, original_amount, pending_amount, currency, start_date, due_date, installment, interest_rate, status::text, notes, created_at, updated_at FROM debts WHERE user_id=$1 ORDER BY created_at ASC";
 const GET_DEBT_SQL: &str = "SELECT id, name, creditor, original_amount, pending_amount, currency, start_date, due_date, installment, interest_rate, status::text, notes, created_at, updated_at FROM debts WHERE id=$1 AND user_id=$2";
 const DELETE_DEBT_SQL: &str = "DELETE FROM debts WHERE id=$1 AND user_id=$2";
+/// Base for the dynamic PATCH builder (see `patch_debt_handler`).
+const PATCH_DEBT_BASE_SQL: &str = "UPDATE debts SET updated_at = now()";
+const LIST_PAYMENTS_SQL: &str = "SELECT id, debt_id, amount, paid_on, payment_method, transaction_id, notes, created_at FROM debt_payments WHERE debt_id=$1 AND user_id=$2 ORDER BY paid_on ASC, created_at ASC";
+const DELETE_PAYMENT_SQL: &str = "DELETE FROM debt_payments WHERE id=$1 AND debt_id=$2 AND user_id=$3";
 const DEBT_OWNERSHIP_SQL: &str = "SELECT id FROM debts WHERE id=$1 AND user_id=$2";
 const DEBT_EXISTS_SQL: &str = "SELECT id FROM debts WHERE id=$1";
 const DEBT_STATE_SQL: &str =
@@ -78,6 +82,21 @@ pub struct CreateDebtRequest {
     /// Wire-format money string (`> 0`), e.g. `"50.00"`.
     pub installment: Option<String>,
     /// Wire-format rate string, e.g. `"19.990"` (0–999.999).
+    pub interest_rate: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchDebtRequest {
+    pub name: Option<String>,
+    /// Real wire name `creditor` (columna `debts.creditor`; nunca `creditor_name`).
+    pub creditor: Option<String>,
+    /// Calendar date `YYYY-MM-DD`.
+    pub due_date: Option<String>,
+    /// Wire-format money string (`> 0`); real name `installment` (nunca `installment_amount`).
+    pub installment: Option<String>,
+    /// Wire-format rate string `0-999.999`.
     pub interest_rate: Option<String>,
     pub notes: Option<String>,
 }
@@ -336,6 +355,153 @@ pub async fn delete_debt_handler(
     let user_id = require_user_id(&headers, &state.pool).await?;
     let res = sqlx::query(DELETE_DEBT_SQL)
         .bind(id)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn patch_debt_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PatchDebtRequest>,
+) -> Result<Json<DebtResponse>, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    if body.name.is_none()
+        && body.creditor.is_none()
+        && body.due_date.is_none()
+        && body.installment.is_none()
+        && body.interest_rate.is_none()
+        && body.notes.is_none()
+    {
+        return Err(AppError::Validation("no updatable fields provided".into()));
+    }
+    // Ownership contract: ajeno → 404, inexistente puro → 422.
+    ensure_debt_writable(&state.pool, id, user_id).await?;
+    let current = sqlx::query_as::<_, DebtRow>(GET_DEBT_SQL)
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?
+        .ok_or(AppError::NotFound)?;
+    let (
+        _cid,
+        _cname,
+        _ccreditor,
+        _coriginal,
+        _cpending,
+        _ccurrency,
+        _cstart,
+        _cdue,
+        _cinstallment,
+        _crate,
+        cstatus,
+        _cnotes,
+        _ccreated,
+        _cupdated,
+    ) = &current;
+    if cstatus != "active" {
+        return Err(AppError::Validation(
+            "debt is not editable when paid_off".into(),
+        ));
+    }
+    let name = match body.name.as_deref() {
+        Some(raw) => Some(validate_required_text(raw, MAX_NAME_LEN, "name")?),
+        None => None,
+    };
+    let creditor = match body.creditor.as_deref() {
+        Some(raw) => Some(validate_required_text(raw, MAX_CREDITOR_LEN, "creditor")?),
+        None => None,
+    };
+    let due_date = match body.due_date.as_deref() {
+        Some(raw) => Some(validate_calendar_date(raw, "due_date")?),
+        None => None,
+    };
+    let installment = match body.installment.as_deref() {
+        Some(raw) => Some(validate_optional_installment(Some(raw))?.expect("Some validated")),
+        None => None,
+    };
+    let interest_rate = match body.interest_rate.as_deref() {
+        Some(raw) => {
+            Some(validate_optional_interest_rate(Some(raw))?.expect("Some validated"))
+        }
+        None => None,
+    };
+    validate_optional_text(body.notes.as_deref(), MAX_TEXT_LEN, "notes")?;
+    let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
+        sqlx::QueryBuilder::new(PATCH_DEBT_BASE_SQL);
+    if let Some(name) = name.as_deref() {
+        qb.push(", name = ");
+        qb.push_bind(name);
+    }
+    if let Some(creditor) = creditor.as_deref() {
+        qb.push(", creditor = ");
+        qb.push_bind(creditor);
+    }
+    if let Some(due_date) = due_date {
+        qb.push(", due_date = ");
+        qb.push_bind(due_date);
+    }
+    if let Some(installment) = installment {
+        qb.push(", installment = ");
+        qb.push_bind(installment);
+    }
+    if let Some(interest_rate) = interest_rate {
+        qb.push(", interest_rate = ");
+        qb.push_bind(interest_rate);
+    }
+    if let Some(notes) = body.notes.as_deref() {
+        qb.push(", notes = ");
+        qb.push_bind(notes);
+    }
+    qb.push(" WHERE id = ");
+    qb.push_bind(id);
+    qb.push(" AND user_id = ");
+    qb.push_bind(user_id);
+    qb.push(" RETURNING id, name, creditor, original_amount, pending_amount, currency, start_date, due_date, installment, interest_rate, status::text, notes, created_at, updated_at");
+    let row = qb
+        .build_query_as::<DebtRow>()
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(map_debt_db_err)?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(DebtResponse::from(row)))
+}
+
+pub async fn list_payments_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(debt_id): Path<Uuid>,
+) -> Result<Json<Vec<PaymentResponse>>, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    ensure_debt_writable(&state.pool, debt_id, user_id).await?;
+    let rows = sqlx::query_as::<_, PaymentRow>(LIST_PAYMENTS_SQL)
+        .bind(debt_id)
+        .bind(user_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    Ok(Json(rows.into_iter().map(PaymentResponse::from).collect()))
+}
+
+pub async fn delete_payment_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((debt_id, pid)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    ensure_debt_writable(&state.pool, debt_id, user_id).await?;
+    // Correccion UX permitida incluso si la deuda esta `paid_off`: el trigger
+    // `update_debt_pending` revierte `pending_amount` y reabre `status` a `active`.
+    let res = sqlx::query(DELETE_PAYMENT_SQL)
+        .bind(pid)
+        .bind(debt_id)
         .bind(user_id)
         .execute(&state.pool)
         .await
@@ -1159,6 +1325,388 @@ mod tests {
             err.into_response().status(),
             axum::http::StatusCode::UNPROCESSABLE_ENTITY
         );
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+}
+
+#[cfg(test)]
+mod patch_debt_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn patch_dto_uses_real_names_and_rejects_trigger_owned() {
+        // Nombres reales: name, creditor, due_date, installment, interest_rate, notes.
+        for payload in [
+            json!({"creditor": "Banco X"}),
+            json!({"installment": "200000.00"}),
+            json!({"notes": "x"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchDebtRequest>(payload).is_ok(),
+                "real field must deserialize"
+            );
+        }
+        for payload in [
+            json!({"pending_amount": "0.00"}),
+            json!({"original_amount": "9.00"}),
+            json!({"status": "active"}),
+            json!({"creditor_name": "Banco X"}),
+            json!({"installment_amount": "200000.00"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchDebtRequest>(payload.clone()).is_err(),
+                "trigger-owned/alias must fail deserialization: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_and_payment_sql_scope_correctly() {
+        assert!(
+            PATCH_DEBT_BASE_SQL.contains("updated_at = now()"),
+            "patch base must refresh updated_at"
+        );
+        assert!(
+            LIST_PAYMENTS_SQL.contains("FROM debt_payments"),
+            "list must read debt_payments"
+        );
+        assert!(
+            LIST_PAYMENTS_SQL.contains("ORDER BY paid_on ASC"),
+            "list must order by paid_on ASC, got: {LIST_PAYMENTS_SQL}"
+        );
+        assert!(
+            DELETE_PAYMENT_SQL.contains("id=$1 AND debt_id=$2 AND user_id=$3"),
+            "delete payment must scope id+debt+user, got: {DELETE_PAYMENT_SQL}"
+        );
+        assert!(
+            GET_DEBT_SQL.contains("id=$1 AND user_id=$2"),
+            "detail lookup must scope id+user_id"
+        );
+    }
+
+    #[test]
+    fn triangulate_patch_guards_reject_paid_off_and_trigger_owned() {
+        use axum::response::IntoResponse;
+        // Trigger-owned nunca deserializan (deny_unknown_fields → 422 en el wire).
+        for payload in [
+            serde_json::json!({"pending_amount": "1.00"}),
+            serde_json::json!({"original_amount": "9.00"}),
+            serde_json::json!({"status": "active"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchDebtRequest>(payload).is_err(),
+                "trigger-owned must be 422"
+            );
+        }
+        // Alias nunca existen en el wire real.
+        for payload in [
+            serde_json::json!({"creditor_name": "Banco X"}),
+            serde_json::json!({"installment_amount": "1.00"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchDebtRequest>(payload).is_err(),
+                "alias must be 422"
+            );
+        }
+        // Validadores reusados rechazan borde.
+        assert!(validate_optional_installment(Some("0.00")).is_err());
+        assert!(validate_optional_interest_rate(Some("1000")).is_err());
+        let err = validate_required_text("", MAX_NAME_LEN, "name").unwrap_err();
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    fn test_pool() -> Option<sqlx::PgPool> {
+        std::env::var("DATABASE_URL")
+            .ok()
+            .map(|url| sqlx::PgPool::connect_lazy(&url).expect("lazy pool from DATABASE_URL"))
+    }
+
+    async fn db_state(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        let email = format!("debtpatch-{}@example.com", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind("not-a-real-hash")
+        .bind("debt patch test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        (state, headers, user_id)
+    }
+
+    async fn cleanup_user(pool: &sqlx::PgPool, user_id: Uuid) {
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup user");
+    }
+
+    async fn seed_debt(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO debts (user_id, name, creditor, original_amount, pending_amount, currency, start_date) VALUES ($1,$2,'Test Bank',500,500,'COP','2026-01-15') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(format!("debt-{}", Uuid::new_v4()))
+        .fetch_one(pool)
+        .await
+        .expect("seed debt")
+    }
+
+    async fn debt_state(
+        pool: &sqlx::PgPool,
+        debt_id: Uuid,
+        user_id: Uuid,
+    ) -> (rust_decimal::Decimal, String) {
+        sqlx::query_as::<_, (rust_decimal::Decimal, String)>(DEBT_STATE_SQL)
+            .bind(debt_id)
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("read debt state")
+    }
+
+    #[tokio::test]
+    async fn delete_payment_reverts_pending_and_reopens_status() {
+        // Test dedicado de reversion del trigger (obligatorio por tasks BE-3):
+        // pending 500 → pay 100 (pending 400) → DELETE (pending 500, active).
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_payment_reverts_pending_and_reopens_status: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let debt_id = seed_debt(&pool, user_id).await;
+        let (status, created) = create_payment_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(debt_id),
+            Json(
+                serde_json::from_value(serde_json::json!({
+                    "amount": "100.00",
+                    "paid_on": "2026-02-01"
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("payment is 201");
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        let (pending, st) = debt_state(&pool, debt_id, user_id).await;
+        assert_eq!(pending, rust_decimal::Decimal::new(40000, 2));
+        assert_eq!(st, "active");
+        let status = delete_payment_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path((debt_id, created.id)),
+        )
+        .await
+        .expect("delete is 204");
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        let (pending, st) = debt_state(&pool, debt_id, user_id).await;
+        assert_eq!(pending, rust_decimal::Decimal::new(50000, 2));
+        assert_eq!(st, "active");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn payoff_then_delete_last_payment_reopens_to_active() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP payoff_then_delete_last_payment_reopens_to_active: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let debt_id = seed_debt(&pool, user_id).await;
+        let mut last_id = None;
+        for amount in ["450.00", "50.00"] {
+            let (status, created) = create_payment_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(debt_id),
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "amount": amount,
+                        "paid_on": "2026-02-01"
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .expect("payment is 201");
+            assert_eq!(status, axum::http::StatusCode::CREATED);
+            last_id = Some(created.id);
+        }
+        let (pending, st) = debt_state(&pool, debt_id, user_id).await;
+        assert_eq!(pending, rust_decimal::Decimal::ZERO);
+        assert_eq!(st, "paid_off");
+        // PATCH en paid_off → 422.
+        let err = patch_debt_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(debt_id),
+            Json(serde_json::from_value(serde_json::json!({"notes": "x"})).unwrap()),
+        )
+        .await
+        .expect_err("patch on paid_off must be 422");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // DELETE del ultimo payment reabre a active (correccion UX permitida).
+        let status = delete_payment_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path((debt_id, last_id.unwrap())),
+        )
+        .await
+        .expect("delete last payment is 204");
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        let (pending, st) = debt_state(&pool, debt_id, user_id).await;
+        assert_eq!(pending, rust_decimal::Decimal::new(5000, 2));
+        assert_eq!(st, "active");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn payments_cross_foreign_and_missing_map_correctly() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP payments_cross_foreign_and_missing_map_correctly: no DATABASE_URL");
+            return;
+        };
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let debt_a = seed_debt(&pool, user_a).await;
+        let debt_b = seed_debt(&pool, user_b).await;
+        // Pago en A para luego intentar borrarlo via B → 404 cruzado.
+        let raw_a = {
+            use crate::auth::rate_limit::LoginRateLimiter;
+            use std::sync::Arc;
+            let raw = crate::auth::tokens::generate_token();
+            let hash = crate::auth::tokens::hash_token(&raw);
+            sqlx::query(
+                "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+            )
+            .bind(user_a)
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .expect("seed session");
+            let state = AppState {
+                pool: pool.clone(),
+                session_ttl_hours: 24,
+                rate_limiter: Arc::new(LoginRateLimiter::new()),
+            };
+            let mut h = HeaderMap::new();
+            h.insert(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {raw}").parse().unwrap(),
+            );
+            (state, h)
+        };
+        let (_, created) = create_payment_handler(
+            State(raw_a.0.clone()),
+            raw_a.1.clone(),
+            Path(debt_a),
+            Json(
+                serde_json::from_value(serde_json::json!({
+                    "amount": "10.00",
+                    "paid_on": "2026-02-01"
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect("payment in A is 201");
+        let err = delete_payment_handler(
+            State(state_b.clone()),
+            headers_b.clone(),
+            Path((debt_b, created.id)),
+        )
+        .await
+        .expect_err("cross-debt delete must be 404");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        // Ajeno → 404; inexistente puro → 422.
+        let err = list_payments_handler(State(state_b.clone()), headers_b.clone(), Path(debt_a))
+            .await
+            .expect_err("foreign list must be 404");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        let err = list_payments_handler(
+            State(state_b.clone()),
+            headers_b.clone(),
+            Path(Uuid::new_v4()),
+        )
+        .await
+        .expect_err("missing list must be 422");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // PATCH con payments preserva pending_amount.
+        let patched = patch_debt_handler(
+            State(raw_a.0.clone()),
+            raw_a.1.clone(),
+            Path(debt_a),
+            Json(serde_json::from_value(serde_json::json!({"creditor": "Banco Y"})).unwrap()),
+        )
+        .await
+        .expect("patch creditor is 200");
+        assert_eq!(patched.creditor, "Banco Y");
+        assert_eq!(
+            patched.pending_amount,
+            rust_decimal::Decimal::new(49000, 2),
+            "PATCH must preserve trigger-owned pending_amount"
+        );
+        // Historial lista 1 ordenado; vacia → [].
+        let list = list_payments_handler(
+            State(raw_a.0.clone()),
+            raw_a.1.clone(),
+            Path(debt_a),
+        )
+        .await
+        .expect("list is 200");
+        assert_eq!(list.len(), 1);
+        let empty = list_payments_handler(
+            State(state_b.clone()),
+            headers_b.clone(),
+            Path(debt_b),
+        )
+        .await
+        .expect("empty list is 200");
+        assert!(empty.is_empty());
         let _ = state_a;
         cleanup_user(&pool, user_a).await;
         cleanup_user(&pool, user_b).await;
