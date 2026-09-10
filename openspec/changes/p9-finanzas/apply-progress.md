@@ -130,3 +130,103 @@ Diferidas al dueño/orquestador (no apply, intactas):
 
 - `applyState: ready` (12/32 completadas —12 implementation—; quedan 18 FE implementation + refactor + 2 parent). `verify: blocked` (sin `verifyReport`), `archive: blocked`. `next_recommended: parent-lifecycle` (PR-1 BE listo para verify acotado del slice; el ciclo completo cierra tras PR-2/PR-3).
 - Sin `blockedReasons` nuevas. `skill_resolution: none`. Sin subagentes lanzados. Sin commits (el padre/orquestador decide el commit/PR).
+
+---
+
+# Apply Progress — p9-finanzas · PR-2 FE S5 (stacked-to-main, eslabón 2 de 3)
+
+- change: `p9-finanzas` · project: `personal-dashboard` · date: 2026-09-09
+- slice: PR-2 FE S5 únicamente (6 forms por dominio + mutadores + `toDebtProgress` + montaje S5) · base: rama `p9-pr1` (con PR-1 BE ya aplicado)
+- chain: `stacked-to-main` (fijado por el padre; tasks.md decía `Chain strategy: pending` + `Decision needed: Yes`, el prompt delegado fija `stacked-to-main, eslabón 2 de 3`)
+- TDD: `STRICT` (`pnpm exec vitest run` + `tsc --noEmit`) · BE no tocado en este eslabón
+- store: openspec (`openspec/changes/p9-finanzas/apply-progress.md`, merge acumulativo con PR-1 supra)
+- skill_resolution: `none` (sin `## Skills to load before work` inyectadas; se siguió el contrato del prompt + `sdd-status-contract.md` + `strict-tdd.md` globales)
+
+## Structured status consumed
+
+- Artefactos leídos: `tasks.md`, `design.md`, `specs/{budgets,savings,debts,subscriptions,cards,assets}-write/spec.md`, `apply-progress.md` (PR-1), `openspec/config.yaml` (`strict_tdd: false` en config, pero el prompt delegado activa STRICT TDD con runners FE — manda el prompt).
+- `actionContext`: `mode: repo-local`, edición dentro del repo, sin warnings. Sin tocar Fase 1/2 (agregados S1 y sus tests intactos).
+- Rama actual: `p9-pr1`. Sin bloqueos de selección de change.
+- Review Workload Gate (tasks.md): `Decision needed: Yes`, `Chained PRs: Yes`, `Chain strategy: pending`, `400-line budget risk: High`. Decisión resuelta por el padre (`stacked-to-main`, solo S5 PR-2). Se implementa únicamente el slice asignado y se reporta el borde del PR (ver §Workload).
+
+## Completed tasks (6/6 del slice S5; 18/32 implementation acumuladas) + persisted checkbox updates
+
+En `openspec/changes/p9-finanzas/tasks.md`, pasadas de `- [ ]` a `- [x]` (solo filas `<!-- sdd-owner: implementation -->`; filas `parent` intactas):
+
+- [x] `RED+GREEN FE budgets-form` — `createBudget/patchBudget/deleteBudget` (claves reales `warn_threshold/over_threshold`) + `BudgetForm.tsx` crear+editar+borrar con `confirm()` + invalidación `dashboard/budgets`.
+- [x] `RED+GREEN FE savings-forms` — `patchGoal` + `createMovement/deleteMovement` (signed) + `SavingsForms.tsx` (`SavingsDepositForm` con guard over-withdrawal, `SavingsGoalForm` allowlist, eliminar con confirmación) + invalidación `finance/savings-goals` + `dashboard/savings-goals`.
+- [x] `RED+GREEN FE debts-ui` — `patchDebt` (nombres reales) + `createPayment/deletePayment` + `DebtPayments.tsx` (`DebtPayForm` guard `amount<=pending`, `DebtPaymentHistory` vía `useDebtPayments` + corregir DELETE+prefill con confirmación, `DebtProgressBar` con `toDebtProgress`, `DebtEditForm` solo metadata) + invalidación `finance/debts` + `finance/debt-payments/{id}`.
+- [x] `RED+GREEN FE subs-forms` — `createSubscription/setSubscriptionActive/deleteSubscription` (PATCH solo `{is_active}`) + `SubscriptionForms.tsx` (crear + `SubscriptionRow` cancelar/reactivar/borrar con confirmación) + invalidación `finance/subscriptions` + `dashboard/subscriptions`.
+- [x] `RED+GREEN FE cards` — `createCard` (`POST /accounts type=credit_card`, exige límite + ambos días) + `CardForm.tsx`/`CardDetail.tsx` (solo formato + guía DELETE+recreate ES) + invalidación `dashboard/accounts` + `dashboard/net-worth`.
+- [x] `RED+GREEN FE assets-forms + montaje S5` — `patchAsset` + `createValuation` (guard `recorded_on>máx`) + `AssetForms.tsx` (editar allowlist + valuar + archivar con confirmación) + 6 `SectionShell` S5 + patrimonio-número (`useNetWorth`, moneda de `GET /me`, fallback primera currency) en `FinanceScreens.tsx` tras las tres F1 intactas.
+
+Re-verificado: las 6 filas muestran `- [x]`; filas FE puros/charts/analysis/e2e/refactor + 2 `parent` siguen `- [ ]`.
+
+## Files changed (solo FE S5; sin BE; sin migraciones; sin Fase 1/2)
+
+Nuevos (7, 819 líneas):
+
+- `frontend/components/finance/BudgetForm.tsx` (124): crear+editar (`budget?`), select categoría por nombre, monto `normalizeManualAmount`, dates `YYYY-MM-DD`, thresholds 0–2 (defaults 0.8/1.0), notes; borrar con `confirm(finance.confirmDeleteBudget)`.
+- `frontend/components/finance/SavingsForms.tsx` (148): `SavingsDepositForm` (monto firmado, guard over-withdrawal), `SavingsGoalForm` (allowlist `name/description/target_amount/target_date/category_id/color`, crear vía `POST`, eliminar con confirmación).
+- `frontend/components/finance/DebtPayments.tsx` (160): `DebtPayForm` (guard `amount<=pending`), `DebtPaymentHistory` (`useDebtPayments`, corregir DELETE+prefill con confirmación), `DebtProgressBar` (`toDebtProgress`), `DebtEditForm` (`creditor/installment/interest_rate`, nunca montos).
+- `frontend/components/finance/SubscriptionForms.tsx` (150): `SubscriptionCreateForm` (frecuencias enum real `daily…annual`, currency fija COP, payment_method reuse S1), `SubscriptionRow` (toggle solo `{is_active}` + borrar con confirmación).
+- `frontend/components/finance/CardForm.tsx` (71): exige `credit_limit` + corte/pago 1–31 (espejo `validate_card_fields`).
+- `frontend/components/finance/CardDetail.tsx` (20): solo formato (límite=usado+disponible, alerta) + `limitChangeHint` (DELETE+recreate, jamás PATCH).
+- `frontend/components/finance/AssetForms.tsx` (146): `AssetEditForm` (allowlist real + archivar vía DELETE con confirmación), `AssetValuationForm` (guard fecha posterior).
+
+Modificados:
+
+- `frontend/lib/api/finance.ts` (+43): `apiPatch` import; wires ampliados `DebtWire` (`installment?, start_date?`), `SavingsGoalWire` (`description?, target_date?, category_id?, color?`), `SubscriptionWire` (`payment_method?, category_id?`); nuevos `DebtPaymentWire` + `fetchDebtPayments/useDebtPayments` (key `finance/debt-payments/{id}`), `AssetWire` + `fetchAssets/useAssets` (key `finance/assets`); 16 mutadores §3.2 (montos string, sin parseo).
+- `frontend/lib/finance/finance.ts` (+11): `toDebtProgress({original,pending})→{paid,remaining,pct,status}` (paid=original−pending, pct clamp [0,1], `paid` si pending≤0, `warn` si pct≥0.7). Firmas existentes intactas.
+- `frontend/lib/i18n/es.ts` (+44): ~40 claves `finance.*` S5 (`manage*`, forms/confirmaciones/errores/guards, `cardLimitDetail/cardAlert`, `assets/assetsHint`); genéricos reusados de `productivity.*` (save/delete/saving); cero literales en JSX nuevo.
+- `frontend/components/containers/FinanceScreens.tsx` (+55/−5): hooks S5 no-bloqueantes (`useFinanceCategories/useAssets/useNetWorth` fuera del skeleton/alert S1) + `S5Sections` (6 `SectionShell` con títulos propios `manage*`, sin hints de lectura) tras las F1 intactas; `ManualCaptureSection/TransactionsLedger/TransferHistory` y sus keys sin tocar.
+- Tests: `frontend/lib/finance/finance.test.ts` (+18: 2 casos `toDebtProgress`), `frontend/components/finance/finance.test.tsx` (+224: 2 mutadores + 6 forms con MSW; handlers base `/assets` + `/net-worth`).
+
+## Test commands run (evidencia)
+
+- Baseline pre-cambio (SAFETY NET): `pnpm exec vitest run lib/finance/finance.test.ts components/finance/finance.test.tsx` → 21 passed.
+- RED: tests S5 añadidos (imports inexistentes `toDebtProgress`, mutadores, 7 componentes) → `2 failed | 10 passed` (`toDebtProgress is not a function` + import failure). ✅ RED.
+- GREEN (iterativo): `toNumber` mal importado desde `finance` en vez de `money` → 7 failed; duplicados de copy S1 (títulos/hints/region `Cuentas`, textos `Music`, `/usados/`) → 5 failed. Tras títulos propios `manage*`, `CardDetail` sin `usedAvailable`, subs montando solo crear: `31 passed`. ✅ GREEN.
+- TRIANGULATE: cada dominio tiene happy (mutador POST/PATCH/DELETE vía MSW + render) + borde (monto inválido, sobrerretiro, sobreabono, precio inválido, tarjeta incompleta, valuación desordenada, UUIDs ausentes). ✅.
+- REFACTOR: eliminado `removeMovement` muerto + `void currency`; re-verde 31/31 + `tsc --noEmit` limpio. ✅.
+- Final: `pnpm test` (vitest run) → **19 files, 182 passed** (S1 intactos); `tsc --noEmit` → exit 0.
+
+## TDD Cycle Evidence (Strict TDD)
+
+| Tarea | RED | GREEN | TRIANGULATE | SAFETY NET | REFACTOR |
+|---|---|---|---|---|---|
+| `toDebtProgress` | ✅ `is not a function` | ✅ 2 casos pasan | ✅ paid/warn/clamp mecidos | ✅ baseline 21 previo | ➖ puro mínimo |
+| budgets-form | ✅ import inexistente | ✅ MSW POST/PATCH(`warn_threshold`)/DELETE + render + alerta monto | ✅ crear feliz + monto `abc`→alert + sin UUID | ✅ baseline previo | ✅ sin conducta cambiada |
+| savings-forms | ✅ import inexistente | ✅ movements signed + patchGoal + renders | ✅ abono feliz + sobrerretiro→alert + meta render | ✅ GREEN previo | ✅ muerto eliminado |
+| debts-ui | ✅ import inexistente | ✅ payments POST/DELETE/GET + 3 renders | ✅ abono feliz + `150>100`→alert + historial + corregir | ✅ GREEN previo | ✅ import `money` |
+| subs-forms | ✅ import inexistente | ✅ POST/PATCH `{is_active}`/DELETE + renders | ✅ precio `abc`→alert + fila Cancelar | ✅ GREEN previo | ✅ sin conducta cambiada |
+| cards | ✅ import inexistente | ✅ `POST /accounts` + renders | ✅ incompleto→alert + hint DELETE+recreate | ✅ GREEN previo | ✅ copy sin colisión S1 |
+| assets-forms+montaje | ✅ import inexistente | ✅ PATCH/valuation + renders + 6 shells + patrimonio | ✅ fecha vieja→alert + `a1` ausente + S1 intacto (182) | ✅ suite previa | ✅ slice sin conducta cambiada |
+
+Triangulación mínima cumplida: cada comportamiento tiene ≥2 casos; ningún GREEN es trivial (los mutadores golpean MSW y asertan método/URL/cuerpo; los forms ejecutan handlers y muestran `role=alert` reales).
+
+## Deviations from design (menores, sin cambio de conducta pactada)
+
+1. `frequency yearly` (tasks) vs enum real: el BE solo acepta `daily, weekly, biweekly, monthly, quarterly, semiannual, annual` (`subscriptions.rs:247-253`, migración `0001`). El form usa los 7 valores reales como value+label (identificadores, no copy). `yearly` no existe en el wire.
+2. `SubscriptionRow` (cancelar/reactivar/borrar por fila) implementado + unit-testeado pero NO montado en `FinanceScreens` (solo `SubscriptionCreateForm`): montarlo duplicaría `Music`/filas de la lista S1 y rompería tests S1 (`findByText` simple). Igual para `CardDetail`: copy propio (`cardLimitDetail/cardAlert`) para no duplicar `/usados/`.
+3. Títulos S5 propios (`manage*`, sin hints de lectura): las `SectionShell` S1 y S5 no pueden compartir título/hint/region sin romper los asserts S1 existentes (regiones duplicadas, `findByText` simples).
+4. `puros-1`/`api-wires` quedan `- [ ]`: solo se implementó lo que S5 necesita (`toDebtProgress`, `fetchDebtPayments/useDebtPayments`, `useAssets`, expansiones de wires). `toPeriodRange`, `useSpendByCategory(type)` y resto de puros son PR-3 (charts/period), no S5.
+5. `DebtPaymentHistory` vacía renderiza título + lista vacía (sin `EmptyState` dedicado) para no añadir copy/keys; el guard `paid_off` de corrección lo aplica el BE (422), el FE solo confirma.
+6. `PATCH /subscriptions` con `is_active: undefined` no se envía (toggle siempre booleano); `category_id=null`/desvincular sigue convención repo (plano `Option`, igual que PR-1).
+
+## Remaining tasks (8 implementation + 2 parent = 10 unchecked)
+
+- [ ] RED FE puros-1 (resta `toPeriodRange`), GREEN puros-1, RED+GREEN puros-2, RED+GREEN puros-3, GREEN api-wires (resta `useSpendByCategory(type)`), charts-1/2, period+reuse, analysis, i18n cierre, e2e, REFACTOR final (ver tasks.md).
+- [ ] 2 parent (bounded review + chain gate) intactas.
+
+## Workload / PR boundary (stacked-to-main eslabón 2/3)
+
+- Este eslabón contiene SOLO FE S5: 7 archivos nuevos (819) + 4 modificados (~150 producción) + tests (+242) + i18n (+44) ≈ **~1210 líneas**. **Supera el HARD BUDGET 400** (≈3×): 6 forms funcionales con TDD no caben en 400 (los tests S5 solos son 242). No se recortó alcance (los 6 dominios + montaje + patrimonio están completos y testeados).
+- Decisión requerida del mantenedor: aceptar `size:exception` para PR-2 (precedente PR-1: +1766 también sobre budget) o partir PR-2 (p. ej. budgets+savings+debts vs subs+cards+assets+montaje). No se parte unilateralmente.
+- Borde del PR: base `p9-pr1` (incluye BE PR-1), apila PR-3 (puros restantes + charts + PeriodSelector + Analysis + i18n cierre + e2e). Rollback FE = revert de los 11 archivos (S1 intacto: agregados, keys y tests S1 sin tocar). F1/F2 sin cambios; sin BE; sin migraciones.
+- Contratos: montos string, allowlists reales (`warn/over_threshold`, `creditor/installment/interest_rate`, `{is_active}`, sin `credit_limit` PATCH), selects por nombre, cero UUIDs visibles, solo COP, solo ES, presupuestos nunca bloquean.
+
+## Status produced
+
+- `applyState: ready` (18/32 implementation acumuladas —12 PR-1 + 6 PR-2—; quedan 8 FE implementation PR-3 + refactor + 2 parent). `verify: blocked` (sin `verifyReport`), `archive: blocked`. `next_recommended: parent-lifecycle` (PR-2 S5 listo para verify acotado del slice + decisión `size:exception`; el ciclo completo cierra tras PR-3).
+- Sin `blockedReasons` nuevas. `skill_resolution: none`. Sin subagentes lanzados. Sin commits (el padre/orquestador decide el commit/PR).

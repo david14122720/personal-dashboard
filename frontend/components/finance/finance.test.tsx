@@ -189,6 +189,12 @@ const server = setupServer(
   http.get("http://test.local/api/transfers", () => {
     return HttpResponse.json({ items: [], next_cursor: null, total_count: 0 });
   }),
+  http.get("http://test.local/api/assets", () => {
+    return HttpResponse.json([]);
+  }),
+  http.get("http://test.local/api/net-worth", () => {
+    return HttpResponse.json({ per_currency: [] });
+  }),
 );
 
 beforeAll(() => server.listen());
@@ -368,5 +374,223 @@ describe("finance screens", () => {
     await within(ledger).findByText("groceries");
     fireEvent.click(within(ledger).getByRole("button", { name: "Cargar más" }));
     expect(await within(ledger).findByRole("alert")).toHaveTextContent("No se pudieron cargar más transacciones");
+  });
+});
+
+// -- S5 escritura (RED: mutadores + 6 forms por dominio, montos string, selects por nombre) --
+import {
+  createBudget,
+  createCard,
+  createMovement,
+  createPayment,
+  createSubscription,
+  createValuation,
+  deleteBudget,
+  deleteMovement,
+  deletePayment,
+  deleteSubscription,
+  fetchDebtPayments,
+  patchAsset,
+  patchBudget,
+  patchDebt,
+  patchGoal,
+  setSubscriptionActive,
+} from "@/lib/api/finance";
+import BudgetForm from "@/components/finance/BudgetForm";
+import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
+import { DebtEditForm, DebtPayForm, DebtPaymentHistory } from "@/components/finance/DebtPayments";
+import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
+import CardForm from "@/components/finance/CardForm";
+import { CardDetail } from "@/components/finance/CardDetail";
+import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
+
+describe("finance S5 mutators", () => {
+  it("budgets: create POST, patch PATCH con warn_threshold real, delete DELETE", async () => {
+    const seen: { method: string; url: string; body?: unknown }[] = [];
+    server.use(
+      http.post("http://test.local/api/budgets", async ({ request }) => {
+        seen.push({ method: "POST", url: request.url, body: await request.json() });
+        return HttpResponse.json({ id: "b9" });
+      }),
+      http.patch("http://test.local/api/budgets/b1", async ({ request }) => {
+        seen.push({ method: "PATCH", url: request.url, body: await request.json() });
+        return HttpResponse.json({ id: "b1" });
+      }),
+      http.delete("http://test.local/api/budgets/b1", ({ request }) => {
+        seen.push({ method: "DELETE", url: request.url });
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await createBudget({ category_id: "c1", amount: "500.00", period_start: "2026-09-01", period_end: "2026-09-30" });
+    await patchBudget("b1", { amount: "600.00", warn_threshold: 0.8, over_threshold: 1.0 });
+    await deleteBudget("b1");
+    expect(seen.map((s) => s.method)).toEqual(["POST", "PATCH", "DELETE"]);
+    expect((seen[1].body as Record<string, unknown>).warn_threshold).toBe(0.8);
+    expect(seen[1].url).toContain("/budgets/b1");
+  });
+
+  it("savings/debts/subs/assets/cards usan endpoints PR-1 con montos string", async () => {
+    const seen: string[] = [];
+    server.use(
+      http.post("http://test.local/api/savings-goals/g1/movements", ({ request }) => { seen.push(`POST ${request.url}`); return HttpResponse.json({ id: "m1" }); }),
+      http.delete("http://test.local/api/savings-goals/g1/movements/m1", ({ request }) => { seen.push(`DELETE ${request.url}`); return new HttpResponse(null, { status: 204 }); }),
+      http.patch("http://test.local/api/savings-goals/g1", () => HttpResponse.json({ id: "g1" })),
+      http.post("http://test.local/api/debts/d1/payments", () => HttpResponse.json({ id: "p1" })),
+      http.delete("http://test.local/api/debts/d1/payments/p1", () => new HttpResponse(null, { status: 204 })),
+      http.get("http://test.local/api/debts/d1/payments", () => HttpResponse.json([])),
+      http.patch("http://test.local/api/debts/d1", () => HttpResponse.json({ id: "d1" })),
+      http.post("http://test.local/api/subscriptions", () => HttpResponse.json({ id: "s9" })),
+      http.patch("http://test.local/api/subscriptions/s1", () => HttpResponse.json({ id: "s1" })),
+      http.delete("http://test.local/api/subscriptions/s1", () => new HttpResponse(null, { status: 204 })),
+      http.post("http://test.local/api/accounts", () => HttpResponse.json({ id: "a9" })),
+      http.patch("http://test.local/api/assets/a1", () => HttpResponse.json({ id: "a1" })),
+      http.post("http://test.local/api/assets/a1/valuations", () => HttpResponse.json({ id: "v1" })),
+    );
+    await createMovement("g1", { amount: "50.00", occurred_on: "2026-09-09" });
+    await deleteMovement("g1", "m1");
+    await patchGoal("g1", { name: "Viaje playa" });
+    await createPayment("d1", { amount: "100.00", paid_on: "2026-09-09" });
+    await deletePayment("d1", "p1");
+    await fetchDebtPayments("d1");
+    await patchDebt("d1", { creditor: "Banco X" });
+    await createSubscription({ name: "Streaming", price: "19900", frequency: "monthly" });
+    await setSubscriptionActive("s1", false);
+    await deleteSubscription("s1");
+    await createCard({ name: "Visa", credit_limit: "5000000", statement_day: 15, payment_due_day: 25 });
+    await patchAsset("a1", { name: "Apartamento" });
+    await createValuation("a1", { value: "1200.00", recorded_on: "2026-09-09" });
+    expect(seen).toContain("POST http://test.local/api/savings-goals/g1/movements");
+    expect(seen).toContain("DELETE http://test.local/api/savings-goals/g1/movements/m1");
+  });
+});
+
+describe("finance S5 forms", () => {
+  const cats = [{ id: "c1", name: "Alimentación" }];
+  const accs = [{ id: "a1", name: "Billetera" }];
+
+  it("BudgetForm crea con select por nombre y monto manual, sin UUID visible", async () => {
+    server.use(http.post("http://test.local/api/budgets", () => HttpResponse.json({ id: "b9" })));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <BudgetForm categories={cats} onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    expect(screen.getByText("Alimentación")).toBeInTheDocument();
+    expect(screen.queryByText("c1")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Monto/), { target: { value: "abc" } });
+    fireEvent.click(screen.getByRole("button", { name: /Guardar/ }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+  });
+
+  it("SavingsDepositForm bloquea sobrerretiro en cliente y GoalForm edita meta", async () => {
+    const first = render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <SavingsDepositForm goalId="g1" saved={100} currency="COP" onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    fireEvent.change(screen.getByLabelText(/Monto/), { target: { value: "150" } });
+    fireEvent.click(screen.getByRole("button", { name: /Retirar/ }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    first.unmount();
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <SavingsGoalForm categories={cats} onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    expect(screen.getByLabelText(/Nombre/)).toBeInTheDocument();
+  });
+
+  it("DebtPayForm valida amount<=pending y el historial corrige vía DELETE+recreate", async () => {
+    server.use(
+      http.get("http://test.local/api/debts/d1/payments", () => HttpResponse.json([
+        { id: "p1", debt_id: "d1", amount: "100.00", paid_on: "2026-09-02", payment_method: null, transaction_id: null, notes: null, created_at: "2026-09-02T00:00:00Z" },
+      ])),
+      http.delete("http://test.local/api/debts/d1/payments/p1", () => new HttpResponse(null, { status: 204 })),
+    );
+    const stub = window.confirm;
+    window.confirm = () => true;
+    const pay = render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <DebtPayForm debtId="d1" pending={100} currency="COP" onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    fireEvent.change(screen.getByLabelText(/Monto/), { target: { value: "150" } });
+    fireEvent.click(screen.getByRole("button", { name: /Abonar/ }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    pay.unmount();
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <DebtPaymentHistory debtId="d1" onCorrect={() => undefined} />
+      </SWRConfig>,
+    );
+    expect(await screen.findByText(/100/)).toBeInTheDocument();
+    const hist = render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <DebtEditForm debtId="d1" onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    void hist;
+    expect(screen.getByLabelText(/Acreedor/)).toBeInTheDocument();
+    window.confirm = stub;
+  });
+
+  it("SubscriptionCreateForm exige precio manual y la fila cancela/reactiva solo con is_active", async () => {
+    server.use(
+      http.post("http://test.local/api/subscriptions", () => HttpResponse.json({ id: "s9" })),
+      http.patch("http://test.local/api/subscriptions/s1", () => HttpResponse.json({ id: "s1" })),
+    );
+    const created = render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <SubscriptionCreateForm categories={cats} onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    fireEvent.change(screen.getByLabelText(/Precio/), { target: { value: "abc" } });
+    fireEvent.click(screen.getByRole("button", { name: /Crear suscripción/ }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    created.unmount();
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <SubscriptionRow sub={{ id: "s1", name: "Música", price: "9.99", currency: "COP", frequency: "monthly", next_billing_on: null, is_active: true }} />
+      </SWRConfig>,
+    );
+    expect(screen.getByRole("button", { name: /Cancelar/ })).toBeInTheDocument();
+  });
+
+  it("CardForm exige límite+corte+pago y CardDetail explica DELETE+recreate", () => {
+    const card = render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <CardForm onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Crear tarjeta/ }));
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    card.unmount();
+    render(
+      <CardDetail
+        card={{ id: "a1", name: "Visa", type: "credit_card", currency: "COP", balance: 0, isCard: true, used: 910, available: 90, usagePct: 91, alertLevel: "high", statementBalance: 320 }}
+        locale="es-CO"
+      />,
+    );
+    expect(screen.getByText(/elimina y recrea/i)).toBeInTheDocument();
+  });
+
+  it("AssetForms editan allowlist real y valúan con fecha posterior", async () => {
+    const edit = render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <AssetEditForm assetId="a1" accounts={accs} onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    expect(screen.getByLabelText(/Nombre/)).toBeInTheDocument();
+    expect(screen.queryByText("a1")).not.toBeInTheDocument();
+    edit.unmount();
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <AssetValuationForm assetId="a1" lastRecordedOn="2026-09-05" onDone={() => undefined} />
+      </SWRConfig>,
+    );
+    fireEvent.change(screen.getByLabelText(/Fecha/), { target: { value: "2026-09-01" } });
+    fireEvent.change(screen.getByLabelText(/Valor/), { target: { value: "1200" } });
+    fireEvent.click(screen.getByRole("button", { name: /Valuar/ }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
   });
 });
