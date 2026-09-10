@@ -42,6 +42,8 @@ const CREATE_GOAL_SQL: &str = "INSERT INTO savings_goals (user_id, name, descrip
 const LIST_GOALS_SQL: &str = "SELECT id, name, description, target_amount, saved_amount, currency, target_date, category_id, color, is_completed, completed_at, created_at, updated_at FROM savings_goals WHERE user_id=$1 ORDER BY created_at ASC";
 const GET_GOAL_SQL: &str = "SELECT id, name, description, target_amount, saved_amount, currency, target_date, category_id, color, is_completed, completed_at, created_at, updated_at FROM savings_goals WHERE id=$1 AND user_id=$2";
 const DELETE_GOAL_SQL: &str = "DELETE FROM savings_goals WHERE id=$1 AND user_id=$2";
+/// Base for the dynamic PATCH builder (see `patch_goal_handler`).
+const PATCH_GOAL_BASE_SQL: &str = "UPDATE savings_goals SET updated_at = now()";
 const CATEGORY_LOOKUP_SQL: &str = "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
 const CREATE_MOVEMENT_SQL: &str = "INSERT INTO savings_goal_movements (user_id, savings_goal_id, amount, occurred_on, transaction_id, notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, savings_goal_id, amount, occurred_on, transaction_id, notes, created_at";
 const DELETE_MOVEMENT_SQL: &str =
@@ -78,6 +80,19 @@ pub struct CreateGoalRequest {
     pub target_amount: String,
     pub currency: Option<String>,
     pub description: Option<String>,
+    /// Calendar date `YYYY-MM-DD`.
+    pub target_date: Option<String>,
+    pub category_id: Option<Uuid>,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchGoalRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    /// Wire-format money string (`> 0`), e.g. `"2000000.00"`.
+    pub target_amount: Option<String>,
     /// Calendar date `YYYY-MM-DD`.
     pub target_date: Option<String>,
     pub category_id: Option<Uuid>,
@@ -236,6 +251,24 @@ pub async fn ensure_finance_category(
     }
 }
 
+/// JD-SAVE: decide completion from saved vs target, mirroring the PATCH
+/// UPDATE recalc (`saved>=target → completed + COALESCE(completed_at,now())`,
+/// else reopen with `completed_at=NULL`). Pure helper for unit tests; the
+/// handler applies the same logic atomically in SQL.
+#[cfg(test)]
+pub fn decide_goal_completion(
+    saved: Decimal,
+    target: Decimal,
+    prev_completed_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> (bool, Option<DateTime<Utc>>) {
+    if saved >= target {
+        (true, prev_completed_at.or(Some(now)))
+    } else {
+        (false, None)
+    }
+}
+
 /// Map goal write errors: `23505` (UNIQUE user_id,name) → 409,
 /// `23514` (check) → 422; everything else is internal (never leaked).
 fn map_goal_db_err(e: sqlx::Error) -> AppError {
@@ -328,6 +361,103 @@ pub async fn delete_goal_handler(
         return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn patch_goal_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PatchGoalRequest>,
+) -> Result<Json<GoalResponse>, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    if body.name.is_none()
+        && body.description.is_none()
+        && body.target_amount.is_none()
+        && body.target_date.is_none()
+        && body.category_id.is_none()
+        && body.color.is_none()
+    {
+        return Err(AppError::Validation("no updatable fields provided".into()));
+    }
+    // Ownership contract: ajeno → 404, inexistente puro → 422 (movements contract).
+    ensure_goal_writable(&state.pool, id, user_id).await?;
+    let current = sqlx::query_as::<_, GoalRow>(GET_GOAL_SQL)
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?
+        .ok_or(AppError::NotFound)?;
+    let _ = &current;
+    let name = match body.name.as_deref() {
+        Some(raw) => Some(validate_goal_name(raw)?),
+        None => None,
+    };
+    let target_amount = match body.target_amount.as_deref() {
+        Some(raw) => Some(parse_money_amount(raw)?),
+        None => None,
+    };
+    let target_date = match body.target_date.as_deref() {
+        Some(raw) => validate_target_date(Some(raw))?,
+        None => None,
+    };
+    validate_optional_text(body.description.as_deref(), MAX_TEXT_LEN, "description")?;
+    validate_optional_text(body.color.as_deref(), MAX_COLOR_LEN, "color")?;
+    if let Some(category_id) = body.category_id {
+        ensure_finance_category(&state.pool, category_id, user_id).await?;
+    }
+    let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
+        sqlx::QueryBuilder::new(PATCH_GOAL_BASE_SQL);
+    if let Some(name) = name.as_deref() {
+        qb.push(", name = ");
+        qb.push_bind(name);
+    }
+    if let Some(description) = body.description.as_deref() {
+        qb.push(", description = ");
+        qb.push_bind(description);
+    }
+    if let Some(target_amount) = target_amount {
+        qb.push(", target_amount = ");
+        qb.push_bind(target_amount);
+    }
+    if let Some(target_date) = target_date {
+        qb.push(", target_date = ");
+        qb.push_bind(target_date);
+    }
+    if let Some(category_id) = body.category_id {
+        qb.push(", category_id = ");
+        qb.push_bind(category_id);
+    }
+    if let Some(color) = body.color.as_deref() {
+        qb.push(", color = ");
+        qb.push_bind(color);
+    }
+    // JD-SAVE: recálculo en el mismo UPDATE (saved>=target → completed +
+    // COALESCE(completed_at,now()); si no → reabrir con completed_at=NULL).
+    // Cuando el PATCH trae target nuevo se compara contra ese valor bindeado
+    // (RHS de UPDATE ve la fila vieja, no el SET previo); sin target nuevo se
+    // compara contra la columna actual (idempotente para renombres parciales).
+    if let Some(new_target) = target_amount {
+        qb.push(", is_completed = (saved_amount >= ");
+        qb.push_bind(new_target);
+        qb.push("), completed_at = CASE WHEN (saved_amount >= ");
+        qb.push_bind(new_target);
+        qb.push(") THEN COALESCE(completed_at, now()) ELSE NULL END");
+    } else {
+        qb.push(", is_completed = (saved_amount >= target_amount), completed_at = CASE WHEN (saved_amount >= target_amount) THEN COALESCE(completed_at, now()) ELSE NULL END");
+    }
+    qb.push(" WHERE id = ");
+    qb.push_bind(id);
+    qb.push(" AND user_id = ");
+    qb.push_bind(user_id);
+    qb.push(" RETURNING id, name, description, target_amount, saved_amount, currency, target_date, category_id, color, is_completed, completed_at, created_at, updated_at");
+    let row = qb
+        .build_query_as::<GoalRow>()
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(map_goal_db_err)?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(GoalResponse::from(row)))
 }
 
 type MovementRow = (
@@ -1219,6 +1349,366 @@ mod tests {
             err.into_response().status(),
             axum::http::StatusCode::UNPROCESSABLE_ENTITY
         );
+        cleanup_user(&pool, user_id).await;
+    }
+}
+
+#[cfg(test)]
+mod patch_goal_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn patch_dto_rejects_trigger_owned_fields() {
+        for payload in [
+            json!({"name": "Viaje playa"}),
+            json!({"target_amount": "2000000.00"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchGoalRequest>(payload).is_ok(),
+                "allowlisted field must deserialize"
+            );
+        }
+        for payload in [
+            json!({"saved_amount": "999.00"}),
+            json!({"is_completed": true}),
+            json!({"completed_at": "2026-01-01T00:00:00Z"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchGoalRequest>(payload.clone()).is_err(),
+                "trigger-owned field must fail deserialization: {payload}"
+            );
+        }
+        assert!(serde_json::from_value::<PatchGoalRequest>(json!({"target_amount": "0"})).is_ok());
+    }
+
+    #[test]
+    fn patch_sql_scopes_by_user_id_and_refreshes_updated_at() {
+        assert!(
+            PATCH_GOAL_BASE_SQL.contains("updated_at = now()"),
+            "patch base must refresh updated_at"
+        );
+        assert!(
+            DELETE_GOAL_SQL.contains("id=$1 AND user_id=$2"),
+            "delete must scope id+user_id"
+        );
+        assert!(
+            GET_GOAL_SQL.contains("id=$1 AND user_id=$2"),
+            "detail lookup must scope id+user_id, got: {GET_GOAL_SQL}"
+        );
+    }
+
+    #[test]
+    fn triangulate_target_amount_zero_is_422_and_trigger_fields_rejected() {
+        use axum::response::IntoResponse;
+        let err = parse_money_amount("0").unwrap_err();
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        for payload in [
+            serde_json::json!({"saved_amount": "5.00"}),
+            serde_json::json!({"is_completed": true}),
+            serde_json::json!({"completed_at": "2026-01-01T00:00:00Z"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchGoalRequest>(payload).is_err(),
+                "trigger-owned must be 422 via deny_unknown_fields"
+            );
+        }
+    }
+
+    fn test_pool() -> Option<sqlx::PgPool> {
+        std::env::var("DATABASE_URL")
+            .ok()
+            .map(|url| sqlx::PgPool::connect_lazy(&url).expect("lazy pool from DATABASE_URL"))
+    }
+
+    async fn db_state(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        let email = format!("goalpatch-{}@example.com", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind("not-a-real-hash")
+        .bind("goal patch test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        (state, headers, user_id)
+    }
+
+    async fn cleanup_user(pool: &sqlx::PgPool, user_id: Uuid) {
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup user");
+    }
+
+    #[tokio::test]
+    async fn patch_rename_to_existing_name_is_409_and_partial_preserves_saved() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP patch_rename_to_existing_name_is_409_and_partial_preserves_saved: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let a: Uuid = sqlx::query_scalar(
+            "INSERT INTO savings_goals (user_id, name, target_amount) VALUES ($1,'A',100) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed goal A");
+        let b: Uuid = sqlx::query_scalar(
+            "INSERT INTO savings_goals (user_id, name, target_amount) VALUES ($1,'B',100) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed goal B");
+        // Rename B → A debe ser 409.
+        let err = patch_goal_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(b),
+            Json(serde_json::from_value(serde_json::json!({"name": "A"})).unwrap()),
+        )
+        .await
+        .expect_err("duplicate rename must be 409");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::CONFLICT
+        );
+        // Abono 50 al goal A vía trigger, luego PATCH parcial preserva saved_amount.
+        sqlx::query(
+            "INSERT INTO savings_goal_movements (user_id, savings_goal_id, amount, occurred_on) VALUES ($1,$2,50,'2026-09-01')",
+        )
+        .bind(user_id)
+        .bind(a)
+        .execute(&pool)
+        .await
+        .expect("seed movement");
+        let patched = patch_goal_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(a),
+            Json(serde_json::from_value(serde_json::json!({"name": "A2"})).unwrap()),
+        )
+        .await
+        .expect("partial rename is 200");
+        assert_eq!(patched.name, "A2");
+        assert_eq!(
+            patched.saved_amount,
+            rust_decimal::Decimal::new(5000, 2),
+            "partial patch must preserve trigger-owned saved_amount"
+        );
+        // target_amount "0" → 422.
+        let err = patch_goal_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(a),
+            Json(
+                serde_json::from_value(serde_json::json!({"target_amount": "0"})).unwrap(),
+            ),
+        )
+        .await
+        .expect_err("zero target must be 422");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn patch_foreign_is_404_and_missing_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP patch_foreign_is_404_and_missing_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let gid: Uuid = sqlx::query_scalar(
+            "INSERT INTO savings_goals (user_id, name, target_amount) VALUES ($1,'Mine',100) RETURNING id",
+        )
+        .bind(user_a)
+        .fetch_one(&pool)
+        .await
+        .expect("seed goal");
+        let err = patch_goal_handler(
+            State(state_b.clone()),
+            headers_b.clone(),
+            Path(gid),
+            Json(serde_json::from_value(serde_json::json!({"name": "X"})).unwrap()),
+        )
+        .await
+        .expect_err("foreign patch must be 404");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        // Inexistente puro (nadie lo posee) → 422 por contrato ensure_goal_writable.
+        let err = patch_goal_handler(
+            State(state_b.clone()),
+            headers_b.clone(),
+            Path(Uuid::new_v4()),
+            Json(serde_json::from_value(serde_json::json!({"name": "X"})).unwrap()),
+        )
+        .await
+        .expect_err("missing goal patch must be 422");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+}
+
+#[cfg(test)]
+mod jd_save_tests {
+    use super::*;
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn patch_recalc_decides_completion_from_saved_vs_target() {
+        // JD-SAVE RED: recálculo saved>=target → completed + preserve-or-now, si no → reopen NULL.
+        let now = Utc::now();
+        // Completa cuando saved alcanza target, preservando completed_at previo.
+        let prev = Some(now);
+        let (done, at) = decide_goal_completion(Decimal::new(10000, 2), Decimal::new(10000, 2), prev, now);
+        assert!(done);
+        assert_eq!(at, prev);
+        // Completa con now() cuando no había completed_at.
+        let (done, at) = decide_goal_completion(Decimal::new(6000, 2), Decimal::new(5000, 2), None, now);
+        assert!(done);
+        assert_eq!(at, Some(now));
+        // Reabre cuando saved < target.
+        let (done, at) = decide_goal_completion(Decimal::new(4000, 2), Decimal::new(5000, 2), prev, now);
+        assert!(!done);
+        assert_eq!(at, None);
+    }
+
+    fn test_pool() -> Option<sqlx::PgPool> {
+        std::env::var("DATABASE_URL")
+            .ok()
+            .map(|url| sqlx::PgPool::connect_lazy(&url).expect("lazy pool from DATABASE_URL"))
+    }
+
+    async fn db_state(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        let email = format!("goalsave-{}@example.com", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind("not-a-real-hash")
+        .bind("goal save test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        (state, headers, user_id)
+    }
+
+    async fn cleanup_user(pool: &sqlx::PgPool, user_id: Uuid) {
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup user");
+    }
+
+    #[tokio::test]
+    async fn patch_target_recalc_completes_and_reopens_in_same_update() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP patch_target_recalc_completes_and_reopens_in_same_update: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        // Meta target 100, abono 60 vía trigger → saved 60, abierta.
+        let goal_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO savings_goals (user_id, name, target_amount) VALUES ($1,'JD-SAVE',100) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed goal");
+        sqlx::query(
+            "INSERT INTO savings_goal_movements (user_id, savings_goal_id, amount, occurred_on) VALUES ($1,$2,60,'2026-09-01')",
+        )
+        .bind(user_id)
+        .bind(goal_id)
+        .execute(&pool)
+        .await
+        .expect("seed movement");
+        // Bajar target a 50 en el mismo UPDATE → saved(60)>=50 → completed + completed_at Some.
+        let patched = patch_goal_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            Json(serde_json::from_value(serde_json::json!({"target_amount": "50.00"})).unwrap()),
+        )
+        .await
+        .expect("lower target is 200");
+        assert!(patched.is_completed, "saved 60 >= target 50 must complete in same UPDATE");
+        assert!(patched.completed_at.is_some(), "completing PATCH must set completed_at via COALESCE(now())");
+        assert_eq!(patched.saved_amount, Decimal::new(6000, 2));
+        // Subir target a 200 → saved(60)<200 → reabrir con completed_at NULL.
+        let patched = patch_goal_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(goal_id),
+            Json(serde_json::from_value(serde_json::json!({"target_amount": "200.00"})).unwrap()),
+        )
+        .await
+        .expect("raise target is 200");
+        assert!(!patched.is_completed, "saved 60 < target 200 must reopen in same UPDATE");
+        assert!(patched.completed_at.is_none(), "reopening PATCH must clear completed_at to NULL");
         cleanup_user(&pool, user_id).await;
     }
 }

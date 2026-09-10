@@ -88,7 +88,12 @@ fn api_routes() -> Router<AppState> {
             "/budgets",
             post(routes::budgets::create_budget_handler).get(routes::budgets::list_budgets_handler),
         )
-        .route("/budgets/{id}", get(routes::budgets::get_budget_handler))
+        .route(
+            "/budgets/{id}",
+            get(routes::budgets::get_budget_handler)
+                .patch(routes::budgets::patch_budget_handler)
+                .delete(routes::budgets::delete_budget_handler),
+        )
         .route(
             "/budgets/{id}/status",
             get(routes::budgets::budget_status_handler),
@@ -99,7 +104,9 @@ fn api_routes() -> Router<AppState> {
         )
         .route(
             "/savings-goals/{id}",
-            get(routes::savings::get_goal_handler).delete(routes::savings::delete_goal_handler),
+            get(routes::savings::get_goal_handler)
+                .patch(routes::savings::patch_goal_handler)
+                .delete(routes::savings::delete_goal_handler),
         )
         .route(
             "/savings-goals/{id}/movements",
@@ -115,11 +122,17 @@ fn api_routes() -> Router<AppState> {
         )
         .route(
             "/debts/{id}",
-            get(routes::debts::get_debt_handler).delete(routes::debts::delete_debt_handler),
+            get(routes::debts::get_debt_handler)
+                .patch(routes::debts::patch_debt_handler)
+                .delete(routes::debts::delete_debt_handler),
         )
         .route(
             "/debts/{id}/payments",
-            post(routes::debts::create_payment_handler),
+            post(routes::debts::create_payment_handler).get(routes::debts::list_payments_handler),
+        )
+        .route(
+            "/debts/{id}/payments/{pid}",
+            delete(routes::debts::delete_payment_handler),
         )
         .route(
             "/habits",
@@ -202,7 +215,9 @@ fn api_routes() -> Router<AppState> {
         )
         .route(
             "/assets/{id}",
-            get(routes::assets::get_asset_handler).delete(routes::assets::delete_asset_handler),
+            get(routes::assets::get_asset_handler)
+                .patch(routes::assets::patch_asset_handler)
+                .delete(routes::assets::delete_asset_handler),
         )
         .route(
             "/assets/{id}/valuations",
@@ -397,6 +412,43 @@ mod api_nest_tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error"]["code"], serde_json::Value::String("NOT_FOUND".into()));
+    }
+
+    #[tokio::test]
+    async fn p9_finanzas_write_routes_are_wired() {
+        // Las 7 rutas PR-1 deben existir: sin sesion llegan al handler (401),
+        // no a 404/405. Prueba la existencia del wiring sin tocar la DB.
+        let app = build_router(lazy_state(), None);
+        let id = uuid::Uuid::new_v4();
+        let pid = uuid::Uuid::new_v4();
+        for (method, uri) in [
+            ("PATCH", format!("/api/budgets/{id}")),
+            ("DELETE", format!("/api/budgets/{id}")),
+            ("PATCH", format!("/api/savings-goals/{id}")),
+            ("PATCH", format!("/api/debts/{id}")),
+            ("GET", format!("/api/debts/{id}/payments")),
+            ("DELETE", format!("/api/debts/{id}/payments/{pid}")),
+            ("PATCH", format!("/api/assets/{id}")),
+        ] {
+            let app = build_router(lazy_state(), None);
+            let res = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(&uri)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must reach the handler (401), proving the route is wired"
+            );
+        }
+        let _ = app;
     }
 
     #[tokio::test]

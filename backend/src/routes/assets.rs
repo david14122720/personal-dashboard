@@ -83,6 +83,8 @@ const LIST_ASSETS_SQL: &str = "SELECT id, name, category::text, account_id, curr
 const GET_ASSET_SQL: &str = "SELECT id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived";
 const ARCHIVE_ASSET_SQL: &str =
     "UPDATE assets SET is_archived=TRUE, updated_at=now() WHERE id=$1 AND user_id=$2 AND NOT is_archived";
+/// Base for the dynamic PATCH builder (see `patch_asset_handler`).
+const PATCH_ASSET_BASE_SQL: &str = "UPDATE assets SET updated_at = now()";
 const ASSET_OWNERSHIP_SQL: &str =
     "SELECT id FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived";
 const ASSET_EXISTS_SQL: &str = "SELECT id FROM assets WHERE id=$1";
@@ -115,6 +117,18 @@ pub struct CreateAssetRequest {
     /// One of the `asset_category` enum values (e.g. `"investment"`).
     pub category: String,
     /// Optional link to an owned bank account (`accounts.id`).
+    pub account_id: Option<Uuid>,
+    pub currency: Option<String>,
+    /// Calendar date `YYYY-MM-DD`.
+    pub acquired_on: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchAssetRequest {
+    pub name: Option<String>,
+    pub category: Option<String>,
     pub account_id: Option<Uuid>,
     pub currency: Option<String>,
     /// Calendar date `YYYY-MM-DD`.
@@ -422,6 +436,86 @@ pub async fn delete_asset_handler(
         return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn patch_asset_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PatchAssetRequest>,
+) -> Result<Json<AssetResponse>, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    if body.name.is_none()
+        && body.category.is_none()
+        && body.account_id.is_none()
+        && body.currency.is_none()
+        && body.acquired_on.is_none()
+        && body.notes.is_none()
+    {
+        return Err(AppError::Validation("no updatable fields provided".into()));
+    }
+    // Archivado/ajeno → 404, inexistente puro → 422 (contrato ensure_asset_writable).
+    ensure_asset_writable(&state.pool, id, user_id).await?;
+    let name = match body.name.as_deref() {
+        Some(raw) => Some(validate_required_text(raw, MAX_NAME_LEN, "name")?),
+        None => None,
+    };
+    let category = match body.category.as_deref() {
+        Some(raw) => Some(validate_category(raw)?),
+        None => None,
+    };
+    if let Some(account_id) = body.account_id {
+        ensure_account_owned(&state.pool, account_id, user_id).await?;
+    }
+    let currency = match body.currency.as_deref() {
+        Some(raw) => Some(validate_currency(Some(raw))?),
+        None => None,
+    };
+    let acquired_on = match body.acquired_on.as_deref() {
+        Some(raw) => Some(validate_calendar_date(raw, "acquired_on")?),
+        None => None,
+    };
+    validate_optional_text(body.notes.as_deref(), MAX_TEXT_LEN, "notes")?;
+    let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
+        sqlx::QueryBuilder::new(PATCH_ASSET_BASE_SQL);
+    if let Some(name) = name.as_deref() {
+        qb.push(", name = ");
+        qb.push_bind(name);
+    }
+    if let Some(category) = category.as_deref() {
+        qb.push(", category = ");
+        qb.push_bind(category);
+        qb.push("::asset_category");
+    }
+    if let Some(account_id) = body.account_id {
+        qb.push(", account_id = ");
+        qb.push_bind(account_id);
+    }
+    if let Some(currency) = currency.as_deref() {
+        qb.push(", currency = ");
+        qb.push_bind(currency);
+    }
+    if let Some(acquired_on) = acquired_on {
+        qb.push(", acquired_on = ");
+        qb.push_bind(acquired_on);
+    }
+    if let Some(notes) = body.notes.as_deref() {
+        qb.push(", notes = ");
+        qb.push_bind(notes);
+    }
+    qb.push(" WHERE id = ");
+    qb.push_bind(id);
+    qb.push(" AND user_id = ");
+    qb.push_bind(user_id);
+    qb.push(" AND NOT is_archived");
+    qb.push(" RETURNING id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at");
+    let row = qb
+        .build_query_as::<AssetRow>()
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(map_asset_db_err)?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(AssetResponse::from(row)))
 }
 
 type ValuationRow = (
@@ -1257,5 +1351,197 @@ mod tests {
         assert_eq!(worth.per_currency[0].debts, Decimal::new(100000, 2));
         assert_eq!(worth.per_currency[0].net_worth, Decimal::new(900000, 2));
         cleanup_user(&pool, user_id).await;
+    }
+}
+
+#[cfg(test)]
+mod patch_asset_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn patch_dto_rejects_trigger_owned_fields() {
+        for payload in [
+            json!({"name": "Apartamento"}),
+            json!({"notes": "avaluo 2026"}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchAssetRequest>(payload).is_ok(),
+                "allowlisted field must deserialize"
+            );
+        }
+        for payload in [
+            json!({"current_value": "999.00"}),
+            json!({"is_archived": true}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchAssetRequest>(payload.clone()).is_err(),
+                "trigger-owned must fail deserialization: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_sql_scopes_and_casts_category() {
+        assert!(
+            PATCH_ASSET_BASE_SQL.contains("updated_at = now()"),
+            "patch base must refresh updated_at"
+        );
+        assert!(
+            GET_ASSET_SQL.contains("NOT is_archived"),
+            "reads must hide archived"
+        );
+        assert!(
+            ARCHIVE_ASSET_SQL.contains("SET is_archived=TRUE"),
+            "delete must archive via flag"
+        );
+    }
+
+    #[test]
+    fn triangulate_category_and_trigger_owned_rejected() {
+        use axum::response::IntoResponse;
+        assert!(validate_category("investment").is_ok());
+        let err = validate_category("crypto").unwrap_err();
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        for payload in [
+            serde_json::json!({"current_value": "1.00"}),
+            serde_json::json!({"is_archived": true}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchAssetRequest>(payload).is_err(),
+                "trigger-owned must be 422"
+            );
+        }
+    }
+
+    fn test_pool() -> Option<sqlx::PgPool> {
+        std::env::var("DATABASE_URL")
+            .ok()
+            .map(|url| sqlx::PgPool::connect_lazy(&url).expect("lazy pool from DATABASE_URL"))
+    }
+
+    async fn db_state(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        let email = format!("assetpatch-{}@example.com", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind("not-a-real-hash")
+        .bind("asset patch test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        (state, headers, user_id)
+    }
+
+    async fn cleanup_user(pool: &sqlx::PgPool, user_id: Uuid) {
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("cleanup user");
+    }
+
+    #[tokio::test]
+    async fn patch_rename_ok_foreign_account_422_and_archived_404() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP patch_rename_ok_foreign_account_422_and_archived_404: no DATABASE_URL");
+            return;
+        };
+        let (state_a, headers_a, user_a) = db_state(&pool).await;
+        let (state_b, _, user_b) = db_state(&pool).await;
+        let aid: Uuid = sqlx::query_scalar(
+            "INSERT INTO assets (user_id, name, category) VALUES ($1,'Casa','property') RETURNING id",
+        )
+        .bind(user_a)
+        .fetch_one(&pool)
+        .await
+        .expect("seed asset");
+        // Rename propio OK.
+        let patched = patch_asset_handler(
+            State(state_a.clone()),
+            headers_a.clone(),
+            Path(aid),
+            Json(
+                serde_json::from_value(serde_json::json!({"name": "Apartamento"})).unwrap(),
+            ),
+        )
+        .await
+        .expect("rename is 200");
+        assert_eq!(patched.name, "Apartamento");
+        // Cuenta ajena → 422.
+        let foreign_account: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+        )
+        .bind(user_b)
+        .fetch_one(&pool)
+        .await
+        .expect("seed foreign account");
+        let err = patch_asset_handler(
+            State(state_a.clone()),
+            headers_a.clone(),
+            Path(aid),
+            Json(
+                serde_json::from_value(
+                    serde_json::json!({"account_id": foreign_account}),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .expect_err("foreign account must be 422");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Archivar luego PATCH → 404.
+        let status = delete_asset_handler(
+            State(state_a.clone()),
+            headers_a.clone(),
+            Path(aid),
+        )
+        .await
+        .expect("archive is 204");
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        let err = patch_asset_handler(
+            State(state_a.clone()),
+            headers_a.clone(),
+            Path(aid),
+            Json(serde_json::from_value(serde_json::json!({"name": "X"})).unwrap()),
+        )
+        .await
+        .expect_err("archived patch must be 404");
+        assert_eq!(
+            axum::response::IntoResponse::into_response(err).status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        let _ = state_b;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
     }
 }
