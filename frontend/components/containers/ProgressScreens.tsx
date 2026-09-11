@@ -11,7 +11,8 @@ import {
   eventsKey, tasksKey, useEvents as useDashboardEvents, useGoals as useDashboardGoals,
   useMonthlyFlow, useNetWorth, useSavingsGoals, useTasks as useDashboardTasks,
 } from "@/lib/api/dashboard";
-import { habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
+import { HABITS_TODAY_KEY, habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
+import { toEventRange } from "@/lib/finance/finance";
 import { aggregateEvolution, habitStats } from "@/lib/productivity/habitStats";
 import { scoreByArea, type AreaKey } from "@/lib/productivity/scoreByArea";
 import { formatMoney, toNumber } from "@/lib/api/money";
@@ -32,6 +33,14 @@ const SavingsChart = dynamic(() => import("@/components/ui/SavingsChart"), {
 
 function range30(now: Date): { from: string; to: string } {
   return { from: todayYmdLocal(new Date(now.getTime() - 29 * 86_400_000)), to: todayYmdLocal(now) };
+}
+
+/** Ventana propia de la agenda: los `starts_at` de los próximos 14 días (`toUpcomingEvents`). */
+function upcomingWindow(now: Date): { from: string; to: string } {
+  return {
+    from: todayYmdLocal(now),
+    to: todayYmdLocal(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14)),
+  };
 }
 
 /** loading → error → empty → contenido, retry revalida solo sus keys. */
@@ -75,7 +84,12 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const goals = useDashboardGoals();
   const savingsGoals = useSavingsGoals();
   const tasks = useDashboardTasks("done");
-  const events = useDashboardEvents(from, to);
+  // `GET /events` exige RFC 3339 (una fecha desnuda es 422): el período alimenta el
+  // score y la ventana propia de próximos 14 días alimenta la agenda.
+  const periodEvents = toEventRange({ from, to });
+  const nextEvents = toEventRange(upcomingWindow(ref));
+  const events = useDashboardEvents(periodEvents.from, periodEvents.to);
+  const upcoming = useDashboardEvents(nextEvents.from, nextEvents.to);
 
   const rows = flow.data ?? [];
   const habits = today.data ?? [];
@@ -83,7 +97,7 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const goalItems = goals.data ?? [];
   const savingItems = savingsGoals.data ?? [];
   const doneTasks = (tasks.data ?? []).filter((task) => inRange((task as { completed_at?: string | null }).completed_at, from, to));
-  const upcoming = toUpcomingEvents(events.data ?? [], ref, 14);
+  const upcomingEvents = toUpcomingEvents(upcoming.data ?? [], ref, 14);
 
   // Score: inputs ya normalizados 0–100 por sus transforms; `null` = sin datos.
   const last = rows[rows.length - 1];
@@ -103,7 +117,7 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   ];
   const goalsScore = goalPcts.length === 0 ? null : Math.round((goalPcts.reduce((a, b) => a + b, 0) / goalPcts.length) * 10) / 10;
   // Escala visual documentada: 5+ completadas ≈ 100; sin tareas ni eventos → sin datos.
-  const noProdData = !tasks.data || !events.data || (doneTasks.length === 0 && upcoming.length === 0 && tasks.data.length === 0 && (events.data ?? []).length === 0);
+  const noProdData = !tasks.data || !events.data || (doneTasks.length === 0 && upcomingEvents.length === 0 && tasks.data.length === 0 && (events.data ?? []).length === 0);
   const productivityScore = noProdData ? null : Math.min(100, doneTasks.length * 20);
   const scores = scoreByArea({ finance: financeScore, habits: habitsScore, goals: goalsScore, productivity: productivityScore });
 
@@ -133,6 +147,7 @@ export default function ProgressScreens({ now }: { now?: Date }) {
             </li>
           ))}
         </ul>
+        <p className="mt-4 text-xs text-instrument/60">{t("progress.score.disclaimer")}</p>
       </section>
       <div className="mt-4 grid grid-cols-12 gap-4">
         <SectionShell title={t("progress.finance")} hint={t("progress.financeHint")} span="col-span-12 xl:col-span-6">
@@ -178,7 +193,10 @@ export default function ProgressScreens({ now }: { now?: Date }) {
           <Block loading={(!today.data && !today.error) || (!history.data && !history.error)} error={!!today.error || !!history.error}
             empty={!!today.data && !!history.data && habits.length === 0}
             emptyNode={<EmptyState title={t("progress.emptyHabits")} hint={t("progress.emptyHabitsHint")} />}
-            onRetry={() => void mutate(habitsHistoryKey(from, to))}>
+            onRetry={() => {
+              void mutate(HABITS_TODAY_KEY);
+              void mutate(habitsHistoryKey(from, to));
+            }}>
             <h3 className="font-display text-sm font-medium">{t("progress.pendingHabits")}</h3>
             <ul className="mt-2 space-y-1">{pending.map((h) => (<li key={h.habit_id} className="text-sm"><span>{h.name}</span></li>))}</ul>
             <h3 className="mt-4 font-display text-sm font-medium">{t("progress.bestStreaks")}</h3>
@@ -188,10 +206,10 @@ export default function ProgressScreens({ now }: { now?: Date }) {
           </Block>
         </SectionShell>
         <SectionShell title={t("progress.productivity")} hint={t("progress.productivityHint")} span="col-span-12">
-          <Block loading={(!tasks.data && !tasks.error) || (!events.data && !events.error)} error={!!tasks.error || !!events.error}
-            empty={!!tasks.data && !!events.data && doneTasks.length === 0 && upcoming.length === 0 && advanced.length === 0}
+          <Block loading={(!tasks.data && !tasks.error) || (!upcoming.data && !upcoming.error)} error={!!tasks.error || !!upcoming.error}
+            empty={!!tasks.data && !!upcoming.data && doneTasks.length === 0 && upcomingEvents.length === 0 && advanced.length === 0}
             emptyNode={<EmptyState title={t("progress.emptyActivity")} hint={t("progress.emptyActivityHint")} />}
-            onRetry={() => void mutate((k) => typeof k === "string" && (k === tasksKey("done", true) || k === eventsKey(from, to, true)))}>
+            onRetry={() => void mutate((k) => typeof k === "string" && (k === tasksKey("done", true) || k === eventsKey(periodEvents.from, periodEvents.to, true) || k === eventsKey(nextEvents.from, nextEvents.to, true)))}>
             <div className="grid gap-4 sm:grid-cols-3">
               <div>
                 <h3 className="font-display text-sm font-medium">{t("progress.completedTasks")} ({doneTasks.length})</h3>
@@ -202,14 +220,13 @@ export default function ProgressScreens({ now }: { now?: Date }) {
                 <ul className="mt-2 space-y-1">{advanced.map((g) => (<li key={g.id} className="text-sm"><span>{g.name}</span></li>))}</ul>
               </div>
               <div>
-                <h3 className="font-display text-sm font-medium">{t("progress.upcomingEvents")} ({upcoming.length})</h3>
-                <ul className="mt-2 space-y-1">{upcoming.map((e) => (<li key={e.id} className="text-sm"><span>{e.title}</span></li>))}</ul>
+                <h3 className="font-display text-sm font-medium">{t("progress.upcomingEvents")} ({upcomingEvents.length})</h3>
+                <ul className="mt-2 space-y-1">{upcomingEvents.map((e) => (<li key={e.id} className="text-sm"><span>{e.title}</span></li>))}</ul>
               </div>
             </div>
           </Block>
         </SectionShell>
       </div>
-      <p className="mt-6 text-xs text-instrument/60">{t("progress.score.disclaimer")}</p>
     </div>
   );
 }

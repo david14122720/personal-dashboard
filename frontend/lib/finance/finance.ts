@@ -357,6 +357,15 @@ export function toPeriodRange(sel: PeriodSel, now: Date = new Date()): { from: s
   }
 }
 
+/**
+ * Rango de fechas `YYYY-MM-DD` → rango RFC 3339 para `GET /events`, cuyo backend
+ * exige un datetime RFC 3339 (una fecha desnuda es 422) y filtra por solape con
+ * `starts_at < to` / `ends_at > from`.
+ */
+export function toEventRange(range: { from: string; to: string }): { from: string; to: string } {
+  return { from: `${range.from}T00:00:00.000Z`, to: `${range.to}T23:59:59.999Z` };
+}
+
 export interface FlowLike {
   month: string;
   income: string | number;

@@ -42,8 +42,8 @@
 //! (remaining P4 modules land in their own slices).
 
 use axum::{
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{FromRequestParts, Path, Query, State},
+    http::{request::Parts, HeaderMap, StatusCode},
     Json,
 };
 use chrono::{DateTime, NaiveDate, Utc};
@@ -864,13 +864,35 @@ const LOGS_RANGE_SQL: &str = "SELECT habit_id, log_date, status::text FROM habit
 
 type HabitLogRangeRow = (Uuid, NaiveDate, String);
 
-/// `GET /habits/logs` range filter. Unknown query fields are rejected
-/// (422) via `deny_unknown_fields`, mirroring `EventRangeQuery`.
+/// `GET /habits/logs` range filter. Unknown query fields are rejected (422) via
+/// `deny_unknown_fields` (see `ValidatedQuery`, which remaps axum's 400).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HabitLogsRangeQuery {
     pub from: String,
     pub to: String,
+}
+
+/// Query extractor whose rejection is 422 `VALIDATION_ERROR` instead of axum's
+/// default 400: the `Range Logs Read` contract requires 422 for malformed or
+/// unknown query fields. Opt-in per handler (`GET /habits/logs`); the global
+/// `Query` extractor and every other route stay untouched.
+#[derive(Debug)]
+pub struct ValidatedQuery<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for ValidatedQuery<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Query(value)| ValidatedQuery(value))
+            .map_err(|rejection| AppError::Validation(format!("invalid query parameters: {rejection}")))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -883,7 +905,7 @@ pub struct HabitLogRangeEntry {
 pub async fn list_logs_range_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<HabitLogsRangeQuery>,
+    ValidatedQuery(query): ValidatedQuery<HabitLogsRangeQuery>,
 ) -> Result<Json<Vec<HabitLogRangeEntry>>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     let (from, to) = parse_logs_range(&query.from, &query.to)?;
@@ -1934,8 +1956,8 @@ mod logs_range_tests {
         assert_eq!(ok.from, "2026-09-01");
     }
 
-    fn range_query(from: &str, to: &str) -> Query<HabitLogsRangeQuery> {
-        Query(HabitLogsRangeQuery {
+    fn range_query(from: &str, to: &str) -> ValidatedQuery<HabitLogsRangeQuery> {
+        ValidatedQuery(HabitLogsRangeQuery {
             from: from.to_string(),
             to: to.to_string(),
         })
@@ -2107,5 +2129,74 @@ mod logs_range_tests {
             !LOGS_RANGE_SQL.contains("HabitRow"),
             "range SQL must not mention HabitRow"
         );
+    }
+
+    fn query_parts(uri: &str) -> Parts {
+        axum::http::Request::builder()
+            .uri(uri)
+            .body(())
+            .expect("request builds")
+            .into_parts()
+            .0
+    }
+
+    #[tokio::test]
+    async fn validated_query_acepta_from_y_to() {
+        let mut parts = query_parts("/habits/logs?from=2026-09-01&to=2026-09-30");
+        let ValidatedQuery(query) = ValidatedQuery::<HabitLogsRangeQuery>::from_request_parts(&mut parts, &())
+            .await
+            .expect("from+to validos pasan la extraccion");
+        assert_eq!(query.from, "2026-09-01");
+        assert_eq!(query.to, "2026-09-30");
+    }
+
+    #[tokio::test]
+    async fn validated_query_mapea_unknown_field_a_422() {
+        let mut parts = query_parts("/habits/logs?from=2026-09-01&to=2026-09-30&unknown=1");
+        let err = ValidatedQuery::<HabitLogsRangeQuery>::from_request_parts(&mut parts, &())
+            .await
+            .expect_err("unknown field debe rechazarse");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.expect("body legible");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"]["code"], "VALIDATION_ERROR");
+    }
+
+    #[tokio::test]
+    async fn validated_query_mapea_falta_de_parametros_a_422() {
+        let mut parts = query_parts("/habits/logs?from=2026-09-01");
+        let err = ValidatedQuery::<HabitLogsRangeQuery>::from_request_parts(&mut parts, &())
+            .await
+            .expect_err("to es requerido");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    /// Router real (`main::build_router`) con pool lazy: la query invalida se
+    /// rechaza antes del handler (422), no como 401 ni 400.
+    #[tokio::test]
+    async fn router_rechaza_unknown_query_field_con_422() {
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let state = AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused").expect("lazy pool"),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+        };
+        let app = crate::build_router(state, None);
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/habits/logs?from=2026-09-01&to=2026-09-30&unknown=1")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(res.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

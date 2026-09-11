@@ -8,7 +8,7 @@ import { t } from "@/lib/i18n";
 import PeriodSelector from "@/components/finance/PeriodSelector";
 import { SectionShell } from "@/components/finance/FinanceSections";
 import EmptyState from "@/components/ui/EmptyState";
-import { toPeriodRange, type PeriodSel } from "@/lib/finance/finance";
+import { toEventRange, toPeriodRange, type PeriodSel } from "@/lib/finance/finance";
 import {
   eventsKey,
   tasksKey,
@@ -18,7 +18,7 @@ import {
   useSpendByCategory,
   useTasks as useDashboardTasks,
 } from "@/lib/api/dashboard";
-import { GOALS_KEY, habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
+import { GOALS_KEY, HABITS_TODAY_KEY, habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
 import { habitStats } from "@/lib/productivity/habitStats";
 import { formatMoney, toNumber } from "@/lib/api/money";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
@@ -149,7 +149,10 @@ function HabitsBlock({ range }: { range: Range }) {
       error={!!range && (!!today.error || !!history.error)}
       empty={!range || (!!today.data && !!history.data && (habits.length === 0 || logs.length === 0))}
       emptyNode={<EmptyState title={t("reports.emptyHabits")} hint={t("reports.emptyHabitsHint")} />}
-      onRetry={() => void mutate(habitsHistoryKey(range?.from ?? null, range?.to ?? null))}
+      onRetry={() => {
+        void mutate(HABITS_TODAY_KEY);
+        void mutate(habitsHistoryKey(range?.from ?? null, range?.to ?? null));
+      }}
     >
       <ul className="space-y-2">
         {habits.map((habit) => {
@@ -216,16 +219,35 @@ function inRange(day: string | null | undefined, range: { from: string; to: stri
   return date >= range.from && date <= range.to;
 }
 
+/**
+ * Solape real de un evento con el período: el servidor devuelve `starts_at < to`
+ * AND `ends_at > from`, así que un evento multi-día que empieza antes del rango
+ * igual cuenta. Filtrar solo por `starts_at` lo descartaba.
+ */
+function overlapsRange(
+  startsAt: string | null | undefined,
+  endsAt: string | null | undefined,
+  range: { from: string; to: string },
+): boolean {
+  if (!startsAt) return false;
+  const starts = startsAt.slice(0, 10);
+  const ends = (endsAt ?? startsAt).slice(0, 10);
+  return starts <= range.to && ends >= range.from;
+}
+
 function ActivityBlock({ range }: { range: Range }) {
   const { mutate } = useSWRConfig();
   const tasks = useDashboardTasks("done", range !== null);
-  const events = useDashboardEvents(range?.from ?? null, range?.to ?? null, range !== null);
+  const eventRange = range ? toEventRange(range) : null;
+  const events = useDashboardEvents(eventRange?.from ?? null, eventRange?.to ?? null, range !== null);
   const doneTasks = (tasks.data ?? []).filter(
     (task) => range && inRange((task as { completed_at?: string | null }).completed_at, range),
   );
-  const periodEvents = (events.data ?? []).filter((event) => range && inRange(event.starts_at, range));
+  const periodEvents = (events.data ?? []).filter(
+    (event) => range && overlapsRange(event.starts_at, event.ends_at, range),
+  );
   const tasksKeyStr = tasksKey("done", true);
-  const eventsKeyStr = range ? eventsKey(range.from, range.to, true) : null;
+  const eventsKeyStr = eventRange ? eventsKey(eventRange.from, eventRange.to, true) : null;
   return (
     <BlockShell
       loading={!!range && ((!tasks.data && !tasks.error) || (!events.data && !events.error))}

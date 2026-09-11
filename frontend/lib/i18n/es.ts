@@ -374,7 +374,7 @@ export const es = {
     pinNoteLabel: "Fijar {title}",
     unpinNoteLabel: "Quitar fijada de {title}",
     habitsCalendarLink: "Ver calendario de hábitos",
-    habitsCalendarHint: "El calendario mensual llega en S7.",
+    habitsCalendarHint: "Elegí un hábito para ver su mes.",
         history: {
           title: "Historial",
           hint: "Calendario mensual con tus registros reales.",
@@ -382,6 +382,14 @@ export const es = {
           empty: "Sin registros en este período",
           emptyHint: "Tus registros aparecerán aquí cuando marques tus hábitos.",
           loadFailed: "No se pudo cargar el historial",
+        },
+        heatmap: {
+          label: "{habit}: cumplimientos recientes",
+          day: "día {n}",
+          done: "cumplido",
+          missed: "no cumplido",
+          pending: "sin registro",
+          empty: "omitido",
         },
         stats: {
           bestStreak: "Mejor racha",
@@ -404,6 +412,8 @@ export const es = {
           month: "Mes",
           year: "Año",
           doneLabel: "días cumplidos",
+          empty: "Sin datos de evolución en este período",
+          emptyHint: "Sumá hábitos al comparador para ver su evolución.",
         },
   },
   common: {

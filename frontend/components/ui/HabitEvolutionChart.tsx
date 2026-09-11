@@ -22,7 +22,7 @@ export default function HabitEvolutionChart({
   animate?: boolean;
 }) {
   if (!data || data.length === 0 || series.length === 0) {
-    return <EmptyState title={t("productivity.history.empty")} hint={t("productivity.history.emptyHint")} />;
+    return <EmptyState title={t("productivity.evolution.empty")} hint={t("productivity.evolution.emptyHint")} />;
   }
   return (
     <div

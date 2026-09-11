@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import EmptyState from "@/components/ui/EmptyState";
 import HabitsHeatmap from "@/components/ui/HabitsHeatmap";
@@ -16,6 +16,7 @@ import {
   type CalendarState,
   type EvolutionGranularity,
 } from "@/lib/productivity/habitStats";
+import { todayYmdLocal } from "@/lib/productivity/productivity";
 import { EVOLUTION_SERIES_TOKENS } from "@/components/ui/chartTheme";
 import type { EvolutionRow } from "@/components/ui/HabitEvolutionChart";
 
@@ -24,9 +25,16 @@ const HabitEvolutionChart = dynamic(() => import("@/components/ui/HabitEvolution
   loading: () => <p role="status" className="text-sm text-instrument/60">{t("common.loading")}</p>,
 });
 
-export interface HistoryHabit { habit_id: string; name: string; days_of_week?: number[]; }
+export interface HistoryHabit { habit_id: string; name: string; days_of_week?: number[]; current_streak?: number | null; }
 
 const COMPARE_MAX = 4;
+const CELLS_PER_ROW = 7;
+
+/** Mes `YYYY-MM` del reloj local (UTC daría el mes equivocado en husos negativos). */
+export function defaultMonthKey(now: Date = new Date()): string {
+  return todayYmdLocal(now).slice(0, 7);
+}
+
 const stateClass: Record<CalendarState, string> = {
   "cumplido": "bg-flow",
   "no-cumplido": "bg-alert",
@@ -72,30 +80,51 @@ export function toEvolutionRows(
 /** Habit history for `#calendario-habitos`: name-only selector, 42-cell real-log calendar, base stats, S/M/A evolution, max-4 compare. */
 export default function HabitHistorySection({
   habits,
-  monthKey = new Date().toISOString().slice(0, 7),
+  monthKey,
+  now,
 }: {
   habits: HistoryHabit[];
   monthKey?: string;
+  now?: Date;
 }) {
   const { mutate } = useSWRConfig();
   const reduced = usePrefersReducedMotion();
   const [selectedId, setSelectedId] = useState(habits[0]?.habit_id ?? "");
   const [granularity, setGranularity] = useState<EvolutionGranularity>("month");
   const [compareIds, setCompareIds] = useState<string[]>(habits[0] ? [habits[0].habit_id] : []);
-  const { from, to } = useMemo(() => monthRange(monthKey), [monthKey]);
+  const seeded = useRef(false);
+  const month = monthKey ?? defaultMonthKey(now);
+
+  // El primer render ve `habits=[]` (SWR aún sin resolver) y el estado inicial queda
+  // vacío; al llegar los hábitos hay que sembrar selección y comparador una sola vez.
+  useEffect(() => {
+    const first = habits[0];
+    if (seeded.current || !first) return;
+    seeded.current = true;
+    setSelectedId((current) => current || first.habit_id);
+    setCompareIds((current) => (current.length > 0 ? current : [first.habit_id]));
+  }, [habits]);
+
+  const { from, to } = useMemo(() => monthRange(month), [month]);
   const history = useHabitsHistory(from, to);
   const logs = useMemo(() => history.data ?? [], [history.data]);
 
   const selected = habits.find((h) => h.habit_id === selectedId) ?? habits[0];
   const cells = useMemo(
-    () => (selected ? logsToCalendarCells(logs, selected.habit_id, monthKey) : []),
-    [logs, selected, monthKey],
+    () => (selected ? logsToCalendarCells(logs, selected.habit_id, month) : []),
+    [logs, selected, month],
+  );
+  const rows = useMemo(
+    () => Array.from({ length: cells.length / CELLS_PER_ROW }, (_, row) => cells.slice(row * CELLS_PER_ROW, (row + 1) * CELLS_PER_ROW)),
+    [cells],
   );
   const stats = useMemo(
     () => habitStats(logs.filter((l) => l.habit_id === selected?.habit_id), from, to, selected?.days_of_week),
     [logs, selected, from, to],
   );
   const heats = useMemo(() => cells.map((c) => calendarStateToHeat(c.state)), [cells]);
+  // Racha actual del API (`GET /habits/today`); la del mes solo como fallback.
+  const currentStreak = selected?.current_streak ?? stats.currentStreak;
   const picked = useMemo(() => habits.filter((h) => compareIds.includes(h.habit_id)).slice(0, COMPARE_MAX), [habits, compareIds]);
   const evolution = useMemo(() => toEvolutionRows(logs, picked, granularity), [logs, picked, granularity]);
 
@@ -146,28 +175,33 @@ export default function HabitHistorySection({
         <EmptyState title={t("productivity.history.empty")} hint={t("productivity.history.emptyHint")} />
       ) : (
         <>
-          <div role="grid" aria-label={selected.name} className="grid grid-cols-7 gap-1">
-            {cells.map((cell) => {
-              const label = `${cell.date}, ${stateText(cell.state)}`;
-              return (
-                <span
-                  key={cell.date}
-                  role="gridcell"
-                  tabIndex={0}
-                  title={label}
-                  aria-label={label}
-                  className={`flex h-8 items-center justify-center rounded-md font-mono text-[11px] tabular-nums focus:outline-none focus-visible:ring-2 focus-visible:ring-signal ${stateClass[cell.state]}`}
-                >
-                  {Number(cell.date.slice(8))}
-                </span>
-              );
-            })}
+          <div
+            role="grid"
+            aria-label={selected.name}
+            tabIndex={0}
+            className="grid grid-cols-7 gap-1 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+          >
+            {rows.map((row, rowIndex) => (
+              <div key={`row-${rowIndex}`} role="row" className="contents">
+                {row.map((cell) => (
+                  <span
+                    key={cell.date}
+                    role="gridcell"
+                    title={`${cell.date}, ${stateText(cell.state)}`}
+                    aria-label={`${cell.date}, ${stateText(cell.state)}`}
+                    className={`flex h-8 items-center justify-center rounded-md font-mono text-[11px] tabular-nums ${stateClass[cell.state]}`}
+                  >
+                    {Number(cell.date.slice(8))}
+                  </span>
+                ))}
+              </div>
+            ))}
           </div>
           <HabitsHeatmap cells={heats} label={selected.name} dates={cells.map((c) => c.date)} />
           <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {[
               [t("productivity.stats.bestStreak"), t("productivity.stats.daysUnit", { n: stats.bestStreak })],
-              [t("productivity.stats.currentStreak"), t("productivity.stats.daysUnit", { n: stats.currentStreak })],
+              [t("productivity.stats.currentStreak"), t("productivity.stats.daysUnit", { n: currentStreak })],
               [t("productivity.stats.compliance"), `${stats.complianceRate}%`],
               [`${t("productivity.stats.done")} · ${t("productivity.stats.missed")} · ${t("productivity.stats.skipped")} · ${t("productivity.stats.unlogged")}`, `${stats.done} · ${stats.missed} · ${stats.skipped} · ${stats.unlogged}`],
             ].map(([term, value]) => (

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -107,5 +107,65 @@ describe("ProgressScreens S4 RED", () => {
     expect(within(worth).queryByRole("button")).not.toBeInTheDocument();
     expect(within(worth).queryByRole("combobox")).not.toBeInTheDocument();
     expect(worth.innerHTML).not.toMatch(/valuar|valuación/i);
+  });
+});
+
+describe("ProgressScreens JD-1 fixes", () => {
+  it("C-01: pide /events con RFC 3339 (una fecha desnuda sería 422)", async () => {
+    const events: string[] = [];
+    server.use(
+      http.get("http://test.local/api/events", ({ request }) => {
+        events.push(decodeURIComponent(request.url));
+        return HttpResponse.json([]);
+      }),
+    );
+    renderProgress();
+    await waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1));
+    for (const url of events) {
+      expect(url).toMatch(/from=\d{4}-\d{2}-\d{2}T00:00:00\.000Z/);
+      expect(url).toMatch(/to=\d{4}-\d{2}-\d{2}T23:59:59\.999Z/);
+    }
+  });
+
+  it("C-02: lee los próximos 14 días en su propia ventana y los muestra", async () => {
+    server.use(
+      http.get("http://test.local/api/events", ({ request }) => {
+        const from = new URL(request.url).searchParams.get("from") ?? "";
+        // Ventana de período [hoy-29, hoy] frente a la ventana de próximos 14 días [hoy, hoy+14].
+        return from.startsWith("2026-08")
+          ? HttpResponse.json([
+              { id: "e-past", title: "Evento del período", kind: "event", starts_at: "2026-09-01T12:00:00Z", ends_at: null },
+            ])
+          : HttpResponse.json([
+              { id: "e-next", title: "Evento próximo", kind: "event", starts_at: "2026-09-20T12:00:00Z", ends_at: null },
+            ]);
+      }),
+    );
+    renderProgress();
+    expect(await screen.findByText("Evento próximo")).toBeInTheDocument();
+    expect(screen.queryByText("Evento del período")).not.toBeInTheDocument();
+  });
+
+  it("W-01: el retry de hábitos revalida también /habits/today, no solo el historial", async () => {
+    server.use(
+      http.get("http://test.local/api/habits/today", () => HttpResponse.json({ message: "caído" }, { status: 500 })),
+      http.get("http://test.local/api/habits/logs", () => HttpResponse.json({ message: "caído" }, { status: 500 })),
+    );
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
+        <ProgressScreens now={new Date(2026, 8, 15)} />
+      </SWRConfig>,
+    );
+    const habitsRegion = await screen.findByRole("region", { name: "Hábitos" });
+    const retry = await within(habitsRegion).findByRole("button", { name: "Reintentar" });
+    server.resetHandlers();
+    fireEvent.click(retry);
+    expect(await screen.findByText("Leer")).toBeInTheDocument();
+  });
+
+  it("W-06: el disclaimer vive dentro de la sección del score, bajo las barras", async () => {
+    renderProgress();
+    const score = await screen.findByRole("region", { name: "Puntaje por área" });
+    expect(within(score).getByText(DISCLAIMER)).toBeVisible();
   });
 });
