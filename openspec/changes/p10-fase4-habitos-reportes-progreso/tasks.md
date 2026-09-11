@@ -75,15 +75,15 @@ Objetivo: ruta + `PeriodSelector` + 4 bloques FE-only (finanzas/hábitos/metas/a
 
 ### S3 — RED
 
-- [ ] 3.1 RED: crear `frontend/components/containers/ReportsScreens.test.tsx` (vitest) — período `2026-09` propaga `2026-09-01..30` a los 4 bloques, custom `from/to` exacto, custom inválido bloquea agregados sin romper (precedente `finance.test.tsx:630`), `by-category` caído aísla error solo en bloque finanzas, no existe botón/link/ruta PDF-Excel; verificar que fallan. <!-- sdd-owner: implementation -->
+- [x] 3.1 RED: crear `frontend/components/containers/ReportsScreens.test.tsx` (vitest) — período `2026-09` propaga `2026-09-01..30` a los 4 bloques, custom `from/to` exacto, custom inválido bloquea agregados sin romper (precedente `finance.test.tsx:630`), `by-category` caído aísla error solo en bloque finanzas, no existe botón/link/ruta PDF-Excel; verificar que fallan. <!-- sdd-owner: implementation -->
 
 ### S3 — GREEN
 
-- [ ] 3.2 GREEN: crear ruta `frontend/app/dashboard/reportes/page.tsx` (shell + redirect login, copia `productivity/page.tsx`) + `frontend/components/containers/ReportsScreens.tsx` reutilizando `frontend/components/finance/PeriodSelector.tsx` (semana/mes/año + custom); 4 bloques en paralelo (`Promise.all`): finanzas (`monthly-flow` + `by-category`, `toNumber` en boundary + `formatMoney` es-CO/COP), hábitos (`useHabitsHistory` + `habitStats`), metas (`GET /goals` progress solo lectura), actividad (`tasks?view=done` filtro cliente `completed_at` + `GET /events?from&to`); `EmptyState` + retry por bloque, i18n ES tipado. <!-- sdd-owner: implementation -->
+- [x] 3.2 GREEN: crear ruta `frontend/app/dashboard/reportes/page.tsx` (shell + redirect login, copia `productivity/page.tsx`) + `frontend/components/containers/ReportsScreens.tsx` reutilizando `frontend/components/finance/PeriodSelector.tsx` (semana/mes/año + custom); 4 bloques en paralelo (`Promise.all`): finanzas (`monthly-flow` + `by-category`, `toNumber` en boundary + `formatMoney` es-CO/COP), hábitos (`useHabitsHistory` + `habitStats`), metas (`GET /goals` progress solo lectura), actividad (`tasks?view=done` filtro cliente `completed_at` + `GET /events?from&to`); `EmptyState` + retry por bloque, i18n ES tipado. <!-- sdd-owner: implementation -->
 
 ### S3 — TRIANGULATE + REFACTOR + verify
 
-- [ ] 3.3 TRIANGULATE + REFACTOR: loading/error/empty independientes por bloque, error panel ES con retry que revalida solo sus keys (`reports-*` o existentes, `revalidateOnFocus:false`); charts `next/dynamic(ssr:false)`, tokens `--color-*`, `prefers-reduced-motion`, foco visible; `pnpm --dir frontend vitest run ReportsScreens`, `tsc --noEmit` y `pnpm --dir frontend test` verdes; rollback = revert (ruta nueva, sin flags). <!-- sdd-owner: implementation -->
+- [x] 3.3 TRIANGULATE + REFACTOR: loading/error/empty independientes por bloque, error panel ES con retry que revalida solo sus keys (`reports-*` o existentes, `revalidateOnFocus:false`); charts `next/dynamic(ssr:false)`, tokens `--color-*`, `prefers-reduced-motion`, foco visible; `pnpm --dir frontend vitest run ReportsScreens`, `tsc --noEmit` y `pnpm --dir frontend test` verdes; rollback = revert (ruta nueva, sin flags). <!-- sdd-owner: implementation -->
 
 ### S3 — Gate (post-apply)
 
