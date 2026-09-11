@@ -41,7 +41,7 @@ Objetivo: un solo endpoint multi-hábito en 1 round-trip + tests puros sin DB. S
 
 ### S1 — Gate (post-apply)
 
-- [ ] 1.7 Start o reuse bounded review JD 2 jueces ciegos sobre PR1 antes de merge (contrato HTTP, 401/404/422, cap 366, orden, EXPLAIN, ≤400 líneas). <!-- sdd-owner: parent -->
+- [x] 1.7 Start o reuse bounded review JD 2 jueces ciegos sobre PR1 antes de merge (contrato HTTP, 401/404/422, cap 366, orden, EXPLAIN, ≤400 líneas). <!-- sdd-owner: parent -->
 
 ## Slice S2 — Historial-FE calendario + heatmap real + stats + evolución + comparar (base: S1)
 
@@ -67,7 +67,7 @@ Objetivo: fetcher rango + transforms puros + calendario 4-estados + heatmap real
 
 ### S2 — Gate (post-apply)
 
-- [ ] 2.8 Start o reuse bounded review JD 2 jueces ciegos sobre PR2 antes de merge (4-estados, heatmap real, stats, evolución/comparar, i18n ES, ≤400 líneas o partición S2a/S2b). <!-- sdd-owner: parent -->
+- [x] 2.8 Start o reuse bounded review JD 2 jueces ciegos sobre PR2 antes de merge (4-estados, heatmap real, stats, evolución/comparar, i18n ES, ≤400 líneas o partición S2a/S2b). <!-- sdd-owner: parent -->
 
 ## Slice S3 — Reportes `/reportes` solo-pantalla (base: S2)
 
@@ -87,7 +87,7 @@ Objetivo: ruta + `PeriodSelector` + 4 bloques FE-only (finanzas/hábitos/metas/a
 
 ### S3 — Gate (post-apply)
 
-- [ ] 3.4 Start o reuse bounded review JD 2 jueces ciegos sobre PR3 antes de merge (4 bloques, período único, cero endpoints nuevos, sin PDF/Excel, ≤400 líneas). <!-- sdd-owner: parent -->
+- [x] 3.4 Start o reuse bounded review JD 2 jueces ciegos sobre PR3 antes de merge (4 bloques, período único, cero endpoints nuevos, sin PDF/Excel, ≤400 líneas). <!-- sdd-owner: parent -->
 
 ## Slice S4 — Progreso `/progreso` + score visual (base: S3)
 
@@ -107,9 +107,9 @@ Objetivo: dashboard combinado + `scoreByArea` puro + disclaimer fijo siempre vis
 
 ### S4 — Gate (post-apply)
 
-- [ ] 4.4 Start o reuse bounded review JD 2 jueces ciegos sobre PR4 antes de merge (combinado 5 áreas, score solo visual, disclaimer fijo, contratos heredados, ≤400 líneas). <!-- sdd-owner: parent -->
+- [x] 4.4 Start o reuse bounded review JD 2 jueces ciegos sobre PR4 antes de merge (combinado 5 áreas, score solo visual, disclaimer fijo, contratos heredados, ≤400 líneas). <!-- sdd-owner: parent -->
 
 ## Verificación global (post-cadena)
 
 - [x] 5.1 Verificar cadena completa S1→S4: `cargo test` backend, `pnpm --dir frontend test` + `tsc --noEmit`, ancla `#calendario-habitos` resuelve, `/reportes` y `/progreso` renderizan ES sin literales, `grep -r "heatmapCells" frontend/lib` vacío, `grep -ri "pdf\|excel\|xlsx" frontend/app/dashboard/reportes` vacío. <!-- sdd-owner: implementation -->
-- [ ] 5.2 Start o reuse bounded review JD final de cadena (2 jueces, stacked-to-main S1→S2→S3→S4, cada PR ≤400 líneas o `size:exception` justificado en una sola pasada honesta). <!-- sdd-owner: parent -->
+- [x] 5.2 Start o reuse bounded review JD final de cadena (2 jueces, stacked-to-main S1→S2→S3→S4, cada PR ≤400 líneas o `size:exception` justificado en una sola pasada honesta). <!-- sdd-owner: parent -->
