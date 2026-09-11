@@ -148,6 +148,8 @@ export function useHabitsToday() {
     config,
   );
 }
+// NOTE: range history (`habits-history`) lives in lib/api/productivity.ts
+// (`useHabitsHistory`); do not duplicate the hook here.
 
 export function useAccounts() {
   return useSWR<AccountWire[]>(
