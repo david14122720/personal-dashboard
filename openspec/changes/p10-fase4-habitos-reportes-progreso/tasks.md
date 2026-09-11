@@ -95,15 +95,15 @@ Objetivo: dashboard combinado + `scoreByArea` puro + disclaimer fijo siempre vis
 
 ### S4 — RED
 
-- [ ] 4.1 RED: crear `frontend/lib/productivity/scoreByArea.test.ts` + `frontend/components/containers/ProgressScreens.test.tsx` (vitest) — `scoreByArea({finance,habits,goals,productivity})` 4 indicadores etiquetados, área sin datos → visual neutro nunca fabricado, disclaimer `progress.score.disclaimer` visible en estados poblado y vacío, patrimonio sin ningún control de escritura; verificar que fallan. <!-- sdd-owner: implementation -->
+- [x] 4.1 RED: crear `frontend/lib/productivity/scoreByArea.test.ts` + `frontend/components/containers/ProgressScreens.test.tsx` (vitest) — `scoreByArea({finance,habits,goals,productivity})` 4 indicadores etiquetados, área sin datos → visual neutro nunca fabricado, disclaimer `progress.score.disclaimer` visible en estados poblado y vacío, patrimonio sin ningún control de escritura; verificar que fallan. <!-- sdd-owner: implementation -->
 
 ### S4 — GREEN
 
-- [ ] 4.2 GREEN: implementar `scoreByArea` puro junto a `frontend/lib/productivity/habitStats.ts` (inputs 0–100 ya normalizados, pesos documentados, solo visual barras/LED sin "nota única"); crear `frontend/app/dashboard/progreso/page.tsx` + `frontend/components/containers/ProgressScreens.tsx` combinando `monthly-flow` (ahorro+gastos), patrimonio número solo lectura, `goals`+savings-goals, hábitos (cumplimiento global, mejores rachas, pendientes `today_status=pending`, evolución semanal vía transforms S2), productividad (completadas, metas avanzadas, próximos 14d vía `toUpcomingEvents`); disclaimer fijo siempre visible + copy ES sin culpa, i18n tipado. <!-- sdd-owner: implementation -->
+- [x] 4.2 GREEN: implementar `scoreByArea` puro junto a `frontend/lib/productivity/habitStats.ts` (inputs 0–100 ya normalizados, pesos documentados, solo visual barras/LED sin "nota única"); crear `frontend/app/dashboard/progreso/page.tsx` + `frontend/components/containers/ProgressScreens.tsx` combinando `monthly-flow` (ahorro+gastos), patrimonio número solo lectura, `goals`+savings-goals, hábitos (cumplimiento global, mejores rachas, pendientes `today_status=pending`, evolución semanal vía transforms S2), productividad (completadas, metas avanzadas, próximos 14d vía `toUpcomingEvents`); disclaimer fijo siempre visible + copy ES sin culpa, i18n tipado. <!-- sdd-owner: implementation -->
 
 ### S4 — TRIANGULATE + REFACTOR + verify
 
-- [ ] 4.3 TRIANGULATE + REFACTOR: per-section loading/error/empty ES + retry, `formatMoney` es-CO/COP con coerción solo en boundary, `--color-*` sin hex, `prefers-reduced-motion`, foco visible, charts `next/dynamic(ssr:false)`, bearer single-flight 401; `pnpm --dir frontend vitest run scoreByArea ProgressScreens`, `tsc --noEmit` y `pnpm --dir frontend test` verdes; confirmar valuaciones intactas (INSERT-only) y rollback = revert (ruta nueva). <!-- sdd-owner: implementation -->
+- [x] 4.3 TRIANGULATE + REFACTOR: per-section loading/error/empty ES + retry, `formatMoney` es-CO/COP con coerción solo en boundary, `--color-*` sin hex, `prefers-reduced-motion`, foco visible, charts `next/dynamic(ssr:false)`, bearer single-flight 401; `pnpm --dir frontend vitest run scoreByArea ProgressScreens`, `tsc --noEmit` y `pnpm --dir frontend test` verdes; confirmar valuaciones intactas (INSERT-only) y rollback = revert (ruta nueva). <!-- sdd-owner: implementation -->
 
 ### S4 — Gate (post-apply)
 
@@ -111,5 +111,5 @@ Objetivo: dashboard combinado + `scoreByArea` puro + disclaimer fijo siempre vis
 
 ## Verificación global (post-cadena)
 
-- [ ] 5.1 Verificar cadena completa S1→S4: `cargo test` backend, `pnpm --dir frontend test` + `tsc --noEmit`, ancla `#calendario-habitos` resuelve, `/reportes` y `/progreso` renderizan ES sin literales, `grep -r "heatmapCells" frontend/lib` vacío, `grep -ri "pdf\|excel\|xlsx" frontend/app/dashboard/reportes` vacío. <!-- sdd-owner: implementation -->
+- [x] 5.1 Verificar cadena completa S1→S4: `cargo test` backend, `pnpm --dir frontend test` + `tsc --noEmit`, ancla `#calendario-habitos` resuelve, `/reportes` y `/progreso` renderizan ES sin literales, `grep -r "heatmapCells" frontend/lib` vacío, `grep -ri "pdf\|excel\|xlsx" frontend/app/dashboard/reportes` vacío. <!-- sdd-owner: implementation -->
 - [ ] 5.2 Start o reuse bounded review JD final de cadena (2 jueces, stacked-to-main S1→S2→S3→S4, cada PR ≤400 líneas o `size:exception` justificado en una sola pasada honesta). <!-- sdd-owner: parent -->
