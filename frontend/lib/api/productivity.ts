@@ -78,6 +78,27 @@ export function useHabitsToday() {
   return useSWR<HabitTodayWire[]>(HABITS_TODAY_KEY, () => apiGet<HabitTodayWire[]>("/habits/today"), config);
 }
 
+/** One row of `GET /habits/logs?from&to` (multi-habit, single round-trip). */
+export interface HabitLogWire { habit_id: string; log_date: string; status: string; }
+
+export const HABITS_HISTORY_KEY = "habits-history";
+
+/** SWR key for a range; null when the range is invalid so SWR stays idle. */
+export function habitsHistoryKey(from: string | null, to: string | null): string | null {
+  if (!from || !to || from > to) return null;
+  return `${HABITS_HISTORY_KEY}:${from}:${to}`;
+}
+
+/** Range logs for calendars, stats and evolution. Bearer + single-flight 401 via `apiGet`. */
+export function useHabitsHistory(from: string | null, to: string | null, swrConfig?: SWRConfiguration) {
+  const key = habitsHistoryKey(from, to);
+  return useSWR<HabitLogWire[]>(
+    key,
+    () => apiGet<HabitLogWire[]>(`/habits/logs?from=${encodeURIComponent(from as string)}&to=${encodeURIComponent(to as string)}`),
+    { ...config, ...swrConfig },
+  );
+}
+
 export function useGoals() {
   return useSWR<GoalWire[]>(GOALS_KEY, () => apiGet<GoalWire[]>("/goals"), config);
 }
@@ -89,7 +110,6 @@ export function useTasks() {
 export function eventsKey(from: string | null): string | null {
   return from ? `productivity/events?from=${encodeURIComponent(from)}` : "productivity/events";
 }
-
 export function useEvents(from: string | null) {
   const key = eventsKey(from);
   return useSWR<EventWire[]>(
