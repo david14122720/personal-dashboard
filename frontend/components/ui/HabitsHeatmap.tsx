@@ -8,24 +8,28 @@ const cellClass: Record<HeatCell, string> = {
 };
 
 /**
- * Pure CSS-grid heatmap of recent habit completions (no chart library).
- * Fixed 7-column grid with fixed-size cells keeps dates aligned; the strip
- * is oldest → newest left to right, top to bottom.
+ * Pure CSS-grid heatmap fed ONLY by real range logs: callers map the
+ * 4-state calendar (`logsToCalendarCells` + `calendarStateToHeat`) into
+ * `cells`. Streak-derived strips were removed in S2b (single source: logs).
  */
-export default function HabitsHeatmap({ cells, label }: { cells: HeatCell[]; label: string }) {
+export default function HabitsHeatmap({ cells, label, dates }: { cells: HeatCell[]; label: string; dates?: string[] }) {
   return (
     <div
       role="img"
       aria-label={`${label} recent completions`}
       className="grid grid-cols-7 justify-start gap-1"
     >
-      {cells.map((cell, index) => (
-        <span
-          key={`${label}-${index}`}
-          title={`${label} day ${index + 1}: ${cell}`}
-          className={`h-3 w-3 rounded-sm ${cellClass[cell]}`}
-        />
-      ))}
+      {cells.map((cell, index) => {
+        const date = dates?.[index];
+        const hint = date ? `${label} ${date}: ${cell}` : `${label} day ${index + 1}: ${cell}`;
+        return (
+          <span
+            key={date ?? `${label}-${index}`}
+            title={hint}
+            className={`h-3 w-3 rounded-sm ${cellClass[cell]}`}
+          />
+        );
+      })}
     </div>
   );
 }

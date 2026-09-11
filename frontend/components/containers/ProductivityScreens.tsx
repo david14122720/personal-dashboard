@@ -52,6 +52,7 @@ import {
   type TaskDateView,
 } from "@/lib/productivity/productivity";
 import { toISODate } from "@/lib/dashboard/transforms";
+import HabitHistorySection from "@/components/productivity/HabitHistorySection";
 
 /**
  * Productivity screens container. Owns all SWR reads (fired in parallel),
@@ -266,7 +267,8 @@ export default function ProductivityScreens() {
               span="col-span-12 xl:col-span-7"
             >
               <HabitsList habits={habits.data ?? []} loggingId={loggingId} onLog={(id, s) => void handleLog(id, s)} />
-              <div id="calendario-habitos">
+              <div id="calendario-habitos" className="mt-4">
+                    <HabitHistorySection habits={habits.data ?? []} />
                 <p className="mt-3 text-xs text-instrument/60">
                   <a
                     href="#calendario-habitos"

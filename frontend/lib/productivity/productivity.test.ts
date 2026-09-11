@@ -4,7 +4,6 @@ import {
   goalProgressFraction,
   groupTasksByStatus,
   habitStatusLed,
-  heatmapCells,
   noteExcerpt,
 } from "@/lib/productivity/productivity";
 
@@ -15,28 +14,6 @@ describe("productivity transforms", () => {
     expect(habitStatusLed("missed")).toBe("over");
     expect(habitStatusLed("skipped")).toBeNull();
     expect(habitStatusLed("unknown")).toBeNull();
-  });
-
-  it("builds a fixed-width heatmap strip pinned to today", () => {
-    const cells = heatmapCells(3, "done", 7);
-    expect(cells).toHaveLength(7);
-    expect(cells[6]).toBe("done");
-    expect(cells[5]).toBe("done");
-    expect(cells[4]).toBe("done");
-    expect(cells[3]).toBe("empty");
-  });
-
-  it("breaks the run visually on a missed today", () => {
-    const cells = heatmapCells(0, "missed", 7);
-    expect(cells[6]).toBe("missed");
-    expect(cells.slice(0, 6).every((c) => c === "empty")).toBe(true);
-  });
-
-  it("clamps oversized streaks to the strip width", () => {
-    const cells = heatmapCells(99, "pending", 7);
-    expect(cells).toHaveLength(7);
-    expect(cells[6]).toBe("pending");
-    expect(cells.slice(0, 6).every((c) => c === "done")).toBe(true);
   });
 
   it("groups tasks in stable status order", () => {

@@ -1,7 +1,6 @@
 "use client";
 
 import EmptyState from "@/components/ui/EmptyState";
-import HabitsHeatmap from "@/components/ui/HabitsHeatmap";
 import { t } from "@/lib/i18n";
 import type { EventWire, GoalWire, HabitTodayWire, NoteWire, TaskWire } from "@/lib/api/productivity";
 import { ledDotClass } from "@/lib/dashboard/transforms";
@@ -10,7 +9,6 @@ import {
   goalProgressFraction,
   groupTasksByStatus,
   habitStatusLed,
-  heatmapCells,
   noteExcerpt,
   type EventTimeView,
   type TaskDateView,
@@ -245,9 +243,7 @@ export function HabitsList({
                     })}
                   </p>
                 </div>
-                <div className="mt-2">
-                  <HabitsHeatmap cells={heatmapCells(habit.current_streak, habit.today_status)} label={habit.name} />
-                </div>
+                {/* Real-log heatmap lives in HabitHistorySection (#calendario-habitos). */}
                 <div className="mt-2 flex flex-wrap gap-2">
                   {(["done", "missed", "skipped"] as const).map((status) => (
                     <button
