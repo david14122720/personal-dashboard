@@ -140,6 +140,7 @@ const server = setupServer(
     return HttpResponse.json({ id: "l1" }, { status: 201 });
   }),
   http.patch("http://test.local/api/habits/:id/logs/:date", () => HttpResponse.json({ id: "l1" })),
+  http.get("http://test.local/api/habits/logs", () => HttpResponse.json([])),
   http.get("http://test.local/api/goals", () => HttpResponse.json(goals)),
   http.get("http://test.local/api/tasks", () => HttpResponse.json(tasks)),
   http.patch("http://test.local/api/tasks/:id", async ({ params, request }) => {
@@ -176,18 +177,26 @@ function renderScreens() {
 }
 
 describe("productivity screens", () => {
-  it("renders habits with streak counts, LED status, and a CSS-grid heatmap", async () => {
+  it("renders habits with streak counts and LED status but no streak-derived heatmap", async () => {
     renderScreens();
     const habits = await screen.findByRole("region", { name: "Hábitos" });
-    expect(within(habits).getByText("Morning Run")).toBeInTheDocument();
+    expect(within(habits).getAllByText("Morning Run").length).toBeGreaterThanOrEqual(1);
     expect(within(habits).getByText("racha de 5 días · hecho")).toBeInTheDocument();
     expect(within(habits).getByRole("img", { name: "Morning Run, estado hecho" })).toHaveClass("bg-flow");
     expect(
-      within(habits).getByRole("img", { name: "Morning Run recent completions" }),
-    ).toBeInTheDocument();
+      within(habits).queryByRole("img", { name: "Morning Run recent completions" }),
+    ).not.toBeInTheDocument();
     expect(within(habits).getByText("racha de 0 días · pendiente")).toBeInTheDocument();
   });
 
+  it("renders the real-log history section in the calendario-habitos slot", async () => {
+    renderScreens();
+    const habits = await screen.findByRole("region", { name: "Hábitos" });
+    const history = within(habits).getByRole("region", { name: "Historial" });
+    expect(within(history).getByRole("combobox", { name: "Hábito" })).toHaveTextContent("Morning Run");
+    expect(history.textContent).not.toContain("h1");
+    expect(await within(history).findByText("Sin registros en este período", {}, { timeout: 8000 })).toBeInTheDocument();
+  });
   it("logs a habit as done through POST with today's date", async () => {
     renderScreens();
     const habits = await screen.findByRole("region", { name: "Hábitos" });

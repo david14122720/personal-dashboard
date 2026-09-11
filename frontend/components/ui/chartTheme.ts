@@ -26,3 +26,6 @@ export function chartTooltipStyle(): {
 export function chartTick(): { fill: string; fontSize: number } {
   return { fill: chartTok("--color-instrument"), fontSize: 12 };
 }
+
+/** Multi-series palette for habit evolution/compare (max 4, token-driven, no hex). */
+export const EVOLUTION_SERIES_TOKENS = ["--color-flow", "--color-signal", "--color-alert", "--color-violet"] as const;

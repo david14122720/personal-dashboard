@@ -23,34 +23,6 @@ export function habitStatusLed(status: string | null | undefined): "ok" | "warn"
   }
 }
 
-export const HEATMAP_DAYS = 14;
-
-/**
- * Derive a fixed-width heatmap strip (oldest → newest) from a habit's
- * streak. The backend exposes no per-day log history on this read, so the
- * strip renders `current_streak` trailing completions with the last cell
- * pinned to `today_status`: a done today extends the run, a missed today
- * breaks it, a pending today waits, and a skipped day stays neutral.
- */
-export function heatmapCells(
-  streak: number,
-  todayStatus: string,
-  days: number = HEATMAP_DAYS,
-): HeatCell[] {
-  const cells: HeatCell[] = new Array(days).fill("empty");
-  if (days <= 0) return cells;
-  const run = Math.min(Math.max(Math.floor(streak), 0), days);
-  const doneBefore = todayStatus === "done" ? Math.max(run - 1, 0) : run;
-  for (let i = 0; i < doneBefore; i += 1) {
-    cells[days - 2 - i] = "done";
-  }
-  const last = days - 1;
-  if (todayStatus === "done") cells[last] = "done";
-  else if (todayStatus === "missed") cells[last] = "missed";
-  else if (todayStatus === "pending") cells[last] = "pending";
-  return cells;
-}
-
 export interface TaskGroup {
   status: string;
   items: Array<{ id: string } & Record<string, unknown>>;
