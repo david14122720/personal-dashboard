@@ -143,6 +143,10 @@ fn api_routes() -> Router<AppState> {
             get(routes::habits::today_habits_handler),
         )
         .route(
+            "/habits/logs",
+            get(routes::habits::list_logs_range_handler),
+        )
+        .route(
             "/habits/{id}",
             get(routes::habits::get_habit_handler)
                 .patch(routes::habits::patch_habit_handler)
@@ -449,6 +453,23 @@ mod api_nest_tests {
             );
         }
         let _ = app;
+    }
+
+    #[tokio::test]
+    async fn habits_logs_range_route_is_wired_before_id_capture() {
+        // GET /api/habits/logs sin sesion debe llegar al handler (401):
+        // ni 404 (ruta ausente) ni 422 (captura por /habits/{id} con Uuid).
+        let app = build_router(lazy_state(), None);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/habits/logs?from=2026-09-01&to=2026-09-30")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

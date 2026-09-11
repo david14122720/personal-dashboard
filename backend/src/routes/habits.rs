@@ -42,7 +42,7 @@
 //! (remaining P4 modules land in their own slices).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -462,6 +462,22 @@ pub fn validate_date_range(start: NaiveDate, end: Option<NaiveDate>) -> Result<(
     Ok(())
 }
 
+/// Parse the `GET /habits/logs?from&to` range bounds (strict `YYYY-MM-DD`,
+/// else 422): `from > to` is 422 (`from_after_to`), and ranges wider than
+/// 366 days inclusive (`(to - from).num_days() > 365`) are 422
+/// (`range_too_wide`). Pure: no I/O, no `PgPool`.
+pub fn parse_logs_range(from: &str, to: &str) -> Result<(NaiveDate, NaiveDate), AppError> {
+    let from = validate_calendar_date(from, "from")?;
+    let to = validate_calendar_date(to, "to")?;
+    if from > to {
+        return Err(AppError::Validation("from_after_to".into()));
+    }
+    if (to - from).num_days() > 365 {
+        return Err(AppError::Validation("range_too_wide".into()));
+    }
+    Ok((from, to))
+}
+
 /// Reject a PATCH with no actionable field, else 422.
 pub fn validate_habit_patch(body: &PatchHabitRequest) -> Result<(), AppError> {
     if body.name.is_none()
@@ -836,6 +852,55 @@ pub async fn today_habits_handler(
                     }
                 },
             )
+            .collect(),
+    ))
+}
+
+/// Range-history read (multi-habit, one round-trip): dedicated 3-column
+/// SQL — never widens `HabitRow` (15 cols, near the sqlx cap of 16).
+/// `idx_habit_logs_user_date (user_id, log_date)` covers the filter;
+/// `idx_habit_logs_habit_date` stays on the streak/today path.
+const LOGS_RANGE_SQL: &str = "SELECT habit_id, log_date, status::text FROM habit_logs WHERE user_id = $1 AND log_date >= $2 AND log_date <= $3 ORDER BY habit_id ASC, log_date ASC";
+
+type HabitLogRangeRow = (Uuid, NaiveDate, String);
+
+/// `GET /habits/logs` range filter. Unknown query fields are rejected
+/// (422) via `deny_unknown_fields`, mirroring `EventRangeQuery`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HabitLogsRangeQuery {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HabitLogRangeEntry {
+    pub habit_id: Uuid,
+    pub log_date: NaiveDate,
+    pub status: String,
+}
+
+pub async fn list_logs_range_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HabitLogsRangeQuery>,
+) -> Result<Json<Vec<HabitLogRangeEntry>>, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let (from, to) = parse_logs_range(&query.from, &query.to)?;
+    let rows = sqlx::query_as::<_, HabitLogRangeRow>(LOGS_RANGE_SQL)
+        .bind(user_id)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(map_habit_db_err)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(habit_id, log_date, status)| HabitLogRangeEntry {
+                habit_id,
+                log_date,
+                status,
+            })
             .collect(),
     ))
 }
@@ -1792,5 +1857,255 @@ mod tests {
             "streak must not sequential-scan habit_logs, got:\n{plan}"
         );
         cleanup_user(&pool, user_id).await;
+    }
+}
+
+#[cfg(test)]
+mod logs_range_tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    fn assert_422(err: AppError) {
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn parse_logs_range_acepta_rango_valido() {
+        let (from, to) = parse_logs_range("2026-09-01", "2026-09-30").expect("rango valido es Ok");
+        assert_eq!(from, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+        assert_eq!(to, NaiveDate::from_ymd_opt(2026, 9, 30).unwrap());
+    }
+
+    #[test]
+    fn parse_logs_range_rechaza_formato() {
+        for (from, to) in [
+            ("2026-13-40", "2026-09-30"),
+            ("not-a-date", "2026-09-30"),
+            ("2026-09-01", "2026-02-30"),
+            ("09/01/2026", "2026-09-30"),
+        ] {
+            assert_422(parse_logs_range(from, to).unwrap_err());
+        }
+    }
+
+    #[test]
+    fn parse_logs_range_rechaza_from_after_to() {
+        assert_422(parse_logs_range("2026-09-30", "2026-09-01").unwrap_err());
+    }
+
+    #[test]
+    fn parse_logs_range_rechaza_mas_de_366_dias() {
+        // 366 dias inclusivos (diff 365) ok; 367 (diff 366) err.
+        parse_logs_range("2026-01-01", "2027-01-01").expect("366 dias es Ok");
+        assert_422(parse_logs_range("2026-01-01", "2027-01-02").unwrap_err());
+    }
+
+    #[test]
+    fn parse_logs_range_acepta_rango_de_un_dia() {
+        let (from, to) = parse_logs_range("2026-09-01", "2026-09-01").expect("mismo dia es Ok");
+        assert_eq!(from, to);
+    }
+
+    #[test]
+    fn parse_logs_range_acepta_bisiesto_y_rechaza_feb29_invalido() {
+        let (from, to) = parse_logs_range("2024-02-28", "2024-03-01").expect("bisiesto es Ok");
+        assert_eq!((to - from).num_days(), 2);
+        parse_logs_range("2024-02-29", "2024-02-29").expect("2024-02-29 existe");
+        assert!(parse_logs_range("2023-02-29", "2023-03-01").is_err());
+    }
+
+    #[test]
+    fn range_query_rechaza_unknown_fields_con_422() {
+        let payload = serde_json::json!({
+            "from": "2026-09-01",
+            "to": "2026-09-30",
+            "habit_id": "00000000-0000-0000-0000-000000000000",
+        });
+        assert!(
+            serde_json::from_value::<HabitLogsRangeQuery>(payload).is_err(),
+            "unknown field must fail deserialization (axum surfaces it as 422)"
+        );
+        let ok: HabitLogsRangeQuery = serde_json::from_value(serde_json::json!({
+            "from": "2026-09-01",
+            "to": "2026-09-30",
+        }))
+        .expect("from+to deserializa");
+        assert_eq!(ok.from, "2026-09-01");
+    }
+
+    fn range_query(from: &str, to: &str) -> Query<HabitLogsRangeQuery> {
+        Query(HabitLogsRangeQuery {
+            from: from.to_string(),
+            to: to.to_string(),
+        })
+    }
+
+    async fn range_db_state(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
+        use crate::auth::rate_limit::LoginRateLimiter;
+        use std::sync::Arc;
+        let email = format!("habrange-{}@example.com", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind("not-a-real-hash")
+        .bind("habit range test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1,$2,now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(LoginRateLimiter::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        (state, headers, user_id)
+    }
+
+    #[tokio::test]
+    async fn range_devuelve_solo_propios_en_rango_ordenados_y_not_done_tal_cual() {
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP range_devuelve_solo_propios_en_rango_ordenados_y_not_done_tal_cual: no DATABASE_URL");
+            return;
+        };
+        let pool = sqlx::PgPool::connect_lazy(&url).expect("lazy pool from DATABASE_URL");
+        let (state, headers, user_id) = range_db_state(&pool).await;
+        let other: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(format!("habrange-other-{}@example.com", Uuid::new_v4()))
+        .bind("not-a-real-hash")
+        .bind("other user")
+        .fetch_one(&pool)
+        .await
+        .expect("seed other user");
+        let habit_a: Uuid = sqlx::query_scalar(
+            "INSERT INTO habits (user_id, name, direction) VALUES ($1,'range-a','build') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed habit a");
+        let habit_b: Uuid = sqlx::query_scalar(
+            "INSERT INTO habits (user_id, name, direction) VALUES ($1,'range-b','build') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed habit b");
+        let foreign: Uuid = sqlx::query_scalar(
+            "INSERT INTO habits (user_id, name, direction) VALUES ($1,'range-foreign','build') RETURNING id",
+        )
+        .bind(other)
+        .fetch_one(&pool)
+        .await
+        .expect("seed foreign habit");
+        for (hid, uid, date, status) in [
+            (habit_a, user_id, "2026-09-01", "done"),
+            (habit_a, user_id, "2026-09-03", "missed"),
+            (habit_a, user_id, "2026-09-05", "not_done"),
+            (habit_b, user_id, "2026-09-02", "skipped"),
+            // Fuera de rango: no deben aparecer.
+            (habit_a, user_id, "2026-08-31", "done"),
+            (habit_b, user_id, "2026-10-01", "done"),
+            // Otro usuario en rango: invisible.
+            (foreign, other, "2026-09-02", "done"),
+        ] {
+            sqlx::query(
+                "INSERT INTO habit_logs (user_id, habit_id, log_date, status) VALUES ($1,$2,$3,$4::habit_log_status)",
+            )
+            .bind(uid)
+            .bind(hid)
+            .bind(date.parse::<NaiveDate>().expect("probe date"))
+            .bind(status)
+            .execute(&pool)
+            .await
+            .expect("seed log");
+        }
+        let body = list_logs_range_handler(
+            State(state),
+            headers,
+            range_query("2026-09-01", "2026-09-30"),
+        )
+        .await
+        .expect("range es 200")
+        .0;
+        assert_eq!(body.len(), 4);
+        let keys: Vec<(Uuid, NaiveDate)> =
+            body.iter().map(|e| (e.habit_id, e.log_date)).collect();
+        assert_eq!(keys, {
+            let mut sorted = keys.clone();
+            sorted.sort();
+            sorted
+        });
+        let legacy = body
+            .iter()
+            .find(|e| e.habit_id == habit_a && e.log_date == NaiveDate::from_ymd_opt(2026, 9, 5).unwrap())
+            .expect("legacy not_done presente");
+        assert_eq!(legacy.status, "not_done");
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup user");
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(other)
+            .execute(&pool)
+            .await
+            .expect("cleanup other");
+    }
+
+    #[tokio::test]
+    async fn range_sin_sesion_es_401() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+            .expect("lazy pool construction must succeed");
+        let state = AppState {
+            pool,
+            session_ttl_hours: 24,
+            rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+        };
+        let err = list_logs_range_handler(State(state), HeaderMap::new(), range_query("2026-09-01", "2026-09-30"))
+            .await
+            .expect_err("sin sesion es 401");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn logs_range_sql_filtra_por_usuario_y_rango_y_ordena() {
+        for fragment in [
+            "user_id = $1",
+            "log_date >= $2",
+            "log_date <= $3",
+            "ORDER BY habit_id",
+        ] {
+            assert!(
+                LOGS_RANGE_SQL.contains(fragment),
+                "range SQL must contain {fragment}"
+            );
+        }
+        assert!(
+            !LOGS_RANGE_SQL.contains("SELECT *"),
+            "range SQL must not use SELECT *"
+        );
+        assert!(
+            !LOGS_RANGE_SQL.contains("HabitRow"),
+            "range SQL must not mention HabitRow"
+        );
     }
 }
