@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/", labelKey: "nav.overview" },
   { href: "/dashboard/finance/", labelKey: "nav.finance" },
   { href: "/dashboard/productivity/", labelKey: "nav.productivity" },
+  { href: "/dashboard/ajustes/tokens/", labelKey: "nav.tokens" },
 ] as const;
 
 function isActive(pathname: string, href: string): boolean {
