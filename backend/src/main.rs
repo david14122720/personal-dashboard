@@ -228,6 +228,12 @@ fn api_routes() -> Router<AppState> {
             post(routes::assets::create_valuation_handler),
         )
         .route("/net-worth", get(routes::assets::get_net_worth_handler))
+        .route(
+            "/tokens",
+            post(routes::tokens::create_token_handler)
+                .get(routes::tokens::list_tokens_handler),
+        )
+        .route("/tokens/{id}", delete(routes::tokens::delete_token_handler))
         .fallback(api_fallback_handler)
 }
 

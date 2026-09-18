@@ -6,14 +6,31 @@ use crate::{auth::middleware, error::AppError};
 
 // Allowed until finance routes (PR2+) call it; covered by unit tests.
 #[allow(dead_code)]
-/// Resolve the authenticated user id from the `Authorization: Bearer` session token.
+/// Resolve the authenticated user id from the `Authorization: Bearer` token.
+///
+/// Accepts both session tokens (`sessions`) and personal API tokens
+/// (`api_tokens`); sessions take priority and a matched API token gets its
+/// `last_used_at` touched (see `middleware::resolve_token_user_id`).
 ///
 /// Returns `AppError::Auth` (401) when the header is missing/malformed or when
-/// no active, unexpired session matches the token. Database failures map to
+/// no active, unexpired session or API token matches. Database failures map to
 /// `AppError::Internal` so infrastructure problems are never confused with
 /// bad credentials. Never leaks whether a token ever existed (unknown,
 /// expired, and revoked tokens all map to 401).
 pub async fn require_user_id(headers: &HeaderMap, pool: &PgPool) -> Result<Uuid, AppError> {
+    let token = middleware::extract_bearer(headers).ok_or(AppError::Auth)?;
+    middleware::resolve_token_user_id(pool, &token).await
+}
+
+/// Resolve the authenticated user id from a session `Authorization: Bearer`
+/// token ONLY. Personal API tokens (`api_tokens`) are rejected with 401:
+/// sessions create credentials, API tokens never mint new ones, so a leaked
+/// API token cannot be used to issue fresh credentials around a revocation.
+/// Same 401/500 mapping contract as [`require_user_id`].
+pub async fn require_session_user_id(
+    headers: &HeaderMap,
+    pool: &PgPool,
+) -> Result<Uuid, AppError> {
     let token = middleware::extract_bearer(headers).ok_or(AppError::Auth)?;
     let hash = middleware::bearer_hash(&token);
     let row: Option<(Uuid,)> = sqlx::query_as(
@@ -164,6 +181,44 @@ mod tests {
         let got = require_user_id(&headers_with(&format!("Bearer {raw}")), &pool)
             .await
             .expect("valid session resolves");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup user");
+        assert_eq!(got, user_id);
+    }
+
+    #[tokio::test]
+    async fn valid_api_token_returns_user_id() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP valid_api_token_returns_user_id: no DATABASE_URL");
+            return;
+        };
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(format!("helper-api-token-{}@example.com", Uuid::new_v4()))
+        .bind("not-a-real-hash")
+        .bind("helper test")
+        .fetch_one(&pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at, revoked_at) VALUES ($1, $2, $3, $4, NULL, NULL)",
+        )
+        .bind(user_id)
+        .bind("helper test token")
+        .bind(&hash)
+        .bind("pd_test")
+        .execute(&pool)
+        .await
+        .expect("seed api token");
+        let got = require_user_id(&headers_with(&format!("Bearer {raw}")), &pool)
+            .await
+            .expect("valid api token resolves");
         sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(user_id)
             .execute(&pool)
