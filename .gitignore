@@ -32,3 +32,7 @@ Thumbs.db
 # Playwright smoke artifacts (skip-clean without live backend; never commit runs)
 frontend/test-results/
 frontend/playwright-report/
+
+# MCP server
+mcp-dashboard/node_modules/
+mcp-dashboard/dist/

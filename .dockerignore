@@ -1,0 +1,30 @@
+# Dokploy build context: ship only sources needed by the image stages.
+# Biggest wins: backend/target (multi-GB) and all node_modules never sail.
+
+.git/
+.github/
+
+# Rust
+backend/target/
+
+# Frontend build outputs / deps (reinstalled + rebuilt inside the image)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/test-results/
+frontend/playwright-report/
+
+# MCP companion (product source stays, heavy/output dirs go)
+mcp-dashboard/node_modules/
+mcp-dashboard/dist/
+
+# Local-only: skills, agents, notes, caches, env
+.agents/
+.claude/
+.codegraph/
+.atl/
+odd/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
