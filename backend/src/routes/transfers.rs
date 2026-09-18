@@ -141,8 +141,9 @@ fn validate_description(description: Option<&str>) -> Result<(), AppError> {
 /// Order transfer leg ids so history can recover direction without extra
 /// columns: the source leg always carries the smaller UUID, the destination
 /// the larger one. Both ids are random v4; sorting them before insert makes
-/// `MIN(id)` = source and `MAX(id)` = destination for every group created
-/// after S1. Legacy groups (pre-S1, random ids) may resolve swapped — the
+/// the smaller id = source and the larger = destination for every group
+/// created after S1 (recovered with `array_agg(account_id ORDER BY id)`:
+/// Postgres has no `min(uuid)` aggregate). Legacy groups (pre-S1, random ids) may resolve swapped — the
 /// history query documents that fallback.
 ///
 /// Pure helper so the convention is unit-testable without a DB.
@@ -186,7 +187,7 @@ async fn execute_transfer(
         let group_id = Uuid::new_v4();
         // S1 direction convention: source id < dest id (see
         // [`order_transfer_leg_ids`]). `GET /transfers` recovers
-        // from/to via `MIN(id)`/`MAX(id)` without a schema change.
+        // from/to via `array_agg(account_id ORDER BY id)` without a schema change.
         let (out_id, in_id) = order_transfer_leg_ids(Uuid::new_v4(), Uuid::new_v4());
         // Leg 1 (money out of `from`) with `related_transfer_id` NULL for now:
         // the FK requires the counterparty row to exist, so the cross-link is
@@ -347,10 +348,11 @@ pub struct ListTransfersQuery {
 /// One transfer for history: the two legs collapsed into from/to. Amount,
 /// currency, date and description are identical on both legs (enforced at
 /// insert), so `MIN` is exact. Direction follows the S1 convention
-/// (`MIN(id)` = source, `MAX(id)` = destination); pre-S1 groups with random
+/// (smaller leg id = source, recovered via `array_agg(account_id ORDER BY id)`);
+/// pre-S1 groups with random
 /// ids may resolve swapped, which the frontend surfaces as a plain
 /// origin/destination pair without asserting direction for legacy rows.
-const LIST_TRANSFERS_SQL: &str = "WITH groups AS (SELECT transfer_group_id, MIN(occurred_on) AS occurred_on, MIN(amount) AS amount, MIN(currency) AS currency, MIN(description) AS description, MAX(created_at) AS created_at, MIN(id) AS first_id, MAX(id) AS second_id FROM transactions WHERE user_id=$1 AND type='transfer' AND ($2::date IS NULL OR occurred_on >= $2) AND ($3::date IS NULL OR occurred_on <= $3) GROUP BY transfer_group_id HAVING COUNT(*) = 2) SELECT g.transfer_group_id, src.account_id, dst.account_id, g.amount, g.currency, g.occurred_on, g.description, g.created_at, (SELECT COUNT(*) FROM groups) AS total_count FROM groups g JOIN transactions src ON src.id = g.first_id AND src.user_id=$1 JOIN transactions dst ON dst.id = g.second_id AND dst.user_id=$1 WHERE ($4::date IS NULL OR (g.occurred_on, g.transfer_group_id) < ($4, $5::uuid)) ORDER BY g.occurred_on DESC, g.transfer_group_id DESC LIMIT $6";
+const LIST_TRANSFERS_SQL: &str = "WITH groups AS (SELECT transfer_group_id, MIN(occurred_on) AS occurred_on, MIN(amount) AS amount, MIN(currency) AS currency, MIN(description) AS description, MAX(created_at) AS created_at, (array_agg(account_id ORDER BY id))[1] AS from_account_id, (array_agg(account_id ORDER BY id))[2] AS to_account_id FROM transactions WHERE user_id=$1 AND type='transfer' AND ($2::date IS NULL OR occurred_on >= $2) AND ($3::date IS NULL OR occurred_on <= $3) GROUP BY transfer_group_id HAVING COUNT(*) = 2) SELECT g.transfer_group_id, g.from_account_id, g.to_account_id, g.amount, g.currency, g.occurred_on, g.description, g.created_at, (SELECT COUNT(*) FROM groups) AS total_count FROM groups g WHERE ($4::date IS NULL OR (g.occurred_on, g.transfer_group_id) < ($4, $5::uuid)) ORDER BY g.occurred_on DESC, g.transfer_group_id DESC LIMIT $6";
 
 type TransferListRow = (
     Uuid,
@@ -618,7 +620,7 @@ mod tests {
             "LIMIT $",
             "user_id=$1",
             "HAVING COUNT(*) = 2",
-            "MIN(id) AS first_id",
+            "array_agg(account_id ORDER BY id)",
         ] {
             assert!(
                 LIST_TRANSFERS_SQL.contains(fragment),
