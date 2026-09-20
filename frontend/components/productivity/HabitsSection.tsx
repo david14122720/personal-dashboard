@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import HabitsTrackerGrid, { monthRangeDays } from "@/components/productivity/HabitsTrackerGrid";
+import HabitCreateForm from "@/components/productivity/HabitCreateForm";
 import { t } from "@/lib/i18n";
 import { useHabitsToday } from "@/lib/api/productivity";
 import { todayYmdLocal } from "@/lib/productivity/productivity";
@@ -83,6 +84,7 @@ export default function HabitsSection({ todayYmd }: { todayYmd?: string }) {
   const currentMonth = today.slice(0, 7);
   const minMonth = shiftMonthKey(currentMonth, -11);
   const [visibleMonth, setVisibleMonth] = useState(currentMonth);
+  const [showCreate, setShowCreate] = useState(false);
   // Clamp defensively: the month only ever moves through the buttons below.
   const month = visibleMonth < minMonth ? minMonth : visibleMonth > currentMonth ? currentMonth : visibleMonth;
 
@@ -175,12 +177,11 @@ export default function HabitsSection({ todayYmd }: { todayYmd?: string }) {
                 <ChevronRightIcon className="h-4 w-4" />
               </button>
             </div>
-            {/* No habit CRUD exists yet: an honest disabled button, no invented flow. */}
             <button
               type="button"
-              disabled
-              title={t("productivity.tracker.addHabitSoon")}
-              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-full bg-signal/15 px-4 py-2 font-display text-sm text-signal opacity-60"
+              aria-expanded={showCreate}
+              onClick={() => setShowCreate((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-signal px-4 py-2 font-display text-sm text-deck transition-colors hover:bg-signal/90"
             >
               <PlusIcon className="h-4 w-4" />
               {t("productivity.tracker.addHabit")}
@@ -188,6 +189,11 @@ export default function HabitsSection({ todayYmd }: { todayYmd?: string }) {
           </div>
         </div>
       </header>
+      {showCreate ? (
+        <section aria-label={t("productivity.tracker.createTitle")} className="rounded-xl border border-hull bg-deck/60 p-5">
+          <HabitCreateForm onCreated={() => setShowCreate(false)} onCancel={() => setShowCreate(false)} />
+        </section>
+      ) : null}
       <HabitsTrackerGrid habits={habits.data ?? []} monthKey={month} todayYmd={today} />
     </div>
   );
