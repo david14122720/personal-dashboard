@@ -20,11 +20,18 @@
 //!
 //! PATCH is metadata-scoped (mirroring the subscription lifecycle precedent):
 //! `name`, `description`, `target_per_period`, `end_date`, `category_id`,
-//! `color`, `icon`, `is_archived`. `direction`, `frequency`, `days_of_week`,
-//! and `start_date` are immutable after creation — corrections go through
-//! DELETE + recreate, and `deny_unknown_fields` turns them into 422 on PATCH.
-//! `category_id` must be an owned `habit`-kind category (else 422).
+//! `color`, `icon`, `category`, `short_label`, `is_archived`. `direction`,
+//! `frequency`, `days_of_week`, and `start_date` are immutable after creation
+//! — corrections go through DELETE + recreate, and `deny_unknown_fields`
+//! turns them into 422 on PATCH. `category`/`short_label` are free-form
+//! display metadata like `color`/`icon` (nullable, blank normalizes to
+//! `None`); `category_id` must be an owned `habit`-kind category (else 422).
 //! `reminder_id` linking is out of scope for slice 1 (additive later).
+//!
+//! `DELETE /habits/:id/logs/:date` is the idempotent toggle-off for a daily
+//! log: ownership is validated like every other log write (foreign habit →
+//! 404, orphaned habit → 422) and the response is 204 even when no log row
+//! exists — a missing row is already the desired end state, never a 404.
 //!
 //! Streaks are computed on demand with gaps-and-islands SQL over
 //! `idx_habit_logs_habit_date`: `done` increments, `skipped` is neutral
@@ -60,6 +67,8 @@ use crate::{
 
 const MAX_NAME_LEN: usize = 200;
 const MAX_TEXT_LEN: usize = 2000;
+const MAX_CATEGORY_LEN: usize = 64;
+const MAX_SHORT_LABEL_LEN: usize = 32;
 
 /// Mirrors the `habit_direction` Postgres enum; validated at the API boundary
 /// so an unknown value is 422 instead of a DB error.
@@ -75,10 +84,10 @@ const HABIT_LOG_STATUSES: &[&str] = &["done", "missed", "skipped"];
 /// `NUMERIC(8,2)` ceiling: values `>= 10^6` would overflow the column.
 const MAX_PERIOD_VALUE: Decimal = Decimal::from_parts(1_000_000, 0, 0, false, 0);
 
-const CREATE_HABIT_SQL: &str = "INSERT INTO habits (user_id, name, description, direction, frequency, days_of_week, target_per_period, start_date, end_date, category_id, color, icon) VALUES ($1,$2,$3,$4::habit_direction,$5::habit_frequency,$6,$7,$8,$9,$10,$11,$12) RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at";
-const LIST_HABITS_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at FROM habits WHERE user_id=$1 ORDER BY created_at ASC";
-const GET_HABIT_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at FROM habits WHERE id=$1 AND user_id=$2";
-const PATCH_HABIT_SQL: &str = "UPDATE habits SET name=COALESCE($3,name), description=COALESCE($4,description), target_per_period=COALESCE($5,target_per_period), end_date=COALESCE($6,end_date), category_id=COALESCE($7,category_id), color=COALESCE($8,color), icon=COALESCE($9,icon), is_archived=COALESCE($10,is_archived), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at";
+const CREATE_HABIT_SQL: &str = "INSERT INTO habits (user_id, name, description, direction, frequency, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, category, short_label) VALUES ($1,$2,$3,$4::habit_direction,$5::habit_frequency,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label";
+const LIST_HABITS_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE user_id=$1 ORDER BY created_at ASC";
+const GET_HABIT_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE id=$1 AND user_id=$2";
+const PATCH_HABIT_SQL: &str = "UPDATE habits SET name=COALESCE($3,name), description=COALESCE($4,description), target_per_period=COALESCE($5,target_per_period), end_date=COALESCE($6,end_date), category_id=COALESCE($7,category_id), color=COALESCE($8,color), icon=COALESCE($9,icon), is_archived=COALESCE($10,is_archived), category=COALESCE($11,category), short_label=COALESCE($12,short_label), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label";
 const DELETE_HABIT_SQL: &str = "DELETE FROM habits WHERE id=$1 AND user_id=$2";
 const HABIT_OWNERSHIP_SQL: &str = "SELECT id FROM habits WHERE id=$1 AND user_id=$2";
 const HABIT_EXISTS_SQL: &str = "SELECT id FROM habits WHERE id=$1";
@@ -86,29 +95,40 @@ const HABIT_MASK_SQL: &str = "SELECT days_of_week FROM habits WHERE id=$1 AND us
 const CATEGORY_LOOKUP_SQL: &str = "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
 const CREATE_LOG_SQL: &str = "INSERT INTO habit_logs (user_id, habit_id, log_date, status, count_value, notes) VALUES ($1,$2,$3,$4::habit_log_status,$5,$6) RETURNING id, habit_id, log_date, status::text, count_value, notes, created_at, updated_at";
 const PATCH_LOG_SQL: &str = "UPDATE habit_logs SET status=COALESCE($4::habit_log_status,status), count_value=COALESCE($5,count_value), notes=COALESCE($6,notes), updated_at=now() WHERE habit_id=$1 AND user_id=$2 AND log_date=$3 RETURNING id, habit_id, log_date, status::text, count_value, notes, created_at, updated_at";
+/// Idempotent log delete (toggle-off): scoped by habit + user + date; the
+/// handler always answers 204, so a missing row is not an error.
+const DELETE_LOG_SQL: &str =
+    "DELETE FROM habit_logs WHERE habit_id=$1 AND user_id=$2 AND log_date=$3";
 
 /// On-demand streak (gaps-and-islands with a `skipped` bridge): `$1` habit,
 /// `$2` user, `$3` `days_of_week` mask (empty/NULL = every day). See the
 /// module docs for why this differs from the `design.md` sketch.
 const STREAK_SQL: &str = "WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=$1 AND user_id=$2 AND (COALESCE(CARDINALITY($3),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY($3))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs s WHERE s.status='skipped' AND s.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak";
 
-type HabitRow = (
-    Uuid,
-    String,
-    Option<String>,
-    String,
-    String,
-    Vec<i16>,
-    Option<Decimal>,
-    NaiveDate,
-    Option<NaiveDate>,
-    Option<Uuid>,
-    Option<String>,
-    Option<String>,
-    bool,
-    DateTime<Utc>,
-    DateTime<Utc>,
-);
+/// Row mirror of the habit `SELECT`/`RETURNING` column list. A named struct
+/// (not a tuple) because the row is now 17 columns and sqlx implements
+/// `FromRow` for tuples only up to 16 values; the derive maps field names to
+/// the selected column names.
+#[derive(Debug, sqlx::FromRow)]
+struct HabitRow {
+    id: Uuid,
+    name: String,
+    description: Option<String>,
+    direction: String,
+    frequency: String,
+    days_of_week: Vec<i16>,
+    target_per_period: Option<Decimal>,
+    start_date: NaiveDate,
+    end_date: Option<NaiveDate>,
+    category_id: Option<Uuid>,
+    color: Option<String>,
+    icon: Option<String>,
+    is_archived: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    category: Option<String>,
+    short_label: Option<String>,
+}
 
 type HabitLogRow = (
     Uuid,
@@ -142,6 +162,10 @@ pub struct CreateHabitRequest {
     pub category_id: Option<Uuid>,
     pub color: Option<String>,
     pub icon: Option<String>,
+    /// Optional free-form display label (max 64 chars); blank → `None`.
+    pub category: Option<String>,
+    /// Optional compact label (max 32 chars); blank → `None`.
+    pub short_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +181,11 @@ pub struct PatchHabitRequest {
     pub color: Option<String>,
     pub icon: Option<String>,
     pub is_archived: Option<bool>,
+    /// Optional free-form display label (max 64 chars); blank → `None`
+    /// (patch semantics mirror the other metadata fields).
+    pub category: Option<String>,
+    /// Optional compact label (max 32 chars); blank → `None`.
+    pub short_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,61 +229,33 @@ pub struct HabitResponse {
     pub is_archived: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Optional free-form display label (max 64 chars at the API boundary),
+    /// distinct from `category_id`; blank/absent serializes as `null`.
+    pub category: Option<String>,
+    /// Optional compact label for dense widgets (max 32 chars).
+    pub short_label: Option<String>,
 }
 
 impl From<HabitRow> for HabitResponse {
-    fn from(
-        row: (
-            Uuid,
-            String,
-            Option<String>,
-            String,
-            String,
-            Vec<i16>,
-            Option<Decimal>,
-            NaiveDate,
-            Option<NaiveDate>,
-            Option<Uuid>,
-            Option<String>,
-            Option<String>,
-            bool,
-            DateTime<Utc>,
-            DateTime<Utc>,
-        ),
-    ) -> Self {
-        let (
-            id,
-            name,
-            description,
-            direction,
-            frequency,
-            days_of_week,
-            target_per_period,
-            start_date,
-            end_date,
-            category_id,
-            color,
-            icon,
-            is_archived,
-            created_at,
-            updated_at,
-        ) = row;
+    fn from(row: HabitRow) -> Self {
         Self {
-            id,
-            name,
-            description,
-            direction,
-            frequency,
-            days_of_week,
-            target_per_period,
-            start_date,
-            end_date,
-            category_id,
-            color,
-            icon,
-            is_archived,
-            created_at,
-            updated_at,
+            id: row.id,
+            name: row.name,
+            description: row.description,
+            direction: row.direction,
+            frequency: row.frequency,
+            days_of_week: row.days_of_week,
+            target_per_period: row.target_per_period,
+            start_date: row.start_date,
+            end_date: row.end_date,
+            category_id: row.category_id,
+            color: row.color,
+            icon: row.icon,
+            is_archived: row.is_archived,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            category: row.category,
+            short_label: row.short_label,
         }
     }
 }
@@ -335,6 +336,25 @@ fn validate_optional_text(
         }
     }
     Ok(())
+}
+
+/// Normalize an optional display-text field: trim, map blank to absent, and
+/// validate the trimmed value with [`validate_optional_text`] (max length, no
+/// null bytes). Blank input becomes `None`, never an empty stored string.
+fn normalize_optional_text(
+    value: Option<&str>,
+    max: usize,
+    field: &'static str,
+) -> Result<Option<String>, AppError> {
+    let Some(text) = value else {
+        return Ok(None);
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    validate_optional_text(Some(trimmed), max, field)?;
+    Ok(Some(trimmed.to_string()))
 }
 
 /// Parse a calendar date (strict `YYYY-MM-DD`), else 422.
@@ -487,6 +507,8 @@ pub fn validate_habit_patch(body: &PatchHabitRequest) -> Result<(), AppError> {
         && body.category_id.is_none()
         && body.color.is_none()
         && body.icon.is_none()
+        && body.category.is_none()
+        && body.short_label.is_none()
         && body.is_archived.is_none()
     {
         return Err(AppError::Validation("no updatable fields provided".into()));
@@ -597,6 +619,12 @@ pub async fn create_habit_handler(
     validate_optional_text(body.description.as_deref(), MAX_TEXT_LEN, "description")?;
     validate_optional_text(body.color.as_deref(), 32, "color")?;
     validate_optional_text(body.icon.as_deref(), 64, "icon")?;
+    let category = normalize_optional_text(body.category.as_deref(), MAX_CATEGORY_LEN, "category")?;
+    let short_label = normalize_optional_text(
+        body.short_label.as_deref(),
+        MAX_SHORT_LABEL_LEN,
+        "short_label",
+    )?;
     let row = sqlx::query_as::<_, HabitRow>(CREATE_HABIT_SQL)
         .bind(user_id)
         .bind(&name)
@@ -610,6 +638,8 @@ pub async fn create_habit_handler(
         .bind(body.category_id)
         .bind(body.color.as_deref())
         .bind(body.icon.as_deref())
+        .bind(category.as_deref())
+        .bind(short_label.as_deref())
         .fetch_one(&state.pool)
         .await
         .map_err(map_habit_db_err)?;
@@ -679,6 +709,12 @@ pub async fn patch_habit_handler(
     validate_optional_text(body.description.as_deref(), MAX_TEXT_LEN, "description")?;
     validate_optional_text(body.color.as_deref(), 32, "color")?;
     validate_optional_text(body.icon.as_deref(), 64, "icon")?;
+    let category = normalize_optional_text(body.category.as_deref(), MAX_CATEGORY_LEN, "category")?;
+    let short_label = normalize_optional_text(
+        body.short_label.as_deref(),
+        MAX_SHORT_LABEL_LEN,
+        "short_label",
+    )?;
     let row = sqlx::query_as::<_, HabitRow>(PATCH_HABIT_SQL)
         .bind(id)
         .bind(user_id)
@@ -690,6 +726,8 @@ pub async fn patch_habit_handler(
         .bind(body.color.as_deref())
         .bind(body.icon.as_deref())
         .bind(body.is_archived)
+        .bind(category.as_deref())
+        .bind(short_label.as_deref())
         .fetch_optional(&state.pool)
         .await
         .map_err(map_habit_db_err)?
@@ -777,6 +815,27 @@ pub async fn patch_log_handler(
     Ok(Json(HabitLogResponse::from(row)))
 }
 
+/// Idempotent toggle-off for one habit/date log: same ownership gate as the
+/// other log writes (foreign → 404, orphan → 422) and always 204, so deleting
+/// an absent row succeeds instead of leaking a 404.
+pub async fn delete_log_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((habit_id, raw_date)): Path<(Uuid, String)>,
+) -> Result<StatusCode, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let log_date = validate_calendar_date(&raw_date, "log_date")?;
+    ensure_habit_writable(&state.pool, habit_id, user_id).await?;
+    sqlx::query(DELETE_LOG_SQL)
+        .bind(habit_id)
+        .bind(user_id)
+        .bind(log_date)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn get_streak_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -856,10 +915,10 @@ pub async fn today_habits_handler(
     ))
 }
 
-/// Range-history read (multi-habit, one round-trip): dedicated 3-column
-/// SQL — never widens `HabitRow` (15 cols, near the sqlx cap of 16).
-/// `idx_habit_logs_user_date (user_id, log_date)` covers the filter;
-/// `idx_habit_logs_habit_date` stays on the streak/today path.
+/// Range-history read (multi-habit, one round-trip): dedicated 3-column SQL —
+/// log entries need only these three fields, so the read never widens
+/// `HabitRow`. `idx_habit_logs_user_date (user_id, log_date)` covers the
+/// filter; `idx_habit_logs_habit_date` stays on the streak/today path.
 const LOGS_RANGE_SQL: &str = "SELECT habit_id, log_date, status::text FROM habit_logs WHERE user_id = $1 AND log_date >= $2 AND log_date <= $3 ORDER BY habit_id ASC, log_date ASC";
 
 type HabitLogRangeRow = (Uuid, NaiveDate, String);
@@ -1336,6 +1395,102 @@ mod tests {
     }
 
     #[test]
+    fn blank_category_and_short_label_normalize_to_none() {
+        assert_eq!(
+            normalize_optional_text(None, MAX_CATEGORY_LEN, "category").unwrap(),
+            None
+        );
+        for raw in ["", "   ", "\t\n"] {
+            assert_eq!(
+                normalize_optional_text(Some(raw), MAX_CATEGORY_LEN, "category").unwrap(),
+                None,
+                "blank category must normalize to None: {raw:?}"
+            );
+        }
+        assert_eq!(
+            normalize_optional_text(Some("  Health  "), MAX_CATEGORY_LEN, "category").unwrap(),
+            Some("Health".to_string())
+        );
+        assert_eq!(
+            normalize_optional_text(Some(" Run "), MAX_SHORT_LABEL_LEN, "short_label").unwrap(),
+            Some("Run".to_string())
+        );
+    }
+
+    #[test]
+    fn category_and_short_label_length_and_null_bytes_are_422() {
+        let max_category = "c".repeat(MAX_CATEGORY_LEN);
+        assert_eq!(
+            normalize_optional_text(Some(&max_category), MAX_CATEGORY_LEN, "category").unwrap(),
+            Some(max_category.clone())
+        );
+        assert_422(
+            normalize_optional_text(
+                Some(&"c".repeat(MAX_CATEGORY_LEN + 1)),
+                MAX_CATEGORY_LEN,
+                "category",
+            )
+            .unwrap_err(),
+        );
+        let max_label = "s".repeat(MAX_SHORT_LABEL_LEN);
+        assert_eq!(
+            normalize_optional_text(Some(&max_label), MAX_SHORT_LABEL_LEN, "short_label").unwrap(),
+            Some(max_label.clone())
+        );
+        assert_422(
+            normalize_optional_text(
+                Some(&"s".repeat(MAX_SHORT_LABEL_LEN + 1)),
+                MAX_SHORT_LABEL_LEN,
+                "short_label",
+            )
+            .unwrap_err(),
+        );
+        assert_422(
+            normalize_optional_text(Some("bad\0cat"), MAX_CATEGORY_LEN, "category").unwrap_err(),
+        );
+        assert_422(
+            normalize_optional_text(Some("bad\0label"), MAX_SHORT_LABEL_LEN, "short_label")
+                .unwrap_err(),
+        );
+        // Trim never hides a null byte: `" \0 "` is invalid, not blank.
+        assert_422(
+            normalize_optional_text(Some(" \0 "), MAX_SHORT_LABEL_LEN, "short_label").unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn category_or_short_label_alone_makes_patch_actionable() {
+        let body: PatchHabitRequest =
+            serde_json::from_value(json!({"category": "Health"})).expect("valid patch body");
+        validate_habit_patch(&body).expect("category-only patch is actionable");
+        let body: PatchHabitRequest =
+            serde_json::from_value(json!({"short_label": "Run"})).expect("valid patch body");
+        validate_habit_patch(&body).expect("short_label-only patch is actionable");
+    }
+
+    #[test]
+    fn delete_log_sql_is_a_single_scoped_statement() {
+        assert_eq!(
+            DELETE_LOG_SQL.matches(';').count(),
+            0,
+            "no trailing semicolon"
+        );
+        assert!(!DELETE_LOG_SQL.contains("SELECT"));
+        assert!(!DELETE_LOG_SQL.contains("RETURNING"));
+        for fragment in [
+            "DELETE FROM habit_logs",
+            "habit_id=$1",
+            "user_id=$2",
+            "log_date=$3",
+        ] {
+            assert!(
+                DELETE_LOG_SQL.contains(fragment),
+                "delete-log SQL must contain {fragment}"
+            );
+        }
+    }
+
+    #[test]
     fn habit_sql_scopes_every_query_by_user_id() {
         for sql in [
             CREATE_HABIT_SQL,
@@ -1346,6 +1501,7 @@ mod tests {
             HABIT_MASK_SQL,
             CREATE_LOG_SQL,
             PATCH_LOG_SQL,
+            DELETE_LOG_SQL,
             STREAK_SQL,
         ] {
             assert!(

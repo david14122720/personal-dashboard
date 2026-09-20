@@ -155,7 +155,8 @@ fn api_routes() -> Router<AppState> {
         .route("/habits/{id}/logs", post(routes::habits::create_log_handler))
         .route(
             "/habits/{id}/logs/{date}",
-            patch(routes::habits::patch_log_handler),
+            patch(routes::habits::patch_log_handler)
+                .delete(routes::habits::delete_log_handler),
         )
         .route(
             "/habits/{id}/streak",
