@@ -18,6 +18,9 @@ vi.mock("next/link", () => ({
 }));
 
 import HabitosPage from "./page";
+import { monthLabel, shiftMonthKey } from "@/components/productivity/HabitsSection";
+import { monthRangeDays } from "@/components/productivity/HabitsTrackerGrid";
+import { todayYmdLocal } from "@/lib/productivity/productivity";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
@@ -54,16 +57,47 @@ function renderPage() {
 }
 
 describe("habitos page", () => {
-  it("renders the habits heading and the month-grid tracker anchor", async () => {
+  it("renders the control-deck hero and the month-grid tracker anchor", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
     const { container } = renderPage();
 
-    expect(await screen.findByRole("heading", { name: "Hábitos" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Rastreador de hábitos" })).toBeInTheDocument();
+    // The live pill splits its copy across nodes (dot + separator), so assert on text content.
+    expect(container.textContent).toContain("Métricas en Tiempo Real");
     const anchor = container.querySelector("#rastreador-habitos");
     expect(anchor).not.toBeNull();
     expect(await screen.findByRole("grid", { name: "Rastreador de hábitos" })).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalledWith("/login/");
+  });
+
+  it("shows the real visible month with its day count and clamps navigation", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    const { container } = renderPage();
+
+    const currentMonth = todayYmdLocal().slice(0, 7);
+    const dayCount = monthRangeDays(currentMonth).length;
+    expect(await screen.findByRole("heading", { name: "Rastreador de hábitos" })).toBeInTheDocument();
+    expect(container.textContent).toContain(`Ciclo activo · ${dayCount} días`);
+    expect(screen.getByText(monthLabel(currentMonth))).toBeInTheDocument();
+
+    // At the current month the next button is disabled (range: current - 11 .. current).
+    expect(screen.getByRole("button", { name: "Mes siguiente" })).toBeDisabled();
+    const prev = screen.getByRole("button", { name: "Mes anterior" });
+    expect(prev).not.toBeDisabled();
+
+    fireEvent.click(prev);
+    const prevMonth = shiftMonthKey(currentMonth, -1);
+    expect(await screen.findByText(monthLabel(prevMonth))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mes siguiente" })).not.toBeDisabled();
+  });
+
+  it("keeps the add-habit action honestly disabled without CRUD", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+
+    const add = await screen.findByRole("button", { name: "Añadir Hábito" });
+    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute("title", "La creación de hábitos aún no está disponible en esta vista");
   });
 
   it("redirects to login without a token", () => {

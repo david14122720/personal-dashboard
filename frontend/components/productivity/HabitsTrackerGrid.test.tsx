@@ -79,22 +79,32 @@ function renderGrid() {
 }
 
 describe("HabitsTrackerGrid", () => {
-  it("shows the Spanish title and one row per habit with one cell per month day", async () => {
+  it("renders one row per habit with one cell per month day plus streak and success cells", async () => {
     renderGrid();
-    expect(await screen.findByRole("heading", { name: "Rastreador de hábitos" })).toBeInTheDocument();
     const grid = await screen.findByRole("grid", { name: "Rastreador de hábitos" });
-    // September 2026 has 30 days; two habit rows give 60 gridcells.
-    expect(within(grid).getAllByRole("gridcell")).toHaveLength(60);
+    // September 2026 has 30 days; two habit rows give 60 day cells
+    // plus 2 streak cells plus 2 success cells.
+    expect(within(grid).getAllByRole("gridcell")).toHaveLength(64);
     expect(within(grid).getAllByRole("row")).toHaveLength(3);
     expect(within(grid).getByRole("rowheader", { name: /Morning Run/ })).toBeInTheDocument();
     expect(within(grid).getByRole("rowheader", { name: /Read/ })).toBeInTheDocument();
   });
 
-  it("paints a done day with color and an unlogged day without the done color", async () => {
+  it("shows the schedule subtitle under each habit name", async () => {
+    renderGrid();
+    const grid = await screen.findByRole("grid", { name: "Rastreador de hábitos" });
+    const morning = within(grid).getByRole("rowheader", { name: /Morning Run/ });
+    expect(morning).toHaveTextContent("Todos los días");
+    const read = within(grid).getByRole("rowheader", { name: /Read/ });
+    expect(read).toHaveTextContent("lun");
+  });
+
+  it("paints a done day with color and glow and an unlogged day without the done color", async () => {
     renderGrid();
     const grid = await screen.findByRole("grid", { name: "Rastreador de hábitos" });
     const done = within(grid).getByRole("gridcell", { name: "Morning Run, 2026-09-01, hecho" });
     expect(done).toHaveClass("bg-flow");
+    expect(done.className).toContain("shadow-");
     const pending = within(grid).getByRole("gridcell", { name: "Morning Run, 2026-09-03, pendiente" });
     expect(pending).not.toHaveClass("bg-flow");
     expect(pending).toHaveClass("bg-signal/30");
@@ -109,6 +119,50 @@ describe("HabitsTrackerGrid", () => {
     });
     expect(offSchedule).not.toHaveClass("bg-flow");
     expect(offSchedule).not.toHaveClass("bg-alert");
+  });
+
+  it("marks the today column header as current date", async () => {
+    renderGrid();
+    const grid = await screen.findByRole("grid", { name: "Rastreador de hábitos" });
+    const todayHeader = within(grid).getByRole("columnheader", { name: "Día 2026-09-15" });
+    expect(todayHeader).toHaveAttribute("aria-current", "date");
+  });
+
+  it("shows real streak and success cells per habit", async () => {
+    renderGrid();
+    const grid = await screen.findByRole("grid", { name: "Rastreador de hábitos" });
+    expect(within(grid).getByRole("columnheader", { name: "Racha" })).toBeInTheDocument();
+    expect(within(grid).getByRole("columnheader", { name: "Éxito" })).toBeInTheDocument();
+    // h1: 1 done over 30 scheduled September days -> 3.3%, best streak 1.
+    expect(within(grid).getByRole("gridcell", { name: "racha de 1 días" })).toHaveTextContent("1");
+    expect(
+      within(grid).getByRole("gridcell", { name: "Cumplimiento de Morning Run: 3.3%" }),
+    ).toHaveTextContent("3.3%");
+    // h2 only runs on Mondays with no Monday log -> 0%, streak 0.
+    expect(within(grid).getByRole("gridcell", { name: "racha de 0 días" })).toHaveTextContent("0");
+  });
+
+  it("shows the four KPI cards with real month data", async () => {
+    renderGrid();
+    // Mean of per-habit rates (3.3 + 0) / 2 -> 1.7%.
+    const compliance = await screen.findByRole("group", { name: "Cumplimiento mensual" });
+    expect(within(compliance).getByText("1.7%")).toBeInTheDocument();
+    const streak = await screen.findByRole("group", { name: "Racha más larga" });
+    expect(within(streak).getByText("1")).toBeInTheDocument();
+    expect(within(streak).getByText("días seguidos")).toBeInTheDocument();
+    const active = await screen.findByRole("group", { name: "Hábitos activos" });
+    expect(within(active).getByText("2")).toBeInTheDocument();
+    // 2026-09-15 is a Tuesday: only the daily habit is scheduled, none done.
+    const todayCard = await screen.findByRole("group", { name: "Completados hoy" });
+    expect(within(todayCard).getByText("0 de 1")).toBeInTheDocument();
+  });
+
+  it("shows the legend with the same swatches plus the HOY pill", async () => {
+    renderGrid();
+    expect(await screen.findByText("Completado")).toBeInTheDocument();
+    expect(screen.getByText("Sin registrar")).toBeInTheDocument();
+    expect(screen.getByText("Futuro")).toBeInTheDocument();
+    expect(screen.getByText("HOY: 15")).toBeInTheDocument();
   });
 
   it("disables future days and logs today through POST with the current date", async () => {
@@ -142,5 +196,26 @@ describe("HabitsTrackerGrid", () => {
       t("productivity.tracker.dayLabel", { name: "Correr", date: "2026-09-01", status: "hecho" }),
     ).toContain("2026-09-01");
     expect(t("productivity.tracker.complianceLabel", { name: "Correr", n: 80 })).toContain("80%");
+    expect(t("productivity.tracker.heroLive")).toBe("Métricas en Tiempo Real");
+    expect(t("productivity.tracker.heroCycle", { n: 30 })).toContain("30");
+    expect(t("productivity.tracker.heroDescription")).toBeTruthy();
+    expect(t("productivity.tracker.monthPrev")).toBeTruthy();
+    expect(t("productivity.tracker.monthNext")).toBeTruthy();
+    expect(t("productivity.tracker.addHabit")).toBe("Añadir Hábito");
+    expect(t("productivity.tracker.addHabitSoon")).toBeTruthy();
+    expect(t("productivity.tracker.kpiCompliance")).toBe("Cumplimiento mensual");
+    expect(t("productivity.tracker.kpiStreak")).toBe("Racha más larga");
+    expect(t("productivity.tracker.kpiActive")).toBe("Hábitos activos");
+    expect(t("productivity.tracker.kpiToday")).toBe("Completados hoy");
+    expect(t("productivity.tracker.streakUnit")).toBe("días seguidos");
+    expect(t("productivity.tracker.todayCount", { done: 1, total: 2 })).toBe("1 de 2");
+    expect(t("productivity.tracker.legendDone")).toBe("Completado");
+    expect(t("productivity.tracker.legendPending")).toBe("Sin registrar");
+    expect(t("productivity.tracker.legendFuture")).toBe("Futuro");
+    expect(t("productivity.tracker.todayPill", { n: 15 })).toBe("HOY: 15");
+    expect(t("productivity.tracker.colHabit")).toBe("Hábito");
+    expect(t("productivity.tracker.colStreak")).toBe("Racha");
+    expect(t("productivity.tracker.colSuccess")).toBe("Éxito");
+    expect(t("productivity.tracker.everyday")).toBe("Todos los días");
   });
 });
