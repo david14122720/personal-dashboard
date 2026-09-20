@@ -15,6 +15,10 @@ export const es = {
     submit: "Iniciar sesión",
     pending: "Iniciando sesión…",
     error: "No se pudo iniciar sesión. Inténtalo de nuevo.",
+    remember: "Recordar sesión",
+    forgot: "¿Olvidaste tu contraseña?",
+    secureNote: "Conexión segura cifrada de extremo a extremo",
+    footerNote: "Control Deck • Panel de administración y gestión privada",
   },
   dashboard: {
     loadFailed: "No se pudo cargar el panel",

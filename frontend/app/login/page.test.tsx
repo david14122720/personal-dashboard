@@ -69,3 +69,35 @@ describe("login screen auth flow", () => {
     expect(replace).not.toHaveBeenCalledWith("/dashboard/");
   });
 });
+
+describe("login screen control deck visuals", () => {
+  it("toggles password visibility with an accessible button", () => {
+    render(<LoginPage />);
+
+    const password = screen.getByLabelText("Contraseña") as HTMLInputElement;
+    expect(password.type).toBe("password");
+
+    fireEvent.click(screen.getByRole("button", { name: "Mostrar contraseña" }));
+    expect(password.type).toBe("text");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ocultar contraseña" }));
+    expect(password.type).toBe("password");
+  });
+
+  it("renders remember-me checkbox, forgot link, secure note and footer note", () => {
+    render(<LoginPage />);
+
+    const remember = screen.getByLabelText("Recordar sesión") as HTMLInputElement;
+    expect(remember.type).toBe("checkbox");
+    fireEvent.click(remember);
+    expect(remember.checked).toBe(true);
+
+    expect(screen.getByRole("link", { name: "¿Olvidaste tu contraseña?" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Conexión segura cifrada de extremo a extremo"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Control Deck • Panel de administración y gestión privada"),
+    ).toBeInTheDocument();
+  });
+});

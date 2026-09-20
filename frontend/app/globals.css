@@ -58,6 +58,17 @@
   --color-instrument: oklch(21% 0.034 264);
 }
 
+@layer utilities {
+  /* Subtle grid pattern for dark ambient surfaces (e.g. login).
+     Low-opacity white hairlines on a 32px rhythm. */
+  .bg-grid-pattern {
+    background-image:
+      linear-gradient(to right, rgb(255 255 255 / 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(255 255 255 / 0.05) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+}
+
 @layer base {
   html {
     color-scheme: dark;
