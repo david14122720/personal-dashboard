@@ -2,13 +2,12 @@
 
 import EmptyState from "@/components/ui/EmptyState";
 import { t } from "@/lib/i18n";
-import type { EventWire, GoalWire, HabitTodayWire, NoteWire, TaskWire } from "@/lib/api/productivity";
+import type { EventWire, GoalWire, NoteWire, TaskWire } from "@/lib/api/productivity";
 import { ledDotClass } from "@/lib/dashboard/transforms";
 import {
   eventWhenLabel,
   goalProgressFraction,
   groupTasksByStatus,
-  habitStatusLed,
   noteExcerpt,
   type EventTimeView,
   type TaskDateView,
@@ -162,13 +161,6 @@ function ProgressBar({ pct, status, label }: { pct: number; status: string; labe
   );
 }
 
-function habitStatusText(status: string): string {
-  if (status === "done") return t("productivity.habitStatusDone");
-  if (status === "missed") return t("productivity.habitStatusMissed");
-  if (status === "skipped") return t("productivity.habitStatusSkipped");
-  return t("productivity.habitStatusPending");
-}
-
 function taskStatusText(status: string): string {
   if (status === "in_progress") return t("productivity.taskStatusInProgress");
   if (status === "completed") return t("productivity.taskStatusCompleted");
@@ -200,74 +192,6 @@ function goalStatusText(status: string): string {
   if (status === "paused") return t("productivity.goalStatusPaused");
   if (status === "cancelled") return t("productivity.goalStatusCancelled");
   return status;
-}
-
-export function HabitsList({
-  habits,
-  loggingId,
-  onLog,
-}: {
-  habits: HabitTodayWire[];
-  loggingId: string | null;
-  onLog: (habitId: string, status: "done" | "missed" | "skipped") => void;
-}) {
-  if (habits.length === 0) {
-    return <EmptyState title={t("productivity.noHabits")} hint={t("productivity.noHabitsHint")} />;
-  }
-  return (
-    <ul className="flex flex-col gap-3">
-      {habits.map((habit) => {
-        const led = habitStatusLed(habit.today_status);
-        const isLogging = loggingId === habit.habit_id;
-        return (
-          <li key={habit.habit_id} className="rounded-lg border border-hull px-4 py-3">
-            <div className="flex items-start gap-2.5">
-              {led ? (
-                <span
-                  role="img"
-                  aria-label={t("productivity.habitStatusLabel", {
-                    name: habit.name,
-                    status: habitStatusText(habit.today_status),
-                  })}
-                  title={habitStatusText(habit.today_status)}
-                  className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${ledDotClass(led)}`}
-                />
-              ) : null}
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <p className="truncate text-sm font-medium">{habit.name}</p>
-                  <p className="font-mono text-xs tabular-nums text-instrument/60">
-                    {t("productivity.streakDetail", {
-                      n: habit.current_streak,
-                      status: habitStatusText(habit.today_status),
-                    })}
-                  </p>
-                </div>
-                {/* Real-log heatmap lives in HabitHistorySection (#calendario-habitos). */}
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {(["done", "missed", "skipped"] as const).map((status) => (
-                    <button
-                      key={status}
-                      type="button"
-                      disabled={isLogging}
-                      aria-label={t("productivity.logHabitAs", {
-                        name: habit.name,
-                        status: habitStatusText(status),
-                      })}
-                      onClick={() => onLog(habit.habit_id, status)}
-                      className="rounded-md border border-hull px-2.5 py-1 font-display text-xs capitalize transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
-                    >
-                      {habitStatusText(status)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
 }
 
 function goalLed(status: string): string {
