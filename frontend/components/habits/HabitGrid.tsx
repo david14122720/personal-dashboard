@@ -191,10 +191,12 @@ export interface HabitGridProps {
 }
 
 /**
- * Month grid: one row per habit, one 30×30 button per day. Past/today cells
- * toggle (optimistic, owned by the container), future/off-range/off-schedule
- * cells are disabled. The left column is sticky and the grid scrolls
- * horizontally; the today column scrolls into view whenever the month changes.
+ * Month grid: one row per habit, one 30×30 cell button per day wrapped in a
+ * `gridcell`. Past/today in-range cells toggle (optimistic, owned by the
+ * container); future, off-range (before `startDate`/after `endDate`, even with
+ * a stored log) and off-schedule cells render disabled futuro-style. The left
+ * column is sticky and the grid scrolls horizontally; the today column scrolls
+ * into view whenever the month changes.
  */
 export default function HabitGrid({ rows, days, monthKey, todayYmd, isDone, onToggle, onArchive }: HabitGridProps) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -314,16 +316,20 @@ export default function HabitGrid({ rows, days, monthKey, todayYmd, isDone, onTo
                 </span>
               </div>
               {days.map((date) => {
-                const scheduled = isExpected(habit, date, todayYmd);
-                const done = isDone(habit.id, date);
+                const inRange =
+                  (!habit.startDate || date >= habit.startDate) && (!habit.endDate || date <= habit.endDate);
+                const scheduled = inRange && isExpected(habit, date, todayYmd);
+                const done = scheduled && isDone(habit.id, date);
                 const isToday = date === todayYmd;
-                const status = !scheduled
-                  ? date > todayYmd
-                    ? t("habitsDashboard.cellFuture")
-                    : t("habitsDashboard.cellUnscheduled")
-                  : done
-                    ? t("habitsDashboard.cellDone")
-                    : t("habitsDashboard.cellPending");
+                const status = !inRange
+                  ? t("habitsDashboard.cellFuture")
+                  : !scheduled
+                    ? date > todayYmd
+                      ? t("habitsDashboard.cellFuture")
+                      : t("habitsDashboard.cellUnscheduled")
+                    : done
+                      ? t("habitsDashboard.cellDone")
+                      : t("habitsDashboard.cellPending");
                 const label = t("habitsDashboard.cellLabel", {
                   name: habit.name,
                   date: dayLabelEs(date),
@@ -335,29 +341,29 @@ export default function HabitGrid({ rows, days, monthKey, todayYmd, isDone, onTo
                     ? `bg-hull/60 text-instrument/60 hover:bg-hull ${isToday ? "ring-1 ring-signal" : ""}`
                     : "bg-black/40 text-instrument/20";
                 return (
-                  <button
-                    key={date}
-                    type="button"
-                    role="gridcell"
-                    aria-label={label}
-                    aria-pressed={done}
-                    title={label}
-                    disabled={!scheduled}
-                    onClick={() => onToggle(habit.id, date)}
-                    className={`${cellBase} ${stateClass} ${scheduled ? "cursor-pointer" : "cursor-default"}`}
-                  >
-                    {done ? (
-                      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-3.5 w-3.5">
-                        <path
-                          d="M5 10.4l3 3 7-7.4"
-                          stroke="currentColor"
-                          strokeWidth="2.2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    ) : null}
-                  </button>
+                  <span key={date} role="gridcell" className="flex h-[30px] w-[30px] items-center justify-center">
+                    <button
+                      type="button"
+                      aria-label={label}
+                      aria-pressed={done}
+                      title={label}
+                      disabled={!scheduled}
+                      onClick={() => onToggle(habit.id, date)}
+                      className={`${cellBase} ${stateClass} ${scheduled ? "cursor-pointer" : "cursor-default"}`}
+                    >
+                      {done ? (
+                        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-3.5 w-3.5">
+                          <path
+                            d="M5 10.4l3 3 7-7.4"
+                            stroke="currentColor"
+                            strokeWidth="2.2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      ) : null}
+                    </button>
+                  </span>
                 );
               })}
             </div>

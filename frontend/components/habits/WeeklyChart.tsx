@@ -23,6 +23,14 @@ const WEEKDAY_KEYS: EsKey[] = [
   "habitsDashboard.weekdaySun",
 ];
 
+/** `Martes`-style full weekday for a Monday-first index, capitalized via Intl. */
+function fullWeekday(index: number): string {
+  const raw = new Intl.DateTimeFormat("es", { weekday: "long", timeZone: "UTC" }).format(
+    new Date(Date.UTC(2024, 0, 1 + index)),
+  );
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
 export interface WeeklyChartProps {
   /** Monday-first percentages (7 entries). */
   values: number[];
@@ -49,22 +57,50 @@ function BarsIcon({ className }: { className?: string }) {
  */
 export default function WeeklyChart({ values, avg, best, weeks, monthLabel, report }: WeeklyChartProps) {
   const [reportOpen, setReportOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!reportOpen) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const focusables = (): HTMLElement[] =>
+      Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setReportOpen(false);
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setReportOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      triggerRef.current?.focus();
+    };
   }, [reportOpen]);
 
-  const max = Math.max(...values, 0);
-  const min = Math.min(...values, 0);
-  const lowest = max > min ? values.indexOf(min) : -1;
-  const bestDay = t(WEEKDAY_KEYS[best.index] ?? "habitsDashboard.weekdayMon");
+  const min = Math.min(...values);
+  const lowest = values.length > 0 ? values.indexOf(min) : -1;
+  const bestDay = fullWeekday(best.index);
 
   return (
     <section
@@ -111,6 +147,7 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
       <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-4 text-xs text-instrument/60">
         <p>{t("habitsDashboard.weeklyBestDay", { day: bestDay, pct: Math.round(best.pct) })}</p>
         <button
+          ref={triggerRef}
           type="button"
           onClick={() => setReportOpen(true)}
           className="font-display text-xs text-signal transition-colors hover:text-flow"
@@ -127,6 +164,7 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
           }}
         >
           <div
+            ref={panelRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="habit-report-title"

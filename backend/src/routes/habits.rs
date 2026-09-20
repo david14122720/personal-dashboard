@@ -24,8 +24,9 @@
 //! `frequency`, `days_of_week`, and `start_date` are immutable after creation
 //! — corrections go through DELETE + recreate, and `deny_unknown_fields`
 //! turns them into 422 on PATCH. `category`/`short_label` are free-form
-//! display metadata like `color`/`icon` (nullable, blank normalizes to
-//! `None`); `category_id` must be an owned `habit`-kind category (else 422).
+//! display metadata like `color`/`icon` (nullable, blank normalizes to `None`,
+//! which on PATCH is a `COALESCE` no-op and never a clear); `category_id`
+//! must be an owned `habit`-kind category (else 422).
 //! `reminder_id` linking is out of scope for slice 1 (additive later).
 //!
 //! `DELETE /habits/:id/logs/:date` is the idempotent toggle-off for a daily
@@ -85,6 +86,8 @@ const HABIT_LOG_STATUSES: &[&str] = &["done", "missed", "skipped"];
 const MAX_PERIOD_VALUE: Decimal = Decimal::from_parts(1_000_000, 0, 0, false, 0);
 
 const CREATE_HABIT_SQL: &str = "INSERT INTO habits (user_id, name, description, direction, frequency, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, category, short_label) VALUES ($1,$2,$3,$4::habit_direction,$5::habit_frequency,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label";
+/// List read: archived rows are kept on purpose — the UI needs them for
+/// "Desarchivar" — unlike the today read, which filters them out.
 const LIST_HABITS_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE user_id=$1 ORDER BY created_at ASC";
 const GET_HABIT_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE id=$1 AND user_id=$2";
 const PATCH_HABIT_SQL: &str = "UPDATE habits SET name=COALESCE($3,name), description=COALESCE($4,description), target_per_period=COALESCE($5,target_per_period), end_date=COALESCE($6,end_date), category_id=COALESCE($7,category_id), color=COALESCE($8,color), icon=COALESCE($9,icon), is_archived=COALESCE($10,is_archived), category=COALESCE($11,category), short_label=COALESCE($12,short_label), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label";
@@ -162,9 +165,9 @@ pub struct CreateHabitRequest {
     pub category_id: Option<Uuid>,
     pub color: Option<String>,
     pub icon: Option<String>,
-    /// Optional free-form display label (max 64 chars); blank → `None`.
+    /// Optional free-form display label (max 64 chars); blank stores NULL.
     pub category: Option<String>,
-    /// Optional compact label (max 32 chars); blank → `None`.
+    /// Optional compact label (max 32 chars); blank stores NULL.
     pub short_label: Option<String>,
 }
 
@@ -181,10 +184,12 @@ pub struct PatchHabitRequest {
     pub color: Option<String>,
     pub icon: Option<String>,
     pub is_archived: Option<bool>,
-    /// Optional free-form display label (max 64 chars); blank → `None`
-    /// (patch semantics mirror the other metadata fields).
+    /// Optional free-form display label (max 64 chars); blank is a silent
+    /// no-op: `COALESCE($N, col)` keeps the stored value, so PATCH never
+    /// clears it (same as `color`/`icon`).
     pub category: Option<String>,
-    /// Optional compact label (max 32 chars); blank → `None`.
+    /// Optional compact label (max 32 chars); blank is a silent no-op and
+    /// never clears the stored value.
     pub short_label: Option<String>,
 }
 
@@ -230,9 +235,11 @@ pub struct HabitResponse {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Optional free-form display label (max 64 chars at the API boundary),
-    /// distinct from `category_id`; blank/absent serializes as `null`.
+    /// distinct from `category_id`; absent serializes as `null` (a blank
+    /// patch keeps the stored value instead of clearing it).
     pub category: Option<String>,
-    /// Optional compact label for dense widgets (max 32 chars).
+    /// Optional compact label for dense widgets (max 32 chars); absent
+    /// serializes as `null`.
     pub short_label: Option<String>,
 }
 
@@ -338,9 +345,14 @@ fn validate_optional_text(
     Ok(())
 }
 
-/// Normalize an optional display-text field: trim, map blank to absent, and
+/// Normalize an optional display-text field: trim, map blank to `None`, and
 /// validate the trimmed value with [`validate_optional_text`] (max length, no
-/// null bytes). Blank input becomes `None`, never an empty stored string.
+/// null bytes).
+///
+/// `None` never clears a stored value: `CREATE` stores NULL for an absent
+/// value, while `PATCH` binds it through `COALESCE($N, col)`, so a blank
+/// patch value is a silent no-op that keeps the stored value — the same
+/// contract as `color`/`icon`.
 fn normalize_optional_text(
     value: Option<&str>,
     max: usize,
@@ -872,7 +884,9 @@ pub async fn get_streak_handler(
 /// via `CROSS JOIN LATERAL` (per-habit evaluation, no loop, no N+1); the
 /// placeholders are rebound to the outer habit row (`h.id`, `h.user_id`,
 /// `h.days_of_week`), keeping the `::int` cast and the `skipped` bridge.
-const TODAY_SQL: &str = "SELECT h.id, h.name, h.frequency::text, h.days_of_week, s.current_streak, COALESCE(l.status::text, CASE WHEN (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM CURRENT_DATE)::int = ANY(h.days_of_week)) THEN 'pending' ELSE 'skipped' END) AS today_status FROM habits h LEFT JOIN habit_logs l ON l.habit_id=h.id AND l.user_id=h.user_id AND l.log_date=CURRENT_DATE CROSS JOIN LATERAL (WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=h.id AND user_id=h.user_id AND (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY(h.days_of_week))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs skipped_bridge WHERE skipped_bridge.status='skipped' AND skipped_bridge.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak) s WHERE h.user_id=$1 ORDER BY h.created_at ASC";
+/// Archived habits are excluded (`NOT h.is_archived`); the list read keeps
+/// them on purpose so the UI can offer Desarchivar.
+const TODAY_SQL: &str = "SELECT h.id, h.name, h.frequency::text, h.days_of_week, s.current_streak, COALESCE(l.status::text, CASE WHEN (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM CURRENT_DATE)::int = ANY(h.days_of_week)) THEN 'pending' ELSE 'skipped' END) AS today_status FROM habits h LEFT JOIN habit_logs l ON l.habit_id=h.id AND l.user_id=h.user_id AND l.log_date=CURRENT_DATE CROSS JOIN LATERAL (WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=h.id AND user_id=h.user_id AND (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY(h.days_of_week))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs skipped_bridge WHERE skipped_bridge.status='skipped' AND skipped_bridge.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak) s WHERE h.user_id=$1 AND NOT h.is_archived ORDER BY h.created_at ASC";
 
 type HabitTodayRow = (Uuid, String, String, Vec<i16>, i64, String);
 
@@ -1107,12 +1121,21 @@ mod today_read_tests {
             "'pending'",
             "CARDINALITY",
             "user_id",
+            "AND NOT h.is_archived",
         ] {
             assert!(
                 TODAY_SQL.contains(fragment),
                 "today SQL must contain {fragment}"
             );
         }
+    }
+
+    #[test]
+    fn list_habits_sql_keeps_archived_rows_for_desarchivar() {
+        assert!(
+            !LIST_HABITS_SQL.contains("NOT h.is_archived"),
+            "list must not filter archived rows: the UI needs them for Desarchivar"
+        );
     }
 
     #[tokio::test]
@@ -1173,6 +1196,29 @@ mod today_read_tests {
         let c = entry(habit_c);
         assert_eq!(c.today_status, "pending");
         assert_eq!(c.current_streak, 0);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn today_excludes_archived_habits() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP today_excludes_archived_habits: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let active = seed_habit(&pool, user_id, "habit-active", None).await;
+        let archived = seed_habit(&pool, user_id, "habit-archived", None).await;
+        sqlx::query("UPDATE habits SET is_archived=true WHERE id=$1")
+            .bind(archived)
+            .execute(&pool)
+            .await
+            .expect("archive habit");
+        let body = today_habits_handler(State(state), headers)
+            .await
+            .expect("today is 200")
+            .0;
+        assert_eq!(body.len(), 1);
+        assert_eq!(body[0].habit_id, active);
         cleanup_user(&pool, user_id).await;
     }
 
@@ -1885,6 +1931,119 @@ mod tests {
         .expect_err("orphaned habit log must be 422");
         assert_422(err);
         cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn delete_log_owned_existing_is_204_and_removes_the_row() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_log_owned_existing_is_204_and_removes_the_row: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let habit_id = seed_habit(&pool, user_id).await;
+        seed_log(&pool, user_id, habit_id, "2026-09-02", "done").await;
+        let status = delete_log_handler(
+            State(state),
+            headers,
+            Path((habit_id, "2026-09-02".to_string())),
+        )
+        .await
+        .expect("owned existing log delete is 204");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM habit_logs WHERE habit_id=$1 AND log_date=$2")
+                .bind(habit_id)
+                .bind("2026-09-02".parse::<NaiveDate>().expect("valid log date"))
+                .fetch_one(&pool)
+                .await
+                .expect("count remaining logs");
+        assert_eq!(remaining, 0);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn delete_log_owned_absent_is_204_idempotent() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_log_owned_absent_is_204_idempotent: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let habit_id = seed_habit(&pool, user_id).await;
+        let status = delete_log_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path((habit_id, "2026-09-02".to_string())),
+        )
+        .await
+        .expect("absent log delete is 204");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // The repeat call is the idempotent case: still 204, never 404.
+        let status = delete_log_handler(
+            State(state),
+            headers,
+            Path((habit_id, "2026-09-02".to_string())),
+        )
+        .await
+        .expect("repeat delete is still 204");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn delete_log_foreign_habit_is_404() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_log_foreign_habit_is_404: no DATABASE_URL");
+            return;
+        };
+        let (_, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let habit_id = seed_habit(&pool, user_a).await;
+        seed_log(&pool, user_a, habit_id, "2026-09-02", "done").await;
+        let err = delete_log_handler(
+            State(state_b),
+            headers_b,
+            Path((habit_id, "2026-09-02".to_string())),
+        )
+        .await
+        .expect_err("foreign habit delete-log must be 404");
+        assert_404(err);
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    #[tokio::test]
+    async fn delete_log_unknown_habit_is_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_log_unknown_habit_is_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let err = delete_log_handler(
+            State(state),
+            headers,
+            Path((Uuid::new_v4(), "2026-09-02".to_string())),
+        )
+        .await
+        .expect_err("nonexistent habit delete-log must be 422");
+        assert_422(err);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn delete_log_without_session_is_401() {
+        let state = AppState {
+            pool: lazy_pool(),
+            session_ttl_hours: 24,
+            rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+        };
+        let err = delete_log_handler(
+            State(state),
+            HeaderMap::new(),
+            Path((Uuid::new_v4(), "2026-09-02".to_string())),
+        )
+        .await
+        .expect_err("missing session must be 401");
+        assert_401(err);
     }
 
     #[tokio::test]

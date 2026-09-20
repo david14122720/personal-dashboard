@@ -252,6 +252,12 @@ describe("habitDashboard milestone", () => {
     expect(findMilestone([h], logs, TODAY)).toEqual({ kind: "streak", habitName: "Meditar", days: 9 });
   });
 
+  it("gives an ended habit no current streak", () => {
+    const ended = habit({ id: "ended", name: "Reto", startDate: "2026-09-01", endDate: "2026-09-10" });
+    const logs = doneDaily("ended", "2026-09-01", "2026-09-10");
+    expect(findMilestone([ended], logs, TODAY)).toBeNull();
+  });
+
   it("returns null without a perfect category or a 7-day streak", () => {
     const future = habit({ id: "future", category: "Salud & Físico", startDate: "2026-10-01" });
     expect(findMilestone([future], [], TODAY)).toBeNull();

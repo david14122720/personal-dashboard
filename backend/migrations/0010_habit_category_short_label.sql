@@ -6,7 +6,9 @@
 -- boundary) and is distinct from `category_id` (FK to `categories`);
 -- `short_label` (max 32 chars) is the compact form for dense widgets. Both
 -- are mutable display metadata like `color`/`icon`: writable on create and
--- PATCH, blank input normalizes to NULL.
+-- PATCH. On create a blank value stores NULL; on PATCH a blank value is a
+-- silent no-op — the handler binds it as NULL through `COALESCE($N, col)`,
+-- so the stored value is kept and never cleared.
 --
 -- Plain DDL, no enum change, applied out-of-band with autocommit like the
 -- other migrations in this project (there is no _sqlx_migrations tracking

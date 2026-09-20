@@ -5,6 +5,7 @@ import { useSWRConfig } from "swr";
 import { t, type EsKey } from "@/lib/i18n";
 import {
   HABITS_LIST_KEY,
+  HABITS_TODAY_KEY,
   archiveHabit,
   habitsHistoryKey,
   toggleHabitLog,
@@ -127,6 +128,9 @@ const KPI_CARD =
   "flex min-h-[176px] flex-col justify-between rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px]";
 const CARD = "rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px]";
 const KPI_LABEL = "font-display text-[11px] font-semibold uppercase tracking-widest text-instrument/60";
+
+/** Dashboard-home habits cache (owned by `lib/api/dashboard.ts`). */
+const DASHBOARD_HABITS_TODAY_KEY = "dashboard/habits-today";
 
 function CalendarIcon({ className }: { className?: string }) {
   return (
@@ -257,12 +261,16 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
 
   const habits = useHabitsList();
   const rangeStart = `${shiftMonthKey(month, -11)}-01`;
-  const rangeEnd = monthRangeDays(month).slice(-1)[0] ?? `${month}-28`;
+  const monthEnd = monthRangeDays(month).slice(-1)[0] ?? `${month}-28`;
+  // Keep today in range even when the visible month is in the past: the today
+  // KPI, milestone, reflection and XP/level always read the same fetch.
+  const rangeEnd = monthEnd > today ? monthEnd : today;
   const historyKey = habitsHistoryKey(rangeStart, rangeEnd);
   const history = useHabitsHistory(rangeStart, rangeEnd);
 
   const [filter, setFilter] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
 
@@ -276,32 +284,52 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   const dashHabits = useMemo(() => wires.map(toDashHabit), [wires]);
   const dashLogs = useMemo(() => (history.data ?? []).map(toDashLog), [history.data]);
 
+  // Server logs with the pending optimistic cell overrides applied; every KPI,
+  // chart and report memo reads this so toggles update synchronously.
+  const displayLogs = useMemo(() => {
+    const keys = Object.keys(overrides);
+    if (keys.length === 0) return dashLogs;
+    const byPair = new Map<string, DashLog>();
+    for (const log of dashLogs) byPair.set(`${log.habitId}|${log.date}`, log);
+    for (const key of keys) {
+      const separator = key.lastIndexOf("|");
+      if (separator <= 0) continue;
+      if (overrides[key]) {
+        byPair.set(key, { habitId: key.slice(0, separator), date: key.slice(separator + 1), status: "done" });
+      } else {
+        byPair.delete(key);
+      }
+    }
+    return [...byPair.values()];
+  }, [dashLogs, overrides]);
+
   const donePairs = useMemo(() => {
     const set = new Set<string>();
-    for (const log of dashLogs) if (log.status === "done") set.add(`${log.habitId}|${log.date}`);
+    for (const log of displayLogs) if (log.status === "done") set.add(`${log.habitId}|${log.date}`);
     return set;
-  }, [dashLogs]);
+  }, [displayLogs]);
 
   const activeRows = useMemo(() => activeHabits(dashHabits, month, today), [dashHabits, month, today]);
-  const monthly = useMemo(() => monthlyCompliance(dashHabits, dashLogs, month, today), [dashHabits, dashLogs, month, today]);
+  const archivedHabits = useMemo(() => dashHabits.filter((habit) => habit.isArchived), [dashHabits]);
+  const monthly = useMemo(() => monthlyCompliance(dashHabits, displayLogs, month, today), [dashHabits, displayLogs, month, today]);
   const previous = useMemo(
-    () => monthlyCompliance(dashHabits, dashLogs, shiftMonthKey(month, -1), today),
-    [dashHabits, dashLogs, month, today],
+    () => monthlyCompliance(dashHabits, displayLogs, shiftMonthKey(month, -1), today),
+    [dashHabits, displayLogs, month, today],
   );
   const delta = complianceDelta(monthly, previous);
-  const streak = useMemo(() => longestStreak(dashHabits, dashLogs), [dashHabits, dashLogs]);
-  const todayStats = useMemo(() => todayCompletion(dashHabits, dashLogs, today), [dashHabits, dashLogs, today]);
+  const streak = useMemo(() => longestStreak(dashHabits, displayLogs), [dashHabits, displayLogs]);
+  const todayStats = useMemo(() => todayCompletion(dashHabits, displayLogs, today), [dashHabits, displayLogs, today]);
   const consistency = useMemo(
-    () => weekdayConsistency(dashHabits, dashLogs, month, today),
-    [dashHabits, dashLogs, month, today],
+    () => weekdayConsistency(dashHabits, displayLogs, month, today),
+    [dashHabits, displayLogs, month, today],
   );
-  const milestone = useMemo(() => findMilestone(dashHabits, dashLogs, today), [dashHabits, dashLogs, today]);
-  const reflection = useMemo(() => reflectionLine(dashHabits, dashLogs, today), [dashHabits, dashLogs, today]);
+  const milestone = useMemo(() => findMilestone(dashHabits, displayLogs, today), [dashHabits, displayLogs, today]);
+  const reflection = useMemo(() => reflectionLine(dashHabits, displayLogs, today), [dashHabits, displayLogs, today]);
   const categoriesCount = categoriesCovered(activeRows);
   const dayCount = monthDays(month).length;
   const weeksInMonth = Math.ceil(dayCount / 7);
-  const xpMonth = xpForLogs(dashLogs, month);
-  const xpHistory = totalXp(dashLogs);
+  const xpMonth = xpForLogs(displayLogs, month);
+  const xpHistory = totalXp(displayLogs);
   const level = levelForXp(xpHistory);
   const levelProgress = Math.round(((xpHistory % 500) / 500) * 100);
   const todayDay = Number(today.slice(8));
@@ -323,8 +351,8 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   const reportRows: HabitReportRow[] = useMemo(
     () =>
       activeRows.map((habit) => {
-        const perHabit = monthlyCompliance([habit], dashLogs, month, today);
-        const perHabitLogs = dashLogs
+        const perHabit = monthlyCompliance([habit], displayLogs, month, today);
+        const perHabitLogs = displayLogs
           .filter((log) => log.habitId === habit.id)
           .map((log) => ({ habit_id: log.habitId, log_date: log.date, status: log.status }));
         const stats = habitStats(perHabitLogs, habit.startDate || rangeStart, today, habit.daysOfWeek);
@@ -334,16 +362,24 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
           monthPct: perHabit.pct,
           doneDays: perHabit.done,
           currentStreak: stats.currentStreak,
-          maxStreak: longestStreak([habit], dashLogs).days,
+          maxStreak: longestStreak([habit], displayLogs).days,
         };
       }),
-    [activeRows, dashLogs, month, today, rangeStart],
+    [activeRows, displayLogs, month, today, rangeStart],
   );
 
   function isDone(habitId: string, date: string): boolean {
-    const key = `${habitId}|${date}`;
-    const override = overrides[key];
-    return override === undefined ? donePairs.has(key) : override;
+    return donePairs.has(`${habitId}|${date}`);
+  }
+
+  /** Revalidate every habits cache a toggle/archive/create can stale. */
+  async function refreshHabitCaches(): Promise<void> {
+    await Promise.all([
+      mutate(HABITS_LIST_KEY),
+      mutate(historyKey),
+      mutate(HABITS_TODAY_KEY),
+      mutate(DASHBOARD_HABITS_TODAY_KEY),
+    ]);
   }
 
   async function handleToggle(habitId: string, date: string): Promise<void> {
@@ -352,7 +388,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
     setOverrides((prev) => ({ ...prev, [key]: !currentlyDone }));
     try {
       await toggleHabitLog(habitId, date, currentlyDone);
-      await mutate(historyKey);
+      await refreshHabitCaches();
     } catch {
       setToast(t("habitsDashboard.toggleFailed"));
     } finally {
@@ -366,17 +402,27 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   }
 
   async function handleArchive(habitId: string): Promise<void> {
+    const name = dashHabits.find((habit) => habit.id === habitId)?.name ?? "";
+    if (!window.confirm(t("habitsDashboard.archiveConfirm", { name }))) return;
     try {
       await archiveHabit(habitId, true);
-      await mutate(HABITS_LIST_KEY);
-      await mutate(historyKey);
+      await refreshHabitCaches();
+    } catch {
+      setToast(t("habitsDashboard.archiveFailed"));
+    }
+  }
+
+  async function handleUnarchive(habitId: string): Promise<void> {
+    try {
+      await archiveHabit(habitId, false);
+      await refreshHabitCaches();
     } catch {
       setToast(t("habitsDashboard.archiveFailed"));
     }
   }
 
   async function handleCreated(): Promise<void> {
-    await Promise.all([mutate(HABITS_LIST_KEY), mutate(historyKey)]);
+    await refreshHabitCaches();
   }
 
   function retry(): void {
@@ -424,6 +470,40 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   }, [activeRows]);
   const categoryCount = (value: string): number =>
     activeRows.filter((habit) => (habit.category?.trim() ?? "") === value).length;
+
+  const archivedSection =
+    archivedHabits.length > 0 ? (
+      <section className="rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 px-4 py-3">
+        <button
+          type="button"
+          aria-expanded={archivedOpen}
+          onClick={() => setArchivedOpen((prev) => !prev)}
+          className="font-display text-sm text-instrument/70 transition-colors hover:text-signal"
+        >
+          {t("habitsDashboard.archivedSection", { n: archivedHabits.length })}
+        </button>
+        {archivedOpen ? (
+          <ul className="mt-3 flex flex-col gap-2">
+            {archivedHabits.map((habit) => (
+              <li
+                key={habit.id}
+                className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-deck/50 px-3 py-2"
+              >
+                <span className="truncate text-sm text-instrument/80">{habit.name}</span>
+                <button
+                  type="button"
+                  aria-label={t("habitsDashboard.unarchiveLabel", { name: habit.name })}
+                  onClick={() => void handleUnarchive(habit.id)}
+                  className="shrink-0 rounded-lg border border-hull px-3 py-1 font-display text-xs text-instrument transition-colors hover:border-signal hover:text-signal"
+                >
+                  {t("habitsDashboard.unarchive")}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+    ) : null;
 
   return (
     <div className="mx-auto flex w-full max-w-[1060px] flex-col gap-5">
@@ -486,7 +566,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
       {loading ? (
         <div role="status" aria-busy="true" className="flex flex-col gap-5">
           <p className="sr-only">{t("common.loading")}</p>
-          <div className="grid grid-cols-1 gap-[18px] sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-[18px] min-[700px]:grid-cols-2 min-[1200px]:grid-cols-4">
             <Skeleton className="h-44" />
             <Skeleton className="h-44" />
             <Skeleton className="h-44" />
@@ -494,7 +574,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
           </div>
           <Skeleton className="h-14" />
           <Skeleton className="h-72" />
-          <div className="flex flex-col gap-4 xl:flex-row">
+          <div className="flex flex-col gap-4 min-[1200px]:flex-row">
             <Skeleton className="h-64 xl:w-3/5" />
             <Skeleton className="h-64 xl:w-2/5" />
           </div>
@@ -512,7 +592,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-[18px] sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-[18px] min-[700px]:grid-cols-2 min-[1200px]:grid-cols-4">
             <section aria-label={t("habitsDashboard.kpiMonthlyCompliance")} className={KPI_CARD}>
               <p className={KPI_LABEL}>{t("habitsDashboard.kpiMonthlyCompliance")}</p>
               <div className="flex items-end justify-between gap-3">
@@ -522,9 +602,15 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                     <span className="text-2xl text-signal">%</span>
                   </p>
                   {delta !== null ? (
-                    <p className={`mt-1 text-xs font-semibold ${delta >= 0 ? "text-flow" : "text-alert"}`}>
-                      {delta >= 0 ? `↗ +${delta}%` : `↘ ${delta}%`}
-                    </p>
+                    delta === 0 ? (
+                      <p className="mt-1 inline-flex items-center rounded-full bg-instrument/10 px-2 py-0.5 text-xs font-semibold text-instrument/60">
+                        {t("habitsDashboard.deltaNeutral", { n: 0 })}
+                      </p>
+                    ) : (
+                      <p className={`mt-1 text-xs font-semibold ${delta > 0 ? "text-[#22C55E]" : "text-alert"}`}>
+                        {delta > 0 ? `↗ +${delta}%` : `↘ ${delta}%`}
+                      </p>
+                    )
                   ) : null}
                   <p className="mt-1 text-xs text-instrument/50">
                     {t("habitsDashboard.monthlyGoal", { n: MONTHLY_GOAL_PCT })}
@@ -584,13 +670,13 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="flex items-baseline gap-1">
-                    <span className="font-display text-[44px] font-bold leading-none tabular-nums text-flow">
+                    <span className="font-display text-[44px] font-bold leading-none tabular-nums text-[#4ADE80]">
                       {todayStats.done}
                     </span>
                     <span className="font-display text-xl tabular-nums text-instrument/40">
                       {t("habitsDashboard.todayTotal", { n: todayStats.total })}
                     </span>
-                    <span className="ml-1 text-sm font-semibold text-flow">
+                    <span className="ml-1 text-sm font-semibold text-[#4ADE80]">
                       {t("habitsDashboard.todayPct", { n: todayPct })}
                     </span>
                   </p>
@@ -602,28 +688,31 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                         : t("habitsDashboard.todayMissing", { n: todayStats.total - todayStats.done })}
                   </p>
                 </div>
-                <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-xl bg-flow/15 text-flow">
+                <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-xl bg-[#22C55E]/15 text-[#22C55E]">
                   <CheckCircleIcon className="h-6 w-6" />
                 </span>
               </div>
             </section>
           </div>
 
-          {wires.length === 0 ? (
-            <section className={`${CARD} flex flex-col items-center gap-3 py-12 text-center`}>
-              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-signal/15 text-signal">
-                <ListCheckIcon className="h-7 w-7" />
-              </span>
-              <h2 className="font-display text-lg font-semibold text-instrument">{t("habitsDashboard.emptyTitle")}</h2>
-              <p className="max-w-md text-sm text-instrument/50">{t("habitsDashboard.emptyHint")}</p>
-              <button
-                type="button"
-                onClick={() => setModalOpen(true)}
-                className="mt-1 rounded-xl bg-signal px-4 py-2 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal/90"
-              >
-                {t("habitsDashboard.emptyCta")}
-              </button>
-            </section>
+          {activeRows.length === 0 ? (
+            <>
+              <section className={`${CARD} flex flex-col items-center gap-3 py-12 text-center`}>
+                <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-signal/15 text-signal">
+                  <ListCheckIcon className="h-7 w-7" />
+                </span>
+                <h2 className="font-display text-lg font-semibold text-instrument">{t("habitsDashboard.emptyTitle")}</h2>
+                <p className="max-w-md text-sm text-instrument/50">{t("habitsDashboard.emptyHint")}</p>
+                <button
+                  type="button"
+                  onClick={() => setModalOpen(true)}
+                  className="mt-1 rounded-xl bg-signal px-4 py-2 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal/90"
+                >
+                  {t("habitsDashboard.emptyCta")}
+                </button>
+              </section>
+              {archivedSection}
+            </>
           ) : (
             <>
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 px-4 py-3">
@@ -702,8 +791,10 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                 />
               </section>
 
-              <div className="flex flex-col gap-4 xl:flex-row">
-                <div className="xl:w-3/5">
+              {archivedSection}
+
+              <div className="flex flex-col gap-4 min-[1200px]:flex-row">
+                <div className="min-[1200px]:w-3/5">
                   <WeeklyChart
                     values={consistency.values}
                     avg={consistency.avg}
@@ -713,13 +804,13 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                     report={reportRows}
                   />
                 </div>
-                <div className="flex flex-col gap-4 xl:w-2/5">
+                <div className="flex flex-col gap-4 min-[1200px]:w-2/5">
                   <section aria-label={t("habitsDashboard.milestonePill")} className={CARD}>
                     <div className="flex items-center gap-3">
-                      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-flow/15 text-flow">
+                      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#22C55E]/15 text-[#22C55E]">
                         <ShieldCheckIcon className="h-6 w-6" />
                       </span>
-                      <span className="rounded-full border border-flow/30 bg-flow/10 px-3 py-0.5 font-display text-[11px] uppercase tracking-widest text-flow">
+                      <span className="rounded-full border border-[#22C55E]/30 bg-[#22C55E]/10 px-3 py-0.5 font-display text-[11px] uppercase tracking-widest text-[#4ADE80]">
                         {t("habitsDashboard.milestonePill")}
                       </span>
                     </div>
@@ -731,12 +822,20 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                             : t("habitsDashboard.milestoneStreakTitle", { n: milestone.days })}
                         </h2>
                         <p className="mt-1 text-sm text-instrument/60">
-                          {milestone.kind === "category"
-                            ? t("habitsDashboard.milestoneCategoryBody", { category: milestone.category })
-                            : t("habitsDashboard.milestoneStreakBody", {
-                                n: milestone.days,
-                                habit: milestone.habitName,
-                              })}
+                          {milestone.kind === "category" ? (
+                            <>
+                              {t("habitsDashboard.milestoneCategoryBodyPre")}
+                              <strong className="font-semibold text-[#4ADE80]">
+                                {t("habitsDashboard.milestoneCategoryBodyBold")}
+                              </strong>
+                              {t("habitsDashboard.milestoneCategoryBodyPost", { category: milestone.category })}
+                            </>
+                          ) : (
+                            t("habitsDashboard.milestoneStreakBody", {
+                              n: milestone.days,
+                              habit: milestone.habitName,
+                            })
+                          )}
                         </p>
                       </>
                     ) : (

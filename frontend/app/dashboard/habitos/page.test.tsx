@@ -1,9 +1,11 @@
 import { createElement as h } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { SWRConfig } from "swr";
+import useSWR, { SWRConfig } from "swr";
+import { apiGet } from "@/lib/api/client";
+import { HABITS_TODAY_KEY } from "@/lib/api/productivity";
 
 const replace = vi.fn();
 
@@ -105,13 +107,21 @@ const seenLogPosts: Array<{ id: string; body: { log_date: string; status: string
 const seenLogDeletes: Array<{ id: string; date: string }> = [];
 const seenHabitPosts: Array<Record<string, unknown>> = [];
 const historyRanges: string[] = [];
+let todayFetches = 0;
 
 const server = setupServer(
   http.get("http://test.local/api/habits", () => HttpResponse.json(habitRows)),
   http.get("http://test.local/api/habits/logs", ({ request }) => {
     const url = new URL(request.url);
-    historyRanges.push(`${url.searchParams.get("from")}|${url.searchParams.get("to")}`);
-    return HttpResponse.json(logRows);
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
+    historyRanges.push(`${from}|${to}`);
+    const rows = logRows.filter((entry) => (!from || entry.log_date >= from) && (!to || entry.log_date <= to));
+    return HttpResponse.json(rows);
+  }),
+  http.get("http://test.local/api/habits/today", () => {
+    todayFetches += 1;
+    return HttpResponse.json([]);
   }),
   http.post("http://test.local/api/habits", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
@@ -149,8 +159,11 @@ const server = setupServer(
     logRows = logRows.filter((entry) => !(entry.habit_id === params.id && entry.log_date === params.date));
     return new HttpResponse(null, { status: 204 });
   }),
-  http.patch("http://test.local/api/habits/:id", ({ params }) => {
-    habitRows = habitRows.map((row) => (row.id === params.id ? { ...row, is_archived: true } : row));
+  http.patch("http://test.local/api/habits/:id", async ({ params, request }) => {
+    const body = (await request.json()) as { is_archived?: boolean };
+    habitRows = habitRows.map((row) =>
+      row.id === params.id ? { ...row, is_archived: body.is_archived ?? row.is_archived } : row,
+    );
     return HttpResponse.json(habitRows.find((row) => row.id === params.id));
   }),
 );
@@ -163,11 +176,13 @@ beforeEach(() => {
   seenLogDeletes.length = 0;
   seenHabitPosts.length = 0;
   historyRanges.length = 0;
+  todayFetches = 0;
 });
 afterEach(() => {
   server.resetHandlers();
   localStorage.clear();
   replace.mockClear();
+  vi.restoreAllMocks();
 });
 afterAll(() => server.close());
 
@@ -175,6 +190,12 @@ function renderPage() {
   return render(
     h(SWRConfig, { value: { provider: () => new Map(), dedupingInterval: 0 } }, h(HabitosPage, null)),
   );
+}
+
+/** Mirrors the dashboard-home habit widget: subscribes to the shared today key. */
+function TodayProbe() {
+  useSWR(HABITS_TODAY_KEY, () => apiGet<unknown[]>("/habits/today"));
+  return null;
 }
 
 async function findGrid(): Promise<HTMLElement> {
@@ -230,19 +251,19 @@ describe("habitos dashboard page", () => {
     const header = within(grid).getByRole("rowheader", { name: /Entrenamiento de fuerza/ });
     expect(header).toHaveTextContent("Salud & Físico • 45m");
 
-    const done = within(grid).getByRole("gridcell", { name: "Entrenamiento de fuerza, 1 de septiembre: completado" });
+    const done = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 1 de septiembre: completado" });
     expect(done).toHaveClass("bg-signal");
     expect(done).toHaveAttribute("aria-pressed", "true");
 
-    const pending = within(grid).getByRole("gridcell", { name: "Entrenamiento de fuerza, 3 de septiembre: sin registrar" });
+    const pending = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 3 de septiembre: sin registrar" });
     expect(pending).toHaveAttribute("aria-pressed", "false");
     expect(pending.className).toContain("bg-hull/60");
 
-    const future = within(grid).getByRole("gridcell", { name: "Entrenamiento de fuerza, 20 de septiembre: futuro" });
+    const future = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 20 de septiembre: futuro" });
     expect(future).toBeDisabled();
     expect(future.className).toContain("bg-black/40");
 
-    const unscheduled = within(grid).getByRole("gridcell", { name: "Leer, 10 de septiembre: no programado" });
+    const unscheduled = within(grid).getByRole("button", { name: "Leer, 10 de septiembre: no programado" });
     expect(unscheduled).toBeDisabled();
   });
 
@@ -251,21 +272,21 @@ describe("habitos dashboard page", () => {
     renderPage();
     const grid = await findGrid();
 
-    const future = within(grid).getByRole("gridcell", { name: "Agua, 16 de septiembre: futuro" });
+    const future = within(grid).getByRole("button", { name: "Agua, 16 de septiembre: futuro" });
     fireEvent.click(future);
     expect(seenLogPosts).toHaveLength(0);
     expect(seenLogDeletes).toHaveLength(0);
 
-    fireEvent.click(within(grid).getByRole("gridcell", { name: "Agua, 15 de septiembre: sin registrar" }));
+    fireEvent.click(within(grid).getByRole("button", { name: "Agua, 15 de septiembre: sin registrar" }));
     await waitFor(() => expect(seenLogPosts).toHaveLength(1));
     expect(seenLogPosts[0]).toEqual({ id: "h2", body: { log_date: TODAY, status: "done" } });
 
-    const doneCell = await within(grid).findByRole("gridcell", { name: "Agua, 15 de septiembre: completado" });
+    const doneCell = await within(grid).findByRole("button", { name: "Agua, 15 de septiembre: completado" });
     expect(doneCell).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(doneCell);
     await waitFor(() => expect(seenLogDeletes).toEqual([{ id: "h2", date: TODAY }]));
     expect(
-      await within(grid).findByRole("gridcell", { name: "Agua, 15 de septiembre: sin registrar" }),
+      await within(grid).findByRole("button", { name: "Agua, 15 de septiembre: sin registrar" }),
     ).toBeInTheDocument();
   });
 
@@ -278,7 +299,7 @@ describe("habitos dashboard page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Mes anterior" }));
     expect(await screen.findByText("Agosto")).toBeInTheDocument();
-    await waitFor(() => expect(historyRanges).toContain("2025-09-01|2026-08-31"));
+    await waitFor(() => expect(historyRanges).toContain("2025-09-01|2026-09-15"));
     expect(await screen.findByRole("button", { name: "Mes siguiente" })).not.toBeDisabled();
   });
 
@@ -290,6 +311,8 @@ describe("habitos dashboard page", () => {
     const dialog = await screen.findByRole("dialog", { name: "Nuevo hábito" });
     expect(within(dialog).getByText("Categoría")).toBeInTheDocument();
     expect(within(dialog).getByLabelText("Etiqueta corta (opcional)")).toBeInTheDocument();
+    expect(within(dialog).getByPlaceholderText("Ej. 1.00")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Categoría")).toHaveAttribute("maxlength", "64");
 
     fireEvent.change(within(dialog).getByLabelText("Nombre"), { target: { value: "Correr" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Mentalidad" }));
@@ -297,7 +320,12 @@ describe("habitos dashboard page", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Crear" }));
 
     await waitFor(() => expect(seenHabitPosts).toHaveLength(1));
-    expect(seenHabitPosts[0]).toMatchObject({ name: "Correr", category: "Mentalidad", short_label: "Reto" });
+    expect(seenHabitPosts[0]).toMatchObject({
+      name: "Correr",
+      category: "Mentalidad",
+      short_label: "Reto",
+      start_date: TODAY,
+    });
     expect(await screen.findByRole("rowheader", { name: /Correr/ })).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
   });
@@ -312,5 +340,256 @@ describe("habitos dashboard page", () => {
   it("redirects to login without a token", () => {
     renderPage();
     expect(replace).toHaveBeenCalledWith("/login/");
+  });
+
+  it("keeps today's KPI real when viewing a past month", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    logRows = [...BASE_LOGS, { habit_id: "h1", log_date: TODAY, status: "done" }];
+    renderPage();
+    await findGrid();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mes anterior" }));
+    expect(await screen.findByText("Agosto")).toBeInTheDocument();
+    await waitFor(() => expect(historyRanges).toContain("2025-09-01|2026-09-15"));
+
+    const kpi = await screen.findByRole("region", { name: "COMPLETADOS HOY (DÍA 15)" });
+    expect(within(kpi).getByText("1")).toBeInTheDocument();
+    expect(within(kpi).getByText("/3")).toBeInTheDocument();
+  });
+
+  it("updates the today KPI optimistically before the toggle mutation resolves", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    server.use(
+      http.post(
+        "http://test.local/api/habits/:id/logs",
+        async ({ params, request }) => {
+          const body = (await request.json()) as { log_date: string; status: string };
+          seenLogPosts.push({ id: params.id as string, body });
+          await delay(200);
+          logRows = [
+            ...logRows.filter((entry) => !(entry.habit_id === params.id && entry.log_date === body.log_date)),
+            { habit_id: params.id as string, log_date: body.log_date, status: body.status },
+          ];
+          return HttpResponse.json({ id: "log1" }, { status: 201 });
+        },
+        { once: true },
+      ),
+    );
+    renderPage();
+    const grid = await findGrid();
+    const kpi = screen.getByRole("region", { name: "COMPLETADOS HOY (DÍA 15)" });
+    expect(within(kpi).getByText("0")).toBeInTheDocument();
+
+    fireEvent.click(within(grid).getByRole("button", { name: "Agua, 15 de septiembre: sin registrar" }));
+
+    // The KPI moved before the delayed POST resolved.
+    expect(within(kpi).getByText("1")).toBeInTheDocument();
+    expect(within(kpi).getByText("/3")).toBeInTheDocument();
+
+    await waitFor(() => expect(seenLogPosts).toHaveLength(1));
+    expect(await within(grid).findByRole("button", { name: "Agua, 15 de septiembre: completado" })).toBeInTheDocument();
+  });
+
+  it("dims exactly one weekly bar when every weekday shares the same raw value", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [BASE_HABITS[0]];
+    logRows = [];
+    for (let day = 1; day <= 15; day += 1) {
+      logRows.push({ habit_id: "h1", log_date: `2026-09-${String(day).padStart(2, "0")}`, status: "done" });
+    }
+    renderPage();
+    await findGrid();
+
+    const weekly = await screen.findByRole("region", { name: "Consistencia Semanal" });
+    expect(weekly.querySelectorAll(".opacity-40")).toHaveLength(1);
+  });
+
+  it("archives with confirmation and restores the row from Archivados", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    const grid = await findGrid();
+
+    fireEvent.click(within(grid).getByRole("button", { name: "Acciones de Entrenamiento de fuerza" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archivar" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+    await waitFor(() =>
+      expect(within(grid).queryByRole("rowheader", { name: /Entrenamiento de fuerza/ })).toBeNull(),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Archivados (1)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Desarchivar Entrenamiento de fuerza" }));
+
+    expect(await within(grid).findByRole("rowheader", { name: /Entrenamiento de fuerza/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Archivados (1)" })).toBeNull();
+  });
+
+  it("keeps the row and shows a toast when archiving fails", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    server.use(
+      http.patch("http://test.local/api/habits/:id", () => HttpResponse.json({ error: "boom" }, { status: 500 }), {
+        once: true,
+      }),
+    );
+    renderPage();
+    const grid = await findGrid();
+
+    fireEvent.click(within(grid).getByRole("button", { name: "Acciones de Agua" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archivar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo archivar el hábito.");
+    expect(within(grid).getByRole("rowheader", { name: /Agua/ })).toBeInTheDocument();
+  });
+
+  it("shows the empty-state CTA when every habit is archived", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = BASE_HABITS.map((row) => ({ ...row, is_archived: true }));
+    renderPage();
+
+    expect(await screen.findByText("Aún no tienes hábitos")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Añadir tu primer hábito" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Archivados (4)" })).toBeInTheDocument();
+    expect(screen.queryByRole("grid")).toBeNull();
+  });
+
+  it("renders days before startDate as disabled futuro cells even with a log", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = BASE_HABITS.map((row) => (row.id === "h1" ? { ...row, start_date: "2026-09-10" } : { ...row }));
+    logRows = [...BASE_LOGS, { habit_id: "h1", log_date: "2026-09-03", status: "done" }];
+    renderPage();
+    const grid = await findGrid();
+
+    const early = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 3 de septiembre: futuro" });
+    expect(early).toBeDisabled();
+    expect(early.className).toContain("bg-black/40");
+    expect(early).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(early);
+    expect(seenLogPosts).toHaveLength(0);
+    expect(seenLogDeletes).toHaveLength(0);
+
+    const inRange = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 12 de septiembre: sin registrar" });
+    expect(inRange).not.toBeDisabled();
+  });
+
+  it("reverts an optimistic toggle and shows a toast when the POST fails", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    server.use(
+      http.post("http://test.local/api/habits/:id/logs", () => HttpResponse.json({ error: "boom" }, { status: 500 }), {
+        once: true,
+      }),
+    );
+    renderPage();
+    const grid = await findGrid();
+
+    fireEvent.click(within(grid).getByRole("button", { name: "Agua, 15 de septiembre: sin registrar" }));
+    expect(within(grid).getByRole("button", { name: "Agua, 15 de septiembre: completado" })).toBeInTheDocument();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo actualizar el hábito.");
+    expect(await within(grid).findByRole("button", { name: "Agua, 15 de septiembre: sin registrar" })).toBeInTheDocument();
+  });
+
+  it("completes an unlogged past cell with POST only, never DELETE", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    const grid = await findGrid();
+
+    fireEvent.click(within(grid).getByRole("button", { name: "Agua, 3 de septiembre: sin registrar" }));
+    await waitFor(() => expect(seenLogPosts).toHaveLength(1));
+    expect(seenLogPosts[0]).toEqual({ id: "h2", body: { log_date: "2026-09-03", status: "done" } });
+    expect(seenLogDeletes).toHaveLength(0);
+  });
+
+  it("revalidates the shared today cache other screens subscribe to", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    render(
+      h(
+        SWRConfig,
+        { value: { provider: () => new Map(), dedupingInterval: 0 } },
+        h("div", null, h(TodayProbe, null), h(HabitosPage, null)),
+      ),
+    );
+    const grid = await findGrid();
+    await waitFor(() => expect(todayFetches).toBeGreaterThan(0));
+    const before = todayFetches;
+
+    fireEvent.click(within(grid).getByRole("button", { name: "Agua, 15 de septiembre: sin registrar" }));
+    await waitFor(() => expect(todayFetches).toBeGreaterThan(before));
+  });
+
+  it("traps focus in the report modal and restores it to the trigger on close", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    await findGrid();
+
+    const trigger = await screen.findByRole("button", { name: "Ver reporte detallado →" });
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Reporte detallado" });
+    expect(within(dialog).getByRole("button", { name: "Cerrar" })).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(trigger).toHaveFocus();
+  });
+
+  it("pulls focus back into the create modal when it escapes", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Añadir Hábito" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nuevo hábito" });
+    const nameInput = within(dialog).getByLabelText("Nombre");
+    expect(nameInput).toHaveFocus();
+
+    screen.getByRole("button", { name: "Mes anterior" }).focus();
+    expect(nameInput).toHaveFocus();
+  });
+
+  it("shows a neutral delta pill when month-over-month compliance does not change", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [BASE_HABITS[0]];
+    logRows = [];
+    renderPage();
+    await findGrid();
+
+    expect(await screen.findByText("= 0%")).toBeInTheDocument();
+    expect(screen.queryByText(/↗|↘/)).toBeNull();
+  });
+
+  it("labels the best weekday with its full capitalized Spanish name", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    await findGrid();
+
+    expect(await screen.findByText("Día con mayor rendimiento: Miércoles (13%)")).toBeInTheDocument();
+  });
+
+  it("renders the milestone 100% phrase in bold green", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [
+      habit({
+        id: "h1",
+        name: "Entrenamiento de fuerza",
+        category: "Salud & Físico",
+        short_label: "45m",
+        color: "#38BDF8",
+        icon: "dumbbell",
+      }),
+    ];
+    logRows = [];
+    for (let day = 2; day <= 15; day += 1) {
+      logRows.push({ habit_id: "h1", log_date: `2026-09-${String(day).padStart(2, "0")}`, status: "done" });
+    }
+    renderPage();
+    await findGrid();
+
+    expect(await screen.findByText("Dominio de Hábitos de Salud & Físico")).toBeInTheDocument();
+    const bold = screen.getByText("100% de consistencia");
+    expect(bold.tagName).toBe("STRONG");
+    expect(bold.className).toContain("text-[#4ADE80]");
   });
 });

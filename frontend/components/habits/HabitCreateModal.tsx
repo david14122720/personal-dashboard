@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { t, type EsKey } from "@/lib/i18n";
 import { ApiError } from "@/lib/api/client";
 import { createHabit, type HabitDirection, type HabitFrequency } from "@/lib/api/productivity";
+import { todayYmdLocal } from "@/lib/productivity/productivity";
 import { HABIT_ICON_NAMES, HabitIcon, type HabitIconName } from "./HabitGrid";
 
 const inputClass =
@@ -142,6 +143,19 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  // Pull focus back into the panel if it escapes while the modal is open.
+  useEffect(() => {
+    if (!open) return;
+    const onFocusIn = (event: FocusEvent) => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      if (event.target instanceof Node && panel.contains(event.target)) return;
+      nameRef.current?.focus();
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, [open]);
+
   if (!open) return null;
 
   function toggleDay(day: number): void {
@@ -173,7 +187,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
         frequency,
         ...(frequency === "custom" ? { days_of_week: days } : {}),
         ...(target.trim() ? { target_per_period: target.trim() } : {}),
-        ...(start ? { start_date: start } : {}),
+        ...(start ? { start_date: start } : { start_date: todayYmdLocal() }),
         ...(end ? { end_date: end } : {}),
         ...(category.trim() ? { category: category.trim() } : {}),
         ...(shortLabel.trim() ? { short_label: shortLabel.trim() } : {}),
@@ -364,6 +378,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
               <input
                 className={`${inputClass} max-w-52`}
                 value={category}
+                maxLength={64}
                 aria-label={t("habitsDashboard.createCategory")}
                 placeholder={t("habitsDashboard.createCategoryPlaceholder")}
                 onChange={(event) => setCategory(event.target.value)}
