@@ -23,13 +23,16 @@ const WEEKDAY_KEYS: EsKey[] = [
   "habitsDashboard.weekdaySun",
 ];
 
-/** `Martes`-style full weekday for a Monday-first index, capitalized via Intl. */
-function fullWeekday(index: number): string {
-  const raw = new Intl.DateTimeFormat("es", { weekday: "long", timeZone: "UTC" }).format(
-    new Date(Date.UTC(2024, 0, 1 + index)),
-  );
-  return raw.charAt(0).toUpperCase() + raw.slice(1);
-}
+/** Full Spanish weekday names for the best-day footer (Monday-first). */
+const WEEKDAY_LONG_KEYS: EsKey[] = [
+  "habitsDashboard.weekdayLongMon",
+  "habitsDashboard.weekdayLongTue",
+  "habitsDashboard.weekdayLongWed",
+  "habitsDashboard.weekdayLongThu",
+  "habitsDashboard.weekdayLongFri",
+  "habitsDashboard.weekdayLongSat",
+  "habitsDashboard.weekdayLongSun",
+];
 
 export interface WeeklyChartProps {
   /** Monday-first percentages (7 entries). */
@@ -74,7 +77,9 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        event.stopPropagation();
+        // Sibling document listeners (other modals, app shortcuts) must not
+        // also react to the same Esc press.
+        event.stopImmediatePropagation();
         setReportOpen(false);
         return;
       }
@@ -98,9 +103,23 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
     };
   }, [reportOpen]);
 
+  // Pull focus back into the panel if it escapes while the report is open
+  // (mirrors the create-modal containment guard).
+  useEffect(() => {
+    if (!reportOpen) return;
+    const onFocusIn = (event: FocusEvent) => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      if (event.target instanceof Node && panel.contains(event.target)) return;
+      closeRef.current?.focus();
+    };
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, [reportOpen]);
+
   const min = Math.min(...values);
   const lowest = values.length > 0 ? values.indexOf(min) : -1;
-  const bestDay = fullWeekday(best.index);
+  const bestDay = t(WEEKDAY_LONG_KEYS[best.index] ?? "habitsDashboard.weekdayLongMon");
 
   return (
     <section
@@ -145,7 +164,13 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
       </div>
 
       <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-4 text-xs text-instrument/60">
-        <p>{t("habitsDashboard.weeklyBestDay", { day: bestDay, pct: Math.round(best.pct) })}</p>
+        <p>
+          {t("habitsDashboard.weeklyBestDayPre")}
+          <strong className="font-semibold text-instrument">
+            {t("habitsDashboard.weeklyBestDayBold", { day: bestDay, pct: Math.round(best.pct) })}
+          </strong>
+          {t("habitsDashboard.weeklyBestDayPost")}
+        </p>
         <button
           ref={triggerRef}
           type="button"

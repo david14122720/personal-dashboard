@@ -4,6 +4,7 @@ import {
   activeHabits,
   categoriesCovered,
   complianceDelta,
+  currentStreakDays,
   expectedDates,
   findMilestone,
   isExpected,
@@ -189,6 +190,18 @@ describe("habitDashboard streaks", () => {
     const logs = [log("h", "2026-09-07"), log("h", "2026-09-08"), log("h", "2026-09-09"), log("h", "2026-09-11")];
     expect(longestStreak([h], logs)).toEqual({ days: 3, habitNames: ["Gym"] });
     expect(longestStreak([], [])).toEqual({ days: 0, habitNames: [] });
+  });
+
+  it("gives an ended habit zero current streak in both report and milestone paths", () => {
+    const ended = habit({ id: "ended", name: "Reto", startDate: "2026-09-01", endDate: "2026-09-10" });
+    const logs = doneDaily("ended", "2026-09-01", "2026-09-10");
+    expect(currentStreakDays(ended, logs, TODAY)).toBe(0);
+    expect(findMilestone([ended], logs, TODAY)).toBeNull();
+  });
+
+  it("counts the current run in the report helper", () => {
+    const running = habit({ id: "run", startDate: "2026-09-01" });
+    expect(currentStreakDays(running, doneDaily("run", "2026-09-10", TODAY), TODAY)).toBe(15);
   });
 });
 

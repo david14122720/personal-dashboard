@@ -141,9 +141,12 @@ export function useBudgets() {
   return useSWR<BudgetWire[]>("dashboard/budgets", () => apiGet<BudgetWire[]>("/budgets"), config);
 }
 
+/** SWR key for the dashboard-home habits widget; toggles revalidate it. */
+export const DASHBOARD_HABITS_TODAY_KEY = "dashboard/habits-today";
+
 export function useHabitsToday() {
   return useSWR<HabitTodayWire[]>(
-    "dashboard/habits-today",
+    DASHBOARD_HABITS_TODAY_KEY,
     () => apiGet<HabitTodayWire[]>("/habits/today"),
     config,
   );

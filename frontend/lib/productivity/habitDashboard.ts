@@ -290,9 +290,10 @@ export function levelForXp(xp: number): number {
  * Current streak: consecutive done expected days ending at the latest done day.
  * Trailing expected days without any log are tolerated (today may not be
  * registered yet); an explicitly non-done expected day breaks the streak. An
- * ended habit (`endDate` before today) has no current streak.
+ * ended habit (`endDate` before today) has no current streak. Shared by the
+ * milestone and the report table so both read the same guarded number.
  */
-function currentStreakDays(habit: DashHabit, logs: DashLog[], todayYmd: string): number {
+export function currentStreakDays(habit: DashHabit, logs: DashLog[], todayYmd: string): number {
   const startMs = toMs(habit.startDate);
   if (!Number.isFinite(startMs)) return 0;
   if (habit.endDate && habit.endDate < todayYmd) return 0;

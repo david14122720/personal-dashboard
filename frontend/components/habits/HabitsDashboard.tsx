@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import { t, type EsKey } from "@/lib/i18n";
+import { DASHBOARD_HABITS_TODAY_KEY } from "@/lib/api/dashboard";
 import {
   HABITS_LIST_KEY,
   HABITS_TODAY_KEY,
@@ -19,6 +20,7 @@ import {
   activeHabits,
   categoriesCovered,
   complianceDelta,
+  currentStreakDays,
   findMilestone,
   levelForXp,
   longestStreak,
@@ -32,7 +34,6 @@ import {
   type DashHabit,
   type DashLog,
 } from "@/lib/productivity/habitDashboard";
-import { habitStats } from "@/lib/productivity/habitStats";
 import { todayYmdLocal } from "@/lib/productivity/productivity";
 import HabitCreateModal from "./HabitCreateModal";
 import HabitGrid, { type HabitGridRow } from "./HabitGrid";
@@ -128,9 +129,6 @@ const KPI_CARD =
   "flex min-h-[176px] flex-col justify-between rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px]";
 const CARD = "rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px]";
 const KPI_LABEL = "font-display text-[11px] font-semibold uppercase tracking-widest text-instrument/60";
-
-/** Dashboard-home habits cache (owned by `lib/api/dashboard.ts`). */
-const DASHBOARD_HABITS_TODAY_KEY = "dashboard/habits-today";
 
 function CalendarIcon({ className }: { className?: string }) {
   return (
@@ -247,26 +245,30 @@ export interface HabitsDashboardProps {
 /**
  * `/dashboard/habitos/` dashboard (spec §2): header + month navigator, 4 KPI
  * cards, category filters/legend, the month grid and the weekly/milestone/
- * reflection bottom row. Owns the visible-month state and the 12-month log
- * range so streaks and deltas have real history; every number comes from
+ * reflection bottom row. Owns the visible-month state and fetches logs in two
+ * ranges that always fit the backend `/habits/logs` 366-day cap: a rolling
+ * 12-month history window anchored to today (streaks/delta/milestone/XP) and
+ * the visible month itself (grid/compliance/chart). Every number comes from
  * `habitDashboard` helpers (no NaN/Infinity).
  */
 export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   const { mutate } = useSWRConfig();
   const today = todayYmd ?? todayYmdLocal();
   const currentMonth = today.slice(0, 7);
-  const minMonth = shiftMonthKey(currentMonth, -11);
+  // History is anchored to today (not the visible month), so its span stays
+  // under the 366-day API cap no matter how far back the user navigates.
+  const historyStartMonth = shiftMonthKey(currentMonth, -11);
+  const historyStart = `${historyStartMonth}-01`;
   const [visibleMonth, setVisibleMonth] = useState(currentMonth);
-  const month = visibleMonth < minMonth ? minMonth : visibleMonth > currentMonth ? currentMonth : visibleMonth;
+  const month = visibleMonth < historyStartMonth ? historyStartMonth : visibleMonth > currentMonth ? currentMonth : visibleMonth;
 
   const habits = useHabitsList();
-  const rangeStart = `${shiftMonthKey(month, -11)}-01`;
+  const monthStart = `${month}-01`;
   const monthEnd = monthRangeDays(month).slice(-1)[0] ?? `${month}-28`;
-  // Keep today in range even when the visible month is in the past: the today
-  // KPI, milestone, reflection and XP/level always read the same fetch.
-  const rangeEnd = monthEnd > today ? monthEnd : today;
-  const historyKey = habitsHistoryKey(rangeStart, rangeEnd);
-  const history = useHabitsHistory(rangeStart, rangeEnd);
+  const historyKey = habitsHistoryKey(historyStart, today);
+  const history = useHabitsHistory(historyStart, today);
+  const monthFetchKey = habitsHistoryKey(monthStart, monthEnd);
+  const monthFetch = useHabitsHistory(monthStart, monthEnd);
 
   const [filter, setFilter] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -282,15 +284,25 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
 
   const wires = habits.data ?? [];
   const dashHabits = useMemo(() => wires.map(toDashHabit), [wires]);
-  const dashLogs = useMemo(() => (history.data ?? []).map(toDashLog), [history.data]);
+  const historyLogs = useMemo(() => (history.data ?? []).map(toDashLog), [history.data]);
+  const monthFetchLogs = useMemo(() => (monthFetch.data ?? []).map(toDashLog), [monthFetch.data]);
+
+  // Union of both server ranges, deduped by habit/day; the visible-month fetch
+  // wins on conflict. Every KPI, chart and report memo reads this merged set.
+  const serverLogs = useMemo(() => {
+    const byPair = new Map<string, DashLog>();
+    for (const log of historyLogs) byPair.set(`${log.habitId}|${log.date}`, log);
+    for (const log of monthFetchLogs) byPair.set(`${log.habitId}|${log.date}`, log);
+    return [...byPair.values()];
+  }, [historyLogs, monthFetchLogs]);
 
   // Server logs with the pending optimistic cell overrides applied; every KPI,
   // chart and report memo reads this so toggles update synchronously.
   const displayLogs = useMemo(() => {
     const keys = Object.keys(overrides);
-    if (keys.length === 0) return dashLogs;
+    if (keys.length === 0) return serverLogs;
     const byPair = new Map<string, DashLog>();
-    for (const log of dashLogs) byPair.set(`${log.habitId}|${log.date}`, log);
+    for (const log of serverLogs) byPair.set(`${log.habitId}|${log.date}`, log);
     for (const key of keys) {
       const separator = key.lastIndexOf("|");
       if (separator <= 0) continue;
@@ -301,7 +313,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
       }
     }
     return [...byPair.values()];
-  }, [dashLogs, overrides]);
+  }, [serverLogs, overrides]);
 
   const donePairs = useMemo(() => {
     const set = new Set<string>();
@@ -311,12 +323,23 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
 
   const activeRows = useMemo(() => activeHabits(dashHabits, month, today), [dashHabits, month, today]);
   const archivedHabits = useMemo(() => dashHabits.filter((habit) => habit.isArchived), [dashHabits]);
+  // The CTA empty state only shows when nothing is left to track: no habits at
+  // all or every habit archived (archived rows live in their own section).
+  // Habits that exist but are inactive in the visible month get the neutral
+  // `noActiveInMonth` card instead.
+  const hasTrackableHabits = dashHabits.some((habit) => !habit.isArchived);
   const monthly = useMemo(() => monthlyCompliance(dashHabits, displayLogs, month, today), [dashHabits, displayLogs, month, today]);
+  // The previous month only counts when it sits inside the fetched history
+  // window; at the window edge its data is absent, so the delta hides.
+  const previousMonth = shiftMonthKey(month, -1);
   const previous = useMemo(
-    () => monthlyCompliance(dashHabits, displayLogs, shiftMonthKey(month, -1), today),
-    [dashHabits, displayLogs, month, today],
+    () =>
+      previousMonth < historyStartMonth
+        ? null
+        : monthlyCompliance(dashHabits, displayLogs, previousMonth, today),
+    [dashHabits, displayLogs, previousMonth, historyStartMonth, today],
   );
-  const delta = complianceDelta(monthly, previous);
+  const delta = previous ? complianceDelta(monthly, previous) : null;
   const streak = useMemo(() => longestStreak(dashHabits, displayLogs), [dashHabits, displayLogs]);
   const todayStats = useMemo(() => todayCompletion(dashHabits, displayLogs, today), [dashHabits, displayLogs, today]);
   const consistency = useMemo(
@@ -352,20 +375,17 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
     () =>
       activeRows.map((habit) => {
         const perHabit = monthlyCompliance([habit], displayLogs, month, today);
-        const perHabitLogs = displayLogs
-          .filter((log) => log.habitId === habit.id)
-          .map((log) => ({ habit_id: log.habitId, log_date: log.date, status: log.status }));
-        const stats = habitStats(perHabitLogs, habit.startDate || rangeStart, today, habit.daysOfWeek);
         return {
           id: habit.id,
           name: habit.name,
           monthPct: perHabit.pct,
           doneDays: perHabit.done,
-          currentStreak: stats.currentStreak,
+          // Same guarded helper as the milestone: ended habits report 0.
+          currentStreak: currentStreakDays(habit, displayLogs, today),
           maxStreak: longestStreak([habit], displayLogs).days,
         };
       }),
-    [activeRows, displayLogs, month, today, rangeStart],
+    [activeRows, displayLogs, month, today],
   );
 
   function isDone(habitId: string, date: string): boolean {
@@ -377,6 +397,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
     await Promise.all([
       mutate(HABITS_LIST_KEY),
       mutate(historyKey),
+      mutate(monthFetchKey),
       mutate(HABITS_TODAY_KEY),
       mutate(DASHBOARD_HABITS_TODAY_KEY),
     ]);
@@ -428,19 +449,21 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   function retry(): void {
     void mutate(HABITS_LIST_KEY);
     void mutate(historyKey);
+    void mutate(monthFetchKey);
   }
 
   function go(deltaMonths: number): void {
     setVisibleMonth((prev) => {
       const next = shiftMonthKey(prev, deltaMonths);
-      if (next < minMonth) return minMonth;
+      if (next < historyStartMonth) return historyStartMonth;
       if (next > currentMonth) return currentMonth;
       return next;
     });
   }
 
-  const loading = habits.isLoading || (history.isLoading && !history.data);
-  const loadFailed = habits.error || history.error;
+  const loading =
+    habits.isLoading || (history.isLoading && !history.data) || (monthFetch.isLoading && !monthFetch.data);
+  const loadFailed = habits.error || history.error || monthFetch.error;
   const parts = monthParts(month) ?? { name: month, year: "" };
   const streakLabel =
     streak.habitNames.length === 1
@@ -507,7 +530,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
 
   return (
     <div className="mx-auto flex w-full max-w-[1060px] flex-col gap-5">
-      <header className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+      <header className="flex flex-col gap-5 min-[1200px]:flex-row min-[1200px]:items-start min-[1200px]:justify-between">
         <div>
           <p className="inline-flex items-center gap-2 rounded-full border border-signal/30 bg-signal/10 px-3 py-1 font-display text-[11px] uppercase tracking-widest text-signal">
             <span aria-hidden="true" className="animate-glow-pulse h-1.5 w-1.5 rounded-full bg-signal" />
@@ -529,7 +552,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
             <button
               type="button"
               aria-label={t("habitsDashboard.monthPrev")}
-              disabled={month <= minMonth}
+              disabled={month <= historyStartMonth}
               onClick={() => go(-1)}
               className="rounded-lg p-1.5 transition-colors hover:bg-signal/10 hover:text-signal disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-instrument"
             >
@@ -575,8 +598,8 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
           <Skeleton className="h-14" />
           <Skeleton className="h-72" />
           <div className="flex flex-col gap-4 min-[1200px]:flex-row">
-            <Skeleton className="h-64 xl:w-3/5" />
-            <Skeleton className="h-64 xl:w-2/5" />
+            <Skeleton className="h-64 min-[1200px]:w-3/5" />
+            <Skeleton className="h-64 min-[1200px]:w-2/5" />
           </div>
         </div>
       ) : loadFailed ? (
@@ -604,7 +627,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                   {delta !== null ? (
                     delta === 0 ? (
                       <p className="mt-1 inline-flex items-center rounded-full bg-instrument/10 px-2 py-0.5 text-xs font-semibold text-instrument/60">
-                        {t("habitsDashboard.deltaNeutral", { n: 0 })}
+                        {t("habitsDashboard.deltaNeutral")}
                       </p>
                     ) : (
                       <p className={`mt-1 text-xs font-semibold ${delta > 0 ? "text-[#22C55E]" : "text-alert"}`}>
@@ -653,7 +676,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                     <span className="text-sm text-instrument/60">{t("habitsDashboard.activeTracking")}</span>
                   </p>
                   <p className="mt-1 flex items-center gap-1.5 text-xs text-instrument/50">
-                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-flow" />
+                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-[#22C55E]" />
                     {categoriesCount === 1
                       ? t("habitsDashboard.categoriesCoveredOne", { n: categoriesCount })
                       : t("habitsDashboard.categoriesCoveredMany", { n: categoriesCount })}
@@ -695,7 +718,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
             </section>
           </div>
 
-          {activeRows.length === 0 ? (
+          {!hasTrackableHabits ? (
             <>
               <section className={`${CARD} flex flex-col items-center gap-3 py-12 text-center`}>
                 <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-signal/15 text-signal">
@@ -779,17 +802,29 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                 </div>
               </div>
 
-              <section aria-label={t("habitsDashboard.title")} className={CARD}>
-                <HabitGrid
-                  rows={gridRows}
-                  days={monthRangeDays(month)}
-                  monthKey={month}
-                  todayYmd={today}
-                  isDone={isDone}
-                  onToggle={(habitId, date) => void handleToggle(habitId, date)}
-                  onArchive={(habitId) => void handleArchive(habitId)}
-                />
-              </section>
+              {activeRows.length === 0 ? (
+                <section className={`${CARD} flex flex-col items-center gap-3 py-12 text-center`}>
+                  <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-hull/40 text-instrument/50">
+                    <CalendarIcon className="h-7 w-7" />
+                  </span>
+                  <h2 className="font-display text-lg font-semibold text-instrument">
+                    {t("habitsDashboard.noActiveInMonth")}
+                  </h2>
+                  <p className="max-w-md text-sm text-instrument/50">{t("habitsDashboard.noActiveInMonthHint")}</p>
+                </section>
+              ) : (
+                <section aria-label={t("habitsDashboard.title")} className={CARD}>
+                  <HabitGrid
+                    rows={gridRows}
+                    days={monthRangeDays(month)}
+                    monthKey={month}
+                    todayYmd={today}
+                    isDone={isDone}
+                    onToggle={(habitId, date) => void handleToggle(habitId, date)}
+                    onArchive={(habitId) => void handleArchive(habitId)}
+                  />
+                </section>
+              )}
 
               {archivedSection}
 
@@ -844,7 +879,7 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                     <div className="mt-4 rounded-xl border border-white/5 bg-deck/50 p-3">
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-instrument/60">{t("habitsDashboard.milestoneNeuro", { n: level })}</span>
-                        <span className="font-mono tabular-nums text-signal">{t("habitsDashboard.milestoneXp", { n: xpMonth })}</span>
+                        <span className="font-mono tabular-nums text-[#38BDF8]">{t("habitsDashboard.milestoneXp", { n: xpMonth })}</span>
                       </div>
                       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-hull/60">
                         <div

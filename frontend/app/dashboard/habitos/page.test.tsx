@@ -109,6 +109,15 @@ const seenHabitPosts: Array<Record<string, unknown>> = [];
 const historyRanges: string[] = [];
 let todayFetches = 0;
 
+/** Backend cap (`parse_logs_range`): `(to - from).num_days() > 365` is 422 `range_too_wide`. */
+const MAX_LOG_SPAN_DAYS = 365;
+
+/** Inclusive day span of a captured `from|to` pair. */
+function rangeSpanDays(range: string): number {
+  const [from, to] = range.split("|");
+  return (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+}
+
 const server = setupServer(
   http.get("http://test.local/api/habits", () => HttpResponse.json(habitRows)),
   http.get("http://test.local/api/habits/logs", ({ request }) => {
@@ -116,6 +125,10 @@ const server = setupServer(
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
     historyRanges.push(`${from}|${to}`);
+    // Mirror the backend 422 so an out-of-contract range fails loudly.
+    if (from && to && rangeSpanDays(`${from}|${to}`) > MAX_LOG_SPAN_DAYS) {
+      return HttpResponse.json({ error: "range_too_wide" }, { status: 422 });
+    }
     const rows = logRows.filter((entry) => (!from || entry.log_date >= from) && (!to || entry.log_date <= to));
     return HttpResponse.json(rows);
   }),
@@ -295,11 +308,13 @@ describe("habitos dashboard page", () => {
     renderPage();
 
     expect(await screen.findByText("Septiembre")).toBeInTheDocument();
-    expect(historyRanges).toContain("2025-10-01|2026-09-30");
+    // Two ranges: today-anchored history + the visible month.
+    expect(historyRanges).toContain("2025-10-01|2026-09-15");
+    expect(historyRanges).toContain("2026-09-01|2026-09-30");
 
     fireEvent.click(screen.getByRole("button", { name: "Mes anterior" }));
     expect(await screen.findByText("Agosto")).toBeInTheDocument();
-    await waitFor(() => expect(historyRanges).toContain("2025-09-01|2026-09-15"));
+    await waitFor(() => expect(historyRanges).toContain("2026-08-01|2026-08-31"));
     expect(await screen.findByRole("button", { name: "Mes siguiente" })).not.toBeDisabled();
   });
 
@@ -350,11 +365,35 @@ describe("habitos dashboard page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Mes anterior" }));
     expect(await screen.findByText("Agosto")).toBeInTheDocument();
-    await waitFor(() => expect(historyRanges).toContain("2025-09-01|2026-09-15"));
+    await waitFor(() => expect(historyRanges).toContain("2026-08-01|2026-08-31"));
 
     const kpi = await screen.findByRole("region", { name: "COMPLETADOS HOY (DÍA 15)" });
     expect(within(kpi).getByText("1")).toBeInTheDocument();
     expect(within(kpi).getByText("/3")).toBeInTheDocument();
+  });
+
+  it("keeps every log request inside the 366-day cap and still renders a past month", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    await findGrid();
+
+    // Current-month view: today-anchored history + the visible month.
+    expect(historyRanges).toContain("2025-10-01|2026-09-15");
+    expect(historyRanges).toContain("2026-09-01|2026-09-30");
+
+    fireEvent.click(screen.getByRole("button", { name: "Mes anterior" }));
+    expect(await screen.findByText("Agosto")).toBeInTheDocument();
+    await waitFor(() => expect(historyRanges).toContain("2026-08-01|2026-08-31"));
+
+    // Both ranges the past-month view depends on fit the API contract.
+    for (const range of historyRanges) {
+      expect(rangeSpanDays(range), range).toBeLessThanOrEqual(MAX_LOG_SPAN_DAYS);
+    }
+
+    // 422 would swap the dashboard for the load-failed card; grid + KPIs must render.
+    expect(await findGrid()).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "CUMPLIMIENTO MENSUAL" })).toBeInTheDocument();
+    expect(screen.queryByText("No se pudo cargar el rastreador")).toBeNull();
   });
 
   it("updates the today KPI optimistically before the toggle mutation resolves", async () => {
@@ -454,6 +493,42 @@ describe("habitos dashboard page", () => {
     expect(screen.queryByRole("grid")).toBeNull();
   });
 
+  it("shows the first-habit empty state when there are no habits at all", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [];
+    renderPage();
+
+    expect(await screen.findByText("Aún no tienes hábitos")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Añadir tu primer hábito" })).toBeInTheDocument();
+    expect(screen.queryByRole("grid")).toBeNull();
+    expect(screen.queryByText("Sin hábitos activos en este mes")).toBeNull();
+  });
+
+  it("keeps filters visible and hides the CTA when the visible month has no active habits", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    expect(await screen.findByText("Septiembre")).toBeInTheDocument();
+
+    // Every habit starts in 2026, so the oldest fetched month (October 2025)
+    // predates them all and has zero active rows.
+    const previous = screen.getByRole("button", { name: "Mes anterior" });
+    for (let step = 0; step < 11; step += 1) fireEvent.click(previous);
+    expect(await screen.findByText("Octubre")).toBeInTheDocument();
+
+    expect(await screen.findByText("Sin hábitos activos en este mes")).toBeInTheDocument();
+    expect(
+      screen.getByText("Ningún hábito tiene días esperados en este mes. Cambia de mes para ver tu actividad."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Añadir tu primer hábito" })).toBeNull();
+    expect(screen.queryByText("Aún no tienes hábitos")).toBeNull();
+    expect(screen.queryByRole("grid")).toBeNull();
+    // Filter bar + legend stay visible for context.
+    expect(screen.getByRole("button", { name: "Todos (0)" })).toBeInTheDocument();
+    expect(screen.getByText("Completado")).toBeInTheDocument();
+    expect(screen.getByText("Sin registrar")).toBeInTheDocument();
+    expect(screen.getByText("Futuro")).toBeInTheDocument();
+  });
+
   it("renders days before startDate as disabled futuro cells even with a log", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
     habitRows = BASE_HABITS.map((row) => (row.id === "h1" ? { ...row, start_date: "2026-09-10" } : { ...row }));
@@ -536,6 +611,37 @@ describe("habitos dashboard page", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it("pulls focus back into the report modal when it escapes", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    await findGrid();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ver reporte detallado →" }));
+    const dialog = await screen.findByRole("dialog", { name: "Reporte detallado" });
+    const close = within(dialog).getByRole("button", { name: "Cerrar" });
+    expect(close).toHaveFocus();
+
+    screen.getByRole("button", { name: "Mes anterior" }).focus();
+    expect(close).toHaveFocus();
+  });
+
+  it("stops Esc at the report modal so sibling document listeners stay silent", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    await findGrid();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ver reporte detallado →" }));
+    await screen.findByRole("dialog", { name: "Reporte detallado" });
+    const sibling = vi.fn();
+    document.addEventListener("keydown", sibling);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(sibling).not.toHaveBeenCalled();
+    document.removeEventListener("keydown", sibling);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("pulls focus back into the create modal when it escapes", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
     renderPage();
@@ -560,12 +666,35 @@ describe("habitos dashboard page", () => {
     expect(screen.queryByText(/↗|↘/)).toBeNull();
   });
 
-  it("labels the best weekday with its full capitalized Spanish name", async () => {
+  it("hides the delta pill when the previous month sits outside the history window", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [habit({ id: "h1", name: "Agua", start_date: "2020-01-01" })];
+    logRows = [{ habit_id: "h1", log_date: "2025-10-05", status: "done" }];
+    renderPage();
+    await findGrid();
+
+    // Navigate to the oldest month (October 2025): its previous month
+    // (September 2025) falls before the fetched history window.
+    const previous = screen.getByRole("button", { name: "Mes anterior" });
+    for (let step = 0; step < 11; step += 1) fireEvent.click(previous);
+    expect(await screen.findByText("Octubre")).toBeInTheDocument();
+    expect(previous).toBeDisabled();
+
+    await waitFor(() => expect(historyRanges).toContain("2025-10-01|2025-10-31"));
+    expect(await findGrid()).toBeInTheDocument();
+    expect(screen.queryByText(/↗|↘/)).toBeNull();
+    expect(screen.queryByText("= 0%")).toBeNull();
+  });
+
+  it("renders the best-day footer with the full Spanish weekday in bold", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
     renderPage();
     await findGrid();
 
-    expect(await screen.findByText("Día con mayor rendimiento: Miércoles (13%)")).toBeInTheDocument();
+    const footer = await screen.findByText("Día con mayor rendimiento:");
+    const bold = footer.querySelector("strong");
+    expect(bold).not.toBeNull();
+    expect(bold).toHaveTextContent("Miércoles (13%)");
   });
 
   it("renders the milestone 100% phrase in bold green", async () => {
