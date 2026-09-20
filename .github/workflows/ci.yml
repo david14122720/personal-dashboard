@@ -8,11 +8,37 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     defaults:
-      run:
+      run: 
         working-directory: backend
+    # DB-gated backend tests self-skip without DATABASE_URL; this service plus
+    # the migration step below makes them actually execute in CI.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: personal_dashboard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://user:password@localhost:5432/personal_dashboard
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Service containers cannot mount backend/migrations as initdb scripts
+      # (docker-compose does), so apply them with autocommit psql, matching the
+      # out-of-band convention documented in the migration files.
+      - name: Apply migrations
+        run: |
+          for migration in migrations/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
+          done
       - run: cargo test --offline
 
   frontend:
