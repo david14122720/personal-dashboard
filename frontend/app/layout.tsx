@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, Inter, IBM_Plex_Mono } from "next/font/google";
+import { Space_Grotesk, Inter, IBM_Plex_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
 const display = Space_Grotesk({
@@ -21,6 +21,15 @@ const mono = IBM_Plex_Mono({
   display: "swap",
 });
 
+// Stitch display face (Control Deck login + habits only). Loaded via
+// next/font so it is self-hosted; `--font-deck-display` in globals.css
+// carries the fallback stack when the font files are unavailable.
+const deckDisplay = Plus_Jakarta_Sans({
+  subsets: ["latin"],
+  variable: "--font-deck-display",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "Panel Personal",
   description: "Centro de control personal privado: finanzas, hábitos, metas y notas.",
@@ -30,7 +39,7 @@ const FOUC_GUARD = `(function(){try{var t=localStorage.getItem("dashboard-theme"
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="es" className={`${display.variable} ${body.variable} ${mono.variable}`}>
+    <html lang="es" className={`${display.variable} ${body.variable} ${mono.variable} ${deckDisplay.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: FOUC_GUARD }} />
       </head>

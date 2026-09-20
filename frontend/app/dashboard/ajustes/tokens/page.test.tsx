@@ -114,6 +114,15 @@ describe("tokens page", () => {
     expect(screen.getByText("Activo")).toBeInTheDocument();
   });
 
+  it("marks the tokens entry current in the sidebar chrome", async () => {
+    render(h(TokensPage, null));
+    expect(await screen.findByText("cli")).toBeInTheDocument();
+
+    const tokensLinks = screen.getAllByRole("link", { name: "Tokens" });
+    expect(tokensLinks.some((l) => l.getAttribute("aria-current") === "page")).toBe(true);
+    expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeInTheDocument();
+  });
+
   it("shows the empty state when there are no tokens", async () => {
     getMode = "empty";
     render(h(TokensPage, null));

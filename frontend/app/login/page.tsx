@@ -5,11 +5,9 @@ import { useRouter } from "next/navigation";
 import { getToken, login } from "@/lib/api/client";
 import { t } from "@/lib/i18n";
 
-// Display stack for this screen: Stitch asks for Plus Jakarta Sans.
-// The global theme still provides Space Grotesk via `font-display`, so this
-// stack prefers Plus Jakarta Sans when available and falls back to the theme
-// display face and system sans otherwise. No global theme change, no CDN.
-const DISPLAY_STACK = "font-['Plus_Jakarta_Sans','Space_Grotesk',ui-sans-serif,system-ui,sans-serif]";
+// Display face for this screen: `font-deck-display` (Plus Jakarta Sans via
+// next/font in the root layout, system fallback in globals.css).
+// No global theme change, no CDN.
 
 function MailIcon({ className }: { className?: string }) {
   return (
@@ -141,7 +139,7 @@ export default function LoginPage() {
             <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-[#006edc] to-[#38bdf8] ring-1 ring-white/20">
               <DeckGlyph className="h-5 w-5 text-white" />
             </span>
-            <h1 id="login-heading" className={`${DISPLAY_STACK} mt-4 text-2xl font-bold tracking-tight`}>
+            <h1 id="login-heading" className="font-deck-display mt-4 text-2xl font-bold tracking-tight">
               Control{" "}
               <span className="bg-gradient-to-r from-sky-400 to-[#006edc] bg-clip-text text-transparent">
                 Deck

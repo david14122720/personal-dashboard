@@ -6,10 +6,9 @@ import { t } from "@/lib/i18n";
 import { useHabitsToday } from "@/lib/api/productivity";
 import { todayYmdLocal } from "@/lib/productivity/productivity";
 
-// Display stack for this screen: Stitch asks for Plus Jakarta Sans.
-// Falls back to the theme display face and system sans. No global
-// theme change, no CDN (same approach as the T1 login restyle).
-const DISPLAY_STACK = "font-['Plus_Jakarta_Sans','Space_Grotesk',ui-sans-serif,system-ui,sans-serif]";
+// Display face for this screen: `font-deck-display` (Plus Jakarta Sans via
+// next/font in the root layout, system fallback in globals.css).
+// No global theme change, no CDN (same approach as the T1 login restyle).
 
 /** Shift a `YYYY-MM` key by `delta` months. Garbage in, current month out. */
 export function shiftMonthKey(monthKey: string, delta: number): string {
@@ -121,6 +120,16 @@ export default function HabitsSection({ todayYmd }: { todayYmd?: string }) {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Cheap local breadcrumb (habits only, no global topbar). */}
+      <nav aria-label={t("dashboard.breadcrumbNav")} className="text-xs text-instrument/50">
+        <ol className="flex items-center gap-1.5">
+          <li>{t("dashboard.panel")}</li>
+          <li aria-hidden="true">›</li>
+          <li aria-current="page" className="text-instrument/80">
+            {t("productivity.tracker.title")}
+          </li>
+        </ol>
+      </nav>
       <header className="relative overflow-hidden rounded-xl border border-hull bg-hull/40 p-5 sm:p-6">
         <div aria-hidden="true" className="bg-grid-pattern pointer-events-none absolute inset-0 opacity-60" />
         <div
@@ -134,7 +143,7 @@ export default function HabitsSection({ todayYmd }: { todayYmd?: string }) {
             <span aria-hidden="true">•</span>
             {t("productivity.tracker.heroCycle", { n: monthRangeDays(month).length })}
           </p>
-          <h1 className={`${DISPLAY_STACK} mt-3 text-balance text-2xl font-semibold tracking-wide sm:text-3xl`}>
+          <h1 className="font-deck-display mt-3 text-balance text-2xl font-semibold tracking-wide sm:text-3xl">
             {t("productivity.tracker.title")}
           </h1>
           <p className="mt-1 max-w-xl text-sm text-instrument/60">{t("productivity.tracker.heroDescription")}</p>

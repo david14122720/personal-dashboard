@@ -1,5 +1,5 @@
 import { createElement as h } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -98,6 +98,28 @@ describe("habitos page", () => {
     const add = await screen.findByRole("button", { name: "Añadir Hábito" });
     expect(add).toBeDisabled();
     expect(add).toHaveAttribute("title", "La creación de hábitos aún no está disponible en esta vista");
+  });
+
+  it("renders Stitch sidebar chrome with the active habits item and sign-out", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Rastreador de hábitos" })).toBeInTheDocument();
+
+    // Breadcrumb is habits-local (no global topbar).
+    const crumb = screen.getByRole("navigation", { name: "Migas de pan" });
+    expect(within(crumb).getByText("Panel")).toBeInTheDocument();
+
+    // Desktop rail + mobile tabs share the Primary nav label.
+    expect(screen.getAllByRole("navigation", { name: "Primary" })).toHaveLength(2);
+
+    // The habits entry is marked current in at least one nav.
+    const habitsLinks = screen.getAllByRole("link", { name: "Hábitos" });
+    expect(habitsLinks.length).toBeGreaterThanOrEqual(2);
+    expect(habitsLinks.some((l) => l.getAttribute("aria-current") === "page")).toBe(true);
+
+    // Sidebar brand + sign-out card (no invented user profile).
+    expect(screen.getByText("Deck")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeInTheDocument();
   });
 
   it("redirects to login without a token", () => {

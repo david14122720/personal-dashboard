@@ -21,6 +21,8 @@ export const es = {
     footerNote: "Control Deck • Panel de administración y gestión privada",
   },
   dashboard: {
+    panel: "Panel",
+    breadcrumbNav: "Migas de pan",
     loadFailed: "No se pudo cargar el panel",
     loadFailedDetail: "{failed} de {total} secciones fallaron. Revisa tu conexión e inténtalo de nuevo.",
     sectionLoadFailed: "No se pudo cargar esta sección",
