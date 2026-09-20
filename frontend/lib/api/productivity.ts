@@ -310,3 +310,48 @@ export async function updateGoal(goalId: string, patch: UpdateGoalInput): Promis
 export function deleteGoal(goalId: string): Promise<void> {
   return apiDelete(`/goals/${goalId}`);
 }
+
+export type HabitDirection = "build" | "maintain" | "reduce" | "quit";
+export type HabitFrequency = "daily" | "weekly" | "monthly" | "custom";
+
+export interface CreateHabitInput {
+  name: string;
+  direction: HabitDirection;
+  frequency?: HabitFrequency;
+  days_of_week?: number[];
+  target_per_period?: string;
+  start_date?: string;
+  end_date?: string;
+  category_id?: string;
+  color?: string;
+  icon?: string;
+  description?: string;
+}
+
+export interface HabitWire {
+  id: string;
+  name: string;
+  description: string | null;
+  direction: string;
+  frequency: string;
+  days_of_week: number[];
+  target_per_period: string | number | null;
+  start_date: string;
+  end_date: string | null;
+  category_id: string | null;
+  color: string | null;
+  icon: string | null;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Create a habit (`POST /habits`). Mirrors `createGoal`: empty strings are
+ * stripped, `ApiError` (409 duplicate, 422 validation) surfaces to the
+ * caller. Callers revalidate `HABITS_TODAY_KEY` plus `dashboard/habits-today`
+ * when present to avoid a stale dual-cache.
+ */
+export function createHabit(input: CreateHabitInput): Promise<HabitWire> {
+  return apiPost<HabitWire>("/habits", stripEmptyStrings({ ...input }));
+}
