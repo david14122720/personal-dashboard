@@ -8,7 +8,6 @@ import {
   EventsList,
   EventViewTabs,
   GoalsList,
-  HabitsList,
   NotesResults,
   NotesSearchBox,
   SectionShell,
@@ -23,23 +22,19 @@ import {
 } from "@/components/productivity/ProductivityForms";
 import {
   GOALS_KEY,
-  HABITS_TODAY_KEY,
   TASKS_KEY,
   deleteEvent,
   deleteGoal,
   deleteNote,
   deleteTask,
-  logHabitToday,
   patchTaskStatus,
   updateNote,
   useEvents,
   useGoals,
-  useHabitsToday,
   useNotesSearch,
   useTasks,
   type EventWire,
   type GoalWire,
-  type HabitLogStatus,
   type NoteWire,
   type TaskWire,
 } from "@/lib/api/productivity";
@@ -52,17 +47,18 @@ import {
   type TaskDateView,
 } from "@/lib/productivity/productivity";
 import { toISODate } from "@/lib/dashboard/transforms";
-import HabitHistorySection from "@/components/productivity/HabitHistorySection";
 
 /**
  * Productivity screens container. Owns all SWR reads (fired in parallel),
- * the debounced notes query, and the habit-log / task-toggle mutations;
+ * the debounced notes query, and the task-toggle mutations;
  * `components/productivity/*` sections stay pure.
  *
  * S2 adds manual CRUD forms (Spanish, selects by name, never raw UUIDs),
- * date-based task views (Hoy / Próximas / Vencidas / Completadas), event
- * time views (Próximos / Vencidos), and a habits-calendar shortcut that
- * reserves the S7 anchor without changing the S1 check-in flow.
+ * date-based task views (Hoy / Próximas / Vencidas / Completadas) and event
+ * time views (Próximos / Vencidos).
+ *
+ * Habits live only in `/dashboard/habitos/` (`HabitsSection` +
+ * `HabitsTrackerGrid`); this screen owns goals/tasks/events/notes.
  */
 
 function SectionsSkeleton() {
@@ -98,7 +94,6 @@ function revalidateProductivity(mutate: ReturnType<typeof useSWRConfig>["mutate"
 export default function ProductivityScreens() {
   const { mutate } = useSWRConfig();
   const [query, setQuery] = useState("");
-  const [loggingId, setLoggingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pinningId, setPinningId] = useState<string | null>(null);
@@ -112,13 +107,12 @@ export default function ProductivityScreens() {
   const [eventsFrom] = useState(() => new Date().toISOString());
   const debouncedQuery = useDebouncedValue(query.trim());
 
-  const habits = useHabitsToday();
   const goals = useGoals();
   const tasks = useTasks();
   const events = useEvents(eventsFrom);
   const notes = useNotesSearch(debouncedQuery);
 
-  const queries = [habits, goals, tasks, events, notes];
+  const queries = [goals, tasks, events, notes];
   const isLoading = queries.some((q) => q.isLoading);
   const failed = queries.filter((q) => q.error);
 
@@ -134,16 +128,6 @@ export default function ProductivityScreens() {
   const goalNameById: Record<string, string> = Object.fromEntries(
     goalOptions.map((goal) => [goal.id, goal.name]),
   );
-
-  async function handleLog(habitId: string, status: HabitLogStatus) {
-    setLoggingId(habitId);
-    try {
-      await logHabitToday(habitId, status, toISODate());
-      await mutate(HABITS_TODAY_KEY);
-    } finally {
-      setLoggingId(null);
-    }
-  }
 
   async function handleToggle(task: TaskWire) {
     setTogglingId(task.id);
@@ -261,26 +245,6 @@ export default function ProductivityScreens() {
           </div>
         ) : (
           <>
-            <SectionShell
-              title={t("productivity.habits")}
-              hint={t("productivity.habitsHint")}
-              span="col-span-12 xl:col-span-7"
-            >
-              <HabitsList habits={habits.data ?? []} loggingId={loggingId} onLog={(id, s) => void handleLog(id, s)} />
-              <div id="calendario-habitos" className="mt-4">
-                    <HabitHistorySection habits={habits.data ?? []} />
-                <p className="mt-3 text-xs text-instrument/60">
-                  <a
-                    href="#calendario-habitos"
-                    className="underline decoration-dotted underline-offset-2 transition-colors hover:text-signal"
-                  >
-                    {t("productivity.habitsCalendarLink")}
-                  </a>
-                  {" · "}
-                  {t("productivity.habitsCalendarHint")}
-                </p>
-              </div>
-            </SectionShell>
             <SectionShell
               title={t("productivity.goals")}
               hint={t("productivity.goalsHint")}

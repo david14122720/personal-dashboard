@@ -7,25 +7,6 @@ import ProductivityScreens from "@/components/containers/ProductivityScreens";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
-const habitsToday = [
-  {
-    habit_id: "h1",
-    name: "Morning Run",
-    habit_frequency: "daily",
-    days_of_week: [],
-    current_streak: 5,
-    today_status: "done",
-  },
-  {
-    habit_id: "h2",
-    name: "Read",
-    habit_frequency: "daily",
-    days_of_week: [],
-    current_streak: 0,
-    today_status: "pending",
-  },
-];
-
 const goals = [
   {
     id: "g1",
@@ -129,18 +110,10 @@ const notesAll = [
   },
 ];
 
-const seenLogPosts: Array<{ habitId: string; body: unknown }> = [];
 const seenTaskPatches: Array<{ taskId: string; body: unknown }> = [];
 const seenNotesQueries: string[] = [];
 
 const server = setupServer(
-  http.get("http://test.local/api/habits/today", () => HttpResponse.json(habitsToday)),
-  http.post("http://test.local/api/habits/:id/logs", async ({ params, request }) => {
-    seenLogPosts.push({ habitId: params.id as string, body: await request.json() });
-    return HttpResponse.json({ id: "l1" }, { status: 201 });
-  }),
-  http.patch("http://test.local/api/habits/:id/logs/:date", () => HttpResponse.json({ id: "l1" })),
-  http.get("http://test.local/api/habits/logs", () => HttpResponse.json([])),
   http.get("http://test.local/api/goals", () => HttpResponse.json(goals)),
   http.get("http://test.local/api/tasks", () => HttpResponse.json(tasks)),
   http.patch("http://test.local/api/tasks/:id", async ({ params, request }) => {
@@ -162,7 +135,6 @@ const server = setupServer(
 beforeAll(() => server.listen());
 afterEach(() => {
   server.resetHandlers();
-  seenLogPosts.length = 0;
   seenTaskPatches.length = 0;
   seenNotesQueries.length = 0;
 });
@@ -177,37 +149,11 @@ function renderScreens() {
 }
 
 describe("productivity screens", () => {
-  it("renders habits with streak counts and LED status but no streak-derived heatmap", async () => {
+  it("does not render a habits section (single owner is /dashboard/habitos/)", async () => {
     renderScreens();
-    const habits = await screen.findByRole("region", { name: "Hábitos" });
-    expect(within(habits).getAllByText("Morning Run").length).toBeGreaterThanOrEqual(1);
-    expect(within(habits).getByText("racha de 5 días · hecho")).toBeInTheDocument();
-    expect(within(habits).getByRole("img", { name: "Morning Run, estado hecho" })).toHaveClass("bg-flow");
-    expect(
-      within(habits).queryByRole("img", { name: "Morning Run recent completions" }),
-    ).not.toBeInTheDocument();
-    expect(within(habits).getByText("racha de 0 días · pendiente")).toBeInTheDocument();
-  });
-
-  it("renders the real-log history section in the calendario-habitos slot", async () => {
-    renderScreens();
-    const habits = await screen.findByRole("region", { name: "Hábitos" });
-    const history = within(habits).getByRole("region", { name: "Historial" });
-    expect(within(history).getByRole("combobox", { name: "Hábito" })).toHaveTextContent("Morning Run");
-    expect(history.textContent).not.toContain("h1");
-    expect(await within(history).findByText("Sin registros en este período", {}, { timeout: 8000 })).toBeInTheDocument();
-  });
-  it("logs a habit as done through POST with today's date", async () => {
-    renderScreens();
-    const habits = await screen.findByRole("region", { name: "Hábitos" });
-    fireEvent.click(within(habits).getByRole("button", { name: "Registrar Read como hecho" }));
-    await waitFor(() => {
-      expect(seenLogPosts).toHaveLength(1);
-    });
-    expect(seenLogPosts[0].habitId).toBe("h2");
-    const body = seenLogPosts[0].body as { log_date: string; status: string };
-    expect(body.status).toBe("done");
-    expect(body.log_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    await screen.findByRole("region", { name: "Metas" });
+    expect(screen.queryByRole("region", { name: "Hábitos" })).not.toBeInTheDocument();
+    expect(screen.queryByText("calendario-habitos")).not.toBeInTheDocument();
   });
 
   it("renders goals with auto-derived progress bars and Spanish status", async () => {
@@ -269,7 +215,6 @@ describe("productivity screens", () => {
 
   it("shows empty states when every productivity endpoint returns nothing", async () => {
     server.use(
-      http.get("http://test.local/api/habits/today", () => HttpResponse.json([])),
       http.get("http://test.local/api/goals", () => HttpResponse.json([])),
       http.get("http://test.local/api/tasks", () => HttpResponse.json([])),
       http.get("http://test.local/api/events", () => HttpResponse.json([])),
@@ -280,7 +225,6 @@ describe("productivity screens", () => {
         <ProductivityScreens />
       </SWRConfig>,
     );
-    expect(await screen.findByText("Sin hábitos aún")).toBeInTheDocument();
     expect(await screen.findByText("Sin metas aún")).toBeInTheDocument();
     expect(await screen.findByText("Sin tareas aún")).toBeInTheDocument();
     expect(await screen.findByText("Sin próximos eventos")).toBeInTheDocument();

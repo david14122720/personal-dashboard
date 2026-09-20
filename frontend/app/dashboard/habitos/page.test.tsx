@@ -91,13 +91,17 @@ describe("habitos page", () => {
     expect(screen.getByRole("button", { name: "Mes siguiente" })).not.toBeDisabled();
   });
 
-  it("keeps the add-habit action honestly disabled without CRUD", async () => {
+  it("opens the create-habit form from the enabled action", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
     renderPage();
 
     const add = await screen.findByRole("button", { name: "Añadir Hábito" });
-    expect(add).toBeDisabled();
-    expect(add).toHaveAttribute("title", "La creación de hábitos aún no está disponible en esta vista");
+    expect(add).not.toBeDisabled();
+    expect(add).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(add);
+    expect(await screen.findByRole("form", { name: "Nuevo hábito" })).toBeInTheDocument();
+    expect(add).toHaveAttribute("aria-expanded", "true");
   });
 
   it("renders Stitch sidebar chrome with the active habits item and sign-out", async () => {
