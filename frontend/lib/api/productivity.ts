@@ -78,6 +78,13 @@ export function useHabitsToday() {
   return useSWR<HabitTodayWire[]>(HABITS_TODAY_KEY, () => apiGet<HabitTodayWire[]>("/habits/today"), config);
 }
 
+export const HABITS_LIST_KEY = "productivity/habits-list";
+
+/** Full owned habit rows (`GET /habits`), including archived ones and metadata. */
+export function useHabitsList() {
+  return useSWR<HabitWire[]>(HABITS_LIST_KEY, () => apiGet<HabitWire[]>("/habits"), config);
+}
+
 /** One row of `GET /habits/logs?from&to` (multi-habit, single round-trip). */
 export interface HabitLogWire { habit_id: string; log_date: string; status: string; }
 
@@ -133,23 +140,18 @@ export function useNotesSearch(query: string) {
 }
 
 /**
- * Log today's status for a habit. POSTs the log for `today` (`YYYY-MM-DD`);
- * when the log already exists (409) it PATCHes the same date instead, so a
- * second tap on the same day updates rather than errors.
+ * POST a log for any `date` (`YYYY-MM-DD`); when the log already exists (409)
+ * PATCH the same date instead, so a repeated tap updates rather than errors.
  */
-export async function logHabitToday(
-  habitId: string,
-  status: HabitLogStatus,
-  today: string,
-): Promise<void> {
+async function logHabitStatus(habitId: string, date: string, status: HabitLogStatus): Promise<void> {
   const res = await apiFetch(`/habits/${habitId}/logs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ log_date: today, status }),
+    body: JSON.stringify({ log_date: date, status }),
   });
   if (res.ok) return;
   if (res.status === 409) {
-    const patch = await apiFetch(`/habits/${habitId}/logs/${today}`, {
+    const patch = await apiFetch(`/habits/${habitId}/logs/${date}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
@@ -158,6 +160,32 @@ export async function logHabitToday(
     return;
   }
   throw await toApiError(res);
+}
+
+/** Log today's status for a habit (`POST` with 409 -> `PATCH` fallback). */
+export async function logHabitToday(
+  habitId: string,
+  status: HabitLogStatus,
+  today: string,
+): Promise<void> {
+  await logHabitStatus(habitId, today, status);
+}
+
+/** Delete one habit log for a date (`DELETE /habits/{id}/logs/{date}`). Idempotent upstream (204). */
+export function deleteHabitLog(habitId: string, date: string): Promise<void> {
+  return apiDelete(`/habits/${habitId}/logs/${date}`);
+}
+
+/**
+ * Toggle a habit log for any date: when it is currently done the log is
+ * deleted, otherwise it is marked done through the POST/409-PATCH helper.
+ */
+export async function toggleHabitLog(habitId: string, date: string, currentlyDone: boolean): Promise<void> {
+  if (currentlyDone) {
+    await deleteHabitLog(habitId, date);
+    return;
+  }
+  await logHabitStatus(habitId, date, "done");
 }
 
 /** Toggle a task between `completed` and `pending` (reopen). */
@@ -323,6 +351,8 @@ export interface CreateHabitInput {
   start_date?: string;
   end_date?: string;
   category_id?: string;
+  category?: string;
+  short_label?: string;
   color?: string;
   icon?: string;
   description?: string;
@@ -339,6 +369,8 @@ export interface HabitWire {
   start_date: string;
   end_date: string | null;
   category_id: string | null;
+  category: string | null;
+  short_label: string | null;
   color: string | null;
   icon: string | null;
   is_archived: boolean;
@@ -354,4 +386,15 @@ export interface HabitWire {
  */
 export function createHabit(input: CreateHabitInput): Promise<HabitWire> {
   return apiPost<HabitWire>("/habits", stripEmptyStrings({ ...input }));
+}
+
+/** Archive or restore a habit (`PATCH /habits/{id}`) and return the updated row. */
+export async function archiveHabit(habitId: string, archived: boolean): Promise<HabitWire> {
+  const res = await apiFetch(`/habits/${habitId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_archived: archived }),
+  });
+  if (!res.ok) throw await toApiError(res);
+  return (await res.json()) as HabitWire;
 }

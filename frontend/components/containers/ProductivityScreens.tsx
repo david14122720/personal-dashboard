@@ -57,8 +57,8 @@ import { toISODate } from "@/lib/dashboard/transforms";
  * date-based task views (Hoy / Próximas / Vencidas / Completadas) and event
  * time views (Próximos / Vencidos).
  *
- * Habits live only in `/dashboard/habitos/` (`HabitsSection` +
- * `HabitsTrackerGrid`); this screen owns goals/tasks/events/notes.
+ * Habits live only in `/dashboard/habitos/` (`HabitsDashboard` +
+ * `HabitGrid`); this screen owns goals/tasks/events/notes.
  */
 
 function SectionsSkeleton() {

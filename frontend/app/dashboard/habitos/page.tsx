@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
-import HabitsSection from "@/components/productivity/HabitsSection";
+import HabitsDashboard from "@/components/habits/HabitsDashboard";
 import { getToken } from "@/lib/api/client";
 
 export default function HabitosPage() {
@@ -17,7 +17,7 @@ export default function HabitosPage() {
 
   return (
     <AppShell>
-      <HabitsSection />
+      <HabitsDashboard />
     </AppShell>
   );
 }
