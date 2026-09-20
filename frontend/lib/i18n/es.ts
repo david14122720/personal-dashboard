@@ -4,6 +4,7 @@ export const es = {
     overview: "Resumen",
     finance: "Finanzas",
     productivity: "Productividad",
+    habits: "Hábitos",
     tokens: "Tokens",
     signOut: "Cerrar sesión",
   },

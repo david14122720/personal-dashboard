@@ -53,7 +53,6 @@ import {
 } from "@/lib/productivity/productivity";
 import { toISODate } from "@/lib/dashboard/transforms";
 import HabitHistorySection from "@/components/productivity/HabitHistorySection";
-import HabitsTrackerGrid from "@/components/productivity/HabitsTrackerGrid";
 
 /**
  * Productivity screens container. Owns all SWR reads (fired in parallel),
@@ -282,9 +281,6 @@ export default function ProductivityScreens() {
                 </p>
               </div>
             </SectionShell>
-            <div className="col-span-12">
-              <HabitsTrackerGrid habits={habits.data ?? []} />
-            </div>
             <SectionShell
               title={t("productivity.goals")}
               hint={t("productivity.goalsHint")}
