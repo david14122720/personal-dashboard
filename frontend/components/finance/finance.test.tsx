@@ -186,9 +186,6 @@ const server = setupServer(
       },
     ]);
   }),
-  http.get("http://test.local/api/transfers", () => {
-    return HttpResponse.json({ items: [], next_cursor: null, total_count: 0 });
-  }),
   http.get("http://test.local/api/assets", () => {
     return HttpResponse.json([]);
   }),

@@ -1,11 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import TransactionsLedger from "@/components/finance/TransactionsLedger";
-import TransferHistory from "@/components/finance/TransferHistory";
-import { ExpenseForm, IncomeForm, TransferForm } from "@/components/finance/ManualCapture";
+import { ExpenseForm, IncomeForm } from "@/components/finance/ManualCapture";
 import {
   apiDelete,
   apiPost,
@@ -13,20 +12,14 @@ import {
   setToken,
 } from "@/lib/api/client";
 import {
-  buildTransfersPath,
   createTransaction,
-  createTransfer,
   deleteAccount,
   fetchFinanceCategories,
-  fetchTransfersPage,
-  transfersPageKey,
 } from "@/lib/api/finance";
 import {
   normalizeManualAmount,
   toAccountOptions,
   toCategoryOptions,
-  toTransferRows,
-  transferKey,
 } from "@/lib/finance/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
@@ -59,7 +52,6 @@ const categories = [
 
 const seenPosts: { url: string; body: unknown }[] = [];
 const seenDeletes: string[] = [];
-const seenTransferUrls: string[] = [];
 
 const server = setupServer(
   http.get("http://test.local/api/accounts", () => HttpResponse.json(accounts)),
@@ -87,91 +79,6 @@ const server = setupServer(
       { status: 201 },
     );
   }),
-  http.post("http://test.local/api/transfers", async ({ request }) => {
-    const body = (await request.json()) as Record<string, unknown>;
-    seenPosts.push({ url: request.url, body });
-    return HttpResponse.json(
-      {
-        transfer_group_id: "g-new",
-        legs: [
-          {
-            id: "leg-out",
-            account_id: body["from_account_id"],
-            type: "transfer",
-            amount: body["amount"],
-            currency: "COP",
-            occurred_on: body["occurred_on"],
-            category_id: null,
-            description: body["description"] ?? null,
-            notes: null,
-            credit_card_account_id: null,
-          },
-          {
-            id: "leg-in",
-            account_id: body["to_account_id"],
-            type: "transfer",
-            amount: body["amount"],
-            currency: "COP",
-            occurred_on: body["occurred_on"],
-            category_id: null,
-            description: body["description"] ?? null,
-            notes: null,
-            credit_card_account_id: null,
-          },
-        ],
-      },
-      { status: 201 },
-    );
-  }),
-  http.get("http://test.local/api/transfers", ({ request }) => {
-    seenTransferUrls.push(request.url);
-    const url = new URL(request.url);
-    if (url.searchParams.get("cursor") === "CURSOR-2") {
-      return HttpResponse.json({
-        items: [
-          {
-            transfer_group_id: "g-1",
-            from_account_id: "a-src",
-            to_account_id: "a-dst",
-            amount: "50000.00",
-            currency: "COP",
-            occurred_on: "2026-09-01",
-            description: "ahorro",
-            created_at: "2026-09-01T00:00:00Z",
-          },
-        ],
-        next_cursor: null,
-        total_count: 3,
-      });
-    }
-    return HttpResponse.json({
-      items: [
-        {
-          transfer_group_id: "g-3",
-          from_account_id: "a-src",
-          to_account_id: "a-dst",
-          amount: "100000.00",
-          currency: "COP",
-          occurred_on: "2026-09-03",
-          category_id: undefined,
-          description: "pago",
-          created_at: "2026-09-03T00:00:00Z",
-        },
-        {
-          transfer_group_id: "g-2",
-          from_account_id: "a-dst",
-          to_account_id: "a-src",
-          amount: "25000.00",
-          currency: "COP",
-          occurred_on: "2026-09-02",
-          description: null,
-          created_at: "2026-09-02T00:00:00Z",
-        },
-      ],
-      next_cursor: "CURSOR-2",
-      total_count: 3,
-    });
-  }),
   http.delete("http://test.local/api/accounts/:id", ({ request }) => {
     seenDeletes.push(request.url);
     return new HttpResponse(null, { status: 204 });
@@ -190,7 +97,6 @@ afterEach(() => {
   server.resetHandlers();
   seenPosts.length = 0;
   seenDeletes.length = 0;
-  seenTransferUrls.length = 0;
   localStorage.clear();
   resetAuthRedirectForTests();
 });
@@ -203,18 +109,6 @@ function renderWithSWR(ui: React.ReactElement) {
 }
 
 describe("S1 api helpers (COP, sin UUIDs visibles)", () => {
-  it("serializes transfer filters and keeps the cursor opaque", () => {
-    const path = buildTransfersPath({ from: "2026-09-01" }, "b3BhcXVlLW9wYXF1ZQ");
-    expect(path).toContain("from=2026-09-01");
-    expect(path).toContain("cursor=b3BhcXVlLW9wYXF1ZQ");
-    expect(buildTransfersPath({}, null)).toBe("/transfers");
-  });
-
-  it("produces distinct SWR keys per cursor and filter set", () => {
-    expect(transfersPageKey({}, null)).not.toBe(transfersPageKey({}, "abc"));
-    expect(transferKey({ from: "2026-09-01" })).not.toBe(transferKey({}));
-  });
-
   it("creates an income via POST /transactions type=income", async () => {
     setToken("tok");
     const created = await createTransaction({
@@ -240,29 +134,6 @@ describe("S1 api helpers (COP, sin UUIDs visibles)", () => {
       payment_method: "efectivo",
     });
     expect(seenPosts[0].body).toMatchObject({ type: "expense", payment_method: "efectivo" });
-  });
-
-  it("creates a transfer via POST /transfers with origin/dest ids", async () => {
-    setToken("tok");
-    const created = await createTransfer({
-      from_account_id: "a-src",
-      to_account_id: "a-dst",
-      amount: "100000.00",
-      occurred_on: "2026-09-05",
-    });
-    expect(created.transfer_group_id).toBe("g-new");
-    expect(seenPosts[0].url).toContain("/transfers");
-  });
-
-  it("lists transfers with keyset pagination", async () => {
-    setToken("tok");
-    const page1 = await fetchTransfersPage({ limit: 2 }, null);
-    expect(page1.items).toHaveLength(2);
-    expect(page1.total_count).toBe(3);
-    expect(page1.next_cursor).toBe("CURSOR-2");
-    const page2 = await fetchTransfersPage({ limit: 2 }, page1.next_cursor);
-    expect(page2.items).toHaveLength(1);
-    expect(seenTransferUrls.some((url) => url.includes("cursor=CURSOR-2"))).toBe(true);
   });
 
   it("lists finance categories ordered by name", async () => {
@@ -295,24 +166,6 @@ describe("S1 transforms (números solo en la frontera)", () => {
     expect(normalizeManualAmount("10.005")).toBeNull();
     expect(normalizeManualAmount("")).toBeNull();
     expect(normalizeManualAmount("abc")).toBeNull();
-  });
-
-  it("coerces transfer history amounts to numbers", () => {
-    const rows = toTransferRows([
-      {
-        transfer_group_id: "g-1",
-        from_account_id: "a-src",
-        to_account_id: "a-dst",
-        amount: "100000.00",
-        currency: "COP",
-        occurred_on: "2026-09-03",
-        description: "pago",
-        created_at: "2026-09-03T00:00:00Z",
-      },
-    ]);
-    expect(rows[0].amount).toBe(100000);
-    expect(rows).toHaveLength(1);
-    expect(toTransferRows(null)).toEqual([]);
   });
 
   it("sorts account/category options by Spanish name", () => {
@@ -396,68 +249,6 @@ describe("S1 capture forms (español, selectores por nombre)", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Guardar gasto" }));
     expect(await within(form).findByText("Movimiento guardado.")).toBeInTheDocument();
     expect(seenPosts[0].body).toMatchObject({ payment_method: "efectivo" });
-  });
-
-  it("blocks a transfer with the same origin and destination in Spanish", async () => {
-    renderWithSWR(<TransferForm />);
-    const form = await screen.findByRole("form", { name: "Nueva transferencia" });
-    fireEvent.change(within(form).getByLabelText("Monto (COP)"), {
-      target: { value: "100000" },
-    });
-    fireEvent.change(within(form).getByLabelText("Cuenta origen"), {
-      target: { value: "a-src" },
-    });
-    fireEvent.change(within(form).getByLabelText("Cuenta destino"), {
-      target: { value: "a-src" },
-    });
-    fireEvent.click(within(form).getByRole("button", { name: "Guardar transferencia" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent(
-      "El origen y el destino deben ser cuentas distintas.",
-    );
-    expect(seenPosts).toHaveLength(0);
-  });
-
-  it("saves a transfer chosen by account names", async () => {
-    renderWithSWR(<TransferForm />);
-    const form = await screen.findByRole("form", { name: "Nueva transferencia" });
-    expect(await within(form).findAllByRole("option", { name: "Billetera" })).toHaveLength(2);
-    fireEvent.change(within(form).getByLabelText("Monto (COP)"), {
-      target: { value: "100000" },
-    });
-    fireEvent.change(within(form).getByLabelText("Cuenta origen"), {
-      target: { value: "a-src" },
-    });
-    fireEvent.change(within(form).getByLabelText("Cuenta destino"), {
-      target: { value: "a-dst" },
-    });
-    fireEvent.click(within(form).getByRole("button", { name: "Guardar transferencia" }));
-    expect(await within(form).findByText("Transferencia guardada.")).toBeInTheDocument();
-    expect(seenPosts[0].url).toContain("/transfers");
-  });
-});
-
-describe("S1 transfer history (nombres, sin UUIDs)", () => {
-  it("lists transfers with origin → destination names and Spanish count", async () => {
-    renderWithSWR(<TransferHistory locale="es-CO" />);
-    const region = screen.getByRole("region", { name: "Historial de transferencias" });
-    expect(await within(region).findByText("Billetera → Banco")).toBeInTheDocument();
-    expect(await within(region).findByText("Mostrando 2 de 3 transferencias")).toBeInTheDocument();
-    expect(within(region).queryByText(/a-src/)).not.toBeInTheDocument();
-    expect(within(region).queryByText(/g-3/)).not.toBeInTheDocument();
-  });
-
-  it("appends the next page through the opaque cursor", async () => {
-    renderWithSWR(<TransferHistory locale="es-CO" />);
-    const region = screen.getByRole("region", { name: "Historial de transferencias" });
-    await within(region).findByText("Billetera → Banco");
-    fireEvent.click(within(region).getByRole("button", { name: "Cargar más" }));
-    expect(await within(region).findByText("Mostrando 3 de 3 transferencias")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(
-        within(region).queryByRole("button", { name: "Cargar más" }),
-      ).not.toBeInTheDocument();
-    });
-    expect(seenTransferUrls.some((url) => url.includes("cursor=CURSOR-2"))).toBe(true);
   });
 });
 

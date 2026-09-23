@@ -34,9 +34,8 @@ async fn api_fallback_handler() -> (StatusCode, Json<serde_json::Value>) {
 }
 
 /// All API routes, mounted under `/api` by [`build_router`].
-/// Slice 0 (p6-frontend-dashboard) adds the dashboard reads
-/// (`GET /transactions` + stats, `GET /habits/today`, `PATCH /me/preferences`)
-/// and upgrades `GET /budgets` to the collection-with-status shape.
+/// Slice S1 removed the `/transfers` routes (`routes::transfers` deleted);
+/// transfers are now recorded as two manual balance edits.
 fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(routes::login::login_handler))
@@ -74,11 +73,6 @@ fn api_routes() -> Router<AppState> {
             "/transactions/{id}",
             patch(routes::transactions::patch_transaction_handler)
                 .delete(routes::transactions::delete_transaction_handler),
-        )
-        .route(
-            "/transfers",
-            post(routes::transfers::create_transfer_handler)
-                .get(routes::transfers::list_transfers_handler),
         )
         .route(
             "/categories",

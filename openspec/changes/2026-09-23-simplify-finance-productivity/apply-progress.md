@@ -214,3 +214,143 @@
 - `backend/src/routes/subscriptions.rs` (fixture label only)
 - `openspec/specs/finance-core-invariants/spec.md` (new canonical copy)
 - `openspec/changes/.../tasks.md` (7 S0 boxes checked; parent boxes byte-preserved)
+
+---
+
+# Apply progress — S1 Transfers removal
+
+- change: `2026-09-23-simplify-finance-productivity`
+- slice: S1 only (transfers eradication: backend + frontend + specs + objetivo block).
+  Untouched per boundary: budgets, transactions, migration 0011, PATCH balance,
+  MCP transaction tools, productivity files.
+- date: 2026-09-23
+- status: S1 complete — all 10 S1 tasks (`S1-WU1` 5/5, `S1-WU2` 5/5) marked `- [x]`
+  in `tasks.md`.
+- delivery: auto-chain / stacked-to-main. No commit (parent owns commits).
+
+## Completed (WU1 — Frontend retirement)
+
+- Deleted `frontend/components/finance/TransferHistory.tsx`; removed its import
+  and `<TransferHistory/>` usage from `FinanceScreens.tsx`.
+- Deleted the transfers block in `frontend/lib/api/finance.ts`:
+  `TransferLegWire`, `TransferCreateWire`, `CreateTransferInput`,
+  `createTransfer`, `TransferHistoryWire`, `TransferListWire`,
+  `TransferFilters`, `buildTransfersPath`, `transfersPageKey`,
+  `fetchTransfersPage`, `useTransfersPage`.
+- Deleted `TransferRow`, `TransferFilters`, `toTransferRows`, `transferKey`
+  from `frontend/lib/finance/finance.ts` (+ the two type imports).
+- Tests/mocks: removed the `/api/transfers` MSW handler from
+  `finance.test.tsx`; `finance.test.ts` and `e2e/sections.spec.ts` contained
+  no transfer assertions (no-op, verified by grep).
+- Deleted all 16 S1 i18n keys from `es.ts` (`transfersTitle`,
+  `transfersSubtitle`, `transfersRegion`, `showingTransfers`, `noTransfers`,
+  `noTransfersHint`, `loadingTransfers`, `transfersLoadFailed`,
+  `transfersLoadFailedHint`, `transferDirection`, `newTransfer`,
+  `saveTransfer`, `transferSaved`, `sameAccountError`, `fromAccount`,
+  `toAccount`); kept `finance.paymentTransfer` (payment method in
+  `SubscriptionForms`/`DebtPayments`/`ManualCapture` payment options).
+- Orphan sweep: exact `t("finance.<key>")` search returns zero hits for all
+  16 keys (the naive `toAccount` substring hit is `toAccountCards` /
+  `toAccountOptions`, unrelated helpers). `pnpm tsc --noEmit` clean.
+
+## Completed (WU2 — Backend, guard, docs)
+
+- Deleted `backend/src/routes/transfers.rs`; removed `pub mod transfers`
+  from `routes/mod.rs`; deleted the `/transfers` route block in `main.rs`
+  and rewrote the `api_routes` doc comment as the S1 removal record.
+- Moved the `migration_is_function_only_and_0002_untouched` byte-guard into
+  new `backend/tests/migration_0011_removal.rs`; deleted
+  `backend/tests/migration_0005_transfer_trigger.rs` (with its 4
+  transfer-specific tests). S3a appends the 0011 post-conditions here.
+- Deleted canonical `openspec/specs/finance-transfers/`; appended the delta
+  `Payment Method Catalog Stability` requirement to canonical
+  `openspec/specs/finance-subscriptions/spec.md` and the `Removed Feature
+  Key Hygiene` requirement to canonical
+  `openspec/specs/frontend-i18n/spec.md`.
+- Edited `objetivo.md` "Transferencias" block only: manual-balance rule +
+  dated (2026-09-23) reversal note (ledger/transfers unused, maintenance
+  cost exceeded value, manual balance covers the use case, no backup).
+
+## Required dangling-reference fixes (beyond the allow-list, still S1-only)
+
+The task allow-list omitted three files that import deleted transfer
+symbols; leaving them would break the build and violate the
+zero-dangling-references invariant, so they were edited minimally for
+transfer removal only (no budgets/transactions/MCP/productivity change):
+
+1. `frontend/components/finance/ManualCapture.tsx`: removed `TransferForm`
+   + its `createTransfer` import + the third `xl:grid-cols-3` column (now
+   2 cols: income/expense). `PAYMENT_OPTIONS` keeps `finance.paymentTransfer`.
+2. `frontend/components/finance/s1-capture.test.tsx`: removed transfer
+   imports, `/api/transfers` MSW handlers, and all transfer tests
+   (filters/keys, create, list, coerce, same-account block, save, history);
+   income/expense/category/account/ledger tests kept. Also fixed one
+   self-inflicted bad merge (transfers-POST opener swallowed the
+   accounts-DELETE handler → 2 MSW timeouts) and dropped the now-unused
+   `waitFor` import.
+3. `backend/src/routes/budgets.rs`: deleted the single transfer-coupled
+   test `reconciliation_signed_sum_matches_cached_balance` (it imported
+   `crate::routes::transfers`); no handler logic touched — the module is
+   deleted wholesale in S2.
+
+## Verification (exact commands, observed results)
+
+- `cd backend && cargo test`: lib 422 passed / 0 failed; integration
+  3 + 10 + 1 passed / 0 failed. (Lib count fell from S0's 442: deleted
+  `transfers.rs` test module + 1 budgets transfer test.)
+- `cd frontend && pnpm test`: 347 passed / 1 failed of 348. The single
+  failure (`finance.test.tsx` › "monta SubscriptionRow cancelar/reactivar
+  y ediciones Budget/Savings") is the PRE-EXISTING budget-subject flake
+  recorded in the S4 progress entry (fails identically on the pristine
+  tree; passes in isolation 21/21 — full-suite timeout flake, S2 deletes
+  that code).
+- `node node_modules/typescript/bin/tsc --noEmit`: clean, exit 0.
+- `grep -rni "transfers" backend/src`: only (a) the S1 removal doc comment
+  in `main.rs`, (b) stale doc comments + `type='transfer'` string literals
+  inside the S2/S3-doomed `budgets.rs`/`transactions.rs`, (c) the S0
+  `validation.rs` doc note. No live route, module, or handler.
+- `grep -rni "transfer" frontend/components frontend/lib frontend/e2e`
+  excluding `paymentTransfer`/`transferencia`: zero hits.
+- `finance.paymentTransfer` survivors: `es.ts:163`, `SubscriptionForms:83`,
+  `DebtPayments:62`, `ManualCapture:31` (payment option, kept by design D4).
+- `grep -rni "transfer" mcp-dashboard/src`: zero hits — no MCP change
+  needed (no transfer tool ever existed).
+
+## Deviations from design/task text
+
+- Task lists `routes/mod.rs:3,19,20` / `main.rs:78-82,38-39` line numbers
+  from an older revision; the actual edits hit the same symbols at their
+  current positions.
+- Task says "six transfer-specific tests" in the migration file; the file
+  contained 4 transfer-specific tests + 1 file-exists test + the kept
+  byte-guard (5 total). All except the byte-guard are gone.
+- `finance.test.ts` / `e2e/sections.spec.ts` had no transfer assertions to
+  update (verified by grep) — reported as no-ops rather than invented edits.
+
+## Remaining / next
+
+- S1: none. Acceptance criteria met (backend suite green; frontend green
+  modulo the pre-existing S2-owned flake; tsc clean; no `/api/transfers`
+  path; no live transfer references outside removal docs + doomed-module
+  literals; `objetivo.md` block replaced with dated note; canonical
+  `finance-transfers` spec deleted).
+- Rollback if needed: `git revert` WU2 then WU1 (no schema change; transfer
+  rows still exist until 0011).
+- Next recommended: S2 (budgets removal). Parent-owned: bounded review for
+  S1, slice PR, lifecycle tasks L1–L3 (untouched, still `sdd-owner: parent`).
+
+## Files changed (S1)
+
+- Deleted: `frontend/components/finance/TransferHistory.tsx`,
+  `backend/src/routes/transfers.rs`,
+  `backend/tests/migration_0005_transfer_trigger.rs`,
+  `openspec/specs/finance-transfers/` (dir)
+- Created: `backend/tests/migration_0011_removal.rs`
+- Edited: `FinanceScreens.tsx`, `lib/api/finance.ts`,
+  `lib/finance/finance.ts`, `lib/i18n/es.ts`, `ManualCapture.tsx`,
+  `finance.test.tsx`, `s1-capture.test.tsx`, `routes/mod.rs`, `main.rs`,
+  `routes/budgets.rs` (one transfer-coupled test only),
+  `openspec/specs/finance-subscriptions/spec.md`,
+  `openspec/specs/frontend-i18n/spec.md`, `objetivo.md`,
+  `openspec/changes/.../tasks.md` (10 S1 boxes checked; parent boxes
+  byte-preserved), this file.
