@@ -7,7 +7,7 @@ edition = "2021"
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "rust_decimal"] }
-tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs"] }
+tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs", "timeout", "set-header"] }
 tower = "0.5"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

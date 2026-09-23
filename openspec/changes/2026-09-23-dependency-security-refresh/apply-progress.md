@@ -332,3 +332,140 @@ The parent instruction was to sync `openspec/specs/mcp-dashboard/spec.md` with *
 - Port 3101 collision with the pre-existing Next.js dev server is environmental; the server contract itself was verified on `MCP_PORT=3199` with no code change.
 - `npm audit` reported 0 vulnerabilities at install time; no audit CI job is added (out of scope).
 - The delta's mcp-dashboard Edge cases / Non-goals additions remain change-local until S2-WU3, per the parent's ADDED-requirements-only sync instruction.
+
+---
+
+# Apply progress — S1 backend hardening (STRICT TDD) — PARTIAL, S1.3 BLOCKED ON SURFACES
+
+- change: `2026-09-23-dependency-security-refresh`
+- slice: S1.1, S1.2, S1.4, S1.5 implemented and green in the working tree. **S1.3 is not implemented**: its GREEN steps (and DD3) require `backend/src/config.rs` (`TRUSTED_PROXIES` in `Config::from_env`) and `backend/src/state.rs` (`AppState.trusted_proxies`), neither of which is in the parent-supplied Allowed edit surfaces. Escalated as `interaction_required`; not guessed and not absorbed.
+- status: **partial** — not committed, not staged (parent-owned).
+- stop condition engaged: the backend S1 diff is **491 insertions / 26 deletions, over the ~280 hand-written stop threshold**, so no further implementation was absorbed. See the escalation note below.
+- checkboxes: 14 completed S1 items marked `- [x]` in `tasks.md`; S1.3 items, the `cors`-rationale item and the DB/CI/runtime closing items left `- [ ]` with reasons. Parent-owned boxes untouched.
+
+## Files touched in this delegation
+
+- `backend/src/main.rs` — S1.1: `CorsLayer` block and `cors::{Any, CorsLayer}` import deleted, merge/fallback wiring intact. S1.2: `assemble(state, static_dir, api_routes, api_timeout)` seam, `API_TIMEOUT = Duration::from_secs(15)`, `TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, budget)` applied to the `/api` nest only, and `#[cfg(test)]` `/api/__test__/slow` + `/api/__test__/fast` routes. S1.5: four `SetResponseHeaderLayer::overriding` layers on the outer assembled router. Tests: `no_cors_headers_on_api_response`, `api_nest_times_out_but_probes_and_static_do_not`, `security_headers_on_static_api_error_and_fallback` plus the `assert_security_headers` helper.
+- `backend/src/auth/rate_limit.rs` — S1.4: `MAX_KEYS = 4096`, `#[cfg(test)] with_limits(window, max_keys)`, whole-map pruning of expired attempts and emptied keys, cap eviction of the least-recently-active non-blocked key (temporary over-cap only when every retained key is blocked), poison-tolerant `lock().unwrap_or_else(|e| e.into_inner())`. Tests: `key_count_stays_bounded_by_cap`, `expired_key_is_removed`, `blocked_key_survives_eviction_pressure`, `poisoned_mutex_does_not_panic`. The 10-per-15-min budget and the `check(ip) -> Option<Duration>` signature are unchanged.
+- `backend/Cargo.toml` — feature-only `tower-http` edit: `features = ["trace", "request-id", "cors", "fs", "timeout", "set-header"]`. No version range changed; the now-unused `cors` feature is retained (additive-only diff per `backend-base`; removal is a follow-up). That rationale is staged here because the tasks.md S1.1 item 4 destination is the verify report, which is S2-WU3-owned.
+- `backend/Cargo.lock` — untouched (feature selection is not recorded there; `--locked` accepted the tree).
+- `openspec/specs/{backend-base,session-auth,health-checks,edge-security-headers}/spec.md` — canonical sync from the change deltas (requirements only): backend-base +4 ADDED; session-auth MODIFIED `Login — Opaque Token Issuance` replaced with the delta block including the `(Previously: …)` note and +2 ADDED; health-checks +1 ADDED; edge-security-headers +2 ADDED. Verification: a Python block-substring check confirmed every delta requirement block (title + body) is present verbatim in the canonical files; the only delta content deliberately not merged is the per-delta `## Edge cases` / `## Non-goals` sections (same ADDED-requirements-only precedent as U3; S2-WU3 owns the full canonical merge). The session-auth old text `enforce rate limit 10 requests / 15 min per IP` is gone and `(Previously:` is present.
+- `openspec/changes/2026-09-23-dependency-security-refresh/tasks.md` — 14 completed S1 checkboxes flipped to `- [x]`.
+- `openspec/changes/2026-09-23-dependency-security-refresh/apply-progress.md` — this section.
+
+## TDD evidence (strict TDD active)
+
+| Sub-change | RED command / observed failure | GREEN command / observed pass |
+|---|---|---|
+| S1.1 CORS | `cargo test no_cors_headers` → `FAILED`: `cross-origin response must not emit access-control-allow-origin` (0 passed / 1 failed) | `cargo test no_cors_headers` → `1 passed; 0 failed`; `grep -rn "allow_origin(Any)\|CorsLayer" backend/src` → no matches |
+| S1.2 timeout | `cargo test api_nest_times_out` → `FAILED`: `a handler stalling past the budget must return 504`, left 200 / right 504 (2.06 s) | `cargo test api_nest_times_out` → `1 passed; 0 failed`; `/health`, `/ready` and the `ServeDir` asset asserted while the slow request is in flight; `assert_eq!(API_TIMEOUT, Duration::from_secs(15))` |
+| S1.4 limiter | `cargo test rate_limit` → 4 failures: cap test (10 retained with cap 4), `expired key must be removed` (left 1 / right 0), eviction `key_count() <= 2` (3 retained), poisoned mutex panic at the old `.expect(...)` | `cargo test rate_limit` → `9 passed; 0 failed`; `blocked_key_survives_eviction_pressure` was green pre-change and stays green (triangulation) |
+| S1.5 headers | `cargo test security_headers` → `FAILED`: `static asset: missing x-content-type-options` | `cargo test security_headers` → `1 passed; 0 failed` (static, 401 JSON, 404 JSON, SPA fallback; `permissions-policy` absent; CSP has no `script-src`) |
+| S1.3 | not run — blocked on `config.rs`/`state.rs` surfaces | not run |
+
+REFACTOR: the `assemble(..., budget)` extraction plus the `#[cfg(test)]` slow/fast routes are the DD4 test seam; the S1.2 RED run observes the missing behaviour (200 instead of 504), not a compile error.
+
+## Verification (exact commands, observed results)
+
+- `cd backend && cargo test --locked`: `378 passed; 0 failed` (unit) + `3 passed` + `10 passed` + `10 passed` (integration) = **401 passed / 0 failed / 0 ignored**. `DATABASE_URL` was unset in this shell, so DB-gated tests self-skipped exactly as recorded for U2; CI with the Postgres service remains the DB acceptance proof.
+- `cd backend && cargo clippy --all-targets --locked`: `Finished` with **zero warnings/errors**.
+- RED/GREEN per sub-change: table above.
+- Diff calibration: `git diff --numstat` → `backend/Cargo.toml` 1/1, `backend/src/auth/rate_limit.rs` 105/4, `backend/src/main.rs` 385/21 = **491 insertions / 26 deletions in backend**, plus canonical-spec markdown +220/-3. Over the ~280-line S1 stop threshold.
+
+## Checkbox status
+
+| S1 item | Status | Evidence / reason |
+|---|---|---|
+| S1.1 RED / GREEN / no-env-allow-list | `- [x]` | failure and pass observed; `config.rs` untouched and has no CORS/origin variable; grep clean |
+| S1.1 cors-feature rationale | `- [ ]` | rationale staged above; the box requires it in the verify report, which is S2-WU3-owned |
+| S1.2 RED / GREEN / exclusions / login-safe | `- [x]` | both tests green; probes and static asserted in-flight; `API_TIMEOUT == 15 s` asserted |
+| S1.3 all four items | `- [ ]` | **blocked**: GREEN requires `backend/src/config.rs` + `backend/src/state.rs`, outside the supplied allowed edit surfaces |
+| S1.4 RED / GREEN + clippy | `- [x]` | 4 failing tests observed first; 9/9 green after; budget and signature unchanged; clippy clean |
+| S1.5 RED / GREEN / verify | `- [x]` | missing-header failures observed first; error/fallback coverage green; no `Permissions-Policy`, no `script-src` |
+| S1 closing — full gate with DB + CI | `- [ ]` | no `DATABASE_URL` in this environment; no push/CI in a worker delegation |
+| S1 closing — runtime eyeball | `- [ ]` | not run; the `oneshot` tests are the recorded evidence |
+| S1 closing — boundary check | `- [x]` | `git diff backend/Cargo.toml` is the feature list only; no route behaviour, migration or data change |
+
+## Escalation — S1.3 allowed edit surfaces (interaction_required)
+
+The delegated S1.3 GREEN steps and DD3 require: (1) `backend/src/config.rs` — `TRUSTED_PROXIES` parsing in `Config::from_env` (malformed token = startup error; absent/empty = trust nobody); (2) `backend/src/state.rs` — `AppState.trusted_proxies: Arc<[TrustedProxy]>` threaded to the login handler. Neither path is in the parent-supplied Allowed edit surfaces. The same behaviour can alternatively be delivered with the trusted set owned by `LoginRateLimiter` (parse `TRUSTED_PROXIES` in `main.rs`), but that deviates from DD3/tasks.md storage-location wording, so the worker stopped instead of guessing.
+
+## Risks / notes
+
+- S1.3 is unimplemented: the login rate-limit key is still header-derived (`X-Forwarded-For` / `X-Real-Ip` precedence) and `SocketAddr` is not yet extracted; SEC-004 is **not** closed.
+- The backend diff (491 insertions) exceeds the ~280 stop threshold even with S1.3 missing; adding S1.3 grows it further. If the review budget must hold, the slice needs splitting (per-sub-change stacked PRs) or a `size:exception` decision from the parent.
+- Canonical `session-auth` now states the peer-address key and empty-default trusted proxies before S1.3 is implemented; that is intended (spec = target state) but the code/spec gap must not be reported as done.
+- Nothing was staged or committed.
+
+---
+
+# Apply progress — S1.3 peer-address rate-limit key + trusted proxies (STRICT TDD) — RESOLVED
+
+- change: `2026-09-23-dependency-security-refresh`
+- slice: S1.3 only (SEC-004, A2). This section **supersedes the S1.3 escalation** in the section above, resolved by the parent with **OPTION 2 approved** and the binding DD3 storage-location amendment recorded below.
+- status: implementation complete in the working tree; **not committed / not staged** (parent-owned).
+- checkboxes: all four S1.3 items marked `- [x]` in `tasks.md`; parent-owned boxes untouched.
+
+## DD3 storage-location amendment (binding, recorded per parent instruction)
+
+> The trusted-proxy set is carried on `LoginRateLimiter` (already inside `AppState`) instead of a new `AppState` field. All DD3 security properties hold: `Config::from_env` parses/validates `TRUSTED_PROXIES` as exact IP/CIDR list, empty default = trust nobody, malformed token = startup error; `login.rs` derives the key through the single helper reading the set from the limiter in state; `AppState` shape untouched. DD1 (infallible `PeerAddr` extractor via `ConnectInfo` extension, optional + loopback fallback) and DD2 (peer → trusted XFF[0] → peer; drop `X-Real-Ip`) stand unchanged.
+
+Implementation conforms to every clause:
+
+- `backend/src/config.rs` — `TrustedProxy` (exact IP or CIDR, std-only mask compare) + `TrustedProxy::parse` + `parse_trusted_proxies(Option<&str>)` + `trusted_proxies_from_env()`; `Config::from_env` calls the env reader and returns `Err("TRUSTED_PROXIES: …")` on a malformed token (startup error), while absent/empty parses to an empty set (trust nobody).
+- `backend/src/auth/rate_limit.rs` — `LoginRateLimiter` carries `trusted_proxies: Vec<TrustedProxy>` and exposes `trusted_proxies() -> &[TrustedProxy]`.
+- `backend/src/routes/login.rs` — `PeerAddr(pub Option<SocketAddr>)` (infallible `FromRequestParts`, DD1), `LOCAL_PEER_FALLBACK = 127.0.0.1`, `rate_limit_key(peer, headers, trusted)` (DD2: peer; first parseable XFF element only when the peer is trusted; never `X-Real-Ip`; never a header without a peer), and `login_handler` derives the key via `rate_limit_key(peer.0, &headers, state.rate_limiter.trusted_proxies())`; `client_ip` is deleted (`grep -rn client_ip backend/src` → no matches).
+- `backend/src/state.rs` — **untouched**: `git diff backend/src/state.rs` is empty; the 33 literal `AppState` construction sites keep compiling.
+
+### Wiring resolution (why the limiter reads the env var)
+
+`backend/src/main.rs` is outside this delegation's allowed edit surfaces, and `LoginRateLimiter::new()` is invoked at 33+ literal `AppState` construction sites, so the parsed set cannot be injected as a constructor argument. Resolution: `LoginRateLimiter::new()` calls the same `config::trusted_proxies_from_env()` helper that `Config::from_env` uses for startup validation; on a parse error it fails closed to an empty set (unreachable in production, where `Config::from_env` exits first). Single parse implementation and single security semantics; the only duplication is the `env::var` read. Handler tests use the `#[cfg(test)]` `with_trusted_proxies` constructor, so they never depend on the process environment.
+
+## Files touched in this delegation
+
+- `backend/src/config.rs` — `TrustedProxy` + parse/validate + `Config::from_env` validation; opt-in consequence documented on the parser (no backend env-var README exists in-tree; this is the in-surface home of the variable). Tests: 3.
+- `backend/src/auth/rate_limit.rs` — trusted-set field/accessor, `new()` env read (fail-closed), `with_trusted_proxies` test constructor; `with_window`/`with_limits` initialize an empty set. No change to `check(ip)` or the 10/15-min budget.
+- `backend/src/routes/login.rs` — `PeerAddr`, `LOCAL_PEER_FALLBACK`, `rate_limit_key`, handler signature + derivation, `client_ip` removed. Tests: 10 new.
+- `backend/src/state.rs` — untouched (verified empty diff).
+- `openspec/changes/2026-09-23-dependency-security-refresh/tasks.md` — four S1.3 checkboxes checked.
+- `openspec/changes/2026-09-23-dependency-security-refresh/apply-progress.md` — this section.
+
+## TDD evidence (strict TDD active)
+
+| Step | RED command / observed failure | GREEN command / observed pass |
+|---|---|---|
+| (a) `PeerAddr` + `rate_limit_key` | `cargo test --locked` → compile failure, 14 errors: E0425 `rate_limit_key` ×7, E0425 `LOCAL_PEER_FALLBACK` ×3, E0433 `PeerAddr` ×2, E0432 unresolved import `crate::config::TrustedProxy` ×1, E0425 `ConnectInfo` ×1 | `cargo test --locked routes::login` → `6 passed; 0 failed` (5 new + the pre-existing CITEXT test) |
+| (b) `TRUSTED_PROXIES` parse/validate | `cargo test --locked trusted_proxies` → compile failure: E0425 cannot find function `parse_trusted_proxies` | `cargo test --locked trusted_proxies` → `3 passed; 0 failed` |
+| (c) handler derivation through the limiter-owned set | `cargo test --locked` → compile failure, 13 errors: E0061 `login_handler` takes 3 arguments but 4 were supplied ×8, E0599 no `with_trusted_proxies` ×5 | `cargo test --locked routes::login` → `11 passed; 0 failed` |
+| (d) explicit untrusted-XFF / trusted-XFF[0] tests | same RED batch as (c): the handler tests cannot compile before the new signature and limiter constructor exist | same GREEN run: `untrusted_peer_ignores_a_blocked_xff_key`, `peers_get_independent_buckets_and_rotating_xff_never_creates_one`, `trusted_peer_uses_first_xff_element`, `trusted_peer_with_malformed_xff_falls_back_to_peer`, `absent_connect_info_uses_local_fallback_without_panicking` all pass |
+
+RED honesty note: steps (a)–(d) introduce new types, a new function and a changed handler signature, so the observed RED is a compile failure (the canonical first failure for a new Rust API surface) rather than a runtime assertion failure. Every behaviour the parent asked for is asserted by a GREEN test that fails if the implementation is reverted: the XFF key is pre-blocked while an untrusted peer still passes the limiter, a trusted peer is blocked exactly when its XFF[0] is blocked, and a rotating XFF never blocks a fresh peer or unblocks an exhausted one.
+
+TRIANGULATE: parser negatives (7 malformed forms, `/33`, `/129`, empty token, cross-family mismatch), helper negatives (absent header, malformed header, `X-Real-Ip` ignored, no-peer fallback with a trusted-looking header), handler contrasts (peer independence while sharing an XFF value; XFF[1] and the peer address are not the key; malformed XFF falls back to a blocked peer key).
+
+REFACTOR: none needed after GREEN. One test-hygiene fix inside the GREEN cycle: the handler tests' lazy pool first used sqlx's default 30 s acquire timeout, making the allowed-path test take 330 s; `PgPoolOptions::acquire_timeout(100 ms)` reduced the module to 1.12 s with identical assertions.
+
+## Verification (exact commands, observed results)
+
+- `cd backend && cargo test --locked`: **414 passed / 0 failed / 0 ignored** — unit `src/main.rs` 391, `tests/migration_0007_goal_progress.rs` 3, `tests/migration_0008_credit_cards.rs` 10, `tests/migration_0011_removal.rs` 10. Net +13 tests over the pre-S1.3 tree (401 → 414). `DATABASE_URL` was unset in this shell, so the same DB-gated tests self-skip as recorded for U2; CI with the Postgres service remains the DB acceptance proof.
+- `cd backend && cargo clippy --all-targets --locked`: `Finished` with **zero warnings/errors** (exit 0).
+- `git diff -- backend/src/state.rs`: empty (AppState shape untouched).
+- `grep -n "into_make_service_with_connect_info" backend/src/main.rs` → line 383, still wired (moved from 319 by the earlier S1 edits; `main.rs` itself is unchanged by this delegation — its diff remains 385/21).
+- `grep -rn "client_ip" backend/src` → no matches (header precedence path fully removed).
+
+## Checkbox status
+
+| S1.3 item | Status | Evidence / reason |
+|---|---|---|
+| 1 — RED tests (a)–(d) | `- [x]` | compile RED observed for all four; GREEN assertions listed above |
+| 2 — `TRUSTED_PROXIES` config + threading | `- [x]` | config parse/validate + limiter-owned set per the DD3 amendment; `AppState` untouched |
+| 3 — handler derivation + `client_ip` removal | `- [x]` | `rate_limit_key` is the single path; `grep client_ip` clean |
+| 4 — opt-in documentation + connect-info wiring | `- [x]` | opt-in and shared-bucket consequence documented on `parse_trusted_proxies` (no backend env README exists in-tree; S2-WU3 owns the verify report); `into_make_service_with_connect_info` confirmed at `main.rs:383` |
+
+## Risks / notes
+
+- The env var is read twice (startup validation in `Config::from_env`, set construction in `LoginRateLimiter::new()`). Single parse implementation, fail-closed fallback; the alternative would need `main.rs`, which is outside the allowed surfaces.
+- `LoginRateLimiter::new()` is now environment-dependent. Production semantics are unchanged (validated at startup); handler tests pin their own trusted set, and the remaining tests exercise `check()` directly.
+- No backend env-var documentation file exists in the repository; the in-surface documentation is the doc comment on the parser. A user-facing doc statement remains an S2-WU3/verify-report item.
+- S1 diff size now totals 1016 insertions / 44 deletions across `backend/` (config 161/1, login 334/17, rate_limit 135/4, main 385/21, Cargo.toml 1/1) — well over the ~280-line S1 stop threshold flagged earlier; the parent's review-budget decision (split or `size:exception`) still applies.
+- Nothing was staged or committed.

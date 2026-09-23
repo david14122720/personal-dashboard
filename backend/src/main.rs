@@ -6,18 +6,19 @@ mod finance;
 mod routes;
 mod state;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    http::StatusCode,
+    http::{HeaderName, HeaderValue, StatusCode},
     routing::{delete, get, patch, post},
     Json, Router,
 };
 use serde_json::json;
 use tower_http::{
-    cors::{Any, CorsLayer},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
+    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use tracing_subscriber::EnvFilter;
@@ -33,6 +34,24 @@ async fn api_fallback_handler() -> (StatusCode, Json<serde_json::Value>) {
     )
 }
 
+/// Production budget for a single `/api` request. Generous enough that an
+/// Argon2id login is never cut off (DD4 / SEC-003).
+const API_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Test-only slow handler used to prove the `/api` timeout (DD4).
+#[cfg(test)]
+async fn test_slow_handler() -> &'static str {
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    "slow"
+}
+
+/// Test-only handler that finishes well under an injected budget.
+#[cfg(test)]
+async fn test_fast_handler() -> &'static str {
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    "fast"
+}
+
 /// All API routes, mounted under `/api` by [`build_router`].
 /// Slice S1 removed the `/transfers` routes (`routes::transfers` deleted);
 /// transfers are now recorded as two manual balance edits.
@@ -42,7 +61,7 @@ async fn api_fallback_handler() -> (StatusCode, Json<serde_json::Value>) {
 /// deleted, migration 0011 drops the table); `accounts.balance` is now
 /// written by hand via `PATCH /api/accounts/{id}`.
 fn api_routes() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/login", post(routes::login::login_handler))
         .route("/logout", post(routes::logout::logout_handler))
         .route("/me", get(routes::me::me_handler))
@@ -201,28 +220,44 @@ fn api_routes() -> Router<AppState> {
             post(routes::tokens::create_token_handler)
                 .get(routes::tokens::list_tokens_handler),
         )
-        .route("/tokens/{id}", delete(routes::tokens::delete_token_handler))
-        .fallback(api_fallback_handler)
+        .route("/tokens/{id}", delete(routes::tokens::delete_token_handler));
+    // Test-only routes proving the `/api` timeout placement (DD4) and the
+    // header layer's coverage of API error responses.
+    #[cfg(test)]
+    let router = router
+        .route("/__test__/slow", get(test_slow_handler))
+        .route("/__test__/fast", get(test_fast_handler));
+    router.fallback(api_fallback_handler)
 }
 
 /// Root router: health probes stay at `/`, the API nests under `/api`, and
 /// static assets (the exported frontend) serve same-origin with an SPA
 /// fallback to `index.html` so the client router owns non-API misses.
-fn build_router(state: AppState, static_dir: Option<String>) -> Router {
+/// Assemble the serving router. `api_routes` and `api_timeout` are parameters
+/// so tests can mount extra routes and inject a short budget (DD4): the
+/// production signature stays [`build_router`]-shaped.
+fn assemble(
+    state: AppState,
+    static_dir: Option<String>,
+    api_routes: Router<AppState>,
+    api_timeout: Duration,
+) -> Router {
+    // SEC-003: the budget covers the whole `/api` subtree (including its JSON
+    // 404 fallback) and nothing else: `/health`, `/ready` and `ServeDir` are
+    // deliberately outside it, and the layer is never applied outermost.
+    // `TimeoutLayer::with_status_code` is used instead of the deprecated
+    // `TimeoutLayer::new`, which would answer 408 instead of the spec's 504.
+    let api_routes = api_routes.layer(TimeoutLayer::with_status_code(
+        StatusCode::GATEWAY_TIMEOUT,
+        api_timeout,
+    ));
     let api: Router<AppState> = Router::new()
         .route("/health", get(routes::health::health_handler))
         .route("/ready", get(routes::ready::ready_handler))
-        .nest("/api", api_routes());
+        .nest("/api", api_routes);
     let api = api.with_state(state);
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
-    let with_cors = api.layer(cors);
-
-    if let Some(dir) = static_dir {
+    let app = if let Some(dir) = static_dir {
         tracing::info!("serving static dir: {dir}");
         // The API router must be MERGED, not parked in a fallback chain:
         // `tower_http::ServeDir` answers 405 (allow: GET, HEAD) for POST/PUT/
@@ -233,12 +268,41 @@ fn build_router(state: AppState, static_dir: Option<String>) -> Router {
         // 404 in `api_routes`), and ServeDir's own `fallback` serves
         // `index.html` (200) for the SPA router on non-API misses.
         let svc = ServeDir::new(&dir).fallback(ServeFile::new(format!("{dir}/index.html")));
-        Router::new()
-            .merge(with_cors)
-            .fallback_service(svc)
+        Router::new().merge(api).fallback_service(svc)
     } else {
-        with_cors
-    }
+        api
+    };
+
+    // SEC-006: app-owned security headers. `overriding` guarantees exactly
+    // one copy of each header even if a handler ever sets one. The layer sits
+    // on the outer assembled router, so API JSON, error responses (401/404),
+    // the SPA fallback and `ServeDir` are all covered; the request-id/trace
+    // layers stay outermost in `main`. `Permissions-Policy` is edge-owned
+    // (`edge-security-headers`) and the CSP is `frame-ancestors 'none'` only:
+    // the full-CSP/`script-src` decision is deferred.
+    app.layer(SetResponseHeaderLayer::overriding(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    ))
+    .layer(SetResponseHeaderLayer::overriding(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    ))
+    .layer(SetResponseHeaderLayer::overriding(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    ))
+    .layer(SetResponseHeaderLayer::overriding(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static("frame-ancestors 'none'"),
+    ))
+}
+
+/// Root router: health probes stay at `/`, the API nests under `/api`, and
+/// static assets (the exported frontend) serve same-origin with an SPA
+/// fallback to `index.html` so the client router owns non-API misses.
+fn build_router(state: AppState, static_dir: Option<String>) -> Router {
+    assemble(state, static_dir, api_routes(), API_TIMEOUT)
 }
 
 #[tokio::main]
@@ -337,6 +401,49 @@ mod api_nest_tests {
             session_ttl_hours: 24,
             rate_limiter: Arc::new(auth::rate_limit::LoginRateLimiter::new()),
         }
+    }
+
+    /// SEC-006: the four app-owned headers must be present with exactly these
+    /// values, and the app must not emit `Permissions-Policy` (edge-owned) nor
+    /// a `script-src` directive (deferred CSP decision).
+    fn assert_security_headers(res: &axum::http::Response<Body>, context: &str) {
+        let headers = res.headers();
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .unwrap_or_else(|| panic!("{context}: missing x-content-type-options")),
+            "nosniff",
+            "{context}: x-content-type-options"
+        );
+        assert_eq!(
+            headers
+                .get("x-frame-options")
+                .unwrap_or_else(|| panic!("{context}: missing x-frame-options")),
+            "DENY",
+            "{context}: x-frame-options"
+        );
+        assert_eq!(
+            headers
+                .get("referrer-policy")
+                .unwrap_or_else(|| panic!("{context}: missing referrer-policy")),
+            "no-referrer",
+            "{context}: referrer-policy"
+        );
+        let csp = headers
+            .get("content-security-policy")
+            .unwrap_or_else(|| panic!("{context}: missing content-security-policy"));
+        assert_eq!(
+            csp, "frame-ancestors 'none'",
+            "{context}: content-security-policy"
+        );
+        assert!(
+            !csp.to_str().unwrap().contains("script-src"),
+            "{context}: CSP must not contain script-src"
+        );
+        assert!(
+            headers.get("permissions-policy").is_none(),
+            "{context}: the app must not emit the edge-owned Permissions-Policy"
+        );
     }
 
     // -- Task 0.13 RED: /api nest does not exist yet --
@@ -509,6 +616,263 @@ mod api_nest_tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn no_cors_headers_on_api_response() {
+        // SEC-002: same-origin only. A cross-origin caller must get no
+        // `Access-Control-*` headers, and a preflight-shaped OPTIONS must not
+        // be answered with an allow decision. A same-origin request (no
+        // Origin header) still reaches the handler normally.
+        const CORS_HEADERS: [&str; 6] = [
+            "access-control-allow-origin",
+            "access-control-allow-methods",
+            "access-control-allow-headers",
+            "access-control-expose-headers",
+            "access-control-max-age",
+            "access-control-allow-credentials",
+        ];
+
+        let app = build_router(lazy_state(), None);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/accounts")
+                    .header("origin", "http://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        for name in CORS_HEADERS {
+            assert!(
+                res.headers().get(name).is_none(),
+                "cross-origin response must not emit {name}"
+            );
+        }
+
+        let app = build_router(lazy_state(), None);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/accounts")
+                    .header("origin", "http://evil.example")
+                    .header("access-control-request-method", "POST")
+                    .header(
+                        "access-control-request-headers",
+                        "authorization,content-type",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        for name in CORS_HEADERS {
+            assert!(
+                res.headers().get(name).is_none(),
+                "preflight-shaped OPTIONS must not emit {name}"
+            );
+        }
+
+        // Same-origin: no Origin header, normal handler outcome, still no
+        // CORS headers (they were never needed for same-origin access).
+        let app = build_router(lazy_state(), None);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/accounts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert!(res.headers().get("access-control-allow-origin").is_none());
+    }
+
+    #[tokio::test]
+    async fn api_nest_times_out_but_probes_and_static_do_not() {
+        // The production budget is 15 s: far above an Argon2id login, so a
+        // real login is never cut off by the timeout layer.
+        assert_eq!(API_TIMEOUT, Duration::from_secs(15));
+        let dir = std::env::temp_dir().join(format!("s1-timeout-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<html>spa-shell</html>").unwrap();
+        std::fs::write(dir.join("asset.txt"), "static-body").unwrap();
+
+        let budget = Duration::from_millis(250);
+        let app = assemble(
+            lazy_state(),
+            Some(dir.to_string_lossy().into_owned()),
+            api_routes(),
+            budget,
+        );
+
+        // A slow `/api` request is in flight while probes and static serving
+        // are exercised; none of those may be affected by the API timeout.
+        let slow = tokio::spawn({
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri("/api/__test__/slow")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let health = app
+            .clone()
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            health.status(),
+            StatusCode::OK,
+            "GET /health must stay outside the API timeout"
+        );
+
+        let ready = app
+            .clone()
+            .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            ready.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GET /ready must answer with its own status, never the API timeout"
+        );
+
+        let asset = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/asset.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            asset.status(),
+            StatusCode::OK,
+            "ServeDir must stay outside the API timeout"
+        );
+        let bytes = axum::body::to_bytes(asset.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), b"static-body".as_slice());
+
+        let slow = slow.await.unwrap();
+        assert_eq!(
+            slow.status(),
+            StatusCode::GATEWAY_TIMEOUT,
+            "a handler stalling past the budget must return 504"
+        );
+
+        // A handler finishing under the budget is never cut off (an
+        // Argon2id-length login must not be affected by the 15s budget).
+        let fast = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/__test__/fast")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fast.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(fast.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), b"fast".as_slice());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn security_headers_on_static_api_error_and_fallback() {
+        let dir = std::env::temp_dir().join(format!("s1-headers-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<html>spa-shell</html>").unwrap();
+        std::fs::write(dir.join("asset.txt"), "static-body").unwrap();
+
+        let app = build_router(lazy_state(), Some(dir.to_string_lossy().into_owned()));
+
+        // (i) ServeDir static asset.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/asset.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_security_headers(&res, "static asset");
+
+        // (ii) API JSON error envelope (401).
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/accounts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_security_headers(&res, "401 API response");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"]["code"], "UNAUTHORIZED");
+
+        // (iii) API 404 error response (JSON fallback inside /api).
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/no-such-route")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_security_headers(&res, "404 API response");
+
+        // (iv) SPA fallback document served by ServeDir.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/finance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_security_headers(&res, "SPA fallback");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .contains("spa-shell"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
