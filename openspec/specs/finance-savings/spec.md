@@ -99,7 +99,7 @@ The system MUST validate `target_amount > 0` as string, `target_date` as `YYYY-M
 
 ### Requirement: Savings Movements Write Preserved
 
-The system MUST keep movements append-only: abonar/retirar via `POST /savings-goals/{id}/movements` with signed string amount, and correction exclusively via `DELETE /savings-goals/{id}/movements/{mid}` + recreate. No `PATCH` for movements SHALL exist. Over-withdrawal (resulting balance < 0) MUST return 422. DELETE MUST return 204 and the trigger MUST revert `saved_amount`/`is_completed`.
+The system MUST keep movements append-only: abonar/retirar via `POST /savings-goals/{id}/movements` with signed string amount and date, and correction exclusively via `DELETE /savings-goals/{id}/movements/{mid}` + recreate. No ledger identifier MAY be accepted or returned, and a request carrying one MUST be rejected with 422. No `PATCH` for movements SHALL exist. Over-withdrawal (resulting balance < 0) MUST return 422. DELETE MUST return 204 and the trigger MUST revert `saved_amount`/`is_completed`.
 
 #### Scenario: Deposit and withdraw
 
@@ -118,6 +118,34 @@ The system MUST keep movements append-only: abonar/retirar via `POST /savings-go
 - GIVEN a goal with balance `"100.00"`
 - WHEN `POST .../movements` with `{"amount": "-150.00"}`
 - THEN the system returns 422 with a Spanish error
+
+#### Scenario: Ledger field rejected as unknown
+
+- GIVEN an owned savings goal
+- WHEN `POST .../movements` includes a ledger identifier field
+- THEN the system returns 422 and records no movement
+
+### Requirement: Savings Movements Are Self-Contained
+
+A savings movement MUST be fully described by its own signed amount, date and optional notes, with no dependency on any ledger row. The request and response schemas MUST NOT contain a ledger field, the persistence MUST NOT hold a foreign key to a removed table, and the savings UI MUST NOT offer or render any ledger selector or identifier.
+
+#### Scenario: Movement form has no ledger control
+
+- GIVEN the savings deposit/withdrawal form rendered
+- WHEN its inputs are inspected
+- THEN no ledger/movement selector or identifier field is present
+
+#### Scenario: No ledger identifier on the wire
+
+- GIVEN a movement list or create response
+- WHEN its fields are inspected
+- THEN no `transaction_id` (or equivalent ledger reference) is present
+
+#### Scenario: No removed-table query
+
+- GIVEN the movement create, list and delete paths
+- WHEN their SQL is inspected
+- THEN none references a removed table
 
 ### Requirement: Savings Goal Delete
 

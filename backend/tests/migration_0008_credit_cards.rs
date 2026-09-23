@@ -207,8 +207,10 @@ async fn card_account_with_limit_and_days_is_accepted() {
 }
 
 /// Task 1.3 GREEN: card queries must be index-backed (no Seq Scan on
-/// `accounts` or `transactions`). `enable_seqscan=off` forces the planner
-/// to prove the partial indexes can serve these shapes.
+/// `accounts`). S3a: the `transactions` half of this probe is deleted with
+/// migration 0011 (the `idx_tx_card_user_date` index falls with its table);
+/// the `accounts` half stays. `enable_seqscan=off` forces the planner
+/// to prove the partial index can serve this shape.
 #[tokio::test]
 async fn card_queries_use_indexes_no_seq_scan() {
     let Some(pool) = test_pool() else {
@@ -231,6 +233,7 @@ async fn card_queries_use_indexes_no_seq_scan() {
     .fetch_one(&pool)
     .await
     .expect("seed card");
+    let _ = card_id;
     let account_plan: String = {
         let rows: Vec<(String,)> = sqlx::query_as(
             "EXPLAIN SELECT id FROM accounts WHERE user_id=$1 AND type='credit_card'",
@@ -248,26 +251,6 @@ async fn card_queries_use_indexes_no_seq_scan() {
     assert!(
         account_plan.contains("idx_accounts_user_card"),
         "card lookup must use idx_accounts_user_card, got: {account_plan}"
-    );
-    let tx_plan: String = {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "EXPLAIN SELECT COALESCE(SUM(amount),0) FROM transactions WHERE credit_card_account_id=$1 AND user_id=$2 AND type='expense' AND occurred_on <= $3",
-        )
-        .bind(card_id)
-        .bind(user_id)
-        .bind(chrono::NaiveDate::from_ymd_opt(2026, 9, 15).unwrap())
-        .fetch_all(&mut *conn)
-        .await
-        .expect("explain statement aggregate");
-        rows.into_iter().map(|(line,)| line).collect::<Vec<_>>().join("\n")
-    };
-    assert!(
-        !tx_plan.contains("Seq Scan"),
-        "statement aggregate must not seq-scan transactions, got: {tx_plan}"
-    );
-    assert!(
-        tx_plan.contains("idx_tx_card_user_date"),
-        "statement aggregate must use idx_tx_card_user_date, got: {tx_plan}"
     );
     sqlx::query("SET enable_seqscan = on")
         .execute(&mut *conn)

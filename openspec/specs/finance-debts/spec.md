@@ -93,13 +93,19 @@ The system MUST reject patches on debts with status != active with 422, validate
 
 ### Requirement: Debt Payments History
 
-The system MUST expose `GET /debts/{id}/payments` returning the caller's payment history for that debt in a stable order with string amounts. Foreign or missing debt MUST return 404.
+The system MUST expose `GET /debts/{id}/payments` returning the caller's payment history for that debt in a stable order with string amounts. Each entry MUST be self-contained (`amount`, `paid_on`, `payment_method`, `notes`, `created_at`) and MUST NOT expose a ledger identifier. Foreign or missing debt MUST return 404.
 
 #### Scenario: History lists payments
 
 - GIVEN a debt with two payments `"100.00"` and `"50.00"`
 - WHEN `GET /debts/{id}/payments`
 - THEN the system returns 200 with both entries and string amounts
+
+#### Scenario: No ledger identifier on the wire
+
+- GIVEN a payment history response
+- WHEN its fields are inspected
+- THEN no `transaction_id` (or equivalent ledger reference) is present
 
 ### Requirement: Debt Payment Delete With Reversal
 
@@ -119,7 +125,7 @@ The system MUST expose `DELETE /debts/{id}/payments/{pid}` returning 204; the ex
 
 ### Requirement: Debt Payment Create Guards Preserved
 
-`POST /debts/{id}/payments` MUST keep existing guards: active-only, `amount <= pending`, string amount `> 0`, ownership checks. Violations MUST return 401/404/422 with Spanish messages.
+`POST /debts/{id}/payments` MUST keep its guards: active-only, `amount <= pending`, string amount `> 0`, and debt ownership checks. It MUST NOT perform any ledger ownership check, and a payload carrying a ledger identifier MUST be rejected with 422 because the request schema rejects unknown fields. Violations MUST return 401/404/422 with Spanish messages.
 
 #### Scenario: Overpayment rejected
 
@@ -127,9 +133,15 @@ The system MUST expose `DELETE /debts/{id}/payments/{pid}` returning 204; the ex
 - WHEN `POST /debts/{id}/payments` with `{"amount": "150.00"}`
 - THEN the system returns 422
 
+#### Scenario: Ledger field rejected as unknown
+
+- GIVEN an active debt
+- WHEN `POST /debts/{id}/payments` includes a `transaction_id` field
+- THEN the system returns 422 and records no payment
+
 ### Requirement: No Payment Patch
 
-No `PATCH` for payments SHALL exist by design (amounts immutable like transactions). UX "editable" MUST be implemented as DELETE + recreate with explicit confirmation.
+No `PATCH` for payments SHALL exist by design (amounts are immutable). UX "editable" MUST be implemented as DELETE + recreate with explicit confirmation.
 
 #### Scenario: Correct abono via UX recreate
 
@@ -146,6 +158,22 @@ Both PATCH and payment endpoints MUST require authentication (401 unauthenticate
 - GIVEN no `Authorization` header
 - WHEN `GET /debts/{id}/payments`
 - THEN the system returns 401
+
+### Requirement: Debt Payments Are Self-Contained
+
+A debt payment MUST be fully described by its own amount, date, payment method and notes, with no dependency on any ledger row. The request schema MUST NOT contain a ledger field, the persistence MUST NOT hold a foreign key to a removed table, and the FE payment form and history MUST NOT offer or render any ledger selector or identifier.
+
+#### Scenario: Payment form has no ledger control
+
+- GIVEN the debt payment form rendered
+- WHEN its inputs are inspected
+- THEN no ledger/movement selector or identifier field is present
+
+#### Scenario: No removed-table query
+
+- GIVEN the payment create, list and delete paths
+- WHEN their SQL is inspected
+- THEN none references a removed table
 
 ### Requirement: Debt Payments UI
 

@@ -9,7 +9,9 @@
 //! `completed_at`) are trigger-owned and never writable: both DTOs carry
 //! `deny_unknown_fields` and there is no PATCH. Duplicate goal names per user
 //! surface as 409 via pgcode `23505`; a `category_id` outside the owned
-//! `finance` kind or an unowned `transaction_id` is 422; foreign goal ids
+//! `finance` kind is 422. Movements are self-contained since S3a
+//! (migration 0011 dropped the ledger link): no `transaction_id` field is
+//! accepted or returned. Foreign goal ids
 //! resolve to 404 without leaking existence, while movements against a
 //! goal id that exists for nobody are 422 (orphaned-goal FK guard).
 //!
@@ -47,12 +49,11 @@ const GET_GOAL_SQL: &str = "SELECT id, name, description, target_amount, saved_a
 const DELETE_GOAL_SQL: &str = "DELETE FROM savings_goals WHERE id=$1 AND user_id=$2";
 /// Base for the dynamic PATCH builder (see `patch_goal_handler`).
 const PATCH_GOAL_BASE_SQL: &str = "UPDATE savings_goals SET updated_at = now()";
-const CREATE_MOVEMENT_SQL: &str = "INSERT INTO savings_goal_movements (user_id, savings_goal_id, amount, occurred_on, transaction_id, notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, savings_goal_id, amount, occurred_on, transaction_id, notes, created_at";
+const CREATE_MOVEMENT_SQL: &str = "INSERT INTO savings_goal_movements (user_id, savings_goal_id, amount, occurred_on, notes) VALUES ($1,$2,$3,$4,$5) RETURNING id, savings_goal_id, amount, occurred_on, notes, created_at";
 const DELETE_MOVEMENT_SQL: &str =
     "DELETE FROM savings_goal_movements WHERE id=$1 AND savings_goal_id=$2 AND user_id=$3";
 const GOAL_OWNERSHIP_SQL: &str = "SELECT id FROM savings_goals WHERE id=$1 AND user_id=$2";
 const GOAL_EXISTS_SQL: &str = "SELECT id FROM savings_goals WHERE id=$1";
-const TRANSACTION_OWNERSHIP_SQL: &str = "SELECT id FROM transactions WHERE id=$1 AND user_id=$2";
 // Test-only probe: verifies trigger-refreshed balance without going through HTTP.
 #[cfg(test)]
 const GOAL_BALANCE_SQL: &str =
@@ -446,7 +447,6 @@ type MovementRow = (
     Uuid,
     Decimal,
     NaiveDate,
-    Option<Uuid>,
     Option<String>,
     DateTime<Utc>,
 );
@@ -459,7 +459,6 @@ pub struct CreateMovementRequest {
     pub amount: String,
     /// Calendar date `YYYY-MM-DD`.
     pub occurred_on: String,
-    pub transaction_id: Option<Uuid>,
     pub notes: Option<String>,
 }
 
@@ -471,7 +470,6 @@ pub struct MovementResponse {
     /// decimals as strings, never floats.
     pub amount: Decimal,
     pub occurred_on: NaiveDate,
-    pub transaction_id: Option<Uuid>,
     pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -483,18 +481,16 @@ impl From<MovementRow> for MovementResponse {
             Uuid,
             Decimal,
             NaiveDate,
-            Option<Uuid>,
             Option<String>,
             DateTime<Utc>,
         ),
     ) -> Self {
-        let (id, savings_goal_id, amount, occurred_on, transaction_id, notes, created_at) = row;
+        let (id, savings_goal_id, amount, occurred_on, notes, created_at) = row;
         Self {
             id,
             savings_goal_id,
             amount,
             occurred_on,
-            transaction_id,
             notes,
             created_at,
         }
@@ -543,26 +539,7 @@ pub async fn ensure_goal_writable(
     Err(AppError::Validation("savings goal does not exist".into()))
 }
 
-/// Verify the linked transaction is owned by the caller (else 422 per
-/// design: unowned `transaction_id` maps to 422, never 404).
-pub async fn ensure_transaction_owned(
-    pool: &sqlx::PgPool,
-    transaction_id: Uuid,
-    user_id: Uuid,
-) -> Result<(), AppError> {
-    let owned: Option<Uuid> = sqlx::query_scalar(TRANSACTION_OWNERSHIP_SQL)
-        .bind(transaction_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    owned.map(|_| ()).ok_or(AppError::Validation(
-        "transaction must be an owned transaction".into(),
-    ))
-}
-
-/// Map movement write errors: `23503` (FK: goal vanished mid-flight or
-/// transaction deleted) → 422; `23514` (check: over-withdrawal drove
+/// Map movement write errors: `23503` (FK: goal vanished mid-flight) → 422; `23514` (check: over-withdrawal drove
 /// `saved_amount` below 0) → 422; everything else is internal.
 fn map_movement_db_err(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db) = &e {
@@ -590,15 +567,11 @@ pub async fn create_movement_handler(
     let occurred_on = validate_movement_date(&body.occurred_on)?;
     validate_optional_text(body.notes.as_deref(), MAX_TEXT_LEN, "notes")?;
     ensure_goal_writable(&state.pool, goal_id, user_id).await?;
-    if let Some(transaction_id) = body.transaction_id {
-        ensure_transaction_owned(&state.pool, transaction_id, user_id).await?;
-    }
     let row = sqlx::query_as::<_, MovementRow>(CREATE_MOVEMENT_SQL)
         .bind(user_id)
         .bind(goal_id)
         .bind(amount)
         .bind(occurred_on)
-        .bind(body.transaction_id)
         .bind(body.notes.as_deref())
         .fetch_one(&state.pool)
         .await
@@ -820,12 +793,30 @@ mod tests {
             savings_goal_id: Uuid::new_v4(),
             amount: Decimal::new(-3000, 2),
             occurred_on: NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
-            transaction_id: None,
             notes: None,
             created_at: Utc::now(),
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["amount"], serde_json::Value::String("-30.00".into()));
+        assert!(
+            v.get("transaction_id").is_none(),
+            "movement wire must not expose a ledger identifier"
+        );
+    }
+
+    #[test]
+    fn ledger_field_rejected_as_unknown() {
+        // S3a: the ledger link is gone — a payload carrying it is 422 at
+        // the JSON boundary (`deny_unknown_fields`), never silently dropped.
+        let payload = json!({
+            "amount": "10.00",
+            "occurred_on": "2026-09-01",
+            "transaction_id": Uuid::new_v4()
+        });
+        assert!(
+            serde_json::from_value::<CreateMovementRequest>(payload).is_err(),
+            "ledger identifier must fail deserialization"
+        );
     }
 
     #[test]
@@ -834,7 +825,6 @@ mod tests {
             CREATE_MOVEMENT_SQL,
             DELETE_MOVEMENT_SQL,
             GOAL_OWNERSHIP_SQL,
-            TRANSACTION_OWNERSHIP_SQL,
         ] {
             assert!(
                 sql.contains("user_id"),
@@ -845,6 +835,14 @@ mod tests {
             DELETE_MOVEMENT_SQL.contains("id=$1 AND savings_goal_id=$2 AND user_id=$3"),
             "movement delete must scope id+goal+user, got: {DELETE_MOVEMENT_SQL}"
         );
+        for token in ["transactions", "budgets"] {
+            for sql in [CREATE_MOVEMENT_SQL, DELETE_MOVEMENT_SQL] {
+                assert!(
+                    !sql.contains(token),
+                    "movement SQL must never reference removed table `{token}`, got: {sql}"
+                );
+            }
+        }
         assert!(
             GOAL_EXISTS_SQL.contains("FROM savings_goals WHERE id=$1"),
             "orphaned-goal probe must be unscoped, got: {GOAL_EXISTS_SQL}"
@@ -1263,36 +1261,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn movement_with_unowned_transaction_is_422() {
+    async fn movement_with_ledger_field_is_422_and_records_nothing() {
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP movement_with_unowned_transaction_is_422: no DATABASE_URL");
+            eprintln!("SKIP movement_with_ledger_field_is_422_and_records_nothing: no DATABASE_URL");
             return;
         };
-        let (state_a, _, user_a) = db_state(&pool).await;
-        let (state_b, headers_b, user_b) = db_state(&pool).await;
-        // Hermetic fixture (S0): no `transactions` seed. Any id the caller
-        // does not own — including one that exists for nobody — is 422 via
-        // `ensure_transaction_owned`, so a random id exercises the same path.
-        let foreign_tx = Uuid::new_v4();
-        let goal_id = seed_goal(&pool, user_b, "1000.00").await;
-        let body = Json(
-            serde_json::from_value(json!({
-                "amount": "10.00",
-                "occurred_on": "2026-09-01",
-                "transaction_id": foreign_tx
-            }))
-            .expect("valid body with transaction"),
+        let (state, headers, user_id) = db_state(&pool).await;
+        // S3a: the ledger link is gone. A payload carrying it never
+        // deserializes (`deny_unknown_fields` → 422), so no movement row
+        // can be recorded with a link.
+        let raw = json!({
+            "amount": "10.00",
+            "occurred_on": "2026-09-01",
+            "transaction_id": Uuid::new_v4()
+        });
+        assert!(
+            serde_json::from_value::<CreateMovementRequest>(raw).is_err(),
+            "ledger identifier must fail deserialization"
         );
-        let err = create_movement_handler(State(state_b.clone()), headers_b, Path(goal_id), body)
-            .await
-            .expect_err("unowned transaction must be 422");
-        assert_eq!(
-            err.into_response().status(),
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY
-        );
-        let _ = state_a;
-        cleanup_user(&pool, user_a).await;
-        cleanup_user(&pool, user_b).await;
+        let goal_id = seed_goal(&pool, user_id, "1000.00").await;
+        let before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM savings_goal_movements WHERE savings_goal_id=$1 AND user_id=$2",
+        )
+        .bind(goal_id)
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count movements");
+        assert_eq!(before, 0);
+        cleanup_user(&pool, user_id).await;
+        let _ = state;
+        let _ = headers;
     }
 
     #[tokio::test]

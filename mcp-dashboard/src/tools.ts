@@ -92,45 +92,15 @@ const CreateAccountSchema = z.object({
 
 const UpdateAccountSchema = z.object({
   id: uuid,
+  balance: z.string().optional(),
   notes: optionalText,
   color: optionalText,
   icon: optionalText,
   is_archived: z.boolean().optional(),
 });
 
-const ListTransactionsSchema = z.object({
-  account_id: optionalUuid,
-  category_id: optionalUuid,
-  type: z.enum(["income", "expense"]).optional(),
-  from: z.string().optional(),
-  to: z.string().optional(),
-  cursor: z.string().optional(),
-  limit: z.number().int().min(1).max(200).optional(),
-});
-
-const CreateTransactionSchema = z.object({
-  account_id: uuid,
-  type: z.enum(["income", "expense"]),
-  amount: z.string().min(1),
-  occurred_on: dateString,
-  category_id: optionalUuid,
-  description: optionalText,
-  notes: optionalText,
-  payment_method: optionalText,
-  credit_card_account_id: optionalUuid,
-});
-
-const UpdateTransactionSchema = z.object({
-  id: uuid,
-  description: optionalText,
-  notes: optionalText,
-  category_id: optionalUuid,
-});
-
-const TransactionStatsSchema = z.object({
-  from: z.string().optional(),
-  to: z.string().optional(),
-});
+// (S3a) Transaction schemas deleted with the ledger: migration 0011 drops
+// the table and no tool entry references them.
 
 const ListTasksSchema = z.object({
   view: z.enum(["today", "upcoming", "overdue", "done"]).optional(),
@@ -363,11 +333,13 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "update_account",
-      description: "PATCH /api/accounts/{id}. Updates notes/color/icon/is_archived.",
+      description:
+        "PATCH /api/accounts/{id}. Accepted fields: balance/notes/color/icon/is_archived. Balance is user-owned manual data as a decimal string (e.g. \"980000.00\").",
       inputSchema: {
         type: "object",
         properties: {
           id: strProp("Account UUID"),
+          balance: optStrProp("Manual balance as a decimal string, e.g. \"980000.00\""),
           notes: optStrProp("Notes"),
           color: optStrProp("Color tag"),
           icon: optStrProp("Icon tag"),
@@ -391,110 +363,6 @@ const entries: ToolEntry[] = [
     },
     schema: DeleteByIdSchema,
     run: async (args, token) => fmt(await apiDelete(`/accounts/${args.id}`, token)),
-  },
-  {
-    def: {
-      name: "list_transactions",
-      description: "GET /api/transactions. Filters: account_id, category_id, type, from/to (YYYY-MM-DD), cursor, limit.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          account_id: optStrProp("Filter by account UUID"),
-          category_id: optStrProp("Filter by category UUID"),
-          type: optStrProp("income|expense"),
-          from: optStrProp("YYYY-MM-DD inclusive"),
-          to: optStrProp("YYYY-MM-DD inclusive"),
-          cursor: optStrProp("Keyset cursor from previous page"),
-          limit: intProp("Page size 1-200"),
-        },
-      },
-    },
-    schema: ListTransactionsSchema,
-    run: async (args, token) => fmt(await apiGet("/transactions", args, token)),
-  },
-  {
-    def: {
-      name: "create_transaction",
-      description: "POST /api/transactions. Amount is a decimal string (e.g. \"50.00\").",
-      inputSchema: {
-        type: "object",
-        properties: {
-          account_id: strProp("Account UUID"),
-          type: strProp("income|expense"),
-          amount: strProp("Decimal string, e.g. \"50.00\""),
-          occurred_on: strProp("YYYY-MM-DD"),
-          category_id: optStrProp("Category UUID"),
-          description: optStrProp("Description"),
-          notes: optStrProp("Notes"),
-          payment_method: optStrProp("Payment method"),
-          credit_card_account_id: optStrProp("Owned credit_card account UUID (expense only)"),
-        },
-        required: ["account_id", "type", "amount", "occurred_on"],
-      },
-    },
-    schema: CreateTransactionSchema,
-    run: async (args, token) => fmt(await apiPost("/transactions", args, token)),
-  },
-  {
-    def: {
-      name: "update_transaction",
-      description: "PATCH /api/transactions/{id}. Only description/notes/category_id are mutable.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          id: strProp("Transaction UUID"),
-          description: optStrProp("Description"),
-          notes: optStrProp("Notes"),
-          category_id: optStrProp("Category UUID"),
-        },
-        required: ["id"],
-      },
-    },
-    schema: UpdateTransactionSchema,
-    run: async (args, token) => fmt(await apiPatch(`/transactions/${args.id}`, withoutId(args), token)),
-  },
-  {
-    def: {
-      name: "delete_transaction",
-      description: "DELETE /api/transactions/{id}. Balance reversal is trigger-owned.",
-      inputSchema: {
-        type: "object",
-        properties: { id: strProp("Transaction UUID") },
-        required: ["id"],
-      },
-    },
-    schema: DeleteByIdSchema,
-    run: async (args, token) => fmt(await apiDelete(`/transactions/${args.id}`, token)),
-  },
-  {
-    def: {
-      name: "stats_transactions_by_category",
-      description: "GET /api/transactions/stats/by-category. Expense/income totals per category.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          from: optStrProp("YYYY-MM-DD inclusive"),
-          to: optStrProp("YYYY-MM-DD inclusive"),
-        },
-      },
-    },
-    schema: TransactionStatsSchema,
-    run: async (args, token) => fmt(await apiGet("/transactions/stats/by-category", args, token)),
-  },
-  {
-    def: {
-      name: "stats_transactions_monthly_flow",
-      description: "GET /api/transactions/stats/monthly-flow. Monthly income vs expense flow.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          from: optStrProp("YYYY-MM-DD inclusive"),
-          to: optStrProp("YYYY-MM-DD inclusive"),
-        },
-      },
-    },
-    schema: TransactionStatsSchema,
-    run: async (args, token) => fmt(await apiGet("/transactions/stats/monthly-flow", args, token)),
   },
   {
     def: {

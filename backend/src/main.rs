@@ -38,6 +38,9 @@ async fn api_fallback_handler() -> (StatusCode, Json<serde_json::Value>) {
 /// transfers are now recorded as two manual balance edits.
 /// Slice S2 removed the `/budgets` routes (`routes::budgets` deleted);
 /// no budget endpoint, UI, LED or MCP tool remains.
+/// Slice S3a removed the `/transactions` routes (`routes::transactions`
+/// deleted, migration 0011 drops the table); `accounts.balance` is now
+/// written by hand via `PATCH /api/accounts/{id}`.
 fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(routes::login::login_handler))
@@ -57,24 +60,6 @@ fn api_routes() -> Router<AppState> {
             get(routes::accounts::get_account_handler)
                 .patch(routes::accounts::patch_account_handler)
                 .delete(routes::accounts::delete_account_handler),
-        )
-        .route(
-            "/transactions",
-            post(routes::transactions::create_transaction_handler)
-                .get(routes::transactions::list_transactions_handler),
-        )
-        .route(
-            "/transactions/stats/by-category",
-            get(routes::transactions::transactions_by_category_handler),
-        )
-        .route(
-            "/transactions/stats/monthly-flow",
-            get(routes::transactions::transactions_monthly_flow_handler),
-        )
-        .route(
-            "/transactions/{id}",
-            patch(routes::transactions::patch_transaction_handler)
-                .delete(routes::transactions::delete_transaction_handler),
         )
         .route(
             "/categories",
@@ -409,8 +394,9 @@ mod api_nest_tests {
 
     #[tokio::test]
     async fn p9_finanzas_write_routes_are_wired() {
-        // Slice S2: budgets gone. Las rutas supervivientes deben existir:
-        // sin sesion llegan al handler (401), no a 404/405.
+        // Slice S3a: transactions gone with the ledger; budgets gone (S2).
+        // Las rutas supervivientes deben existir: sin sesion llegan al
+        // handler (401), no a 404/405.
         let app = build_router(lazy_state(), None);
         let id = uuid::Uuid::new_v4();
         let pid = uuid::Uuid::new_v4();
@@ -441,6 +427,70 @@ mod api_nest_tests {
                 "{method} {uri} must reach the handler (401), proving the route is wired"
             );
         }
+        // S3a atomicity: the manual balance write lands in the same slice
+        // as the removal. Axum deserializes `Json` before the handler runs
+        // `require_user_id`, so a 401 (not 422) proves `balance` is an
+        // accepted PATCH field on a mounted route.
+        let app = build_router(lazy_state(), None);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/accounts/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"balance\": \"-750.50\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "PATCH /api/accounts/{{id}} with balance must reach the handler (401), proving the balance write is wired"
+        );
+        // Removed routes resolve to the JSON 404 fallback, never to a
+        // handler: no /api/transactions, /api/transfers or /api/budgets
+        // path may survive S3a.
+        for (method, uri) in [
+            ("GET", "/api/transactions".to_string()),
+            ("POST", "/api/transactions".to_string()),
+            (
+                "GET",
+                "/api/transactions/stats/by-category".to_string(),
+            ),
+            (
+                "GET",
+                "/api/transactions/stats/monthly-flow".to_string(),
+            ),
+            ("PATCH", format!("/api/transactions/{id}")),
+            ("DELETE", format!("/api/transactions/{id}")),
+            ("GET", "/api/transfers".to_string()),
+            ("GET", "/api/budgets".to_string()),
+        ] {
+            let app = build_router(lazy_state(), None);
+            let res = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(&uri)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "{method} {uri} must be gone (404), proving the removal"
+            );
+        }
+        // The wiring pair in one assertion: the PATCH DTO accepts
+        // `balance` while the transaction routes above are gone.
+        let body: crate::routes::accounts::PatchAccountRequest =
+            serde_json::from_value(serde_json::json!({"balance": "-750.50"}))
+                .expect("PATCH accounts must accept balance");
+        assert_eq!(body.balance.as_deref(), Some("-750.50"));
         let _ = app;
     }
 
