@@ -916,7 +916,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn card_metrics_compute_used_available_usage() {
         let (used, available, usage, alert) =
             compute_card_metrics(Decimal::new(-30000, 2), Decimal::new(100000, 2));

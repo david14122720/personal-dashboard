@@ -397,7 +397,7 @@ mod api_nest_tests {
         // Slice S3a: transactions gone with the ledger; budgets gone (S2).
         // Las rutas supervivientes deben existir: sin sesion llegan al
         // handler (401), no a 404/405.
-        let app = build_router(lazy_state(), None);
+        let _app = build_router(lazy_state(), None);
         let id = uuid::Uuid::new_v4();
         let pid = uuid::Uuid::new_v4();
         for (method, uri) in [

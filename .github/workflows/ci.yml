@@ -39,7 +39,7 @@ jobs:
           for migration in migrations/*.sql; do
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
           done
-      - run: cargo test --offline
+      - run: cargo test --locked
 
   frontend:
     runs-on: ubuntu-latest

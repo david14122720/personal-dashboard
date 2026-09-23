@@ -24,7 +24,7 @@ COPY backend/src ./src
 RUN find ./src -type f -exec touch {} +
 COPY backend/.sqlx ./.sqlx
 ENV SQLX_OFFLINE=true
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 WORKDIR /app
