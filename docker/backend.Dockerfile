@@ -1,16 +1,19 @@
 # syntax=docker/dockerfile:1.6
-FROM rust:1.75-slim-bookworm AS builder
+# Backend-only image used by docker-compose.yml: it serves no static assets
+# (the root Dockerfile is the combined frontend + backend image for Dokploy).
+# The rust base must satisfy the tree's MSRVs (sqlx 0.9 requires >= 1.94).
+FROM rust:1-slim-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY backend/Cargo.toml backend/Cargo.lock* ./Cargo.toml ./Cargo.lock
-# Cache deps with dummy main
+# Cache deps with dummy main (tolerant by design; only the gated build enforces --locked)
 RUN mkdir -p src && echo "fn main(){}" > src/main.rs && cargo build --release 2>/dev/null || true
 COPY backend/src ./src
 # Touch so Cargo sees the real sources as newer than the dummy build above.
 RUN find ./src -type f -exec touch {} +
 COPY backend/.sqlx ./.sqlx
 ENV SQLX_OFFLINE=true
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 WORKDIR /app

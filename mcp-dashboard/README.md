@@ -23,7 +23,7 @@ net-worth.
 
 ```bash
 cd mcp-dashboard
-npm install
+npm ci
 npm run build
 ```
 

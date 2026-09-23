@@ -469,3 +469,123 @@ REFACTOR: none needed after GREEN. One test-hygiene fix inside the GREEN cycle: 
 - No backend env-var documentation file exists in the repository; the in-surface documentation is the doc comment on the parser. A user-facing doc statement remains an S2-WU3/verify-report item.
 - S1 diff size now totals 1016 insertions / 44 deletions across `backend/` (config 161/1, login 334/17, rate_limit 135/4, main 385/21, Cargo.toml 1/1) — well over the ~280-line S1 stop threshold flagged earlier; the parent's review-budget decision (split or `size:exception`) still applies.
 - Nothing was staged or committed.
+
+---
+
+# Apply progress — S2 pnpm approval key, compose pair, docs, canonical specs (last slice)
+
+- change: `2026-09-23-dependency-security-refresh`
+- slice: S2 (S2-WU1, S2-WU2, S2-WU3 docs/canonical-spec/verify-report portions). No file outside the S2 allow-list was touched.
+- date: 2026-09-23
+- status: implementation complete in the working tree; **not committed / not staged** (parent-owned).
+- checkboxes: S2-WU1 (4/4), S2-WU2 (3/3) and the S2-WU3 canonical-spec + verify-report items marked `- [x]`; the README item, the existing-canonical edge-case merge and the full-change gate left `- [ ]` with reasons below. Parent-owned boxes untouched.
+
+## Files touched in this delegation
+
+- `frontend/package.json` — removed the ignored `pnpm.onlyBuiltDependencies` block (+0/-7); `frontend/pnpm-workspace.yaml`'s `allowBuilds:` is the single authoritative approval source. No dependency entry changed, so `frontend/pnpm-lock.yaml` is untouched (`git diff` empty).
+- `docker/backend.Dockerfile` (+6/-3) — base `rust:1.75-slim-bookworm` → `rust:1-slim-bookworm`; gated `cargo build --release` → `cargo build --release --locked`; comments now state backend-only/no-static-assets scope and that the dummy warm-up stays tolerant.
+- `docker-compose.yml` — **unchanged**; the Dockerfile path and tag family still resolve, so no compose edit was required.
+- `openspec/specs/frontend-dependencies/spec.md` — created (123 lines), byte-identical to the change delta (new canonical domain).
+- `openspec/specs/build-reproducibility/spec.md` — verified byte-identical to the change delta (created in U2); no edit needed.
+- `frontend/pnpm-workspace.yaml` — temporarily flipped for the A3 proof and restored byte-identical to HEAD (`diff` against `git show HEAD:frontend/pnpm-workspace.yaml` is empty; no net change).
+- `openspec/changes/2026-09-23-dependency-security-refresh/tasks.md` — S2 implementation checkboxes flipped.
+- `openspec/changes/2026-09-23-dependency-security-refresh/apply-progress.md` — this section (includes the embedded verify report).
+
+## S2-WU1 — A3 proof: which key pnpm 11.23.0 honours
+
+Observed commands and output (all exit 0 unless stated):
+
+1. `pnpm -v` → `11.23.0`.
+2. Baseline with the block still present — `cd frontend && pnpm install` →
+   `[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.onlyBuiltDependencies". See https://pnpm.io/settings for the new home of each setting.` → `Already up to date` → `Done in 1.4s using pnpm v11.23.0`. The package.json key is provably dead before any edit.
+3. Block removed (7 deletions), then `pnpm install --force --frozen-lockfile` → `[WARN] using --force I sure hope you know what you are doing`, `Already up to date`, `Done in 1.3s using pnpm v11.23.0`, no `Ignored build scripts` warning.
+4. Decisive key-honoring proof by config flip — the `rm -rf node_modules` form from `tasks.md` was **not run**: destructive deletion is outside this worker's tool-safety contract, so the flip exercises the same approval decision on a real install pass instead:
+   - `allowBuilds: esbuild: false` → `pnpm install --frozen-lockfile` exit 0; `pnpm ignored-builds` → `Explicitly ignored package builds (via allowBuilds): esbuild`; `node_modules/.modules.yaml` records `allowBuilds: {esbuild: false, msw: true, sharp: true}`.
+   - restored `esbuild: true` → `pnpm install --frozen-lockfile` exit 0 with no warnings; `pnpm ignored-builds` reports no explicit ignores; `.modules.yaml` records `allowBuilds: {esbuild: true, msw: true, sharp: true}`.
+   - functional check of the approved artifact: `frontend/node_modules/.pnpm/esbuild@0.28.2/node_modules/esbuild/bin/esbuild --version` → `0.28.2`.
+5. Corroborating evidence from the installed pnpm 11.23.0 itself: its `CHANGELOG.md` states that `onlyBuiltDependencies`, `onlyBuiltDependenciesFile`, `neverBuiltDependencies` and `ignoredBuiltDependencies` "were replaced by `allowBuilds` in pnpm 11 and silently ignored since"; the bundle's build-config keys are exactly `dangerouslyAllowAllBuilds` and `allowBuilds`.
+
+Conclusion: the workspace `allowBuilds` map is the authoritative approval source for the pinned pnpm 11.23.0, and deleting the package.json block drops no approval — the same three packages stay approved in the workspace file, and nothing else ever approved build scripts. Note on order: the baseline warning was captured before deletion; the flip proof was run after it. The proof outcome does not depend on the block's presence (it tests the workspace key), and the baseline already established the block is ignored, so the deletion was safe when applied.
+
+## S2-WU2 — compose pair, refresh-only (DD8)
+
+- MSRV evidence before choosing the tag — `cd backend && cargo metadata --format-version 1 --locked` → declared `rust_version`: `sqlx`/`sqlx-core`/`sqlx-postgres` 0.9.0 → **1.94.0**; `rand` 0.10.3 → 1.85; `base64` 0.23.1 → 1.71; `axum` 0.8.9 → 1.80; `tower-http` 0.7.1 → 1.65. The old `rust:1.75` pin could not build the tree; `rust:1-slim-bookworm` tracks current stable 1.x (local toolchain 1.95.0) and matches the root `Dockerfile`'s existing tag, keeping the two container paths coherent.
+- `docker compose -f docker-compose.yml config --quiet` → exit 1 with `env file /home/david/Nextcloud2/Ubuntu/landing_personal/.env not found` — environmental only (`.env` is a runtime secret file, absent in this checkout), not caused by the refresh.
+- `docker compose -f docker-compose.yml config --quiet --no-env-resolution` → exit 0 (model parses). `docker compose -f docker-compose.yml config --services --no-env-resolution` → `db`, `backend`. `docker/backend.Dockerfile` exists at the referenced path.
+- `docker-compose.yml` unchanged; no half-fixed state (the compose file points at an existing, refreshed Dockerfile).
+- **`docker build` is NOT evidenced** — no daemon was assumed and none was invoked. Deletion of the pair remains a follow-up change requiring explicit owner confirmation (parent binding constraint: refresh-only, no deletion).
+
+## S2-WU3 — docs, canonical specs, verify report
+
+### Pinning policy (recorded here; the canonical `build-reproducibility` spec already carries the requirement)
+
+- Rust: `cargo test --locked` (CI), `cargo build --release --locked` (root `Dockerfile` and `docker/backend.Dockerfile`); the warm-up dummy build stays tolerant by design.
+- frontend: `pnpm install --frozen-lockfile` (CI and root `Dockerfile`) with `frontend/pnpm-lock.yaml` committed; every manifest edit ships its regenerated lock.
+- mcp-dashboard: `npm ci` with committed `mcp-dashboard/package-lock.json`. **Gap:** `mcp-dashboard/README.md:26` still says `npm install`; that file is outside this delegation's allowed edit surfaces, so the README item remains open for the parent.
+- Behind-latest transitive Rust crates intentionally not chased (from the U2 record): `matchit 0.8.4` (axum declares `=0.8.4`; raising it is an axum decision) and `crypto-common 0.1.6` (0.1.7 would force a `generic-array` 0.14.9→0.14.7 downgrade).
+
+### Canonical sync
+
+- `openspec/specs/frontend-dependencies/spec.md`: created; `diff` against the change delta is clean (byte-identical).
+- `openspec/specs/build-reproducibility/spec.md`: `diff` against the change delta is clean (byte-identical; created in U2).
+- Existing canonicals synced earlier in the change: `backend-base`, `session-auth`, `health-checks`, `edge-security-headers` (S1), `mcp-dashboard` requirements (U3). A read-only block-substring check confirms every delta requirement block is present verbatim in each canonical file.
+- Known remaining gap, outside this delegation's allowed surfaces: the current change's `mcp-dashboard` `## Edge cases` / `## Non-goals` additions are not merged into `openspec/specs/mcp-dashboard/spec.md` (the canonical file's sections there come from the `simplify-finance-productivity` change). The same delta-only sections exist for `backend-base`, `session-auth`, `edge-security-headers` and `health-checks`; merging them is a parent decision on surfaces.
+
+### Verify report (embedded here because no verify-report path was in the allowed surfaces)
+
+- **Backend tests executed vs self-skipped:** `cargo test --locked` = **414 passed / 0 failed / 0 ignored** (S1.3 record; unit `src/main.rs` 391 + migrations 3 + 10 + 10). `DATABASE_URL` was unset in the apply shell, so DB-gated tests self-skip (the U2 run measured 136 of 395: 124 unit + 12 integration, 259 real assertions). CI with the Postgres service plus migrations remains the DB acceptance proof; `cargo clippy --all-targets --locked` finished with zero warnings.
+- **A3 proof result:** workspace `allowBuilds` is authoritative; the `pnpm.onlyBuiltDependencies` block was removed and no approval was lost (see S2-WU1).
+- **Named-but-not-chased transitives:** `matchit 0.8.4`, `crypto-common 0.1.6` (reasons above).
+- **D1 plaintext-LAN acceptance:** recorded in canonical `backend-base` as "Accepted Plaintext-LAN Exposure" — no TLS/certificate/HSTS/Traefik/firewall work; any exposure beyond the trusted LAN invalidates the acceptance and requires its own change.
+- **Deferred `script-src` decision:** canonical `edge-security-headers` records exactly `Content-Security-Policy: frame-ancestors 'none'` with no `script-src`; the named blocker for any future full CSP is the inline FOUC guard in `frontend/app/layout.tsx` (must be resolved by hash or nonce, never a default `'unsafe-inline'`).
+- **Empty-by-default trusted proxies:** `TRUSTED_PROXIES` is opt-in; absent/empty trusts nobody; the consequence (all clients behind a proxy share one bucket until configured) is documented on the parser in `backend/src/config.rs`.
+- **CORS feature retention rationale:** the now-unused `cors` feature stays in `backend/Cargo.toml` because the `backend-base` spec requires an additive-only Cargo.toml diff; removing it is a follow-up.
+- **Compose refresh decision:** refreshed, not deleted, per the parent's minimal-safe-edit constraint; no half-fixed state; **`docker build` not evidenced** (no daemon assumed).
+- **Review accounting:** generated lockfiles (`Cargo.lock`, `pnpm-lock.yaml`, `package-lock.json`) are review-exempt; no `size:exception` is requested or implied.
+
+## Verification (exact commands, observed results)
+
+| Command | Observed result |
+|---|---|
+| `pnpm -v` (in `frontend/`) | `11.23.0` |
+| `pnpm install` with the stale block present | `[WARN] The "pnpm" field in package.json is no longer read by pnpm. … ignored: "pnpm.onlyBuiltDependencies"`; `Already up to date`; exit 0 |
+| `pnpm install --force --frozen-lockfile` after block removal | `Already up to date`, `Done in 1.3s`, exit 0, no `Ignored build scripts` warning |
+| `allowBuilds.esbuild=false` → `pnpm install --frozen-lockfile` + `pnpm ignored-builds` | exit 0; `Explicitly ignored package builds (via allowBuilds): esbuild`; `.modules.yaml` `allowBuilds.esbuild=false` |
+| `allowBuilds.esbuild=true` → `pnpm install --frozen-lockfile` + `pnpm ignored-builds` | exit 0, no warnings; no explicit ignores; `.modules.yaml` `allowBuilds: {esbuild: true, msw: true, sharp: true}` |
+| `diff <(git show HEAD:frontend/pnpm-workspace.yaml) frontend/pnpm-workspace.yaml` | empty — restored byte-identical |
+| `./node_modules/.pnpm/esbuild@0.28.2/node_modules/esbuild/bin/esbuild --version` | `0.28.2` |
+| `cargo metadata --format-version 1 --locked` (backend, rust_version filter) | `sqlx 0.9.0 → 1.94.0`; `rand 0.10.3 → 1.85`; `base64 0.23.1 → 1.71` |
+| `docker compose -f docker-compose.yml config --quiet` | exit 1 — `env file …/.env not found` (environmental, `.env` absent) |
+| `docker compose -f docker-compose.yml config --quiet --no-env-resolution` | exit 0 (parses); `--services` → `db`, `backend` |
+| `cd frontend && pnpm install --frozen-lockfile` | `Already up to date`, exit 0, no warnings |
+| `cd frontend && pnpm exec tsc --noEmit` | exit 0 |
+| `cd frontend && pnpm test` | 32 test files / 309 tests passed, exit 0 |
+| `git diff -- frontend/pnpm-lock.yaml` | empty (0 lines) — lockfile untouched |
+| `git status --short` | `M docker/backend.Dockerfile`, `M frontend/package.json`, `?? openspec/specs/frontend-dependencies/` plus pre-existing untracked entries (`.codegraph/`, `.pi/`, `frontend/AGENTS.md`, `frontend/CLAUDE.md`, `frontend/tsconfig.tsbuildinfo`, `odd/`, `openspec/changes/2026-09-23-simplify-finance-productivity/verify-report.md`) |
+
+## Checkbox status
+
+| S2 item | Status | Evidence / reason |
+|---|---|---|
+| WU1.1 — prove the key shape | `- [x]` | baseline warning + config-flip proof + pnpm changelog; `rm -rf node_modules` form replaced by the non-destructive flip (recorded) |
+| WU1.2 — delete or migrate | `- [x]` | proof passed → block deleted; workspace `allowBuilds` authoritative; commit message statement is for the parent to include |
+| WU1.3 — regenerate lock / re-run gates | `- [x]` | lockfile unchanged; `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm exec tsc --noEmit` all green |
+| WU1.4 — single-source invariant | `- [x]` | `allowBuilds` lists exactly esbuild/msw/sharp; no other key approves builds; no ignored-builds warning after removal |
+| WU2.1 — bump Dockerfile + `--locked` | `- [x]` | MSRVs verified; `rust:1-slim-bookworm`; gated build `--locked`; warm-up untouched |
+| WU2.2 — keep compose working | `- [x]` | `config --no-env-resolution` exit 0; services `db`/`backend`; no compose edit needed |
+| WU2.3 — record compose decision | `- [x]` | recorded above (refresh-only, no half-fix, `docker build` not evidenced, deletion as follow-up) |
+| WU3.1 — `mcp-dashboard/README.md` → `npm ci` | `- [ ]` | **outside allowed surfaces**; file untouched (still `npm install` at line 26) |
+| WU3.2 — pinning policy + transitives recorded | `- [ ]` (policy recorded, README part blocked) | policy recorded in this section and in canonical `build-reproducibility`; the READMEs-touched requirement cannot be satisfied without `mcp-dashboard/README.md` in surfaces |
+| WU3.3 — create canonical specs | `- [x]` | `frontend-dependencies` created; `build-reproducibility` verified byte-identical |
+| WU3.4 — merge deltas into existing canonicals | `- [ ]` (requirements done earlier; edge/non-goals blocked) | requirement blocks verified present for all six; `## Edge cases`/`## Non-goals` merge needs surfaces for the five existing canonical files |
+| WU3.5 — verify report | `- [x]` | embedded above (apply-progress was the only report surface supplied) |
+| WU3.6 — final full-change gate | `- [ ]` | not authorized in this delegation (needs `DATABASE_URL` + full backend/mcp gates); parent-owned |
+
+## Risks / notes
+
+- The A3 proof used a config flip instead of `rm -rf node_modules`; the observed deny/allow behavior through `pnpm ignored-builds` and `.modules.yaml` is conclusive for key authority, but the literal "clean install" wording of the task was not reproduced.
+- `docker build` remains unverified; the compose parse is the strongest evidence available without a daemon. The `docker-compose.yml` file itself was not modified, so no regression risk was introduced there.
+- `frontend/pnpm-lock.yaml` is untouched, which keeps the S2 hand-written diff at +6/-7 (Dockerfile + package.json) plus the 123-line new canonical spec.
+- Open items requiring parent surfaces: `mcp-dashboard/README.md` (`npm install` → `npm ci`), the `## Edge cases`/`## Non-goals` canonical merges, and the full-change gate. None was guessed or absorbed.
+- Nothing was staged or committed; all edits are in the working tree for the parent's commit.
+
