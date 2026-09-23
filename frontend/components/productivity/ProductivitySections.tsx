@@ -20,7 +20,7 @@ import {
  */
 
 const rowActionClass =
-  "shrink-0 rounded-md border border-hull px-2 py-1 font-display text-[11px] transition-colors hover:border-signal hover:text-signal disabled:opacity-50";
+  "shrink-0 rounded-md border border-hull px-3 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal disabled:opacity-50 min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
 
 function DeleteButton({
   label,
@@ -70,7 +70,7 @@ export function TaskViewTabs({
     { value: "done", label: t("productivity.viewDone") },
   ];
   return (
-    <div role="group" aria-label={t("productivity.tasks")} className="mb-3 flex flex-wrap gap-2">
+    <div role="group" aria-label={t("productivity.tasks")} className="flex flex-wrap gap-2">
       {options.map((option) => (
         <button
           key={option.value}
@@ -106,7 +106,7 @@ export function EventViewTabs({
     { value: "overdue", label: t("productivity.viewOverdueEvents") },
   ];
   return (
-    <div role="group" aria-label={t("productivity.events")} className="mb-3 flex flex-wrap gap-2">
+    <div role="group" aria-label={t("productivity.events")} className="flex flex-wrap gap-2">
       {options.map((option) => (
         <button
           key={option.value}
@@ -126,22 +126,59 @@ export function EventViewTabs({
   );
 }
 
+/** Per-section collapsed-form toggle («Nuevo»). Always rendered in the
+ * section header — including over an empty list — so creation is never a
+ * dead end. `aria-expanded`/`aria-controls` expose the collapsed state;
+ * focus moves into the form on open and back here on collapse. */
+export function NewEntryButton({
+  section,
+  formId,
+  open,
+  onToggle,
+  ref,
+}: {
+  section: string;
+  formId: string;
+  open: boolean;
+  onToggle: () => void;
+  ref?: React.Ref<HTMLButtonElement>;
+}) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-expanded={open}
+      aria-controls={formId}
+      aria-label={t("productivity.newEntryLabel", { section })}
+      onClick={onToggle}
+      className="shrink-0 rounded-md border border-hull px-4 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+    >
+      {t("productivity.newEntry")}
+    </button>
+  );
+}
+
 export function SectionShell({
   title,
   hint,
+  action,
   children,
   span,
 }: {
   title: string;
   hint?: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
   span: string;
 }) {
   return (
     <section aria-label={title} className={`rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span}`}>
-      <h2 className="font-display text-base font-semibold text-white">{title}</h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-display text-base font-semibold text-white">{title}</h2>
+        {action}
+      </div>
       {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
-      <div className="mt-4">{children}</div>
+      <div className="mt-4 flex flex-col gap-4">{children}</div>
     </section>
   );
 }
@@ -332,7 +369,7 @@ export function TasksList({
                     aria-label={done ? t("productivity.reopenTask", { title: task.title }) : t("productivity.completeTask", { title: task.title })}
                     aria-pressed={done}
                     onClick={() => onToggle(task)}
-                    className="shrink-0 rounded-md border border-hull px-2.5 py-1 font-display text-xs transition-colors hover:border-flow hover:text-flow disabled:opacity-50"
+                    className={`${rowActionClass} hover:border-flow hover:text-flow`}
                   >
                     {done ? t("productivity.markReopen") : t("productivity.markDone")}
                   </button>
@@ -436,7 +473,7 @@ export function NotesResults({
     return <EmptyState title={t("productivity.noNotes")} hint={t("productivity.noNotesHint")} />;
   }
   return (
-    <ul className="mt-3 flex flex-col gap-2">
+    <ul className="flex flex-col gap-2">
       {notes.map((note) => (
         <li key={note.id} className="rounded-lg border border-hull px-3 py-2">
           <p className="truncate text-sm font-medium">
@@ -463,7 +500,7 @@ export function NotesResults({
                       : t("productivity.pinNoteLabel", { title: note.title })
                   }
                   onClick={() => onTogglePin(note)}
-                  className="shrink-0 rounded-md border border-hull px-2 py-1 font-display text-[11px] transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
+                  className={rowActionClass}
                 >
                   {t("productivity.notePinned")}
                 </button>

@@ -33,6 +33,10 @@ import {
 const inputClass =
   "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument placeholder:text-instrument/40 focus:border-signal focus:outline-none";
 
+/** Submit/Cancelar buttons: 44px minimum hit area with visible focus. */
+const formButtonClass =
+  "rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+
 function revalidateProductivity(mutate: ReturnType<typeof useSWRConfig>["mutate"]): void {
   void mutate((key) => typeof key === "string" && key.startsWith("productivity/"));
 }
@@ -133,6 +137,7 @@ export function TaskForm({
         setGoalId("");
       }
       revalidateProductivity(mutate);
+      onDone?.();
     } catch {
       setError(t("productivity.saveFailed"));
     } finally {
@@ -143,10 +148,10 @@ export function TaskForm({
   return (
     <form
       aria-label={editing ? t("productivity.editTask") : t("productivity.newTask")}
-      className="grid grid-cols-2 gap-3"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2"
       onSubmit={(event) => void handleSubmit(event)}
     >
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.taskTitle")}
         <input
           aria-label={t("productivity.taskTitle")}
@@ -181,7 +186,7 @@ export function TaskForm({
           onChange={(event) => setDueDate(event.target.value)}
         />
       </label>
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.taskGoal")}
         <select
           aria-label={t("productivity.taskGoal")}
@@ -197,19 +202,19 @@ export function TaskForm({
           ))}
         </select>
       </label>
-      <div className="col-span-2 flex items-center gap-3">
+      <div className="sm:col-span-2 flex items-center gap-3">
         <button
           type="submit"
           disabled={pending}
-          className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
+          className={`${formButtonClass} disabled:opacity-50`}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
-        {editing && onDone ? (
+        {onDone ? (
           <button
             type="button"
             onClick={onDone}
-            className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+            className={formButtonClass}
           >
             {t("productivity.cancel")}
           </button>
@@ -266,6 +271,7 @@ export function GoalForm({
         setDescription("");
       }
       revalidateProductivity(mutate);
+      onDone?.();
     } catch {
       setError(t("productivity.saveFailed"));
     } finally {
@@ -276,10 +282,10 @@ export function GoalForm({
   return (
     <form
       aria-label={editing ? t("productivity.editGoal") : t("productivity.newGoal")}
-      className="grid grid-cols-2 gap-3"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2"
       onSubmit={(event) => void handleSubmit(event)}
     >
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.goalName")}
         <input
           aria-label={t("productivity.goalName")}
@@ -315,7 +321,7 @@ export function GoalForm({
           onChange={(event) => setDueDate(event.target.value)}
         />
       </label>
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.goalDescription")}
         <input
           aria-label={t("productivity.goalDescription")}
@@ -325,19 +331,19 @@ export function GoalForm({
           onChange={(event) => setDescription(event.target.value)}
         />
       </label>
-      <div className="col-span-2 flex items-center gap-3">
+      <div className="sm:col-span-2 flex items-center gap-3">
         <button
           type="submit"
           disabled={pending}
-          className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
+          className={`${formButtonClass} disabled:opacity-50`}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
-        {editing && onDone ? (
+        {onDone ? (
           <button
             type="button"
             onClick={onDone}
-            className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+            className={formButtonClass}
           >
             {t("productivity.cancel")}
           </button>
@@ -411,6 +417,7 @@ export function EventForm({
         setLocation("");
       }
       revalidateProductivity(mutate);
+      onDone?.();
     } catch {
       setError(t("productivity.saveFailed"));
     } finally {
@@ -421,10 +428,10 @@ export function EventForm({
   return (
     <form
       aria-label={editing ? t("productivity.editEvent") : t("productivity.newEvent")}
-      className="grid grid-cols-2 gap-3"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2"
       onSubmit={(event) => void handleSubmit(event)}
     >
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.eventTitle")}
         <input
           aria-label={t("productivity.eventTitle")}
@@ -459,7 +466,7 @@ export function EventForm({
           ))}
         </select>
       </label>
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.eventLocation")}
         <input
           aria-label={t("productivity.eventLocation")}
@@ -469,19 +476,19 @@ export function EventForm({
           onChange={(event) => setLocation(event.target.value)}
         />
       </label>
-      <div className="col-span-2 flex items-center gap-3">
+      <div className="sm:col-span-2 flex items-center gap-3">
         <button
           type="submit"
           disabled={pending}
-          className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
+          className={`${formButtonClass} disabled:opacity-50`}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
-        {editing && onDone ? (
+        {onDone ? (
           <button
             type="button"
             onClick={onDone}
-            className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+            className={formButtonClass}
           >
             {t("productivity.cancel")}
           </button>
@@ -535,6 +542,7 @@ export function NoteForm({
         setPinned(false);
       }
       revalidateProductivity(mutate);
+      onDone?.();
     } catch {
       setError(t("productivity.saveFailed"));
     } finally {
@@ -545,10 +553,10 @@ export function NoteForm({
   return (
     <form
       aria-label={editing ? t("productivity.editNote") : t("productivity.newNote")}
-      className="grid grid-cols-2 gap-3"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2"
       onSubmit={(event) => void handleSubmit(event)}
     >
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.noteTitle")}
         <input
           aria-label={t("productivity.noteTitle")}
@@ -558,7 +566,7 @@ export function NoteForm({
           onChange={(event) => setTitle(event.target.value)}
         />
       </label>
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
         {t("productivity.noteBody")}
         <textarea
           aria-label={t("productivity.noteBody")}
@@ -569,7 +577,7 @@ export function NoteForm({
           onChange={(event) => setBody(event.target.value)}
         />
       </label>
-      <label className="col-span-2 flex items-center gap-2 text-xs text-instrument/60">
+      <label className="sm:col-span-2 flex items-center gap-2 text-xs text-instrument/60">
         <input
           type="checkbox"
           aria-label={t("productivity.notePinned")}
@@ -579,19 +587,19 @@ export function NoteForm({
         />
         {t("productivity.notePinned")}
       </label>
-      <div className="col-span-2 flex items-center gap-3">
+      <div className="sm:col-span-2 flex items-center gap-3">
         <button
           type="submit"
           disabled={pending}
-          className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
+          className={`${formButtonClass} disabled:opacity-50`}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
-        {editing && onDone ? (
+        {onDone ? (
           <button
             type="button"
             onClick={onDone}
-            className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+            className={formButtonClass}
           >
             {t("productivity.cancel")}
           </button>

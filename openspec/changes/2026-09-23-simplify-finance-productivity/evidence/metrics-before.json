@@ -1,0 +1,854 @@
+{
+  "phase": "before",
+  "pass": false,
+  "failures": [
+    "390: xl row sum 9 !== 12",
+    "390: xl row sum 8 !== 12",
+    "390: Metas select width 152 < form 316",
+    "390: Metas date width 152 < form 316",
+    "390: Tareas select width 152 < form 316",
+    "390: Tareas date width 152 < form 316",
+    "390: Eventos datetime-local width 152 < form 316",
+    "390: Eventos select width 152 < form 316",
+    "390: control \"Crear\" 70x38 < 44x44",
+    "390: control \"Editar Correr una maratón\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Correr una maratón\" 59x26.5 < 44x44",
+    "390: control \"Editar Publicar panel\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Publicar panel\" 59x26.5 < 44x44",
+    "390: control \"Crear\" 70x38 < 44x44",
+    "390: control \"Editar Comprar zapatos\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Comprar zapatos\" 59x26.5 < 44x44",
+    "390: control \"Completar Comprar zapatos\" 61x26 < 44x44",
+    "390: control \"Editar Escribir plan\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Escribir plan\" 59x26.5 < 44x44",
+    "390: control \"Completar Escribir plan\" 61x26 < 44x44",
+    "390: control \"Crear\" 70x38 < 44x44",
+    "390: control \"Editar Dentista\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Dentista\" 59x26.5 < 44x44",
+    "390: control \"Editar Pagar arriendo\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Pagar arriendo\" 59x26.5 < 44x44",
+    "390: control \"Crear\" 70x38 < 44x44",
+    "390: control \"Quitar fijada de Plan del proyecto\" 50x26.5 < 44x44",
+    "390: control \"Editar Plan del proyecto\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Plan del proyecto\" 59x26.5 < 44x44",
+    "390: control \"Fijar Lista de compras\" 50x26.5 < 44x44",
+    "390: control \"Editar Lista de compras\" 50x26.5 < 44x44",
+    "390: control \"Eliminar Lista de compras\" 59x26.5 < 44x44",
+    "768: xl row sum 9 !== 12",
+    "768: xl row sum 8 !== 12",
+    "768: control \"Crear\" 70x38 < 44x44",
+    "768: control \"Editar Correr una maratón\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Correr una maratón\" 59x26.5 < 44x44",
+    "768: control \"Editar Publicar panel\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Publicar panel\" 59x26.5 < 44x44",
+    "768: control \"Crear\" 70x38 < 44x44",
+    "768: control \"Editar Comprar zapatos\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Comprar zapatos\" 59x26.5 < 44x44",
+    "768: control \"Completar Comprar zapatos\" 61x26 < 44x44",
+    "768: control \"Editar Escribir plan\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Escribir plan\" 59x26.5 < 44x44",
+    "768: control \"Completar Escribir plan\" 61x26 < 44x44",
+    "768: control \"Crear\" 70x38 < 44x44",
+    "768: control \"Editar Dentista\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Dentista\" 59x26.5 < 44x44",
+    "768: control \"Editar Pagar arriendo\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Pagar arriendo\" 59x26.5 < 44x44",
+    "768: control \"Crear\" 70x38 < 44x44",
+    "768: control \"Quitar fijada de Plan del proyecto\" 50x26.5 < 44x44",
+    "768: control \"Editar Plan del proyecto\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Plan del proyecto\" 59x26.5 < 44x44",
+    "768: control \"Fijar Lista de compras\" 50x26.5 < 44x44",
+    "768: control \"Editar Lista de compras\" 50x26.5 < 44x44",
+    "768: control \"Eliminar Lista de compras\" 59x26.5 < 44x44",
+    "1440: xl row sum 9 !== 12",
+    "1440: xl row sum 8 !== 12",
+    "1440: control \"Crear\" 70x38 < 44x44",
+    "1440: control \"Editar Correr una maratón\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Correr una maratón\" 59x26.5 < 44x44",
+    "1440: control \"Editar Publicar panel\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Publicar panel\" 59x26.5 < 44x44",
+    "1440: control \"Crear\" 70x38 < 44x44",
+    "1440: control \"Editar Comprar zapatos\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Comprar zapatos\" 59x26.5 < 44x44",
+    "1440: control \"Completar Comprar zapatos\" 61x26 < 44x44",
+    "1440: control \"Editar Escribir plan\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Escribir plan\" 59x26.5 < 44x44",
+    "1440: control \"Completar Escribir plan\" 61x26 < 44x44",
+    "1440: control \"Crear\" 70x38 < 44x44",
+    "1440: control \"Editar Dentista\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Dentista\" 59x26.5 < 44x44",
+    "1440: control \"Editar Pagar arriendo\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Pagar arriendo\" 59x26.5 < 44x44",
+    "1440: control \"Crear\" 70x38 < 44x44",
+    "1440: control \"Quitar fijada de Plan del proyecto\" 50x26.5 < 44x44",
+    "1440: control \"Editar Plan del proyecto\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Plan del proyecto\" 59x26.5 < 44x44",
+    "1440: control \"Fijar Lista de compras\" 50x26.5 < 44x44",
+    "1440: control \"Editar Lista de compras\" 50x26.5 < 44x44",
+    "1440: control \"Eliminar Lista de compras\" 59x26.5 < 44x44"
+  ],
+  "viewports": [
+    {
+      "viewport": "390",
+      "width": 390,
+      "height": 844,
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "noOverflow": true,
+      "xlSpans": {
+        "Metas": 5,
+        "Tareas": 4,
+        "Eventos": 4,
+        "Notas": 4
+      },
+      "xlRowSums": [
+        9,
+        8
+      ],
+      "inputs": [
+        {
+          "section": "Metas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 152,
+          "formWidth": 316,
+          "fullWidth": false
+        },
+        {
+          "section": "Metas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 152,
+          "formWidth": 316,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 152,
+          "formWidth": 316,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 152,
+          "formWidth": 316,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Eventos",
+          "tag": "input",
+          "inputType": "datetime-local",
+          "width": 152,
+          "formWidth": 316,
+          "fullWidth": false
+        },
+        {
+          "section": "Eventos",
+          "tag": "select",
+          "inputType": "select",
+          "width": 152,
+          "formWidth": 316,
+          "fullWidth": false
+        },
+        {
+          "section": "Notas",
+          "tag": "textarea",
+          "inputType": "textarea",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        }
+      ],
+      "controls": [
+        {
+          "section": "Metas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Correr una maratón",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Correr una maratón",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Publicar panel",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Publicar panel",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Comprar zapatos",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Comprar zapatos",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Comprar zapatos",
+          "width": 61,
+          "height": 26,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Escribir plan",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Escribir plan",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Escribir plan",
+          "width": 61,
+          "height": 26,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Dentista",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Dentista",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Pagar arriendo",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Pagar arriendo",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Quitar fijada de Plan del proyecto",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Plan del proyecto",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Plan del proyecto",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Fijar Lista de compras",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Lista de compras",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Lista de compras",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        }
+      ]
+    },
+    {
+      "viewport": "768",
+      "width": 768,
+      "height": 768,
+      "scrollWidth": 768,
+      "clientWidth": 768,
+      "noOverflow": true,
+      "xlSpans": {
+        "Metas": 5,
+        "Tareas": 4,
+        "Eventos": 4,
+        "Notas": 4
+      },
+      "xlRowSums": [
+        9,
+        8
+      ],
+      "inputs": [
+        {
+          "section": "Metas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 205,
+          "formWidth": 422,
+          "fullWidth": false
+        },
+        {
+          "section": "Metas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 205,
+          "formWidth": 422,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 178,
+          "formWidth": 178,
+          "fullWidth": true
+        },
+        {
+          "section": "Eventos",
+          "tag": "input",
+          "inputType": "datetime-local",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Eventos",
+          "tag": "select",
+          "inputType": "select",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Notas",
+          "tag": "textarea",
+          "inputType": "textarea",
+          "width": 422,
+          "formWidth": 422,
+          "fullWidth": true
+        }
+      ],
+      "controls": [
+        {
+          "section": "Metas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Correr una maratón",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Correr una maratón",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Publicar panel",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Publicar panel",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Comprar zapatos",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Comprar zapatos",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Comprar zapatos",
+          "width": 61,
+          "height": 26,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Escribir plan",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Escribir plan",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Escribir plan",
+          "width": 61,
+          "height": 26,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Dentista",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Dentista",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Pagar arriendo",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Pagar arriendo",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Quitar fijada de Plan del proyecto",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Plan del proyecto",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Plan del proyecto",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Fijar Lista de compras",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Lista de compras",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Lista de compras",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        }
+      ]
+    },
+    {
+      "viewport": "1440",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "noOverflow": true,
+      "xlSpans": {
+        "Metas": 5,
+        "Tareas": 4,
+        "Eventos": 4,
+        "Notas": 4
+      },
+      "xlRowSums": [
+        9,
+        8
+      ],
+      "inputs": [
+        {
+          "section": "Metas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 199.3,
+          "formWidth": 410.7,
+          "fullWidth": false
+        },
+        {
+          "section": "Metas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 199.3,
+          "formWidth": 410.7,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 151.7,
+          "formWidth": 315.3,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 151.7,
+          "formWidth": 315.3,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 315.3,
+          "formWidth": 315.3,
+          "fullWidth": true
+        },
+        {
+          "section": "Eventos",
+          "tag": "input",
+          "inputType": "datetime-local",
+          "width": 151.7,
+          "formWidth": 315.3,
+          "fullWidth": false
+        },
+        {
+          "section": "Eventos",
+          "tag": "select",
+          "inputType": "select",
+          "width": 151.7,
+          "formWidth": 315.3,
+          "fullWidth": false
+        },
+        {
+          "section": "Notas",
+          "tag": "textarea",
+          "inputType": "textarea",
+          "width": 315.3,
+          "formWidth": 315.3,
+          "fullWidth": true
+        }
+      ],
+      "controls": [
+        {
+          "section": "Metas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Correr una maratón",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Correr una maratón",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Publicar panel",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Publicar panel",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Comprar zapatos",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Comprar zapatos",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Comprar zapatos",
+          "width": 61,
+          "height": 26,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Escribir plan",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Escribir plan",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Escribir plan",
+          "width": 61,
+          "height": 26,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Dentista",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Dentista",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Pagar arriendo",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Pagar arriendo",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Crear",
+          "width": 70,
+          "height": 38,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Quitar fijada de Plan del proyecto",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Plan del proyecto",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Plan del proyecto",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Fijar Lista de compras",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Lista de compras",
+          "width": 50,
+          "height": 26.5,
+          "passes": false
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Lista de compras",
+          "width": 59,
+          "height": 26.5,
+          "passes": false
+        }
+      ]
+    }
+  ]
+}

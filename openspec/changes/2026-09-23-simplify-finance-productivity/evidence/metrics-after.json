@@ -1,0 +1,769 @@
+{
+  "phase": "after",
+  "pass": true,
+  "failures": [],
+  "viewports": [
+    {
+      "viewport": "390",
+      "width": 390,
+      "height": 844,
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "noOverflow": true,
+      "xlSpans": {
+        "Metas": 6,
+        "Tareas": 6,
+        "Eventos": 6,
+        "Notas": 6
+      },
+      "xlRowSums": [
+        12,
+        12
+      ],
+      "inputs": [
+        {
+          "section": "Metas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Metas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Tareas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Eventos",
+          "tag": "input",
+          "inputType": "datetime-local",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Eventos",
+          "tag": "select",
+          "inputType": "select",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        },
+        {
+          "section": "Notas",
+          "tag": "textarea",
+          "inputType": "textarea",
+          "width": 316,
+          "formWidth": 316,
+          "fullWidth": true
+        }
+      ],
+      "controls": [
+        {
+          "section": "Metas",
+          "name": "Nuevo en Metas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Correr una maratón",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Correr una maratón",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Publicar panel",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Publicar panel",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Nuevo en Tareas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Comprar zapatos",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Comprar zapatos",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Comprar zapatos",
+          "width": 65,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Escribir plan",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Escribir plan",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Escribir plan",
+          "width": 65,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Nuevo en Eventos",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Dentista",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Dentista",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Pagar arriendo",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Pagar arriendo",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Nuevo en Notas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Quitar fijada de Plan del proyecto",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Plan del proyecto",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Plan del proyecto",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Fijar Lista de compras",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Lista de compras",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Lista de compras",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        }
+      ]
+    },
+    {
+      "viewport": "768",
+      "width": 768,
+      "height": 768,
+      "scrollWidth": 768,
+      "clientWidth": 768,
+      "noOverflow": true,
+      "xlSpans": {
+        "Metas": 6,
+        "Tareas": 6,
+        "Eventos": 6,
+        "Notas": 6
+      },
+      "xlRowSums": [
+        12,
+        12
+      ],
+      "inputs": [
+        {
+          "section": "Metas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 205,
+          "formWidth": 422,
+          "fullWidth": false
+        },
+        {
+          "section": "Metas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 205,
+          "formWidth": 422,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 178,
+          "formWidth": 178,
+          "fullWidth": true
+        },
+        {
+          "section": "Eventos",
+          "tag": "input",
+          "inputType": "datetime-local",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Eventos",
+          "tag": "select",
+          "inputType": "select",
+          "width": 83,
+          "formWidth": 178,
+          "fullWidth": false
+        },
+        {
+          "section": "Notas",
+          "tag": "textarea",
+          "inputType": "textarea",
+          "width": 422,
+          "formWidth": 422,
+          "fullWidth": true
+        }
+      ],
+      "controls": [
+        {
+          "section": "Metas",
+          "name": "Nuevo en Metas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Correr una maratón",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Correr una maratón",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Publicar panel",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Publicar panel",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Nuevo en Tareas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Comprar zapatos",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Comprar zapatos",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Comprar zapatos",
+          "width": 65,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Escribir plan",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Escribir plan",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Escribir plan",
+          "width": 65,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Nuevo en Eventos",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Dentista",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Dentista",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Pagar arriendo",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Pagar arriendo",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Nuevo en Notas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Quitar fijada de Plan del proyecto",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Plan del proyecto",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Plan del proyecto",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Fijar Lista de compras",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Lista de compras",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Lista de compras",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        }
+      ]
+    },
+    {
+      "viewport": "1440",
+      "width": 1440,
+      "height": 900,
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "noOverflow": true,
+      "xlSpans": {
+        "Metas": 6,
+        "Tareas": 6,
+        "Eventos": 6,
+        "Notas": 6
+      },
+      "xlRowSums": [
+        12,
+        12
+      ],
+      "inputs": [
+        {
+          "section": "Metas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 247,
+          "formWidth": 506,
+          "fullWidth": false
+        },
+        {
+          "section": "Metas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 247,
+          "formWidth": 506,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 247,
+          "formWidth": 506,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "input",
+          "inputType": "date",
+          "width": 247,
+          "formWidth": 506,
+          "fullWidth": false
+        },
+        {
+          "section": "Tareas",
+          "tag": "select",
+          "inputType": "select",
+          "width": 506,
+          "formWidth": 506,
+          "fullWidth": true
+        },
+        {
+          "section": "Eventos",
+          "tag": "input",
+          "inputType": "datetime-local",
+          "width": 247,
+          "formWidth": 506,
+          "fullWidth": false
+        },
+        {
+          "section": "Eventos",
+          "tag": "select",
+          "inputType": "select",
+          "width": 247,
+          "formWidth": 506,
+          "fullWidth": false
+        },
+        {
+          "section": "Notas",
+          "tag": "textarea",
+          "inputType": "textarea",
+          "width": 506,
+          "formWidth": 506,
+          "fullWidth": true
+        }
+      ],
+      "controls": [
+        {
+          "section": "Metas",
+          "name": "Nuevo en Metas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Correr una maratón",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Correr una maratón",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Editar Publicar panel",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Metas",
+          "name": "Eliminar Publicar panel",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Nuevo en Tareas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Comprar zapatos",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Comprar zapatos",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Comprar zapatos",
+          "width": 65,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Editar Escribir plan",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Eliminar Escribir plan",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Tareas",
+          "name": "Completar Escribir plan",
+          "width": 65,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Nuevo en Eventos",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Dentista",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Dentista",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Editar Pagar arriendo",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Eventos",
+          "name": "Eliminar Pagar arriendo",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Nuevo en Notas",
+          "width": 71,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Quitar fijada de Plan del proyecto",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Plan del proyecto",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Plan del proyecto",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Fijar Lista de compras",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Editar Lista de compras",
+          "width": 61,
+          "height": 44,
+          "passes": true
+        },
+        {
+          "section": "Notas",
+          "name": "Eliminar Lista de compras",
+          "width": 72,
+          "height": 44,
+          "passes": true
+        }
+      ]
+    }
+  ]
+}
