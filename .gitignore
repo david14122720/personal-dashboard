@@ -9,6 +9,7 @@
 /frontend/.next/
 /frontend/out/
 package-lock.json
+!mcp-dashboard/package-lock.json
 yarn.lock
 # pnpm-lock.yaml IS committed (reproducible frontend builds)
 

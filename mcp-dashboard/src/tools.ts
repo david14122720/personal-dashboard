@@ -33,7 +33,7 @@ interface ToolEntry {
   run: (args: any, token?: RequestToken) => Promise<string>;
 }
 
-const uuid = z.string().uuid();
+const uuid = z.uuid();
 const optionalUuid = uuid.optional();
 const dateString = z.string().min(1);
 const optionalText = z.string().optional();
@@ -70,7 +70,7 @@ function intProp(description: string): object {
 }
 
 const LoginSchema = z.object({
-  email: z.string().email(),
+  email: z.email(),
   password: z.string().min(1),
 });
 
