@@ -5,7 +5,6 @@ import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
 import {
   createTransaction,
-  createTransfer,
   useFinanceCategories,
 } from "@/lib/api/finance";
 import { useAccounts } from "@/lib/api/dashboard";
@@ -372,130 +371,6 @@ export function ExpenseForm() {
   );
 }
 
-export function TransferForm() {
-  const { mutate } = useSWRConfig();
-  const accountsQuery = useAccounts();
-  const accounts = toAccountOptions(
-    (accountsQuery.data ?? []).map((row) => ({ id: row.id, name: row.name })),
-  );
-  const [fromId, setFromId] = useState("");
-  const [toId, setToId] = useState("");
-  const [amount, setAmount] = useState("");
-  const [occurredOn, setOccurredOn] = useState(todayIso());
-  const [description, setDescription] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [pending, setPending] = useState(false);
-
-  async function handleSubmit(event: React.FormEvent): Promise<void> {
-    event.preventDefault();
-    setError(null);
-    setSaved(false);
-    const wireAmount = normalizeManualAmount(amount);
-    if (!wireAmount || !occurredOn || !fromId || !toId) {
-      setError(
-        !wireAmount ? t("finance.amountPositiveError") : t("finance.requiredFieldError"),
-      );
-      return;
-    }
-    if (fromId === toId) {
-      setError(t("finance.sameAccountError"));
-      return;
-    }
-    setPending(true);
-    try {
-      await createTransfer({
-        from_account_id: fromId,
-        to_account_id: toId,
-        amount: wireAmount,
-        occurred_on: occurredOn,
-        ...(description.trim() ? { description: description.trim() } : {}),
-      });
-      setSaved(true);
-      setAmount("");
-      setDescription("");
-      revalidateFinance(mutate);
-    } catch {
-      setError(t("finance.captureFailed"));
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <form
-      aria-label={t("finance.newTransfer")}
-      className="grid grid-cols-2 gap-3"
-      onSubmit={(event) => void handleSubmit(event)}
-    >
-      <AccountSelect
-        label={t("finance.fromAccount")}
-        value={fromId}
-        onChange={setFromId}
-        accounts={accounts}
-        loading={accountsQuery.isLoading}
-      />
-      <AccountSelect
-        label={t("finance.toAccount")}
-        value={toId}
-        onChange={setToId}
-        accounts={accounts}
-        loading={accountsQuery.isLoading}
-      />
-      <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        {t("finance.amountCop")}
-        <input
-          aria-label={t("finance.amountCop")}
-          inputMode="decimal"
-          placeholder={t("finance.amountPlaceholder")}
-          className={inputClass}
-          value={amount}
-          onChange={(event) => setAmount(event.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-instrument/60">
-        {t("finance.dateLabel")}
-        <input
-          aria-label={t("finance.dateLabel")}
-          type="date"
-          className={inputClass}
-          value={occurredOn}
-          onChange={(event) => setOccurredOn(event.target.value)}
-        />
-      </label>
-      <label className="col-span-2 flex flex-col gap-1 text-xs text-instrument/60">
-        {t("finance.descriptionOptional")}
-        <input
-          aria-label={t("finance.description")}
-          placeholder={t("finance.descriptionPlaceholder")}
-          className={inputClass}
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-        />
-      </label>
-      <div className="col-span-2 flex items-center gap-3">
-        <button
-          type="submit"
-          disabled={pending}
-          className="rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50"
-        >
-          {pending ? t("finance.saving") : t("finance.saveTransfer")}
-        </button>
-        {error ? (
-          <p role="alert" className="text-xs text-alert">
-            {error}
-          </p>
-        ) : null}
-        {saved ? (
-          <p role="status" className="text-xs text-flow">
-            {t("finance.transferSaved")}
-          </p>
-        ) : null}
-      </div>
-    </form>
-  );
-}
-
 export function ManualCaptureSection() {
   return (
     <section
@@ -506,7 +381,7 @@ export function ManualCaptureSection() {
         {t("finance.captureTitle")}
       </h2>
       <p className="mt-1 text-sm text-instrument/60">{t("finance.captureSubtitle")}</p>
-      <div className="mt-4 grid grid-cols-1 gap-6 xl:grid-cols-3">
+      <div className="mt-4 grid grid-cols-1 gap-6 xl:grid-cols-2">
         <div>
           <h3 className="mb-3 font-display text-sm font-medium">{t("finance.newIncome")}</h3>
           <IncomeForm />
@@ -514,10 +389,6 @@ export function ManualCaptureSection() {
         <div>
           <h3 className="mb-3 font-display text-sm font-medium">{t("finance.newExpense")}</h3>
           <ExpenseForm />
-        </div>
-        <div>
-          <h3 className="mb-3 font-display text-sm font-medium">{t("finance.newTransfer")}</h3>
-          <TransferForm />
         </div>
       </div>
     </section>

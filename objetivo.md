@@ -122,11 +122,9 @@ Por ejemplo:
 
 ## Transferencias
 
-Debe existir una forma simple y manual de registrar transferencias entre mis propias cuentas. Elijo origen y destino por nombre y escribo el monto a mano. Nunca debe pedirse ni mostrarse UUIDs ni IDs técnicos.
+Movimientos entre cuentas propias se registran editando los dos saldos a mano (regla de saldo manual por cuenta). No existe operación "transferencia": no hay endpoint, ni UI, ni historial de transferencias.
 
-Una transferencia no debe contabilizarse como un ingreso o gasto real.
-
-El sistema debe mantener correctamente los saldos de ambas cuentas.
+Nota de reversión (2026-09-23): el libro mayor y las transferencias no se usaban; el costo de mantenimiento superaba el valor; el saldo manual cubre el caso de uso. Sin respaldo de los movimientos históricos (pérdida aceptada explícitamente).
 
 ---
 

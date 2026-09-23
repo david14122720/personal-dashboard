@@ -16,8 +16,6 @@ import type {
   SubscriptionWire,
   TransactionFilters,
   TransactionWire,
-  TransferFilters,
-  TransferHistoryWire,
 } from "@/lib/api/finance";
 import type { AccountWire } from "@/lib/api/dashboard";
 
@@ -201,37 +199,6 @@ export function toSavingsViews(rows: SavingsGoalWire[] | null | undefined): Savi
 }
 
 // -- S1 (captura manual en COP, sin UUIDs visibles) --
-
-export interface TransferRow {
-  id: string;
-  occurred_on: string;
-  from_account_id: string;
-  to_account_id: string;
-  description: string;
-  amount: number;
-  currency: string;
-}
-
-/** Coerce one transfer-history page to render-ready rows (numbers only). */
-export function toTransferRows(
-  items: TransferHistoryWire[] | null | undefined,
-): TransferRow[] {
-  if (!items) return [];
-  return items.map((item) => ({
-    id: item.transfer_group_id,
-    occurred_on: item.occurred_on,
-    from_account_id: item.from_account_id,
-    to_account_id: item.to_account_id,
-    description: item.description ?? "—",
-    amount: toNumber(item.amount),
-    currency: item.currency,
-  }));
-}
-
-/** Stable React key that resets transfer pagination when filters change. */
-export function transferKey(filters: TransferFilters): string {
-  return [filters.from ?? "", filters.to ?? "", String(filters.limit ?? "")].join("|");
-}
 
 export interface NamedOption {
   id: string;

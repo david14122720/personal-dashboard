@@ -6,7 +6,6 @@ import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
 import { t } from "@/lib/i18n";
 import TransactionsLedger from "@/components/finance/TransactionsLedger";
-import TransferHistory from "@/components/finance/TransferHistory";
 import { ManualCaptureSection } from "@/components/finance/ManualCapture";
 import {
   AccountsList,
@@ -174,9 +173,6 @@ export default function FinanceScreens() {
         </div>
         <div className="col-span-12">
           <TransactionsLedger locale={locale} />
-        </div>
-        <div className="col-span-12">
-          <TransferHistory locale={locale} />
         </div>
         {isLoading ? (
           <div className="col-span-12">

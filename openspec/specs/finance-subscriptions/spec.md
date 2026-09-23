@@ -124,3 +124,25 @@ All subscription UI MUST be manual (selectors by name, never UUID input), Spanis
 - GIVEN subscriptions `"Streaming"` mensual `"19900.00"` and `"Gym"` anual `"600000.00"`
 - WHEN the section renders
 - THEN each row shows its Spanish frequency label and COP-formatted price
+
+### Requirement: Payment Method Catalog Stability
+
+The payment-method catalog offered by the subscription and debt forms MUST keep the "Transferencia" option available after the transfers feature is removed. That option is a payment method recorded as free text on the subscription or payment row and is semantically unrelated to the removed transfers capability; it MUST NOT be deleted, renamed or migrated by this change.
+
+#### Scenario: Transferencia remains selectable
+
+- GIVEN the subscription create form
+- WHEN the payment-method selector is opened
+- THEN "Transferencia" is present as an option alongside the other methods
+
+#### Scenario: Stored value still renders
+
+- GIVEN a subscription whose `payment_method` is "Transferencia"
+- WHEN the subscriptions list renders
+- THEN the row shows "Transferencia" and the stored value is unchanged
+
+#### Scenario: Debt payment form keeps the option
+
+- GIVEN the debt payment form
+- WHEN the payment-method selector is opened
+- THEN "Transferencia" is present as an option

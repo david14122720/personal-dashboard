@@ -17,4 +17,3 @@ pub mod subscriptions;
 pub mod tasks;
 pub mod tokens;
 pub mod transactions;
-pub mod transfers;
