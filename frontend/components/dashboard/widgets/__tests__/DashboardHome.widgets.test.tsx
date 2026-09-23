@@ -1,11 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import DashboardHome from "@/components/containers/DashboardHome";
-import { currentMonthKey } from "@/lib/dashboard/transforms";
+// S3b: useMonthlyFlow/useSpendByCategory were deleted with the ledger
+// (dangling-reference fix: this file keeps only surviving-widget cases).
 vi.mock("next/dynamic", () => ({ default: () => () => null }));
 vi.mock("swr", () => ({ useSWRConfig: () => ({ mutate: vi.fn() }) }));
-const monthKey = currentMonthKey(new Date());
-const flowRows = [{ month: monthKey, income: "1000.00", expense: "400.00" }];
 const q = (data: unknown) => ({ data, error: undefined, isLoading: false });
 const seenPatch: unknown[] = [];
 let layoutWidgets: Array<{ id: string; type: string; order: number; size: string }> | null = null;
@@ -19,59 +18,66 @@ let savings: unknown[] = [{ id: "sg1", name: "Viaje", goal: "1000.00", saved: "5
 const fixDates = () => { debts = [{ id: "d1", name: "Deuda", pending_amount: "500.00", status: "active", due_date: day(2) }, { id: "dx", name: "Pagada", pending_amount: "10", status: "paid_off", due_date: day(2) }]; subs = [{ id: "s1", name: "Música", price: "9.99", is_active: true, next_billing_on: day(5) }, { id: "sx", name: "Off", price: "5", is_active: false, next_billing_on: day(1) }]; tasks = [{ id: "t1", title: "Tarea", status: "pending", due_date: day(1) }]; events = [{ id: "e1", title: "Cobro", kind: "payment_due", starts_at: day(2) }, { id: "e10", title: "Agenda", kind: "event", starts_at: day(10) }]; };
 vi.mock("@/lib/api/dashboard", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/api/dashboard")>();
-  return { ...mod, useNetWorth: () => q({ per_currency: [] }), useMonthlyFlow: () => q(flowRows), useSpendByCategory: () => q([]), useHabitsToday: () => q([]), useAccounts: () => q([]),
+  return { ...mod, useNetWorth: () => q({ per_currency: [] }), useHabitsToday: () => q([]), useAccounts: () => q([]),
       useDebts: () => q(debts), useSubscriptions: () => q(subs), useTasks: () => q(tasks), useEvents: () => q(events), useGoals: () => q(goals), useSavingsGoals: () => q(savings),
     usePreferences: () => q({ preferences: { currency_code: "COP", locale: "es-CO", dashboard_layout: layoutWidgets ? { widgets: layoutWidgets } : null } }),
     useUpdateLayout: () => async (next: { widgets: unknown[] }) => { seenPatch.push({ dashboard_layout: next }); layoutWidgets = next.widgets as typeof layoutWidgets; } };
 });
+vi.mock("@/lib/api/finance", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/api/finance")>();
+  return {
+    ...mod,
+    useSubscriptions: () => q(subs),
+    useDebts: () => q(debts),
+    useSavingsGoals: () => q(savings),
+  };
+});
 beforeEach(() => { seenPatch.length = 0; layoutWidgets = null; fixDates(); goals = [{ id: "g1", name: "Correr", progress: 60, status: "active" }]; savings = [{ id: "sg1", name: "Viaje", goal: "1000.00", saved: "500.00" }]; localStorage.clear(); });
-describe("DashboardHome month trio + toggles p8-pr2", () => {
-  it("renders 3 independent month cards with formatMoney", async () => {
+describe("DashboardHome strip + toggles S3b", () => {
+  it("renders the 5-KPI strip with no month-split cards", async () => {
     render(<DashboardHome />);
-    expect((await screen.findAllByText("Ingreso del mes")).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Gasto del mes").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("Ahorro del mes").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/1\.000/).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/400/).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/600/).length).toBeGreaterThanOrEqual(1);
+    expect((await screen.findAllByText("Patrimonio neto")).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Ingreso del mes")).not.toBeInTheDocument();
+    expect(screen.queryByText("Gasto del mes")).not.toBeInTheDocument();
+    expect(screen.queryByText("Ahorro del mes")).not.toBeInTheDocument();
   });
-  it("toggles hide one card with exact PATCH envelope and round-trips", async () => {
+  it("toggles hide one widget with exact PATCH envelope and round-trips", async () => {
     render(<DashboardHome />);
-    await screen.findAllByText("Ingreso del mes");
+    await screen.findAllByText("Próximos pagos");
     const switches = screen.getAllByRole("switch");
-    expect(switches.length).toBeGreaterThanOrEqual(3);
+    expect(switches.length).toBeGreaterThanOrEqual(6);
     fireEvent.click(switches[0]);
     await waitFor(() => expect(seenPatch.length).toBe(1));
     expect(seenPatch[0]).toEqual({ dashboard_layout: expect.objectContaining({ widgets: expect.any(Array) }) });
-    expect((seenPatch[0] as { dashboard_layout: { widgets: Array<{ id: string }> } }).dashboard_layout.widgets.some((w) => w.id === "month-income")).toBe(false);
+    expect((seenPatch[0] as { dashboard_layout: { widgets: Array<{ id: string }> } }).dashboard_layout.widgets.some((w) => w.id === "upcoming-payments")).toBe(false);
   });
   it("ocultar conserva su toggle en Personalizar y round-trip muestra de nuevo (JD-B-001)", async () => {
     render(<DashboardHome />);
-    await screen.findAllByText("Ingreso del mes");
+    await screen.findAllByText("Próximos pagos");
     // Mientras está visible, el toggle existe en el header del widget y en Personalizar.
-    expect(screen.getAllByRole("switch", { name: "Ocultar bloque: month-income" }).length).toBe(2);
-    fireEvent.click(screen.getAllByRole("switch", { name: "Ocultar bloque: month-income" })[0]);
+    expect(screen.getAllByRole("switch", { name: "Ocultar bloque: upcoming-payments" }).length).toBe(2);
+    fireEvent.click(screen.getAllByRole("switch", { name: "Ocultar bloque: upcoming-payments" })[0]);
     await waitFor(() =>
       expect(
         (seenPatch[0] as { dashboard_layout: { widgets: Array<{ id: string }> } }).dashboard_layout.widgets.some(
-          (w) => w.id === "month-income",
+          (w) => w.id === "upcoming-payments",
         ),
       ).toBe(false),
     );
     // El widget desaparece, pero queda su label en Personalizar…
-    expect(screen.getAllByText("Ingreso del mes")).toHaveLength(1);
+    expect(screen.getAllByText("Próximos pagos")).toHaveLength(1);
     // …y su toggle sigue vivo para volver a mostrarlo.
-    const show = screen.getByRole("switch", { name: "Mostrar bloque: month-income" });
+    const show = screen.getByRole("switch", { name: "Mostrar bloque: upcoming-payments" });
     expect(show).toHaveAttribute("aria-checked", "false");
     fireEvent.click(show);
     await waitFor(() =>
       expect(
         (seenPatch[1] as { dashboard_layout: { widgets: Array<{ id: string }> } }).dashboard_layout.widgets.some(
-          (w) => w.id === "month-income",
+          (w) => w.id === "upcoming-payments",
         ),
       ).toBe(true),
     );
-    expect((await screen.findAllByText("Ingreso del mes")).length).toBeGreaterThanOrEqual(2);
+    expect((await screen.findAllByText("Próximos pagos")).length).toBeGreaterThanOrEqual(2);
   });
 });
 describe("DashboardHome resto widgets p8-pr4", () => {

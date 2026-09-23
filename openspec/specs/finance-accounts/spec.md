@@ -125,6 +125,24 @@ Account deletion MUST NOT query any removed table. Because the surviving foreign
 - WHEN the database rejects it with `23503`
 - THEN the API returns 409 with a Spanish message, never 500
 
+### Requirement: Account Balance Inline Edit
+The finance UI MUST expose the manual balance write on the account card as an inline edit: it MUST display the current balance before editing, require an explicit confirmation before saving, send the new value as a string, and refresh the `finance/` SWR scope on success. The control MUST be keyboard reachable with visible focus, MUST have a hit area of at least 44×44 CSS pixels, MUST format values with es-CO/COP through the existing money formatter, and MUST use typed `finance.*` i18n keys with no UUID input and no hardcoded copy.
+
+#### Scenario: User edits balance from the card
+- GIVEN a user viewing account `"Ahorros"` with balance `$ 1.500.000`
+- WHEN they replace the value with `980000.00` and confirm
+- THEN the FE sends `PATCH /api/accounts/{id}` with the balance as a decimal string and the card shows the new formatted value
+
+#### Scenario: Cancelling leaves the value untouched
+- GIVEN an inline edit in progress
+- WHEN the user cancels
+- THEN no request is sent and the previous balance is still displayed
+
+#### Scenario: Invalid input blocked before the request
+- GIVEN an inline edit with more than 2 decimals or an out-of-range value
+- WHEN the user tries to confirm
+- THEN the FE shows a Spanish validation error and sends no request
+
 ### Requirement: Account Archiving
 The system MUST support soft-archiving of accounts to hide them from active views.
 

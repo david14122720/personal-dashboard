@@ -1,10 +1,8 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
-import TransactionsLedger from "@/components/finance/TransactionsLedger";
-import { ExpenseForm, IncomeForm } from "@/components/finance/ManualCapture";
 import {
   apiDelete,
   apiPost,
@@ -12,22 +10,19 @@ import {
   setToken,
 } from "@/lib/api/client";
 import {
-  createTransaction,
   deleteAccount,
   fetchFinanceCategories,
+  patchAccount,
 } from "@/lib/api/finance";
 import {
   normalizeManualAmount,
   toAccountOptions,
   toCategoryOptions,
 } from "@/lib/finance/finance";
+import { AccountBalanceEdit, isValidBalanceInput } from "@/components/containers/FinanceScreens";
+import type { AccountCardView } from "@/lib/finance/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
-
-const accounts = [
-  { id: "a-src", name: "Billetera", type: "cash", currency: "COP", balance: "500.00" },
-  { id: "a-dst", name: "Banco", type: "bank", currency: "COP", balance: "1000.00" },
-];
 
 const categories = [
   {
@@ -50,42 +45,24 @@ const categories = [
   },
 ];
 
-const seenPosts: { url: string; body: unknown }[] = [];
+const seenPatches: { url: string; body: unknown }[] = [];
 const seenDeletes: string[] = [];
 
 const server = setupServer(
-  http.get("http://test.local/api/accounts", () => HttpResponse.json(accounts)),
   http.get("http://test.local/api/categories", ({ request }) => {
     const url = new URL(request.url);
     if (url.searchParams.get("kind") === "finance") return HttpResponse.json(categories);
     return HttpResponse.json(categories);
   }),
-  http.post("http://test.local/api/transactions", async ({ request }) => {
+  http.patch("http://test.local/api/accounts/:id", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
-    seenPosts.push({ url: request.url, body });
-    return HttpResponse.json(
-      {
-        id: "t-new",
-        account_id: body["account_id"],
-        type: body["type"],
-        amount: body["amount"],
-        currency: "COP",
-        occurred_on: body["occurred_on"],
-        category_id: body["category_id"] ?? null,
-        description: body["description"] ?? null,
-        notes: null,
-        credit_card_account_id: null,
-      },
-      { status: 201 },
-    );
+    seenPatches.push({ url: request.url, body });
+    return HttpResponse.json({ id: "a-src", balance: body["balance"] });
   }),
   http.delete("http://test.local/api/accounts/:id", ({ request }) => {
     seenDeletes.push(request.url);
     return new HttpResponse(null, { status: 204 });
   }),
-  http.get("http://test.local/api/transactions", () =>
-    HttpResponse.json({ items: [], next_cursor: null, total_count: 0 }),
-  ),
   http.post("http://test.local/api/echo", async ({ request }) => {
     const body = await request.json();
     return HttpResponse.json({ seen: body });
@@ -95,7 +72,7 @@ const server = setupServer(
 beforeAll(() => server.listen());
 afterEach(() => {
   server.resetHandlers();
-  seenPosts.length = 0;
+  seenPatches.length = 0;
   seenDeletes.length = 0;
   localStorage.clear();
   resetAuthRedirectForTests();
@@ -108,32 +85,26 @@ function renderWithSWR(ui: React.ReactElement) {
   );
 }
 
-describe("S1 api helpers (COP, sin UUIDs visibles)", () => {
-  it("creates an income via POST /transactions type=income", async () => {
-    setToken("tok");
-    const created = await createTransaction({
-      account_id: "a-src",
-      type: "income",
-      amount: "150000.00",
-      occurred_on: "2026-09-05",
-      category_id: "c-food",
-      description: "Salario",
-    });
-    expect(created.type).toBe("income");
-    expect(seenPosts[0].url).toContain("/transactions");
-    expect(seenPosts[0].body).toMatchObject({ type: "income", amount: "150000.00" });
-  });
+const card: AccountCardView = {
+  id: "a-src",
+  name: "Ahorros",
+  type: "cash",
+  currency: "COP",
+  balance: 1500000,
+  isCard: false,
+  used: null,
+  available: null,
+  usagePct: null,
+  alertLevel: null,
+  statementBalance: null,
+};
 
-  it("creates an expense via POST /transactions type=expense", async () => {
+describe("S1 api helpers (saldos manuales, sin UUIDs visibles)", () => {
+  it("patches an account balance as a decimal string", async () => {
     setToken("tok");
-    await createTransaction({
-      account_id: "a-src",
-      type: "expense",
-      amount: "50000.00",
-      occurred_on: "2026-09-05",
-      payment_method: "efectivo",
-    });
-    expect(seenPosts[0].body).toMatchObject({ type: "expense", payment_method: "efectivo" });
+    await patchAccount("a-src", { balance: "980000.00" });
+    expect(seenPatches[0].url).toContain("/accounts/a-src");
+    expect(seenPatches[0].body).toMatchObject({ balance: "980000.00" });
   });
 
   it("lists finance categories ordered by name", async () => {
@@ -200,69 +171,58 @@ describe("S1 transforms (números solo en la frontera)", () => {
   });
 });
 
-describe("S1 capture forms (español, selectores por nombre)", () => {
-  it("renders the income form with Spanish labels and name selectors", async () => {
-    renderWithSWR(<IncomeForm />);
-    expect(await screen.findByRole("form", { name: "Nuevo ingreso" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Monto (COP)")).toBeInTheDocument();
-    expect(screen.getByLabelText("Cuenta")).toBeInTheDocument();
-    expect(screen.getByLabelText("Categoría")).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "Billetera" })).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "Alimentación" })).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("uuid")).not.toBeInTheDocument();
+describe("inline balance edit (S3b, diseño §6.2)", () => {
+  it("guards the client input with the server shape and |v| < 1e6", () => {
+    expect(isValidBalanceInput("980000.00")).toBe(true);
+    expect(isValidBalanceInput("-750.50")).toBe(true);
+    expect(isValidBalanceInput("0")).toBe(true);
+    expect(isValidBalanceInput("10.005")).toBe(false);
+    expect(isValidBalanceInput("1000000.00")).toBe(false);
+    expect(isValidBalanceInput("abc")).toBe(false);
+    expect(isValidBalanceInput("")).toBe(false);
   });
 
-  it("saves an income and shows a Spanish confirmation", async () => {
-    renderWithSWR(<IncomeForm />);
-    const form = await screen.findByRole("form", { name: "Nuevo ingreso" });
-    fireEvent.change(within(form).getByLabelText("Monto (COP)"), {
-      target: { value: "150000" },
+  it("shows the current value and opens the edit with a per-account label", () => {
+    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    expect(screen.getByText("Ahorros")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
+    expect(screen.getByLabelText("Editar saldo de Ahorros")).toHaveValue("1500000");
+  });
+
+  it("blocks invalid input in Spanish without a request", async () => {
+    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
+    const box = screen.getByLabelText("Editar saldo de Ahorros");
+    fireEvent.change(box, { target: { value: "10.005" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("válido");
+    expect(seenPatches).toHaveLength(0);
+  });
+
+  it("cancel sends nothing and restores the view", () => {
+    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
+    const region = screen.getByLabelText("Editar saldo de Ahorros").closest("div")!;
+    fireEvent.change(screen.getByLabelText("Editar saldo de Ahorros"), {
+      target: { value: "999" },
     });
-    fireEvent.change(within(form).getByLabelText("Cuenta"), { target: { value: "a-src" } });
-    fireEvent.change(within(form).getByLabelText("Categoría"), { target: { value: "c-food" } });
-    fireEvent.click(within(form).getByRole("button", { name: "Guardar ingreso" }));
-    expect(await within(form).findByText("Movimiento guardado.")).toBeInTheDocument();
-    expect(seenPosts[0].body).toMatchObject({ type: "income", amount: "150000" });
+    fireEvent.click(within(region.parentElement!).getByRole("button", { name: "Cancelar" }));
+    expect(seenPatches).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Editar saldo de Ahorros" })).toBeInTheDocument();
   });
 
-  it("rejects a zero amount in Spanish without calling the API", async () => {
-    renderWithSWR(<ExpenseForm />);
-    const form = await screen.findByRole("form", { name: "Nuevo gasto" });
-    fireEvent.change(within(form).getByLabelText("Monto (COP)"), { target: { value: "0" } });
-    fireEvent.click(within(form).getByRole("button", { name: "Guardar gasto" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent(
-      "Escribe un monto mayor a cero.",
+  it("saves a valid balance as a string and collapses", async () => {
+    setToken("tok");
+    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
+    fireEvent.change(screen.getByLabelText("Editar saldo de Ahorros"), {
+      target: { value: "980000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(seenPatches).toHaveLength(1));
+    expect(seenPatches[0].body).toMatchObject({ balance: "980000" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Editar saldo de Ahorros" })).toBeInTheDocument(),
     );
-    expect(seenPosts).toHaveLength(0);
-  });
-
-  it("saves an expense with a simple payment-method selector", async () => {
-    renderWithSWR(<ExpenseForm />);
-    const form = await screen.findByRole("form", { name: "Nuevo gasto" });
-    fireEvent.change(within(form).getByLabelText("Monto (COP)"), {
-      target: { value: "50000" },
-    });
-    fireEvent.change(within(form).getByLabelText("Cuenta"), { target: { value: "a-src" } });
-    fireEvent.change(within(form).getByLabelText("Método de pago"), {
-      target: { value: "efectivo" },
-    });
-    fireEvent.click(within(form).getByRole("button", { name: "Guardar gasto" }));
-    expect(await within(form).findByText("Movimiento guardado.")).toBeInTheDocument();
-    expect(seenPosts[0].body).toMatchObject({ payment_method: "efectivo" });
-  });
-});
-
-describe("S1 ledger filters (selectores, sin UUIDs)", () => {
-  it("offers account/category selects by name without uuid placeholders", async () => {
-    renderWithSWR(<TransactionsLedger locale="es-CO" />);
-    const region = screen.getByRole("region", { name: "Libro de transacciones" });
-    const filters = within(region).getByRole("form", { name: "Filtros de transacciones" });
-    expect(within(filters).getByLabelText("Cuenta")).toBeInTheDocument();
-    expect(within(filters).getByLabelText("Categoría")).toBeInTheDocument();
-    expect(await within(filters).findByRole("option", { name: "Billetera" })).toBeInTheDocument();
-    expect(
-      await within(filters).findByRole("option", { name: "Alimentación" }),
-    ).toBeInTheDocument();
-    expect(within(filters).queryByPlaceholderText("uuid")).not.toBeInTheDocument();
   });
 });

@@ -8,48 +8,72 @@ Static-export Next.js control center rendering aggregates as Recharts charts, wi
 
 ### Requirement: Telemetry Strip
 
-The dashboard home MUST render a full-width Telemetry Strip showing net worth, current-month balance, savings rate, longest streak, and card status LEDs. It MUST NOT render any budget status item: the budgeting feature was removed end to end (S2 — routes, UI, LED, MCP tool, i18n keys), so no LED MAY exist for budget `status` values. The card indicator MUST map the backend enum 1:1: `alert_level` ∈ {`ok`, `warn`, `high`} to its documented visual state. Values MUST be formatted per user `locale`/`currency_code` preferences using the string-money coercion layer.
+The dashboard home MUST render a full-width Telemetry Strip with exactly five
+KPIs whose sources survive the change: net worth, number of accounts, monthly
+subscription cost, outstanding debt and total savings. It MUST NOT render the previous current-month balance, savings rate, streak or
+budget status items, and MUST NOT render any KPI whose source endpoint was
+removed. Values MUST be formatted per user `locale`/`currency_code` preferences
+through the existing string-money coercion at the boundary. A card alert
+indicator MAY remain only if it keeps the backend enum mapping 1:1
+(`alert_level` ∈ {`ok`, `warn`, `high`}); no LED MAY exist for `status` values
+of the removed budgeting feature.
 
-#### Scenario: Enum mapping
+#### Scenario: Five live KPIs render
 
-- GIVEN a card account with `alert_level: "warn"`
-- WHEN the dashboard renders
-- THEN the card LED displays the warn visual state
+- GIVEN populated accounts, subscriptions, debts and savings goals
+- WHEN the home renders
+- THEN patrimonio, cuentas, suscripciones, deudas and ahorros each show a value
+  from a surviving endpoint
 
-#### Scenario: No budget LED
+#### Scenario: Removed items are gone
 
 - GIVEN the rendered strip
 - WHEN its items are inspected
-- THEN no budget status item, bar or colour is present
+- THEN neither a current-month balance, a savings rate, a streak nor a budget
+  LED is present
+
+#### Scenario: Card alert mapping preserved
+
+- GIVEN a card account with `alert_level: "warn"`
+- WHEN the corresponding indicator renders
+- THEN it displays the warn visual state without reinterpreting the enum
 
 #### Scenario: Money formatting
 
 - GIVEN preferences `locale: "es-CO"`, `currency_code: "COP"` and net worth `"1500000.00"`
 - WHEN the strip renders
-- THEN the value displays as `$ 1.500.000` (tabular, locale-correct)
+- THEN the value displays as `$ 1.500.000`
 
 ### Requirement: Recharts Aggregates
 
-The dashboard MUST render monthly income-vs-expense and spend-by-category charts using Recharts 3. Data MUST come from the authenticated aggregate endpoints; the client MUST coerce decimal-string amounts to numbers at the API boundary only. Charts MUST be code-split per route. Month axis labels MUST render in Spanish, series colors MUST reference theme tokens (never hardcoded hex), and charts MUST carry direct value labels and currency-formatted Spanish tooltips.
-(Previously: raw `YYYY-MM` axis labels, hardcoded hex series colors, no direct value labels or currency tooltips.)
+The dashboard MUST NOT render the income-vs-expense flow chart nor the
+spend-by-category donut, because their only data sources were removed. Any
+chart that keeps a live data source MUST use Recharts 3 with
+`next/dynamic(ssr:false)`, coerce decimal-string amounts at the API boundary
+only, render Spanish axis and month labels, reference theme tokens instead of
+hardcoded hex, and carry currency-formatted Spanish tooltips with
+reduced-motion suppression of draw-in.
+(Previously: the dashboard rendered monthly income-vs-expense and
+spend-by-category charts from the transaction aggregate endpoints.)
 
-#### Scenario: Chart renders from aggregates
+#### Scenario: Flow and category charts absent
 
-- GIVEN authenticated aggregates `[{ month: "2026-09", income: "1000.00", expense: "400.00" }]`
-- WHEN the dashboard mounts
-- THEN the chart plots coerced values with a Spanish month label
+- GIVEN the dashboard rendered
+- WHEN the chart region is inspected
+- THEN no income-vs-expense chart and no spend-by-category donut are present
 
-#### Scenario: Empty aggregates
+#### Scenario: No request to a removed endpoint
 
-- GIVEN an empty aggregate response
-- WHEN the chart mounts
-- THEN the chart renders an empty state without errors
+- GIVEN any dashboard render
+- WHEN the network activity is inspected
+- THEN no request targets the removed transaction aggregate paths
 
-#### Scenario: Token-driven colors
+#### Scenario: Surviving chart keeps the contract
 
-- GIVEN a theme color token is changed
-- WHEN charts re-render
-- THEN series colors follow the token with no code change
+- GIVEN a chart with a live source
+- WHEN it renders
+- THEN it is code-split, token-coloured, Spanish-labelled and free of
+  hardcoded hex
 
 ### Requirement: Bento Layout and Responsiveness
 
@@ -125,182 +149,55 @@ Primary navigation MUST link only to existing sections; the dead `/dashboard/wea
 - WHEN the navigation renders
 - THEN no wealth entry appears
 
-<!-- p9-finanzas ADDED from openspec/changes/p9-finanzas/specs/finance-charts/spec.md (alias draft resolved to wire names) -->
+### Requirement: Retained Chart Contracts And Removed Visual Inventory (S3b)
 
-### Requirement: Balance Chart
+The change replaces the previous blanket "charts MUST remain intact" clause
+with an explicit inventory. Removed by name and MUST NOT be re-mounted or
+resurrected as empty shells: `FlowChart`, the expense `CategoryDonut`
+consumption, `BudgetBars`, `BudgetsList`, `BalanceChart`, `SavingsChart`,
+`MonthlyExpensesChart`, `MonthCompareChart`, the income-source donut reuse, the
+finance `PeriodSelector` and the `AnalysisSection` insight block. Retained and
+still binding: the telemetry strip structure, the Recharts composition pattern,
+the token-only colour rule, the string-money coercion boundary, keyboard focus,
+`prefers-reduced-motion` and Spanish typed copy.
 
-The system MUST render `BalanceChart` (area) showing balance evolution as accumulated `income − expense` from `monthly-flow` (`toFlowPoints().balance`). Data MUST be coerced string→number only at the transform boundary.
-
-#### Scenario: Balance renders from flow
-
-- GIVEN `monthly-flow` `[{month: "2026-08", income: "1000.00", expense: "400.00"}, {month: "2026-09", income: "1200.00", expense: "500.00"}]`
-- WHEN `BalanceChart` renders
-- THEN it plots accumulated balances `600` then `1300` with Spanish month labels
-
-#### Scenario: Empty balance shows EmptyState
-
-- GIVEN an empty `monthly-flow` response
-- WHEN `BalanceChart` renders
-- THEN it shows the Spanish empty state without errors
-
-### Requirement: Savings Chart
-
-The system MUST render `SavingsChart` (line/area) showing monthly savings `income − expense` per month from `monthly-flow`.
-
-#### Scenario: Savings renders
-
-- GIVEN `monthly-flow` with September income `"1000.00"` expense `"400.00"`
-- WHEN `SavingsChart` renders
-- THEN September point equals `600` COP-labeled in Spanish
-
-### Requirement: Monthly Expenses Chart
-
-The system MUST render `MonthlyExpensesChart` (bars) showing the `expense` column of `monthly-flow` per month.
-
-#### Scenario: Expenses render
-
-- GIVEN `monthly-flow` with expenses `"300.00"` (Aug) and `"500.00"` (Sep)
-- WHEN the chart renders
-- THEN both bars appear with COP tooltips in Spanish
-
-### Requirement: Month Compare Chart
-
-The system MUST render `MonthCompareChart` (paired bars + delta %) comparing the current month vs the previous month from `monthly-flow`.
-
-#### Scenario: Compare with delta
-
-- GIVEN August expense `"400.00"` and September `"500.00"`
-- WHEN the chart renders
-- THEN it shows both bars plus delta `+25%` in Spanish
-
-### Requirement: Income Source Reuse
-
-The system MUST render ingresos-por-fuente by reusing the existing `CategoryDonut` with `by-category?type=income`. The `useSpendByCategory` hook MUST accept a `type` param instead of hardcoding `expense`. A separate `IncomeSourceDonut` SHALL only be created if reuse proves impossible.
-
-#### Scenario: Income donut reuses component
-
-- GIVEN `by-category?type=income` rows `[{name: "Salario", total: "2000000.00"}]`
-- WHEN the income-source chart renders
-- THEN the shared donut shows `"Salario"` with COP tooltip in Spanish
-
-### Requirement: Period Selector
-
-The system MUST provide `PeriodSelector` with ranges semana (last 7 days) / mes / trimestre / año / custom (two `YYYY-MM-DD` date inputs). Default MUST be the current month (owner decision). Selection MUST compute `from/to` for the existing `by-category` + `monthly-flow` endpoints (whose `validate_stats_range` already supports the range); charts MUST aggregate in FE what the range returns. No new BE endpoint SHALL be created.
-
-#### Scenario: Default is current month
-
-- GIVEN a user opening finance on 2026-09-09
-- WHEN the screen loads
-- THEN `PeriodSelector` starts on September 2026 and charts query that `from/to`
-
-#### Scenario: Custom range filters aggregates
-
-- GIVEN a user picking custom `2026-07-01` to `2026-09-09`
-- WHEN they apply it
-- THEN charts re-query both aggregates with that `from/to` and re-render
-
-### Requirement: Charts Visual and A11y Contract
-
-All S6 charts MUST use Recharts 3 with `next/dynamic(ssr:false)`, theme tokens `--color-*` (never hardcoded hex), Spanish labels and COP tooltips, `prefers-reduced-motion` suppression of draw-in animation, keyboard focus visibility, and Spanish `EmptyState` on no data. No `window` access at import time (static-export safe).
-
-#### Scenario: Reduced motion suppresses animation
-
-- GIVEN `prefers-reduced-motion: reduce`
-- WHEN any S6 chart renders
-- THEN draw-in animation is skipped
-
-#### Scenario: No hex leaks
-
-- GIVEN S6 chart sources
-- WHEN grepped for literal hex colors
-- THEN zero matches remain outside token definitions
-
-### Requirement: Removed Budget Visuals Inventory (S2)
-
-Removed by name in S2 and MUST NOT be re-mounted or resurrected as empty shells: `BudgetBars`, `BudgetsList`, `BudgetForm`, the `useBudgets` hook, the `BudgetWire` type, the `toBudgetViews` transform, `worstBudgetStatus`, the budget write helpers (`createBudget`/`patchBudget`/`deleteBudget`), the `manageBudgets` section, the `finance.budgets*` and `dashboard.budgets*` i18n key families, and the MCP `list_budgets` tool. Retained and still binding until S3 removes the ledger that feeds them: `FlowChart` (income vs expense), `CategoryDonut` (expense), the S6 charts, the finance `PeriodSelector` and the `AnalysisSection` insight block, all of which MUST keep inheriting the existing `transfer` exclusion from aggregates without "fixing" it.
-
-#### Scenario: Removed budget visuals are not present
+#### Scenario: Removed visuals are not present
 
 - GIVEN the finance screen and the dashboard home
 - WHEN their rendered blocks are inspected
-- THEN none of the S2-removed visuals is mounted, and no placeholder stands in for them
+- THEN none of the removed visuals is mounted, and no placeholder stands in
+  for them
 
-#### Scenario: Retained charts keep the contract
+#### Scenario: Retained contracts still hold
 
-- GIVEN the surviving flow/category charts
-- WHEN they render
-- THEN the transfer exclusion still holds: transfer amounts appear in no income/expense/balance figure
+- GIVEN the surviving chart or strip elements
+- WHEN they are inspected
+- THEN no hardcoded hex, no untyped copy and no animation under reduced motion
+  is found
 
-<!-- p9-finanzas ADDED from openspec/changes/p9-finanzas/specs/finance-analysis/spec.md (alias draft resolved to wire names) -->
+#### Scenario: A future change cannot read "intact" as "undeletable"
 
-### Requirement: Month-over-Month Computation
+- GIVEN a reader of the canonical specification
+- WHEN they look for the removed artefacts
+- THEN the removal is stated by name, with the reason being the loss of their
+  data source
 
-The system MUST compute MoM variation with a pure `toMonthOverMonth` transform over `monthly-flow` (current vs previous month income/expense deltas + %).
+### Requirement: Finance Screen Source Integrity (S3b)
 
-#### Scenario: MoM delta correct
+Every finance block, KPI or chart that remains rendered MUST have at least one
+surviving data source, and MUST NOT render a permanent empty state caused by a
+missing source. Data whose only origin was the removed ledger MUST be deleted
+from the screen, along with its hooks, transforms and i18n keys, rather than
+displayed with zeros.
 
-- GIVEN August expense `"400.00"` and September `"500.00"`
-- WHEN `toMonthOverMonth` runs
-- THEN it returns `+100.00` and `+25%` for expense
+#### Scenario: No perpetual empty block
 
-#### Scenario: Single month yields no delta
+- GIVEN the finance screen and home rendered with real data
+- WHEN the blocks are inspected
+- THEN no block shows an empty state for a source that no longer exists
 
-- GIVEN only one month in `monthly-flow`
-- WHEN the analysis renders
-- THEN the MoM line is omitted without errors
+#### Scenario: Deleted chain is complete
 
-### Requirement: Savings and Averages Indicators
-
-The `AnalysisSection` MUST show pure-computed indicators from `monthly-flow` + `by-category`: savings rate, income/expense averages, top category, highest-spend and highest-saving months. All money MUST be coerced string→number only in transforms and formatted COP.
-
-#### Scenario: Indicators render
-
-- GIVEN three months of flow plus `by-category` top `"Mercado"`
-- WHEN `AnalysisSection` renders
-- THEN it shows tasa de ahorro, promedios, top categoría and extreme months with correct COP values
-
-### Requirement: Direct ES Template Insights
-
-Insights MUST be a closed list of fixed Spanish templates in direct tone (owner decision, e.g. "Este mes gastaste N% más en X que el mes anterior"). At least 3 insights MUST render when data suffices. No LLM or free generation SHALL exist; templates live in `analysis.*` i18n keys with value interpolation only.
-
-#### Scenario: Direct insight renders
-
-- GIVEN September food spend 18% above August
-- WHEN insights render
-- THEN one line reads direct-tone Spanish with `18%` and category `"Mercado"` (exact template wording from i18n)
-
-### Requirement: Non-Advisor Disclaimer
-
-Every analysis render MUST include the Spanish non-advisor disclaimer ("análisis personal, no asesoramiento financiero").
-
-#### Scenario: Disclaimer always visible
-
-- GIVEN any populated or empty analysis
-- WHEN `AnalysisSection` renders
-- THEN the Spanish disclaimer is visible
-
-### Requirement: Recurrent Versus Extraordinary Heuristic v1
-
-The v1 heuristic MUST use `description` frequency within the selected period to label recurrent vs extraordinary spend. If frequency is inconclusive, that line MUST be omitted — never invented.
-
-#### Scenario: Inconclusive heuristic omitted
-
-- GIVEN all descriptions appear once in the period
-- WHEN insights render
-- THEN no recurrent/extraordinary line appears
-
-#### Scenario: Recurrent line renders on frequency
-
-- GIVEN `"Arriendo"` appearing every month in the period
-- WHEN insights render
-- THEN the recurrent template line names `"Arriendo"` in Spanish
-
-### Requirement: Analysis Empty and i18n Contract
-
-With no data the section MUST render the Spanish `EmptyState` plus the disclaimer. All strings MUST come from `analysis.*`/`finance.*` keys; hardcoded literals are forbidden. The section MUST respect `prefers-reduced-motion` and keyboard focus like all finance sections.
-
-#### Scenario: Empty analysis
-
-- GIVEN empty `monthly-flow` and empty `by-category`
-- WHEN `AnalysisSection` renders
-- THEN it shows the Spanish empty state and the disclaimer
+- GIVEN a removed visual
+- WHEN its supporting code is searched
+- THEN its hook, transform and i18n keys were removed together

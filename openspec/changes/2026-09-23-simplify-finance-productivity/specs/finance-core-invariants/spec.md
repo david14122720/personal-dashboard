@@ -156,7 +156,7 @@ No deployable build MAY exist in which the transaction routes are absent while t
 
 ### Requirement: Governing Document Reversal Recorded
 
-`objetivo.md` MUST be edited in the same change that removes the capabilities it mandates. The "Transferencias" and "Presupuestos" sections MUST be replaced by (i) the rule that an account balance is written by hand, (ii) a reversal note carrying the date and the reason (the ledger and budgets were not used, their maintenance cost exceeded their value, and the manual balance covers the use case), and (iii) an updated financial-charts section that no longer lists charts whose only source was the removed monthly flow. No other part of the document MAY change.
+`objetivo.md` MUST be edited in the same change that removes the capabilities it mandates. The "Transferencias" and "Presupuestos" sections MUST be replaced by (i) the rule that an account balance is written by hand, (ii) a reversal note carrying the date and the reason (the ledger and budgets were not used, their maintenance cost exceeded their value, and the manual balance covers the use case), and (iii) an updated financial-charts-and-indicators section that no longer lists charts or indicators whose only source was the removed monthly flow. No other part of the document MAY change.
 
 #### Scenario: Mandated sections are replaced
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Dashboard de progreso personal que combina finanzas, hábitos, metas y
+Dashboard de progreso personal que combina finanzas actuales, hábitos, metas y
 productividad, con puntuación visual por área y disclaimer fijo siempre visible,
 sin conclusiones sensibles.
 
@@ -10,18 +10,21 @@ sin conclusiones sensibles.
 
 ### Requirement: Combined Progress Dashboard
 
-The system MUST expose a `/progreso` route combining: monthly savings + expenses
-(`monthly-flow`), simple net-worth number (read-only, existing value — valuaciones
-stay INSERT-only, no writes), goal progress (`GET /goals` + savings-goals),
-habits (overall compliance, best streaks, pending, weekly evolution via
-habits-management transforms), and productivity (completed tasks, advanced goals,
-upcoming events). Composition MUST be FE-only with zero new backend endpoints.
+The system MUST expose a `/progreso` route combining: a simple net-worth
+number and outstanding debt (read-only; valuations stay INSERT-only with no
+writes), savings-goal and goal progress (`GET /goals` + savings goals), habits
+(overall compliance, best streaks, pending, weekly evolution via
+habits-management transforms), and productivity (completed tasks, advanced
+goals, upcoming events). The finance area MUST NOT query or display monthly
+savings or expenses from the removed flow aggregate. Composition MUST be FE-only
+with zero new backend endpoints.
 
 #### Scenario: Progress combines areas
 
 - GIVEN populated finance, habits, goals, and productivity data
 - WHEN `/progreso` renders
-- THEN all five areas appear with their current values in Spanish
+- THEN all areas appear with their current values in Spanish, with finance
+  drawn from net worth, debt and savings progress
 
 #### Scenario: Net worth is read-only
 
@@ -29,12 +32,26 @@ upcoming events). Composition MUST be FE-only with zero new backend endpoints.
 - WHEN inspected
 - THEN no control writes or edits any valuation
 
+#### Scenario: No removed flow figures
+
+- GIVEN the rendered finance area
+- WHEN its figures are inspected
+- THEN no monthly savings, expense or income value from the removed aggregate
+  is present
+
+#### Scenario: No request to a removed endpoint
+
+- GIVEN any `/progreso` render
+- WHEN the network activity is inspected
+- THEN no request targets the removed transaction aggregate paths
+
 ### Requirement: Visual Area Score
 
 The system MUST render a visual score indicator per area
 (finanzas / hábitos / metas / productividad) computed by a pure `scoreByArea`
-transform. The score MUST be presentational only — no diagnosis, no advice, no
-sensitive conclusion.
+transform whose finance input comes only from surviving sources (net worth,
+debt, savings-goal progress via `toFinanceScore`). The score MUST be
+presentational only — no diagnosis, no advice, no sensitive conclusion.
 
 #### Scenario: Scores render per area
 
@@ -47,6 +64,12 @@ sensitive conclusion.
 - GIVEN an area with no data
 - WHEN the score section renders
 - THEN that area shows a neutral empty visual, never a fabricated score
+
+#### Scenario: Finance score has a live basis
+
+- GIVEN a user with a net worth and no savings goals
+- WHEN the finance indicator renders
+- THEN it is computed from the surviving inputs and no removed figure is read
 
 ### Requirement: Fixed Disclaimer
 

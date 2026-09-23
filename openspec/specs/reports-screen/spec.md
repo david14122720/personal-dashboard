@@ -2,42 +2,77 @@
 
 ## Purpose
 
-Reportes por período solo en pantalla: finanzas, hábitos, metas y actividad
-compuestos FE-only desde endpoints existentes, con `PeriodSelector` y sin
-PDF/Excel.
+Reportes solo en pantalla: una foto actual de finanzas (patrimonio, costo
+mensual de suscripciones, deuda pendiente) más hábitos, metas y actividad por
+período, compuestos FE-only desde endpoints existentes, con `PeriodSelector`
+propio y sin PDF/Excel.
 
 ## Requirements
 
 ### Requirement: Period Selection
 
 The system MUST expose a `/reportes` route with a `PeriodSelector` supporting
-week / month / year presets plus custom `from/to`. The selected period MUST drive
-all four blocks with a single consistent window.
+week / month / year presets plus custom `from/to`. The selected period MUST
+drive the period-scoped blocks (habits, goals, activity) with a single
+consistent window. The finance block is a current snapshot and MUST be visibly
+labelled as such (`reports.financeCurrent`); it MUST NOT be presented as if it
+were computed over the selected window.
 
-#### Scenario: Period drives all blocks
+#### Scenario: Period drives the period-scoped blocks
 
 - GIVEN the user selects month 2026-09
 - WHEN `/reportes` renders
-- THEN finance, habits, goals, and activity blocks all reflect 2026-09-01..30
+- THEN habits, goals and activity all reflect 2026-09-01..30
 
 #### Scenario: Custom range
 
 - GIVEN a custom `from/to` selection
 - WHEN the report renders
-- THEN every block queries within that exact window
+- THEN every period-scoped block queries within that exact window
 
-### Requirement: Finance Period Block
+#### Scenario: Finance snapshot is not period-scoped
 
-The finance block MUST show period income / expense / savings from `monthly-flow`
-and top categories from `by-category`, composed FE-only with zero new backend
-endpoints. Amounts MUST display via `formatMoney` under `es-CO`/`COP`; wire
-decimals stay strings with coercion only at the boundary.
+- GIVEN any selected period
+- WHEN the finance snapshot renders
+- THEN it shows current values with an explicit current-value label and does
+  not shift with the window
 
-#### Scenario: Finance summary renders
+### Requirement: Finance Snapshot Block From Surviving Sources
 
-- GIVEN `monthly-flow` income `"1000.00"` and expense `"400.00"`
+The finance block of `/reportes` MUST show only values with a surviving source:
+net worth from the existing net-worth read (valuations stay INSERT-only and
+read-only here), the current monthly cost of active subscriptions, and the total
+outstanding debt from active debts. It MUST NOT show period income, expense or
+savings, top categories, or any figure derived from the removed ledger. Amounts
+MUST display via `formatMoney` under `es-CO`/`COP`, with wire decimals coerced
+only at the boundary.
+
+#### Scenario: Snapshot renders from live sources
+
+- GIVEN net worth, two active subscriptions and one active debt with a pending
+  amount
 - WHEN the finance block renders
-- THEN it shows ingreso, gasto, and ahorro `$ 600` with top categories listed
+- THEN patrimonio, costo mensual de suscripciones and deuda pendiente appear
+  with COP formatting
+
+#### Scenario: No flow figures
+
+- GIVEN the rendered finance block
+- WHEN its figures are inspected
+- THEN no ingreso, gasto, ahorro del período or top-categorías item is present
+
+#### Scenario: Net worth stays read-only
+
+- GIVEN the snapshot rendered
+- WHEN the user interacts with it
+- THEN no control writes or edits a valuation
+
+#### Scenario: Legitimately empty source
+
+- GIVEN a user with no subscriptions and no debts
+- WHEN the snapshot renders
+- THEN each figure shows a neutral zero or Spanish empty label from its live
+  source
 
 ### Requirement: Habits Period Block
 
@@ -65,12 +100,13 @@ from `GET /events?from&to` (overlap semantics) within the period.
 
 ### Requirement: Screen-Only Composition Constraints
 
-The system MUST compose `/reportes` FE-only with zero new backend endpoints and
-MUST NOT offer PDF/Excel export. Each block MUST handle `loading`, `error`, and
-`empty` independently: loading shows a per-block placeholder, error shows a
-Spanish panel with retry revalidating only its own keys, empty shows a Spanish
-`EmptyState`. All strings MUST resolve via typed ES `t(key, vars)` keys; charts
-MUST use `next/dynamic(ssr:false)`; tokens `--color-*` with no hex;
+The system MUST compose `/reportes` FE-only with zero new backend endpoints,
+MUST read only surviving endpoints, and MUST NOT offer PDF/Excel export. Each
+block MUST handle `loading`, `error`, and `empty` independently: loading shows
+a per-block placeholder, error shows a Spanish panel with retry revalidating
+only its own keys, empty shows a Spanish `EmptyState` for a live source that
+happens to be empty. All strings MUST resolve via typed ES `t(key, vars)` keys;
+charts MUST use `next/dynamic(ssr:false)`; tokens `--color-*` with no hex;
 `prefers-reduced-motion` and visible keyboard focus MUST hold.
 
 #### Scenario: No export exists
@@ -81,7 +117,13 @@ MUST use `next/dynamic(ssr:false)`; tokens `--color-*` with no hex;
 
 #### Scenario: Block error isolates
 
-- GIVEN a failed `by-category` fetch
+- GIVEN a failed subscriptions fetch
 - WHEN `/reportes` renders
-- THEN only the finance block shows the Spanish error panel with retry
+- THEN only the finance snapshot shows the Spanish error panel with retry
 - AND the other three blocks keep rendering
+
+#### Scenario: No request to a removed endpoint
+
+- GIVEN `/reportes` rendered
+- WHEN the network activity is inspected
+- THEN no request targets the removed transaction aggregate paths

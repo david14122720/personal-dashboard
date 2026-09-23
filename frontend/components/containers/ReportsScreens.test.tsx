@@ -10,13 +10,20 @@ process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 const seen: string[] = [];
 
 const server = setupServer(
-  http.get("http://test.local/api/transactions/stats/monthly-flow", ({ request }) => {
-    seen.push(request.url);
-    return HttpResponse.json([{ month: "2026-09", income: "1000.00", expense: "400.00" }]);
+  http.get("http://test.local/api/net-worth", () => {
+    return HttpResponse.json({
+      per_currency: [{ currency: "COP", assets: "5000000.00", debts: "1000000.00", net_worth: "4000000.00" }],
+    });
   }),
-  http.get("http://test.local/api/transactions/stats/by-category", ({ request }) => {
-    seen.push(request.url);
-    return HttpResponse.json([{ category_id: "c1", name: "Mercado", total: "1500.00" }]);
+  http.get("http://test.local/api/subscriptions", () => {
+    return HttpResponse.json([
+      { id: "s1", name: "Music", price: "12000.00", currency: "COP", frequency: "monthly", next_billing_on: null, is_active: true },
+    ]);
+  }),
+  http.get("http://test.local/api/debts", () => {
+    return HttpResponse.json([
+      { id: "d1", name: "Loan", creditor: "Bank", original_amount: "500.00", pending_amount: "320.00", currency: "COP", status: "active", due_date: null },
+    ]);
   }),
   http.get("http://test.local/api/habits/today", () => {
     return HttpResponse.json([
@@ -62,10 +69,31 @@ function renderReports() {
   );
 }
 
-describe("ReportsScreens S3 RED", () => {
-  it("periodo 2026-09 propaga 2026-09-01..30 a los 4 bloques", async () => {
+describe("ReportsScreens S3b snapshot", () => {
+  it("finance block renders the current snapshot with its label", async () => {
     renderReports();
-    expect(await screen.findByText("Mercado")).toBeInTheDocument();
+    const financeRegion = await screen.findByRole("region", { name: "Finanzas actuales" });
+    expect(within(financeRegion).getByText("Valor actual")).toBeInTheDocument();
+    expect(within(financeRegion).getByText("Patrimonio neto")).toBeInTheDocument();
+    expect(within(financeRegion).getByText("Suscripciones")).toBeInTheDocument();
+    expect(within(financeRegion).getByText("Deudas")).toBeInTheDocument();
+    // No flow figures survive.
+    expect(within(financeRegion).queryByText("Ingreso")).not.toBeInTheDocument();
+    expect(within(financeRegion).queryByText("Gasto")).not.toBeInTheDocument();
+    expect(within(financeRegion).queryByText("Ahorro")).not.toBeInTheDocument();
+    expect(within(financeRegion).queryByText("Principales categorías")).not.toBeInTheDocument();
+  });
+
+  it("issues no request to a removed aggregate endpoint", async () => {
+    renderReports();
+    await screen.findByRole("region", { name: "Período" });
+    await waitFor(() => expect(seen.length).toBeGreaterThanOrEqual(1));
+    const urls = seen.join("\n");
+    expect(urls).not.toContain("/transactions");
+  });
+
+  it("periodo 2026-09 propaga 2026-09-01..30 a los bloques por período", async () => {
+    renderReports();
     expect(await screen.findByText("Leer")).toBeInTheDocument();
     expect(await screen.findByText("Maratón")).toBeInTheDocument();
     expect(await screen.findByText("Hecha en rango")).toBeInTheDocument();
@@ -74,10 +102,9 @@ describe("ReportsScreens S3 RED", () => {
     const urls = seen.join("\n");
     expect(urls).toContain("from=2026-09-01");
     expect(urls).toContain("to=2026-09-30");
-    expect((await screen.findAllByText(/600/)).length).toBeGreaterThanOrEqual(1);
   });
 
-  it("custom from/to exacto llega a cada bloque", async () => {
+  it("custom from/to exacto llega a cada bloque por período", async () => {
     renderReports();
     const periodRegion = await screen.findByRole("region", { name: "Período" });
     fireEvent.click(within(periodRegion).getByRole("radio", { name: "Personalizado" }));
@@ -89,7 +116,7 @@ describe("ReportsScreens S3 RED", () => {
     expect(urls).toContain("to=2026-09-12");
   });
 
-  it("custom invalido bloquea agregados sin romper (precedente finance.test.tsx:630)", async () => {
+  it("custom invalido bloquea sin romper (precedente finance.test.tsx:630)", async () => {
     renderReports();
     const periodRegion = await screen.findByRole("region", { name: "Período" });
     fireEvent.click(within(periodRegion).getByRole("radio", { name: "Personalizado" }));
@@ -99,14 +126,14 @@ describe("ReportsScreens S3 RED", () => {
     expect(screen.getByRole("region", { name: "Período" })).toBeInTheDocument();
   });
 
-  it("by-category caido aisla el error solo en el bloque finanzas", async () => {
+  it("subscriptions caídas aíslan el error solo en el bloque finanzas", async () => {
     server.use(
-      http.get("http://test.local/api/transactions/stats/by-category", () => {
+      http.get("http://test.local/api/subscriptions", () => {
         return HttpResponse.json({ message: "caído" }, { status: 500 });
       }),
     );
     renderReports();
-    const financeRegion = await screen.findByRole("region", { name: "Finanzas del período" });
+    const financeRegion = await screen.findByRole("region", { name: "Finanzas actuales" });
     expect(within(financeRegion).getByRole("alert")).toBeInTheDocument();
     expect(await screen.findByText("Leer")).toBeInTheDocument();
     expect(await screen.findByText("Maratón")).toBeInTheDocument();

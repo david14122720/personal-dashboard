@@ -22,18 +22,6 @@ export interface NetWorthWire {
   per_currency: NetWorthEntryWire[];
 }
 
-export interface MonthlyFlowRowWire {
-  month: string;
-  income: string | number;
-  expense: string | number;
-}
-
-export interface CategoryTotalWire {
-  category_id: string;
-  name: string;
-  total: string | number;
-}
-
 export interface HabitTodayWire {
   habit_id: string;
   name: string;
@@ -66,12 +54,9 @@ export interface DashboardLayout {
   widgets: DashboardWidgetPref[];
 }
 
-/** Default 9-widget layout (first run / empty / invalid → all visible). Order per design §5.1. */
+/** Default 6-widget layout (first run / empty / invalid → all visible). Order per S3b. */
 export const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
   widgets: [
-    { id: "month-income", type: "metric", order: 10, size: "sm" },
-    { id: "month-expense", type: "metric", order: 11, size: "sm" },
-    { id: "month-savings", type: "metric", order: 12, size: "sm" },
     { id: "upcoming-payments", type: "list", order: 20, size: "lg" },
     { id: "pending-debts", type: "list", order: 21, size: "md" },
     { id: "active-subs", type: "list", order: 22, size: "md" },
@@ -101,27 +86,6 @@ const config: SWRConfiguration = { revalidateOnFocus: false };
 
 export function useNetWorth() {
   return useSWR<NetWorthWire>("dashboard/net-worth", () => apiGet<NetWorthWire>("/net-worth"), config);
-}
-
-export function useMonthlyFlow(from: string | null, to: string | null) {
-  const key = from && to ? `dashboard/monthly-flow?from=${from}&to=${to}` : null;
-  return useSWR<MonthlyFlowRowWire[]>(
-    key,
-    () => apiGet<MonthlyFlowRowWire[]>(`/transactions/stats/monthly-flow?from=${from}&to=${to}`),
-    config,
-  );
-}
-
-export function useSpendByCategory(from: string | null, to: string | null, type: "income" | "expense" = "expense") {
-  const key = from && to ? `dashboard/by-category?from=${from}&to=${to}&type=${type}` : null;
-  return useSWR<CategoryTotalWire[]>(
-    key,
-    () =>
-      apiGet<CategoryTotalWire[]>(
-        `/transactions/stats/by-category?from=${from}&to=${to}&type=${type}`,
-      ),
-    config,
-  );
 }
 
 /** SWR key for the dashboard-home habits widget; toggles revalidate it. */

@@ -9,51 +9,6 @@
 
 import { toNumber } from "@/lib/api/money";
 
-export interface MonthlyFlowWire {
-  month: string;
-  income: string | number;
-  expense: string | number;
-}
-
-export interface FlowPoint {
-  month: string;
-  income: number;
-  expense: number;
-  balance: number;
-}
-
-/** Coerce an aggregate monthly-flow response to chart-ready points. */
-export function toFlowPoints(rows: MonthlyFlowWire[] | null | undefined): FlowPoint[] {
-  if (!rows) return [];
-  return rows.map((row) => {
-    const income = toNumber(row.income);
-    const expense = toNumber(row.expense);
-    return { month: row.month, income, expense, balance: income - expense };
-  });
-}
-
-export interface CategoryWire {
-  category_id: string;
-  name: string;
-  total: string | number;
-}
-
-export interface DonutSlice {
-  id: string;
-  name: string;
-  value: number;
-}
-
-/** Coerce a by-category aggregate response to donut slices. */
-export function toDonutSlices(rows: CategoryWire[] | null | undefined): DonutSlice[] {
-  if (!rows) return [];
-  return rows.map((row) => ({
-    id: row.category_id,
-    name: row.name,
-    value: toNumber(row.total),
-  }));
-}
-
 /**
  * Backend LED enum, 1:1 with the API:
  * - account `alert_level` ∈ { ok, warn, high }
@@ -73,41 +28,6 @@ export function ledDotClass(status: string | null | undefined): string {
     default:
       return "bg-instrument/30";
   }
-}
-
-/** Worst-of rollup for account alert LEDs: high > warn > ok. */
-export function worstAlertLevel(levels: Array<string | null | undefined>): LedStatus | "none" {
-  let worst: LedStatus | "none" = "none";
-  for (const level of levels) {
-    if (level === "high") return "high";
-    if (level === "warn") worst = "warn";
-    else if (level === "ok" && worst === "none") worst = "ok";
-  }
-  return worst;
-}
-
-/** Savings rate as a fraction, or null when there is no income to divide by. */
-export function savingsRate(income: number, expense: number): number | null {
-  if (!Number.isFinite(income) || income <= 0) return null;
-  return (income - expense) / income;
-}
-
-/** Longest current streak across today's habits. */
-export function longestStreak(habits: Array<{ current_streak: number }> | null | undefined): number {
-  if (!habits || habits.length === 0) return 0;
-  let best = 0;
-  for (const habit of habits) {
-    if (Number.isFinite(habit.current_streak) && habit.current_streak > best) {
-      best = habit.current_streak;
-    }
-  }
-  return best;
-}
-
-/** Balance for a calendar month key (`YYYY-MM`), 0 when the month is absent. */
-export function monthBalance(points: FlowPoint[], monthKey: string): number {
-  const point = points.find((p) => p.month === monthKey);
-  return point ? point.balance : 0;
 }
 
 /** Current month key (`YYYY-MM`) in local time. */
@@ -131,45 +51,115 @@ export function toISODate(date: Date = new Date()): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-/* -- p8-home-pagos PR1: month split (S3) -- */
+/* -- S3b: finance snapshot transforms (surviving sources only) -- */
 
-/** Income for a calendar month key, 0 when the month is absent. */
-export function toMonthIncome(
-  flow: MonthlyFlowWire[] | null | undefined,
-  monthKey: string,
-): number {
-  if (!flow) return 0;
-  const row = flow.find((r) => r.month === monthKey);
-  if (!row) return 0;
-  return toNumber(row.income);
+export interface SubscriptionCostLike {
+  price?: string | number | null;
+  frequency?: string | null;
+  is_active?: boolean | null;
 }
 
-/** Expense for a calendar month key, 0 when the month is absent. */
-export function toMonthExpense(
-  flow: MonthlyFlowWire[] | null | undefined,
-  monthKey: string,
-): number {
-  if (!flow) return 0;
-  const row = flow.find((r) => r.month === monthKey);
-  if (!row) return 0;
-  return toNumber(row.expense);
+/**
+ * Monthly-equivalent cost of active subscriptions. Frequency catalog mirrors
+ * backend SUBSCRIPTION_FREQUENCIES: daily×30, weekly×52/12, biweekly×26/12,
+ * monthly×1, quarterly÷3, semiannual÷6, annual÷12. Inactive subscriptions are
+ * excluded; unknown frequencies are excluded (never a silent 1× assumption).
+ * Empty/undefined → 0.
+ */
+export function toMonthlyCost(subs: SubscriptionCostLike[] | null | undefined): number {
+  if (!subs) return 0;
+  let total = 0;
+  for (const sub of subs) {
+    if (sub.is_active !== true) continue;
+    const factor =
+      sub.frequency === "daily" ? 30
+      : sub.frequency === "weekly" ? 52 / 12
+      : sub.frequency === "biweekly" ? 26 / 12
+      : sub.frequency === "monthly" ? 1
+      : sub.frequency === "quarterly" ? 1 / 3
+      : sub.frequency === "semiannual" ? 1 / 6
+      : sub.frequency === "annual" ? 1 / 12
+      : null;
+    if (factor === null) continue;
+    total += toNumber(sub.price) * factor;
+  }
+  return total;
 }
 
-/** Savings as income minus expense (may be negative). */
-export function toMonthSavings(income: number, expense: number): number {
-  const safeIncome = Number.isFinite(income) ? income : 0;
-  const safeExpense = Number.isFinite(expense) ? expense : 0;
-  return safeIncome - safeExpense;
+export interface OutstandingDebtLike {
+  pending_amount?: string | number | null;
+  status?: string | null;
 }
 
-/** Convenience summary for the three month-split MetricCards. */
-export function toMonthSummary(
-  flow: MonthlyFlowWire[] | null | undefined,
-  monthKey: string,
-): { income: number; expense: number; savings: number } {
-  const income = toMonthIncome(flow, monthKey);
-  const expense = toMonthExpense(flow, monthKey);
-  return { income, expense, savings: toMonthSavings(income, expense) };
+/** Outstanding debt = sum of `pending_amount` over debts with active-ish status. */
+export function toOutstandingDebt(debts: OutstandingDebtLike[] | null | undefined): number {
+  if (!debts) return 0;
+  let total = 0;
+  for (const debt of debts) {
+    if (debt.status !== undefined && debt.status !== null && debt.status !== "active") continue;
+    total += toNumber(debt.pending_amount);
+  }
+  return total;
+}
+
+export interface TotalSavingsLike {
+  saved?: string | number | null;
+  saved_amount?: string | number | null;
+  completed?: boolean | null;
+  is_completed?: boolean | null;
+}
+
+/** Total savings = sum of `saved_amount` (fallback `saved`) over non-completed goals. */
+export function toTotalSavings(goals: TotalSavingsLike[] | null | undefined): number {
+  if (!goals) return 0;
+  let total = 0;
+  for (const goal of goals) {
+    if (goal.completed === true || goal.is_completed === true) continue;
+    total += toNumber(goal.saved_amount ?? goal.saved);
+  }
+  return total;
+}
+
+export interface FinanceSnapshotInput {
+  netWorth: number;
+  monthlySubsCost: number;
+  outstandingDebt: number;
+}
+
+export interface FinanceSnapshot {
+  netWorth: number;
+  monthlySubsCost: number;
+  outstandingDebt: number;
+}
+
+/** Reports finance snapshot: three current values, no period window. */
+export function toFinanceSnapshot(input: FinanceSnapshotInput): FinanceSnapshot {
+  return {
+    netWorth: input.netWorth,
+    monthlySubsCost: input.monthlySubsCost,
+    outstandingDebt: input.outstandingDebt,
+  };
+}
+
+export interface FinanceScoreInput {
+  netWorth: number;
+  savings: number;
+  debt: number;
+}
+
+/**
+ * Progress finance score from surviving inputs only: share of the positive
+ * position not owed — 100·(netWorth+savings)/(netWorth+savings+debt),
+ * clamped 0..100. All three inputs zero → null ("sin datos").
+ */
+export function toFinanceScore(input: FinanceScoreInput): number | null {
+  const positive = input.netWorth + input.savings;
+  if (input.netWorth === 0 && input.savings === 0 && input.debt === 0) return null;
+  const denom = positive + input.debt;
+  if (denom <= 0) return 0;
+  const score = (positive / denom) * 100;
+  if (!Number.isFinite(score)) return null;
+  return Math.min(100, Math.max(0, score));
 }
 
 /* -- p8-home-pagos PR1: upcoming 7d + overdue (S3/S4) -- */
