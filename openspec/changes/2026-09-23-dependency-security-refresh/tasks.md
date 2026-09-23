@@ -80,13 +80,13 @@ Overage note: the whole change exceeds 400 lines in total, but the review unit i
 
 ### U1a — TypeScript 7 alone (own PR, own commit)
 
-- [ ] Verify the version claim against the registry: `npm view typescript version`; if the answer is not `7.0.2`, pin the actual latest and record the mismatch in the PR body and verify report. <!-- sdd-owner: implementation -->
-- [ ] Record the TS 7 preconditions before editing: `frontend/tsconfig.json` uses `target ES2022`, `module esnext`, `moduleResolution bundler`, `jsx react-jsx`, and contains none of the removed values (`module` `umd`/` (read-only)amd`/` (read-only)system`/` (read-only)none`, `moduleResolution` `node`/` (read-only)classic`/` (read-only)node10`, `target` `es5`). <!-- sdd-owner: implementation -->
-- [ ] Capture the pre-bump baseline so any TS 7 error is attributable: `cd frontend && pnpm exec tsc --noEmit && pnpm run build` green on the current TypeScript. <!-- sdd-owner: implementation -->
-- [ ] Set `typescript` in `frontend/package.json` to the verified version and regenerate the lock **in the same commit**: `pnpm install`, then `git add frontend/package.json frontend/pnpm-lock.yaml`. <!-- sdd-owner: implementation -->
-- [ ] Run the U1a ladder and stop at the first red: `pnpm install` → `pnpm test` → `pnpm exec tsc --noEmit` → `pnpm run build` → `pnpm exec playwright test --list`; record each result in the PR body. <!-- sdd-owner: implementation -->
-- [ ] If TS 7 surfaces source errors that 5.9.3 tolerated, fix them inside U1a only (its own commit) and re-run the full ladder; do not fold runtime bumps into the fix, and if the fix becomes non-trivial (new module or > ~60 lines) report the budget risk to the parent before continuing. <!-- sdd-owner: implementation -->
-- [ ] Verify the diff surface: `git diff --stat` for U1a is `frontend/package.json` + `frontend/pnpm-lock.yaml` only, and `frontend/tsconfig.tsbuildinfo` is not staged. <!-- sdd-owner: implementation -->
+- [x] Verify the version claim against the registry: `npm view typescript version`; if the answer is not `7.0.2`, pin the actual latest and record the mismatch in the PR body and verify report. <!-- sdd-owner: implementation -->
+- [x] Record the TS 7 preconditions before editing: `frontend/tsconfig.json` uses `target ES2022`, `module esnext`, `moduleResolution bundler`, `jsx react-jsx`, and contains none of the removed values (`module` `umd`/` (read-only)amd`/` (read-only)system`/` (read-only)none`, `moduleResolution` `node`/` (read-only)classic`/` (read-only)node10`, `target` `es5`). <!-- sdd-owner: implementation -->
+- [x] Capture the pre-bump baseline so any TS 7 error is attributable: `cd frontend && pnpm exec tsc --noEmit && pnpm run build` green on the current TypeScript. <!-- sdd-owner: implementation -->
+- [x] Set `typescript` in `frontend/package.json` to the verified version and regenerate the lock **in the same commit**: `pnpm install`, then `git add frontend/package.json frontend/pnpm-lock.yaml`. <!-- sdd-owner: implementation -->
+- [x] Run the U1a ladder and stop at the first red: `pnpm install` → `pnpm test` → `pnpm exec tsc --noEmit` → `pnpm run build` → `pnpm exec playwright test --list`; record each result in the PR body. <!-- sdd-owner: implementation -->
+- [x] If TS 7 surfaces source errors that 5.9.3 tolerated, fix them inside U1a only (its own commit) and re-run the full ladder; do not fold runtime bumps into the fix, and if the fix becomes non-trivial (new module or > ~60 lines) report the budget risk to the parent before continuing. <!-- sdd-owner: implementation -->
+- [x] Verify the diff surface: `git diff --stat` for U1a is `frontend/package.json` + `frontend/pnpm-lock.yaml` only, and `frontend/tsconfig.tsbuildinfo` is not staged. <!-- sdd-owner: implementation -->
 
 ### U1b — runtime and tooling bumps (own PR)
 
