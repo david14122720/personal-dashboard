@@ -244,3 +244,92 @@ describe("productivity screens", () => {
     expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
   });
 });
+
+describe("productivity collapsed creation forms", () => {
+  it("keeps creation forms collapsed on mount and reveals them via Nuevo", async () => {
+    renderScreens();
+    const section = await screen.findByRole("region", { name: "Tareas" });
+    expect(screen.queryByRole("form", { name: "Nueva tarea" })).not.toBeInTheDocument();
+    const nuevo = within(section).getByRole("button", { name: "Nuevo en Tareas" });
+    expect(nuevo).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(nuevo);
+    expect(await screen.findByRole("form", { name: "Nueva tarea" })).toBeInTheDocument();
+    expect(nuevo).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("collapses the form after a successful save", async () => {
+    server.use(
+      http.post("http://test.local/api/tasks", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          id: "t-new",
+          description: null,
+          status: "pending",
+          due_date: null,
+          completed_at: null,
+          goal_id: null,
+          sort_order: 3,
+          ...body,
+        });
+      }),
+    );
+    renderScreens();
+    const section = await screen.findByRole("region", { name: "Tareas" });
+    fireEvent.click(within(section).getByRole("button", { name: "Nuevo en Tareas" }));
+    const form = await screen.findByRole("form", { name: "Nueva tarea" });
+    fireEvent.change(within(form).getByLabelText("Título"), {
+      target: { value: "Nueva tarea e2e" },
+    });
+    fireEvent.click(within(form).getByRole("button", { name: "Crear" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("form", { name: "Nueva tarea" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("opens Editar pre-filled and returns to collapsed on cancel", async () => {
+    renderScreens();
+    const section = await screen.findByRole("region", { name: "Metas" });
+    fireEvent.click(within(section).getByRole("button", { name: "Editar Run a marathon" }));
+    const form = await screen.findByRole("form", { name: "Editar meta" });
+    expect(within(form).getByLabelText("Nombre")).toHaveValue("Run a marathon");
+    fireEvent.click(within(form).getByRole("button", { name: "Cancelar" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("form", { name: "Editar meta" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("keeps at most one section form open across sections", async () => {
+    renderScreens();
+    const tasks = await screen.findByRole("region", { name: "Tareas" });
+    fireEvent.click(within(tasks).getByRole("button", { name: "Nuevo en Tareas" }));
+    expect(await screen.findByRole("form", { name: "Nueva tarea" })).toBeInTheDocument();
+    const notes = await screen.findByRole("region", { name: "Notas" });
+    fireEvent.click(within(notes).getByRole("button", { name: "Nuevo en Notas" }));
+    expect(await screen.findByRole("form", { name: "Nueva nota" })).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Nueva tarea" })).not.toBeInTheDocument();
+  });
+
+  it("still offers Nuevo when a section list is empty", async () => {
+    server.use(http.get("http://test.local/api/goals", () => HttpResponse.json([])));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <ProductivityScreens />
+      </SWRConfig>,
+    );
+    const section = await screen.findByRole("region", { name: "Metas" });
+    expect(await within(section).findByText("Sin metas aún")).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Nuevo en Metas" })).toBeInTheDocument();
+  });
+
+  it("toggles aria-expanded on the Nuevo control", async () => {
+    renderScreens();
+    const section = await screen.findByRole("region", { name: "Eventos" });
+    const nuevo = within(section).getByRole("button", { name: "Nuevo en Eventos" });
+    expect(nuevo).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(nuevo);
+    expect(nuevo).toHaveAttribute("aria-expanded", "true");
+    expect(nuevo).toHaveAttribute("aria-controls", "productivity-form-events");
+    fireEvent.click(nuevo);
+    expect(nuevo).toHaveAttribute("aria-expanded", "false");
+  });
+});

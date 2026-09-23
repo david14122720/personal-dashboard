@@ -372,6 +372,8 @@ export const es = {
     noteBody: "Contenido",
     noteBodyPlaceholder: "Escribe tu nota…",
     notePinned: "Fijada",
+    newEntry: "Nuevo",
+    newEntryLabel: "Nuevo en {section}",
     save: "Guardar",
     create: "Crear",
     update: "Actualizar",
