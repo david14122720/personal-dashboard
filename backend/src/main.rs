@@ -36,6 +36,8 @@ async fn api_fallback_handler() -> (StatusCode, Json<serde_json::Value>) {
 /// All API routes, mounted under `/api` by [`build_router`].
 /// Slice S1 removed the `/transfers` routes (`routes::transfers` deleted);
 /// transfers are now recorded as two manual balance edits.
+/// Slice S2 removed the `/budgets` routes (`routes::budgets` deleted);
+/// no budget endpoint, UI, LED or MCP tool remains.
 fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/login", post(routes::login::login_handler))
@@ -77,20 +79,6 @@ fn api_routes() -> Router<AppState> {
         .route(
             "/categories",
             get(routes::categories::list_categories_handler),
-        )
-        .route(
-            "/budgets",
-            post(routes::budgets::create_budget_handler).get(routes::budgets::list_budgets_handler),
-        )
-        .route(
-            "/budgets/{id}",
-            get(routes::budgets::get_budget_handler)
-                .patch(routes::budgets::patch_budget_handler)
-                .delete(routes::budgets::delete_budget_handler),
-        )
-        .route(
-            "/budgets/{id}/status",
-            get(routes::budgets::budget_status_handler),
         )
         .route(
             "/savings-goals",
@@ -375,7 +363,7 @@ mod api_nest_tests {
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/budgets")
+                    .uri("/api/accounts")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -390,7 +378,7 @@ mod api_nest_tests {
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/budgets")
+                    .uri("/accounts")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -421,14 +409,14 @@ mod api_nest_tests {
 
     #[tokio::test]
     async fn p9_finanzas_write_routes_are_wired() {
-        // Las 7 rutas PR-1 deben existir: sin sesion llegan al handler (401),
-        // no a 404/405. Prueba la existencia del wiring sin tocar la DB.
+        // Slice S2: budgets gone. Las rutas supervivientes deben existir:
+        // sin sesion llegan al handler (401), no a 404/405.
         let app = build_router(lazy_state(), None);
         let id = uuid::Uuid::new_v4();
         let pid = uuid::Uuid::new_v4();
         for (method, uri) in [
-            ("PATCH", format!("/api/budgets/{id}")),
-            ("DELETE", format!("/api/budgets/{id}")),
+            ("GET", format!("/api/debts/{id}")),
+            ("DELETE", format!("/api/savings-goals/{id}")),
             ("PATCH", format!("/api/savings-goals/{id}")),
             ("PATCH", format!("/api/debts/{id}")),
             ("GET", format!("/api/debts/{id}/payments")),

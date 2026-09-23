@@ -195,11 +195,6 @@ export function deleteAccount(id: string): Promise<void> {
 
 // -- S5 escritura (montos string, allowlists reales PR-1, sin parseo local) --
 
-export interface CreateBudgetInput { category_id: string; amount: string; period_start: string; period_end: string; warn_threshold?: number; over_threshold?: number; notes?: string }
-export function createBudget(input: CreateBudgetInput) { return apiPost("/budgets", input); }
-export function patchBudget(id: string, body: Record<string, unknown>) { return apiPatch(`/budgets/${id}`, body); }
-export function deleteBudget(id: string): Promise<void> { return apiDelete(`/budgets/${id}`); }
-
 export function patchGoal(id: string, body: Record<string, unknown>) { return apiPatch(`/savings-goals/${id}`, body); }
 export function createMovement(goalId: string, input: { amount: string; occurred_on: string; notes?: string }) { return apiPost(`/savings-goals/${goalId}/movements`, input); }
 export function deleteMovement(goalId: string, mid: string): Promise<void> { return apiDelete(`/savings-goals/${goalId}/movements/${mid}`); }

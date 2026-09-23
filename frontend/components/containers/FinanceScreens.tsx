@@ -9,19 +9,16 @@ import TransactionsLedger from "@/components/finance/TransactionsLedger";
 import { ManualCaptureSection } from "@/components/finance/ManualCapture";
 import {
   AccountsList,
-  BudgetsList,
   CompactMoneyList,
   SavingsList,
   SectionShell,
 } from "@/components/finance/FinanceSections";
 import {
   useAccounts,
-  useBudgets,
   useMonthlyFlow,
   useNetWorth,
   usePreferences,
   useSpendByCategory,
-  type BudgetWire,
 } from "@/lib/api/dashboard";
 import {
   useAssets,
@@ -36,7 +33,6 @@ import {
   toAccountCards,
   toAccountOptions,
   toBalanceSeries,
-  toBudgetViews,
   toCategoryOptions,
   toDebtRows,
   toExpenseSeries,
@@ -48,8 +44,7 @@ import {
 } from "@/lib/finance/finance";
 import { toDonutSlices } from "@/lib/dashboard/transforms";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
-import { formatMoney, toNumber } from "@/lib/api/money";
-import BudgetForm, { type BudgetFormValue } from "@/components/finance/BudgetForm";
+import { formatMoney } from "@/lib/api/money";
 import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
 import { DebtEditForm, DebtPayForm, DebtPaymentHistory, DebtProgressBar } from "@/components/finance/DebtPayments";
 import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
@@ -118,7 +113,6 @@ export default function FinanceScreens() {
   const { mutate } = useSWRConfig();
   const reducedMotion = usePrefersReducedMotion();
 
-  const budgets = useBudgets();
   const accounts = useAccounts();
   const subscriptions = useSubscriptions();
   const debts = useDebts();
@@ -142,7 +136,7 @@ export default function FinanceScreens() {
   const spendExpense = useSpendByCategory(range?.from ?? null, range?.to ?? null, "expense");
   const spendIncome = useSpendByCategory(range?.from ?? null, range?.to ?? null, "income");
 
-  const queries = [budgets, accounts, subscriptions, debts, savings, prefs];
+  const queries = [accounts, subscriptions, debts, savings, prefs];
   const isLoading = queries.some((q) => q.isLoading);
   const failed = queries.filter((q) => q.error);
 
@@ -203,16 +197,9 @@ export default function FinanceScreens() {
         ) : (
           <>
             <SectionShell
-              title={t("finance.budgets")}
-              hint={t("finance.budgetsHint")}
-              span="col-span-12 xl:col-span-7"
-            >
-              <BudgetsList budgets={toBudgetViews(budgets.data)} locale={locale} />
-            </SectionShell>
-            <SectionShell
               title={t("finance.accounts")}
               hint={t("finance.accountsHint")}
-              span="col-span-12 xl:col-span-5"
+              span="col-span-12 xl:col-span-7"
             >
               <AccountsList accounts={toAccountCards(accounts.data)} locale={locale} />
             </SectionShell>
@@ -247,7 +234,7 @@ export default function FinanceScreens() {
             >
               <SavingsList goals={toSavingsViews(savings.data)} locale={locale} />
             </SectionShell>
-            <S5Sections categories={toCategoryOptions(categories.data ?? [])} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} budgets={budgets.data ?? []} subs={subscriptions.data ?? []} debts={debts.data ?? []} savings={savings.data ?? []} cards={toAccountCards(accounts.data)} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
+            <S5Sections categories={toCategoryOptions(categories.data ?? [])} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} debts={debts.data ?? []} savings={savings.data ?? []} cards={toAccountCards(accounts.data)} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
             <SectionShell title={t("charts.periodLabel")} span="col-span-12">
               <PeriodSelector value={period} onChange={setPeriod} now={now} />
             </SectionShell>
@@ -271,14 +258,7 @@ export default function FinanceScreens() {
                 flow={flowRows}
                 byCatExpense={(spendExpense.data ?? []).map((row) => ({ name: row.name, total: row.total }))}
                 byCatIncome={(spendIncome.data ?? []).map((row) => ({ name: row.name, total: row.total }))}
-                budgets={(budgets.data ?? []).map((b) => ({
-                  id: b.id,
-                  label: `${b.currency} ${toNumber(b.amount).toFixed(0)} · ${b.period_start}`,
-                  spent: toNumber(b.spent),
-                  amount: toNumber(b.amount),
-                  pct: Number.isFinite(b.pct) ? b.pct : 0,
-                  status: b.status,
-                }))}
+                budgets={[]}
                 locale={locale}
                 currency={currency}
               />
@@ -288,27 +268,6 @@ export default function FinanceScreens() {
       </div>
     </div>
   );
-}
-
-/** JD-THRESH: ensanche local — el GET runtime ya trae warn/over/notes aunque BudgetWire base no los tipa. */
-export type BudgetWireWithThresholds = BudgetWire & {
-  warn_threshold?: number | null;
-  over_threshold?: number | null;
-  notes?: string | null;
-};
-
-/** Mapeo GET → BudgetForm preservando thresholds/notas (editar solo notes no resetea 0.5/1.3). */
-export function toBudgetFormValue(b: BudgetWireWithThresholds): BudgetFormValue {
-  return {
-    id: b.id,
-    category_id: b.category_id,
-    amount: b.amount,
-    period_start: b.period_start,
-    period_end: b.period_end,
-    warn_threshold: b.warn_threshold ?? null,
-    over_threshold: b.over_threshold ?? null,
-    notes: b.notes ?? null,
-  };
 }
 
 /** JD-ASSET: ensanche local — AssetWire ya trae la categoría almacenada. */
@@ -340,8 +299,8 @@ export function toAssetEditInitial(a: AssetWireWithDetails): {
 
 /* S5 escritura: 6 SectionShell ocultables tras las F1 intactas + patrimonio-número. */
 /* Títulos propios (sin hints de lectura) para no duplicar copy S1. PR-3 FIX: filas */
-/* SubscriptionRow + edición/borrado BudgetForm/SavingsGoalForm cableados a listas. */
-function S5Sections({ categories, accounts, budgets, subs, debts, savings, cards, assets, netWorth, currency, locale }: { categories: { id: string; name: string }[]; accounts: { id: string; name: string }[]; budgets: BudgetWireWithThresholds[]; subs: SubscriptionWire[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: SavingsGoalWire[]; cards: { id: string; name: string; type: string; currency: string; balance: number; isCard: boolean; used: number | null; available: number | null; usagePct: number | null; alertLevel: string | null; statementBalance: number | null }[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
+/* SubscriptionRow + edición/borrado SavingsGoalForm cableados a listas. */
+function S5Sections({ categories, accounts, subs, debts, savings, cards, assets, netWorth, currency, locale }: { categories: { id: string; name: string }[]; accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: SavingsGoalWire[]; cards: { id: string; name: string; type: string; currency: string; balance: number; isCard: boolean; used: number | null; available: number | null; usagePct: number | null; alertLevel: string | null; statementBalance: number | null }[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
   const noop = (): void => undefined;
   const firstDebt = debts[0];
   const firstGoal = savings[0];
@@ -350,18 +309,6 @@ function S5Sections({ categories, accounts, budgets, subs, debts, savings, cards
   const worth = netWorth?.per_currency.find((e) => e.currency === currency) ?? netWorth?.per_currency[0];
   return (
     <>
-      <SectionShell title={t("finance.manageBudgets")} span="col-span-12 xl:col-span-6">
-        <BudgetForm categories={categories} onDone={noop} />
-        {budgets.map((b) => (
-          <div key={b.id} className="mt-4 border-t border-hull pt-4">
-            <BudgetForm
-              categories={categories}
-              budget={toBudgetFormValue(b)}
-              onDone={noop}
-            />
-          </div>
-        ))}
-      </SectionShell>
       <SectionShell title={t("finance.manageSavings")} span="col-span-12 xl:col-span-6">
         <SavingsGoalForm categories={categories} onDone={noop} />
         {savings.map((g) => (

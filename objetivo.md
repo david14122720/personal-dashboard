@@ -130,24 +130,9 @@ Nota de reversión (2026-09-23): el libro mayor y las transferencias no se usaba
 
 # Presupuestos
 
-Debe existir un sistema de presupuestos.
+No existe sistema de presupuestos: no hay endpoint, ni UI, ni barras de gasto, ni avisos de umbral.
 
-Debe poder establecer cuánto quiero gastar en determinadas categorías durante un período.
-
-Por ejemplo:
-
-* Alimentación: $500.000.
-* Transporte: $200.000.
-* Entretenimiento: $100.000.
-
-El sistema debe mostrar:
-
-* Presupuesto establecido.
-* Dinero gastado.
-* Dinero restante.
-* Porcentaje utilizado.
-
-Debe advertir cuando me esté acercando o superando un presupuesto. Decisión: el presupuesto es solo aviso visual (barras/colores), nunca bloquea ni impide registrar gastos.
+Nota de reversión (2026-09-23): los presupuestos no se usaban; el costo de mantenimiento superaba el valor; sin el libro mayor un presupuesto no tiene observable que medir. Sin respaldo de los presupuestos históricos (pérdida aceptada explícitamente).
 
 ---
 

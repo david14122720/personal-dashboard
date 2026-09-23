@@ -3,8 +3,11 @@
 MCP HTTP server for the personal-dashboard Axum backend, using the
 Streamable HTTP transport from `@modelcontextprotocol/sdk`. Exposes login plus
 CRUD for accounts, transactions, tasks, habits, notes, events and goals, plus
-list/read access to categories, budgets, debts, subscriptions, assets and
+list/read access to categories, debts, subscriptions, assets and
 net-worth.
+
+> Removed by change 2026-09-23-simplify-finance-productivity (S2):
+> `list_budgets` is unregistered (`GET /api/budgets` no longer exists).
 
 ## Prereqs
 
@@ -133,8 +136,11 @@ Events: `list_events`, `get_event`, `create_event`, `update_event`,
 Notes: `list_notes`, `get_note`, `create_note`, `update_note`,
 `delete_note`, `search_notes`.
 
-Catalogs: `list_categories`, `list_budgets`, `list_debts`,
+Catalogs: `list_categories`, `list_debts`,
 `list_subscriptions`, `list_assets`, `get_net_worth`.
+
+> Removed by change 2026-09-23-simplify-finance-productivity (S2):
+> `list_budgets` (budgets eradicated end to end; see `objetivo.md`).
 
 ## Typecheck
 

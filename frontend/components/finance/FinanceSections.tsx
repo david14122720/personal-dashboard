@@ -4,7 +4,6 @@ import { formatMoney } from "@/lib/api/money";
 import { ledDotClass } from "@/lib/dashboard/transforms";
 import type {
   AccountCardView,
-  BudgetView,
   CompactMoneyRow,
   SavingsView,
 } from "@/lib/finance/finance";
@@ -12,8 +11,8 @@ import type {
 /**
  * Pure presentational sections for the finance screens. Containers own all
  * SWR reads and money coercion; these components receive numbers only and
- * reuse the shared LED mapping (`ledDotClass`) for budget `status`
- * (ok|warn|over) and account `alert_level` (ok|warn|high) enums.
+ * reuse the shared LED mapping (`ledDotClass`) for account `alert_level`
+ * (ok|warn|high) enums.
  */
 
 export function SectionShell({
@@ -59,40 +58,6 @@ function ProgressBar({ pct, status, label }: { pct: number; status: string; labe
     >
       <div className={`h-full rounded-full ${ledDotClass(status)}`} style={{ width: `${pct * 100}%` }} />
     </div>
-  );
-}
-
-export function BudgetsList({ budgets, locale }: { budgets: BudgetView[]; locale: string }) {
-  if (budgets.length === 0) {
-    return <EmptyState title={t("finance.noBudgets")} hint={t("finance.noBudgetsHint")} />;
-  }
-  return (
-    <ul className="flex flex-col gap-3">
-      {budgets.map((budget) => (
-        <li key={budget.id} className="rounded-lg border border-hull px-4 py-3">
-          <div className="flex items-start gap-2.5">
-            <LedDot label={budget.label} status={budget.status} />
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <p className="truncate text-sm font-medium">{budget.label}</p>
-                <p className="font-mono text-sm tabular-nums">
-                  {formatMoney(budget.spent, { locale, currency: budget.currency })}
-                  <span className="text-instrument/50">
-                    {" "}· {t("finance.budgetRemaining", { amount: formatMoney(budget.remaining, { locale, currency: budget.currency }) })}
-                  </span>
-                </p>
-              </div>
-              <div className="mt-2">
-                <ProgressBar pct={budget.pct} status={budget.status} label={t("finance.budgetSpendLabel", { label: budget.label })} />
-              </div>
-              <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
-                {t("finance.spentDetail", { n: Math.round(budget.pct * 100), status: budget.status })}
-              </p>
-            </div>
-          </div>
-        </li>
-      ))}
-    </ul>
   );
 }
 

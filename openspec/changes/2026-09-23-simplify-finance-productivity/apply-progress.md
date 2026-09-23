@@ -354,3 +354,161 @@ transfer removal only (no budgets/transactions/MCP/productivity change):
   `openspec/specs/frontend-i18n/spec.md`, `objetivo.md`,
   `openspec/changes/.../tasks.md` (10 S1 boxes checked; parent boxes
   byte-preserved), this file.
+
+---
+
+# Apply progress — S2 Budgets removal
+
+- change: `2026-09-23-simplify-finance-productivity`
+- slice: S2 only (budgets eradication: backend + frontend + MCP `list_budgets` + specs + objetivo block).
+  Untouched per boundary: transactions/flow artefacts, migration 0011, PATCH balance,
+  transaction MCP tools, productivity files. `analysis.tplBudget` stays for S3.
+- date: 2026-09-23
+- status: S2 complete — all 10 S2 tasks (`S2-WU1` 5/5, `S2-WU2` 5/5) marked `- [x]`
+  in `tasks.md`.
+- delivery: auto-chain / stacked-to-main. No commit (parent owns commits).
+
+## Completed (WU1 — Frontend + dashboard)
+
+- Deleted `frontend/components/finance/BudgetForm.tsx` and
+  `frontend/components/ui/BudgetBars.tsx`; removed `BudgetsList` (+ `BudgetView`
+  import, doc comment) from `FinanceSections.tsx`.
+- `FinanceScreens.tsx`: removed `useBudgets`, `toBudgetViews`,
+  `BudgetWireWithThresholds`, `toBudgetFormValue`, the Presupuestos `SectionShell`,
+  the `manageBudgets` S5 block, and the `budgets` prop threading (S5Sections
+  signature + call site). `AnalysisSection` keeps its `budgets` prop fed with
+  `[]` (S3 deletes the component with `toInsights`); accounts shell widened to
+  `xl:col-span-7` so no grid hole remains.
+- `DashboardHome.tsx`: removed `useBudgets`/`budgetRows`/`budgetLed`/dynamic
+  `BudgetBars`/budgets strip item/budgets `WidgetShell` (flow/category/month
+  blocks untouched for S3). `dashboard.ts`: deleted `BudgetWire` + `useBudgets`.
+  `lib/finance/finance.ts`: deleted `BudgetView`/`BudgetWireLike`/`toBudgetViews`
+  (`BudgetInsightLike` stays for S3's `toInsights`). `transforms.ts`: deleted
+  `worstBudgetStatus` (kept `worstAlertLevel`; LED-enum doc narrowed to
+  `alert_level`). `lib/api/finance.ts`: deleted `CreateBudgetInput`,
+  `createBudget`, `patchBudget`, `deleteBudget`.
+- Deleted all 18 S2 i18n keys (11 `finance.*`: budgets, budgetsHint, noBudgets,
+  noBudgetsHint, manageBudgets, confirmDeleteBudget, budgetRemaining, spentDetail,
+  budgetSpendLabel, warnThreshold, overThreshold; 7 `dashboard.*`: budgets,
+  noBudgets, onTrack, budgetsHint, loadingBudgets, noBudgetsData, noBudgetsHint).
+  Orphan sweep: exact-key grep returns zero hits outside `es.ts` (remaining
+  `warn/overThreshold` hits were the doomed jd-round1 budget tests, since
+  deleted). `analysis.tplBudget` kept for S3. `tsc` clean.
+- Tests: removed budget MSW handlers/cases in `finance.test.tsx` (LED test
+  narrowed to card-only, empty-state/error tests repointed to accounts, S5
+  budget mutator + BudgetForm cases deleted, PR-3 test renamed to Savings);
+  deleted JD-THRESH budget describes + budget half of the triangulate test in
+  `jd-round1.test.tsx` (JD-ASSET/JD-INSIGHT kept); removed `useBudgets` mock +
+  `budgetsHint` assertion in `DashboardHome.test.tsx` and added the stale-layout
+  test (persisted `dashboard_layout` with removed id `budgets` renders no block,
+  no toggle, home stays alive); deleted `worstBudgetStatus` import + case in
+  `transforms.test.ts`; deleted `toBudgetViews` import + 2 cases in
+  `lib/finance/finance.test.ts` (toInsights `budgets` inputs kept for S3);
+  removed the Presupuestos assertion in `e2e/sections.spec.ts`.
+  `dashboard.test.ts` and `i18n.test.ts` had no budget assertions (verified by
+  grep — no-ops).
+
+## Completed (WU2 — Backend, MCP, specs)
+
+- Deleted `backend/src/routes/budgets.rs`; removed `pub mod budgets` from
+  `routes/mod.rs`; deleted the three `/budgets` route blocks in `main.rs` and
+  rewrote the `api_routes` doc comment as the S2 removal record. Wiring tests
+  repointed to surviving routes (`/api/accounts`, `/accounts`,
+  `GET /api/debts/{id}` + `DELETE /api/savings-goals/{id}` replacing the two
+  budget entries; S3a rewrites them again).
+- Deleted `list_budgets` from `mcp-dashboard/src/tools.ts`; updated
+  `mcp-dashboard/README.md:6,136` plus a "removed by this change (S2)" note in
+  both places. `npm run typecheck` clean.
+- Deleted canonical `openspec/specs/finance-budgets/`; rewrote the Telemetry
+  Strip requirement (card LED 1:1, explicit no-budget-LED rule + scenario) and
+  replaced the "Existing Charts Intact" clause with the S2-scoped removed-visual
+  inventory (S2 removals by name; flow artefacts explicitly retained until S3)
+  in `openspec/specs/frontend-dashboard/spec.md`. `dashboard-widgets` had zero
+  budget references (verified) and `frontend-i18n` already covers the budget
+  family in "Removed Feature Key Hygiene" (S1) — both reported as no-ops, no
+  invented edits.
+- Edited `objetivo.md` "Presupuestos" block only: mandate replaced by the
+  no-budgets rule + dated (2026-09-23) reversal note (unused, maintenance cost,
+  no observable without the ledger, no backup).
+
+## Required dangling-reference fixes (beyond the allow-list, still S2-only)
+
+Same precedent as S1 (zero-dangling-references invariant; no
+budgets/transactions/MCP/productivity scope change):
+
+1. `frontend/components/ui/charts.test.tsx`: deleted the 3 `BudgetBars` cases +
+   import and dropped `budgetBarFill` from the token test (module deleted).
+2. `frontend/components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx`:
+   removed the `useBudgets` mock entry (hook deleted).
+3. `frontend/components/ui/TelemetryStrip.tsx`: doc comment narrowed to the
+   surviving `alert_level` enum (generic component, comment-only).
+4. `frontend/components/ui/TelemetryStrip.test.tsx`: renamed the generic
+   fixture id `budgets` → `debts` (semantics unchanged, sweep-clean).
+
+## Verification (exact commands, observed results)
+
+- `cd backend && cargo test`: lib 398 passed / 0 failed; integration 3 + 10 + 1
+  passed / 0 failed. (Lib count fell from S1's 422: deleted `budgets.rs` test
+  module.)
+- `cd frontend && pnpm test`: 340 passed / 0 failed of 340 across 33 files
+  (second run; first run showed 339/340 with the known full-suite timeout flake
+  in the PR-3 FIX A test — passes 19/19 in isolation and green on re-run, same
+  profile recorded in S1/S4 progress entries).
+- `pnpm tsc --noEmit`: clean, exit 0 (two self-inflicted double-comma syntax
+  errors in `es.ts` from key deletion were fixed before the final run).
+- `npm run typecheck` (mcp-dashboard): clean.
+- `grep -rni "budget" backend/src frontend/components frontend/lib frontend/e2e mcp-dashboard/src`:
+  only (a) S2 removal doc comments (`main.rs`, `validation.rs`,
+  `subscriptions.rs`, `TelemetryStrip.tsx`), (b) S3-owned `toInsights` /
+  `BudgetInsightLike` / `AnalysisSection` / `tplBudget` consumers, (c) the new
+  stale-layout test. No live route, hook, component, key or tool.
+- Canonical `frontend-dashboard` spec: budget mentions are now the removal
+  inventory + no-LED rule; the "MUST remain intact" clause no longer protects
+  `BudgetBars`/`BudgetsList`.
+
+## Deviations from design/task text
+
+- Task lists `routes/mod.rs:20` / `main.rs:87-100` line numbers from an older
+  revision; the edits hit the same symbols at their current positions.
+- `dashboard.test.ts` / `i18n.test.ts` had no budget assertions to delete
+  (verified by grep) — reported as no-ops rather than invented edits.
+- `dashboard-widgets` canonical spec had no budget references; `frontend-i18n`
+  canonical already covers the budget family — both syncs are no-ops. The
+  S2-scoped `frontend-dashboard` inventory explicitly retains flow artefacts
+  until S3 instead of copying the delta's full S2+S3 inventory (which would
+  state false removals while S3 code is still mounted).
+- Stale-layout test uses removed id `budgets` (not a former layout widget id):
+  it proves the generic ignore-unknown-id path (`isWidgetVisible` never matches)
+  produces no block and no request.
+
+## Remaining / next
+
+- S2: none. Acceptance criteria met (both suites green; no `/api/budgets` path;
+  no budget LED/chip/bar or `worstBudgetStatus` consumer; `list_budgets`
+  unregistered + README updated; `objetivo.md` block reversed with date and
+  reason; stale layout ids ignored).
+- Rollback if needed: `git revert` WU2 then WU1 (no schema change; budget rows
+  still exist until 0011).
+- Next recommended: S3a (ledger removal + manual balance + migration 0011 +
+  MCP). Parent-owned: bounded review for S2, slice PR, lifecycle tasks L1–L3
+  (untouched, still `sdd-owner: parent`).
+
+## Files changed (S2)
+
+- Deleted: `backend/src/routes/budgets.rs`,
+  `frontend/components/finance/BudgetForm.tsx`,
+  `frontend/components/ui/BudgetBars.tsx`, `openspec/specs/finance-budgets/` (dir)
+- Edited: `backend/src/routes/mod.rs`, `backend/src/main.rs`,
+  `frontend/components/finance/FinanceSections.tsx`,
+  `frontend/components/containers/{FinanceScreens,DashboardHome}.tsx`,
+  `frontend/components/containers/DashboardHome.test.tsx`,
+  `frontend/components/finance/{finance.test.tsx,jd-round1.test.tsx}`,
+  `frontend/components/ui/{charts.test.tsx,TelemetryStrip.tsx,TelemetryStrip.test.tsx}`,
+  `frontend/components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx`,
+  `frontend/lib/api/{dashboard,finance}.ts`, `frontend/lib/finance/{finance.ts,finance.test.ts}`,
+  `frontend/lib/dashboard/{transforms.ts,transforms.test.ts}`,
+  `frontend/lib/i18n/es.ts`, `frontend/e2e/sections.spec.ts`,
+  `mcp-dashboard/{src/tools.ts,README.md}`, `objetivo.md`,
+  `openspec/specs/frontend-dashboard/spec.md`,
+  `openspec/changes/.../tasks.md` (10 S2 boxes checked; parent boxes
+  byte-preserved), this file.

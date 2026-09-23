@@ -34,19 +34,6 @@ export interface CategoryTotalWire {
   total: string | number;
 }
 
-export interface BudgetWire {
-  id: string;
-  category_id: string;
-  amount: string | number;
-  currency: string;
-  period_start: string;
-  period_end: string;
-  spent: string | number;
-  remaining: string | number;
-  pct: number;
-  status: string;
-}
-
 export interface HabitTodayWire {
   habit_id: string;
   name: string;
@@ -135,10 +122,6 @@ export function useSpendByCategory(from: string | null, to: string | null, type:
       ),
     config,
   );
-}
-
-export function useBudgets() {
-  return useSWR<BudgetWire[]>("dashboard/budgets", () => apiGet<BudgetWire[]>("/budgets"), config);
 }
 
 /** SWR key for the dashboard-home habits widget; toggles revalidate it. */

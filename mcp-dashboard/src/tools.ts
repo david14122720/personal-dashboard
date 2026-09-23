@@ -985,15 +985,6 @@ const entries: ToolEntry[] = [
   },
   {
     def: {
-      name: "list_budgets",
-      description: "GET /api/budgets. Collection-with-status shape.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    schema: EmptySchema,
-    run: async (_args, token) => fmt(await apiGet("/budgets", undefined, token)),
-  },
-  {
-    def: {
       name: "list_debts",
       description: "GET /api/debts.",
       inputSchema: { type: "object", properties: {} },
