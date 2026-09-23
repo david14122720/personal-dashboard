@@ -2,12 +2,17 @@
 
 MCP HTTP server for the personal-dashboard Axum backend, using the
 Streamable HTTP transport from `@modelcontextprotocol/sdk`. Exposes login plus
-CRUD for accounts, transactions, tasks, habits, notes, events and goals, plus
+CRUD for accounts, tasks, habits, notes, events and goals, plus
 list/read access to categories, debts, subscriptions, assets and
 net-worth.
 
 > Removed by change 2026-09-23-simplify-finance-productivity (S2):
 > `list_budgets` is unregistered (`GET /api/budgets` no longer exists).
+> Removed by the same change (S3a): `list_transactions`,
+> `create_transaction`, `update_transaction`, `delete_transaction`,
+> `stats_transactions_by_category`, `stats_transactions_monthly_flow`
+> (ledger eradicated end to end, migration 0011; see `objetivo.md`).
+> `update_account` accepts the manual `balance` decimal string.
 
 ## Prereqs
 
@@ -116,12 +121,9 @@ is set server-side).
 
 Auth: `login` (returns the token, does not cache it).
 
-Accounts: `list_accounts`, `get_account`, `create_account`, `update_account`,
+Accounts: `list_accounts`, `get_account`, `create_account`, `update_account`
+(balance/notes/color/icon/is_archived; balance is user-owned manual data),
 `delete_account`.
-
-Transactions: `list_transactions`, `create_transaction`, `update_transaction`,
-`delete_transaction`, `stats_transactions_by_category`,
-`stats_transactions_monthly_flow`.
 
 Tasks: `list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`.
 
@@ -141,6 +143,11 @@ Catalogs: `list_categories`, `list_debts`,
 
 > Removed by change 2026-09-23-simplify-finance-productivity (S2):
 > `list_budgets` (budgets eradicated end to end; see `objetivo.md`).
+> Removed by the same change (S3a): `list_transactions`,
+> `create_transaction`, `update_transaction`, `delete_transaction`,
+> `stats_transactions_by_category`, `stats_transactions_monthly_flow`
+> (ledger eradicated end to end, migration 0011; cached clients receive an
+> unknown-tool error, accepted for this single-user deployment).
 
 ## Typecheck
 

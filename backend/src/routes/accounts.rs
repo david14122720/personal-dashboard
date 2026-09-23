@@ -11,7 +11,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{
     auth::helper::require_user_id,
     error::AppError,
-    finance::money::parse_money_amount,
+    finance::money::{parse_balance_amount, parse_money_amount},
     state::AppState,
 };
 
@@ -42,10 +42,6 @@ const MAX_ICON_LEN: usize = 64;
 const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, type, currency, credit_limit, statement_day, payment_due_day, notes, color, icon) VALUES ($1,$2,$3::account_type,$4,$5,$6,$7,$8,$9,$10) RETURNING id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at";
 const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
 const GET_ACCOUNT_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
-/// Statement-balance aggregate: linked expenses on or before the billing
-/// cutoff (served by `idx_tx_card_user_date`; a second query by design, so
-/// the row stays within the sqlx 16-column cap and LIST avoids N+1).
-const STATEMENT_BALANCE_SQL: &str = "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE credit_card_account_id=$1 AND user_id=$2 AND type='expense' AND occurred_on <= $3";
 
 /// Account row: 11 legacy columns + 3 card columns = 14 (sqlx 0.8 FromRow
 /// tuple cap is 16). Derived card metrics (`used/available/usage/alert`)
@@ -90,6 +86,10 @@ pub struct CreateAccountRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatchAccountRequest {
+    /// Manual balance as a decimal string (e.g. `"980000.00"`,
+    /// `"-750.50"`): signed, `scale <= 2`, `|x| < 10^6`, else 422.
+    /// User-asserted data — no trigger or aggregate rewrites it.
+    pub balance: Option<String>,
     pub notes: Option<String>,
     pub color: Option<String>,
     pub icon: Option<String>,
@@ -119,9 +119,10 @@ pub struct AccountResponse {
     pub available_balance: Option<Decimal>,
     pub usage_pct: Option<Decimal>,
     pub alert_level: Option<String>,
-    /// Cycle-to-date debt: negated `SUM` of linked expenses with
-    /// `occurred_on <= cutoff` (`None` for non-cards and for list/patch
-    /// reads, which skip the second query to avoid N+1).
+    /// `statement_balance` is always `None`: the ledger that fed the
+    /// cycle-to-date figure was removed (migration 0011), so no statement
+    /// figure is computed or returned. Card debt is the manual `balance`
+    /// plus the derived metrics above; cycle days stay editable metadata.
     pub statement_balance: Option<Decimal>,
     pub notes: Option<String>,
     pub color: Option<String>,
@@ -204,7 +205,7 @@ impl
             available_balance,
             usage_pct,
             alert_level,
-            // Populated by `get_account_handler` only (second query).
+            // Always `None` since S3a: the ledger is gone (migration 0011).
             statement_balance: None,
             notes,
             color,
@@ -302,69 +303,6 @@ pub fn validate_card_fields(
     }
 }
 
-/// Days in a calendar month (proleptic Gregorian via `chrono`).
-fn days_in_month(year: i32, month: u32) -> i64 {
-    let first_of_next = if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1)
-    } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1)
-    };
-    first_of_next
-        .and_then(|d| d.pred_opt())
-        .map(|d| d.day() as i64)
-        .unwrap_or(28)
-}
-
-/// Clamp a billing-cycle day to the last day of `(year, month)`: a
-/// `statement_day` of 31 in February means the 28th (29th in leap years).
-/// Pure Rust by design — SQL date/bigint arithmetic needs `::int` casts
-/// and trigger WHEN clauses reject OLD/NEW refs, so the cutoff stays a bind
-/// param, never SQL date math.
-pub fn clamp_day(day: i16, year: i32, month: u32) -> i16 {
-    let max = days_in_month(year, month);
-    (day as i64).min(max) as i16
-}
-
-/// Most-recent statement date at or before `today`, derived from the stored
-/// day-of-month and clamped to short months (a 31st in February means the
-/// 28th/29th). Pure Rust: the cutoff travels as a bind param, never as SQL
-/// date math.
-pub fn statement_cutoff(statement_day: i16, today: NaiveDate) -> NaiveDate {
-    let this_month = NaiveDate::from_ymd_opt(
-        today.year(),
-        today.month(),
-        clamp_day(statement_day, today.year(), today.month()) as u32,
-    )
-    .expect("clamped statement day is a valid date");
-    if this_month <= today {
-        return this_month;
-    }
-    let (year, month) = if today.month() == 1 {
-        (today.year() - 1, 12)
-    } else {
-        (today.year(), today.month() - 1)
-    };
-    NaiveDate::from_ymd_opt(year, month, clamp_day(statement_day, year, month) as u32)
-        .expect("clamped statement day is a valid date")
-}
-
-/// Statement debt for a card: negated cycle-to-date spend (`-SUM`), so it
-/// reads as debt like the cached `balance` (e.g. `-150.00`).
-pub async fn statement_balance_for_card(
-    pool: &sqlx::PgPool,
-    card_id: Uuid,
-    user_id: Uuid,
-    cutoff: NaiveDate,
-) -> Result<Decimal, AppError> {
-    let spent: Decimal = sqlx::query_scalar(STATEMENT_BALANCE_SQL)
-        .bind(card_id)
-        .bind(user_id)
-        .bind(cutoff)
-        .fetch_one(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    Ok(-spent)
-}
 /// Derive card health metrics from the cached `balance` (negative = debt)
 /// and the `credit_limit`. Returns
 /// `(used_balance, available_balance, usage_pct, alert_level)` where
@@ -396,8 +334,13 @@ pub fn compute_card_metrics(
     (used, available, usage, alert)
 }
 
-/// Validate PATCH metadata lengths (notes/color/icon caps).
+/// Validate PATCH body: metadata lengths plus the optional manual
+/// `balance` (signed, `scale <= 2`, `|x| < 10^6`, else 422 via
+/// [`parse_balance_amount`]).
 pub fn validate_account_patch(body: &PatchAccountRequest) -> Result<(), AppError> {
+    if let Some(raw) = body.balance.as_deref() {
+        parse_balance_amount(raw)?;
+    }
     validate_metadata_lengths(
         body.notes.as_deref(),
         body.color.as_deref(),
@@ -516,17 +459,9 @@ pub async fn get_account_handler(
     let Some(row) = row else {
         return Err(AppError::NotFound);
     };
-    let mut response = AccountResponse::from(row);
-    // Second, index-backed query for cards only (list/patch skip it: N+1).
-    if response.credit_limit.is_some() {
-        if let Some(day) = response.statement_day {
-            let cutoff = statement_cutoff(day, Utc::now().date_naive());
-            response.statement_balance = Some(
-                statement_balance_for_card(&state.pool, response.id, user_id, cutoff).await?,
-            );
-        }
-    }
-    Ok(Json(response))
+    // S3a: `statement_balance` is always `None` — the ledger is gone
+    // (migration 0011), so no second query runs here.
+    Ok(Json(AccountResponse::from(row)))
 }
 
 pub async fn patch_account_handler(
@@ -537,15 +472,26 @@ pub async fn patch_account_handler(
 ) -> Result<Json<AccountResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     validate_account_patch(&body)?;
-    if body.notes.is_none()
+    if body.balance.is_none()
+        && body.notes.is_none()
         && body.color.is_none()
         && body.icon.is_none()
         && body.is_archived.is_none()
     {
         return Err(AppError::Validation("no updatable fields provided".into()));
     }
+    // Parse once for validation (already done) and bind the decimal value.
+    let balance = body
+        .balance
+        .as_deref()
+        .map(parse_balance_amount)
+        .transpose()?;
     let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
         sqlx::QueryBuilder::new("UPDATE accounts SET updated_at = now()");
+    if let Some(balance) = balance {
+        qb.push(", balance = ");
+        qb.push_bind(balance);
+    }
     if let Some(notes) = &body.notes {
         qb.push(", notes = ");
         qb.push_bind(notes);
@@ -576,19 +522,15 @@ pub async fn patch_account_handler(
         .ok_or(AppError::NotFound)
 }
 
-// -- S1 (captura manual): borrado fisico de cuentas sin movimientos --
+// -- S3a (ledger removal): physical delete with no movement guard --
 
 const DELETE_ACCOUNT_SQL: &str = "DELETE FROM accounts WHERE id=$1 AND user_id=$2";
 const ACCOUNT_OWNERSHIP_CHECK_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
-/// Movements that block a physical delete: primary legs plus card-linked
-/// purchases. Scoped by `user_id` so foreign activity never blocks.
-const ACCOUNT_MOVEMENT_COUNT_SQL: &str = "SELECT COUNT(*) FROM transactions WHERE user_id=$1 AND (account_id=$2 OR credit_card_account_id=$2)";
 
 fn map_account_delete_err(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db) = &e {
-        // `account_id` is ON DELETE RESTRICT: a movement created between the
-        // pre-check and the DELETE surfaces here. Map it to the same clear
-        // 409 as the pre-check instead of leaking a 500.
+        // Dead-man's switch for a future blocking `RESTRICT` reference:
+        // map it to the same clear 409 instead of leaking a 500.
         if db.code().as_deref() == Some("23503") {
             return AppError::Conflict(
                 "account has movements and cannot be deleted".into(),
@@ -598,10 +540,11 @@ fn map_account_delete_err(e: sqlx::Error) -> AppError {
     AppError::Internal
 }
 
-/// Delete an owned account (204). Physical delete only when the account has
-/// no movements; otherwise 409 with a clear message (mirrors the
-/// debts/savings physical-delete convention: owned id missing -> 404, never
-/// leaking foreign existence). Only COP is used; no conversion applies.
+/// Delete an owned account (204). No surviving table holds a blocking
+/// reference to `accounts(id)` (`assets.account_id` is `ON DELETE SET
+/// NULL`; debts, savings and subscriptions carry no `account_id`), so the
+/// delete always succeeds for an owned id. Foreign/missing ids resolve to
+/// 404 without leaking existence. Only COP is used; no conversion applies.
 pub async fn delete_account_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -616,17 +559,6 @@ pub async fn delete_account_handler(
         .map_err(|_| AppError::Internal)?;
     if owned.is_none() {
         return Err(AppError::NotFound);
-    }
-    let movements: i64 = sqlx::query_scalar(ACCOUNT_MOVEMENT_COUNT_SQL)
-        .bind(user_id)
-        .bind(id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    if movements > 0 {
-        return Err(AppError::Conflict(
-            "account has movements and cannot be deleted".into(),
-        ));
     }
     let res = sqlx::query(DELETE_ACCOUNT_SQL)
         .bind(id)
@@ -696,28 +628,62 @@ mod tests {
     }
 
     #[test]
-    fn patch_rejects_core_field_edits_as_422() {
-        // `deny_unknown_fields` turns amount/name/type edits into 422 at the
-        // JSON boundary (axum maps data errors to 422).
-        for payload in [
-            json!({"balance": "5.00"}),
-            json!({"name": "Hacked"}),
-            json!({"type": "bank"}),
-        ] {
-            assert!(
-                serde_json::from_value::<PatchAccountRequest>(payload).is_err(),
-                "core-field edit must fail deserialization"
-            );
-        }
+    fn patch_accepts_balance_but_rejects_structural_edits_as_422() {
+        // `balance` is an accepted PATCH field (S3a manual balance); the
+        // structural fields stay rejected by `deny_unknown_fields` (422 at
+        // the JSON boundary; axum maps data errors to 422).
+        let ok: PatchAccountRequest =
+            serde_json::from_value(json!({"balance": "-750.50"})).unwrap();
+        assert_eq!(ok.balance.as_deref(), Some("-750.50"));
         let ok: PatchAccountRequest =
             serde_json::from_value(json!({"notes": "hi", "is_archived": true})).unwrap();
         assert_eq!(ok.notes.as_deref(), Some("hi"));
         assert_eq!(ok.is_archived, Some(true));
+        for payload in [
+            json!({"name": "Hacked"}),
+            json!({"type": "bank"}),
+            json!({"credit_limit": "5.00"}),
+            json!({"statement_day": 15}),
+            json!({"payment_due_day": 25}),
+        ] {
+            assert!(
+                serde_json::from_value::<PatchAccountRequest>(payload).is_err(),
+                "structural edit must fail deserialization"
+            );
+        }
+        // Money travels as a string: a JSON number never reaches the parser.
+        assert!(
+            serde_json::from_value::<PatchAccountRequest>(json!({"balance": 5.00})).is_err(),
+            "numeric balance must fail deserialization"
+        );
+    }
+
+    #[test]
+    fn patch_balance_validation_rejects_bad_values_as_422() {
+        for raw in ["1000000.00", "10.005", "abc", ""] {
+            let body = PatchAccountRequest {
+                balance: Some(raw.to_string()),
+                notes: None,
+                color: None,
+                icon: None,
+                is_archived: None,
+            };
+            assert_422(validate_account_patch(&body).unwrap_err());
+        }
+        let body = PatchAccountRequest {
+            balance: Some("-750.50".to_string()),
+            notes: None,
+            color: None,
+            icon: None,
+            is_archived: None,
+        };
+        validate_account_patch(&body).expect("valid balance passes");
     }
 
     #[test]
     fn patch_rejects_oversized_metadata_as_422() {
         let body = PatchAccountRequest {
+            balance: None,
             notes: Some("n".repeat(2001)),
             color: None,
             icon: None,
@@ -772,24 +738,22 @@ mod tests {
     }
 
     #[test]
-    fn delete_sql_scopes_and_blocks_movements() {
-        for sql in [
-            DELETE_ACCOUNT_SQL,
-            ACCOUNT_OWNERSHIP_CHECK_SQL,
-            ACCOUNT_MOVEMENT_COUNT_SQL,
-        ] {
+    fn account_delete_sql_never_references_removed_tables() {
+        for sql in [DELETE_ACCOUNT_SQL, ACCOUNT_OWNERSHIP_CHECK_SQL] {
             assert!(
                 sql.contains("user_id"),
                 "account delete SQL must scope by user_id, got: {sql}"
             );
+            for token in ["transactions", "budgets"] {
+                assert!(
+                    !sql.contains(token),
+                    "account delete SQL must never reference removed table `{token}`, got: {sql}"
+                );
+            }
         }
         assert!(
             DELETE_ACCOUNT_SQL.contains("id=$1 AND user_id=$2"),
             "delete must scope id+user_id, got: {DELETE_ACCOUNT_SQL}"
-        );
-        assert!(
-            ACCOUNT_MOVEMENT_COUNT_SQL.contains("credit_card_account_id"),
-            "movement guard must cover card-linked purchases, got: {ACCOUNT_MOVEMENT_COUNT_SQL}"
         );
     }
 
@@ -952,14 +916,6 @@ mod tests {
     }
 
     #[test]
-    fn clamp_day_clamps_to_month_end() {
-        assert_eq!(clamp_day(31, 2026, 2), 28);
-        assert_eq!(clamp_day(31, 2024, 2), 29);
-        assert_eq!(clamp_day(31, 2026, 4), 30);
-        assert_eq!(clamp_day(31, 2026, 1), 31);
-        assert_eq!(clamp_day(15, 2026, 2), 15);
-    }
-
     #[test]
     fn card_metrics_compute_used_available_usage() {
         let (used, available, usage, alert) =
@@ -1109,62 +1065,13 @@ mod tests {
         cleanup_user(&pool, user_id).await;
     }
 
-    // -- Slice 4 (p5-credit-cards): statement cutoff aggregate --
-
-    #[test]
-    fn statement_cutoff_uses_this_month_once_reached() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 20).unwrap();
-        assert_eq!(
-            statement_cutoff(15, today),
-            NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()
-        );
-        // Statement day itself counts as reached.
-        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
-        assert_eq!(
-            statement_cutoff(15, today),
-            NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()
-        );
-    }
-
-    #[test]
-    fn statement_cutoff_falls_back_to_previous_month() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
-        assert_eq!(
-            statement_cutoff(15, today),
-            NaiveDate::from_ymd_opt(2026, 8, 15).unwrap()
-        );
-    }
-
-    #[test]
-    fn statement_cutoff_clamps_to_month_end() {
-        // 31st in February (2026 is not a leap year): this-month candidate
-        // clamps to the 28th and is reached on the 28th itself.
-        let today = NaiveDate::from_ymd_opt(2026, 2, 28).unwrap();
-        assert_eq!(
-            statement_cutoff(31, today),
-            NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
-        );
-        // Earlier in February: previous month keeps its full 31 days.
-        let today = NaiveDate::from_ymd_opt(2026, 2, 10).unwrap();
-        assert_eq!(
-            statement_cutoff(31, today),
-            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap()
-        );
-    }
-
-    #[test]
-    fn statement_cutoff_crosses_year_boundary() {
-        let today = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
-        assert_eq!(
-            statement_cutoff(20, today),
-            NaiveDate::from_ymd_opt(2025, 12, 20).unwrap()
-        );
-    }
+    // -- S3a (ledger removal): statement helpers are gone; the figure is
+    // always `None` and card metrics derive from the manual balance --
 
     #[tokio::test]
-    async fn get_card_reports_statement_vs_current_balance() {
+    async fn get_card_statement_balance_is_always_none() {
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP get_card_reports_statement_vs_current_balance: no DATABASE_URL");
+            eprintln!("SKIP get_card_statement_balance_is_always_none: no DATABASE_URL");
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
@@ -1172,10 +1079,8 @@ mod tests {
             create_account_handler(State(state.clone()), headers.clone(), card_body("Visa", Some("5000.00")))
                 .await
                 .expect("valid card create is 201");
-        // Hermetic fixture (S0): no `transactions` seed. The balance is
-        // arranged directly on the surviving table; with no linked expenses
-        // the statement aggregate over the empty set is zero. S3a retires
-        // this test together with STATEMENT_BALANCE_SQL.
+        // No second query runs: the balance is arranged directly on the
+        // surviving table and the statement figure stays `None`.
         sqlx::query("UPDATE accounts SET balance = -350.00 WHERE id=$1")
             .bind(card.id)
             .execute(&pool)
@@ -1185,7 +1090,9 @@ mod tests {
             .await
             .expect("get own card is 200");
         assert_eq!(got.balance, Decimal::new(-35000, 2));
-        assert_eq!(got.statement_balance, Some(Decimal::ZERO));
+        assert_eq!(got.statement_balance, None);
+        // Derived metrics still come from the manual balance.
+        assert_eq!(got.used_balance, Some(Decimal::new(35000, 2)));
         cleanup_user(&pool, user_id).await;
     }
 
@@ -1218,12 +1125,15 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn delete_account_with_movements_is_409() {
+        async fn delete_account_with_live_finance_rows_is_204() {
             let Some(pool) = test_pool() else {
-                eprintln!("SKIP delete_account_with_movements_is_409: no DATABASE_URL");
+                eprintln!("SKIP delete_account_with_live_finance_rows_is_204: no DATABASE_URL");
                 return;
             };
             let (state, headers, user_id) = db_state(&pool).await;
+            // S3a: no surviving table blocks the delete. Seed live finance
+            // rows for the same user (debt + savings goal + subscription)
+            // and prove the owned account still deletes with 204.
             let account_id: Uuid = sqlx::query_scalar(
                 "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
             )
@@ -1232,29 +1142,161 @@ mod tests {
             .await
             .expect("seed account");
             sqlx::query(
-                "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on) VALUES ($1,$2,'expense',10,'2026-09-01')",
+                "INSERT INTO debts (user_id, name, creditor, original_amount, pending_amount, currency, start_date) VALUES ($1,'Loan','Bank',500,500,'COP','2026-01-15')",
             )
             .bind(user_id)
-            .bind(account_id)
             .execute(&pool)
             .await
-            .expect("seed movement");
-            let err = delete_account_handler(State(state.clone()), headers.clone(), Path(account_id))
+            .expect("seed debt");
+            sqlx::query(
+                "INSERT INTO savings_goals (user_id, name, target_amount) VALUES ($1,'Trip',1000)",
+            )
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed savings goal");
+            sqlx::query(
+                "INSERT INTO subscriptions (user_id, name, price, currency, frequency) VALUES ($1,'Music',999,'COP','monthly')",
+            )
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed subscription");
+            let status = delete_account_handler(State(state.clone()), headers.clone(), Path(account_id))
                 .await
-                .expect_err("account with movements must be 409");
-            assert_eq!(
-                err.into_response().status(),
-                axum::http::StatusCode::CONFLICT
-            );
-            let still: Option<Uuid> =
-                sqlx::query_scalar("SELECT id FROM accounts WHERE id=$1 AND user_id=$2")
+                .expect("delete with live finance rows is 204");
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let gone: Option<Uuid> =
+                sqlx::query_scalar("SELECT id FROM accounts WHERE id=$1")
                     .bind(account_id)
-                    .bind(user_id)
                     .fetch_optional(&pool)
                     .await
-                    .expect("account must survive blocked delete");
-            assert!(still.is_some());
+                    .expect("probe delete");
+            assert!(gone.is_none());
             cleanup_user(&pool, user_id).await;
+        }
+
+        #[tokio::test]
+        async fn patch_balance_round_trip() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP patch_balance_round_trip: no DATABASE_URL");
+                return;
+            };
+            let (state, headers, user_id) = db_state(&pool).await;
+            let account_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Cash','cash',-500) RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed account");
+            let body: Json<PatchAccountRequest> = Json(
+                serde_json::from_value(json!({"balance": "-750.50"}))
+                    .expect("valid balance body"),
+            );
+            let patched =
+                patch_account_handler(State(state.clone()), headers.clone(), Path(account_id), body)
+                    .await
+                    .expect("balance PATCH is 200")
+                    .0;
+            assert_eq!(
+                patched.balance,
+                Decimal::new(-75050, 2),
+                "response must serialize the stored balance"
+            );
+            let v = serde_json::to_value(&patched).unwrap();
+            assert_eq!(v["balance"], serde_json::Value::String("-750.50".into()));
+            let got = get_account_handler(State(state.clone()), headers, Path(account_id))
+                .await
+                .expect("get after PATCH is 200");
+            assert_eq!(got.balance, Decimal::new(-75050, 2));
+            cleanup_user(&pool, user_id).await;
+        }
+
+        #[tokio::test]
+        async fn patch_balance_bad_values_are_422_and_leave_balance_untouched() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP patch_balance_bad_values_are_422_and_leave_balance_untouched: no DATABASE_URL");
+                return;
+            };
+            let (state, headers, user_id) = db_state(&pool).await;
+            let account_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Cash','cash',100) RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed account");
+            for raw in ["1000000.00", "10.005", "abc"] {
+                let body: Json<PatchAccountRequest> = Json(
+                    serde_json::from_value(json!({"balance": raw}))
+                        .expect("deserializable balance body"),
+                );
+                let err = patch_account_handler(
+                    State(state.clone()),
+                    headers.clone(),
+                    Path(account_id),
+                    body,
+                )
+                .await
+                .expect_err("bad balance must be 422");
+                assert_eq!(
+                    err.into_response().status(),
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY
+                );
+            }
+            let got = get_account_handler(State(state.clone()), headers, Path(account_id))
+                .await
+                .expect("get after rejected PATCH is 200");
+            assert_eq!(got.balance, Decimal::new(10000, 2));
+            cleanup_user(&pool, user_id).await;
+        }
+
+        #[tokio::test]
+        async fn patch_balance_foreign_is_404_and_missing_token_is_401() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP patch_balance_foreign_is_404_and_missing_token_is_401: no DATABASE_URL");
+                return;
+            };
+            let (state_a, _, user_a) = db_state(&pool).await;
+            let (state_b, headers_b, user_b) = db_state(&pool).await;
+            let account_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Mine','cash') RETURNING id",
+            )
+            .bind(user_a)
+            .fetch_one(&pool)
+            .await
+            .expect("seed account");
+            let body: Json<PatchAccountRequest> = Json(
+                serde_json::from_value(json!({"balance": "-750.50"}))
+                    .expect("valid balance body"),
+            );
+            let err = patch_account_handler(State(state_b.clone()), headers_b, Path(account_id), body)
+                .await
+                .expect_err("foreign balance PATCH must be 404");
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::NOT_FOUND
+            );
+            let body: Json<PatchAccountRequest> = Json(
+                serde_json::from_value(json!({"balance": "-750.50"}))
+                    .expect("valid balance body"),
+            );
+            let err = patch_account_handler(
+                State(state_a.clone()),
+                HeaderMap::new(),
+                Path(account_id),
+                body,
+            )
+            .await
+            .expect_err("balance PATCH without token must be 401");
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::UNAUTHORIZED
+            );
+            let _ = state_a;
+            cleanup_user(&pool, user_a).await;
+            cleanup_user(&pool, user_b).await;
         }
 
         #[tokio::test]

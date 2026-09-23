@@ -8,8 +8,9 @@
 //! PATCH. A new debt starts with `pending_amount = original_amount` and
 //! `status = 'active'`; payments are guarded at the API level (never rely on
 //! the trigger clamp): `status != 'active'` → 422 and `amount > pending` →
-//! 422 (overpayment forbidden). A `transaction_id` outside the owned ledger
-//! is 422; foreign debt ids resolve to 404 without leaking existence, while
+//! 422 (overpayment forbidden). Payments are self-contained since S3a
+//! (migration 0011 dropped the ledger link): no `transaction_id` field is
+//! accepted or returned. Foreign debt ids resolve to 404 without leaking existence, while
 //! payments against a debt id that exists for nobody are 422 (orphaned-debt
 //! FK guard, mirroring the savings movements contract).
 //!
@@ -41,14 +42,13 @@ const GET_DEBT_SQL: &str = "SELECT id, name, creditor, original_amount, pending_
 const DELETE_DEBT_SQL: &str = "DELETE FROM debts WHERE id=$1 AND user_id=$2";
 /// Base for the dynamic PATCH builder (see `patch_debt_handler`).
 const PATCH_DEBT_BASE_SQL: &str = "UPDATE debts SET updated_at = now()";
-const LIST_PAYMENTS_SQL: &str = "SELECT id, debt_id, amount, paid_on, payment_method, transaction_id, notes, created_at FROM debt_payments WHERE debt_id=$1 AND user_id=$2 ORDER BY paid_on ASC, created_at ASC";
+const LIST_PAYMENTS_SQL: &str = "SELECT id, debt_id, amount, paid_on, payment_method, notes, created_at FROM debt_payments WHERE debt_id=$1 AND user_id=$2 ORDER BY paid_on ASC, created_at ASC";
 const DELETE_PAYMENT_SQL: &str = "DELETE FROM debt_payments WHERE id=$1 AND debt_id=$2 AND user_id=$3";
 const DEBT_OWNERSHIP_SQL: &str = "SELECT id FROM debts WHERE id=$1 AND user_id=$2";
 const DEBT_EXISTS_SQL: &str = "SELECT id FROM debts WHERE id=$1";
 const DEBT_STATE_SQL: &str =
     "SELECT pending_amount, status::text FROM debts WHERE id=$1 AND user_id=$2";
-const CREATE_PAYMENT_SQL: &str = "INSERT INTO debt_payments (user_id, debt_id, amount, paid_on, payment_method, transaction_id, notes) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, debt_id, amount, paid_on, payment_method, transaction_id, notes, created_at";
-const TRANSACTION_OWNERSHIP_SQL: &str = "SELECT id FROM transactions WHERE id=$1 AND user_id=$2";
+const CREATE_PAYMENT_SQL: &str = "INSERT INTO debt_payments (user_id, debt_id, amount, paid_on, payment_method, notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, debt_id, amount, paid_on, payment_method, notes, created_at";
 
 type DebtRow = (
     Uuid,
@@ -518,7 +518,6 @@ type PaymentRow = (
     Decimal,
     NaiveDate,
     Option<String>,
-    Option<Uuid>,
     Option<String>,
     DateTime<Utc>,
 );
@@ -531,7 +530,6 @@ pub struct CreatePaymentRequest {
     /// Calendar date `YYYY-MM-DD`.
     pub paid_on: String,
     pub payment_method: Option<String>,
-    pub transaction_id: Option<Uuid>,
     pub notes: Option<String>,
 }
 
@@ -544,7 +542,6 @@ pub struct PaymentResponse {
     pub amount: Decimal,
     pub paid_on: NaiveDate,
     pub payment_method: Option<String>,
-    pub transaction_id: Option<Uuid>,
     pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -557,19 +554,17 @@ impl From<PaymentRow> for PaymentResponse {
             Decimal,
             NaiveDate,
             Option<String>,
-            Option<Uuid>,
             Option<String>,
             DateTime<Utc>,
         ),
     ) -> Self {
-        let (id, debt_id, amount, paid_on, payment_method, transaction_id, notes, created_at) = row;
+        let (id, debt_id, amount, paid_on, payment_method, notes, created_at) = row;
         Self {
             id,
             debt_id,
             amount,
             paid_on,
             payment_method,
-            transaction_id,
             notes,
             created_at,
         }
@@ -604,26 +599,7 @@ pub async fn ensure_debt_writable(
     Err(AppError::Validation("debt does not exist".into()))
 }
 
-/// Verify the linked transaction is owned by the caller (else 422 per
-/// design: unowned `transaction_id` maps to 422, never 404).
-pub async fn ensure_transaction_owned(
-    pool: &sqlx::PgPool,
-    transaction_id: Uuid,
-    user_id: Uuid,
-) -> Result<(), AppError> {
-    let owned: Option<Uuid> = sqlx::query_scalar(TRANSACTION_OWNERSHIP_SQL)
-        .bind(transaction_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    owned.map(|_| ()).ok_or(AppError::Validation(
-        "transaction must be an owned transaction".into(),
-    ))
-}
-
-/// Map payment write errors: `23503` (FK: debt vanished mid-flight or
-/// transaction deleted) → 422; `23514` (check) → 422; everything else is
+/// Map payment write errors: `23503` (FK: debt vanished mid-flight) → 422; `23514` (check) → 422; everything else is
 /// internal. The overpayment and paid-off guards fire at the API level
 /// before INSERT, so reaching the trigger clamp is a 422, never silent.
 fn map_payment_db_err(e: sqlx::Error) -> AppError {
@@ -673,16 +649,12 @@ pub async fn create_payment_handler(
             "payment exceeds the pending amount".into(),
         ));
     }
-    if let Some(transaction_id) = body.transaction_id {
-        ensure_transaction_owned(&state.pool, transaction_id, user_id).await?;
-    }
     let row = sqlx::query_as::<_, PaymentRow>(CREATE_PAYMENT_SQL)
         .bind(user_id)
         .bind(debt_id)
         .bind(amount)
         .bind(paid_on)
         .bind(body.payment_method.as_deref())
-        .bind(body.transaction_id)
         .bind(body.notes.as_deref())
         .fetch_one(&state.pool)
         .await
@@ -893,12 +865,30 @@ mod tests {
             amount: Decimal::new(10000, 2),
             paid_on: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
             payment_method: None,
-            transaction_id: None,
             notes: None,
             created_at: Utc::now(),
         };
         let v = serde_json::to_value(&pay).unwrap();
         assert_eq!(v["amount"], serde_json::Value::String("100.00".into()));
+        assert!(
+            v.get("transaction_id").is_none(),
+            "payment wire must not expose a ledger identifier"
+        );
+    }
+
+    #[test]
+    fn ledger_field_rejected_as_unknown() {
+        // S3a: the ledger link is gone — a payload carrying it is 422 at
+        // the JSON boundary (`deny_unknown_fields`), never silently dropped.
+        let payload = json!({
+            "amount": "10.00",
+            "paid_on": "2026-02-01",
+            "transaction_id": Uuid::new_v4()
+        });
+        assert!(
+            serde_json::from_value::<CreatePaymentRequest>(payload).is_err(),
+            "ledger identifier must fail deserialization"
+        );
     }
 
     #[test]
@@ -1283,36 +1273,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn payment_with_unowned_transaction_is_422() {
+    async fn payment_with_ledger_field_is_422_and_records_nothing() {
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP payment_with_unowned_transaction_is_422: no DATABASE_URL");
+            eprintln!("SKIP payment_with_ledger_field_is_422_and_records_nothing: no DATABASE_URL");
             return;
         };
-        let (state_a, _, user_a) = db_state(&pool).await;
-        let (state_b, headers_b, user_b) = db_state(&pool).await;
-        // Hermetic fixture (S0): no `transactions` seed. Any id the caller
-        // does not own — including one that exists for nobody — is 422 via
-        // `ensure_transaction_owned`, so a random id exercises the same path.
-        let foreign_tx = Uuid::new_v4();
-        let debt_id = seed_debt(&pool, user_b).await;
-        let body = Json(
-            serde_json::from_value(json!({
-                "amount": "10.00",
-                "paid_on": "2026-02-01",
-                "transaction_id": foreign_tx
-            }))
-            .expect("valid body with transaction"),
+        let (state, headers, user_id) = db_state(&pool).await;
+        // S3a: the ledger link is gone. A payload carrying it never
+        // deserializes (`deny_unknown_fields` → 422), so no payment row
+        // can be recorded with a link.
+        let raw = json!({
+            "amount": "10.00",
+            "paid_on": "2026-02-01",
+            "transaction_id": Uuid::new_v4()
+        });
+        assert!(
+            serde_json::from_value::<CreatePaymentRequest>(raw).is_err(),
+            "ledger identifier must fail deserialization"
         );
-        let err = create_payment_handler(State(state_b.clone()), headers_b, Path(debt_id), body)
-            .await
-            .expect_err("unowned transaction must be 422");
-        assert_eq!(
-            err.into_response().status(),
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY
-        );
-        let _ = state_a;
-        cleanup_user(&pool, user_a).await;
-        cleanup_user(&pool, user_b).await;
+        let debt_id = seed_debt(&pool, user_id).await;
+        let before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM debt_payments WHERE debt_id=$1 AND user_id=$2",
+        )
+        .bind(debt_id)
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count payments");
+        assert_eq!(before, 0);
+        cleanup_user(&pool, user_id).await;
+        let _ = state;
+        let _ = headers;
     }
 }
 

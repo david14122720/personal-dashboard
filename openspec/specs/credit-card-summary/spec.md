@@ -39,18 +39,25 @@ The system MUST assign an alert level based on the `usage_pct`.
 
 The system MUST distinguish between the live current balance and the balance as of the last statement date.
 
-- **Current Balance**: The real-time cached balance of the account.
-- **Statement Balance**: The sum of all transactions linked to the account that occurred on or before the most recent `statement_day` of the billing cycle.
+- **Current Balance**: the user-asserted manual balance, written by hand via `PATCH /api/accounts/{id}`.
+- **Statement Balance**: always `null` — the cycle-to-date figure was removed with the ledger (migration 0011) and MUST NOT be substituted with the balance, zero, or any derived value.
 
-#### Scenario: Statement vs Current balance
-- GIVEN a card where the last statement was on the 15th
-- GIVEN transactions:
-    - 10th: -100.00
-    - 12th: -50.00
-    - 20th: -200.00
+#### Scenario: Statement balance is always null
+- GIVEN any card with any balance
 - WHEN the summary is requested
-- THEN `statement_balance` MUST be -150.00
-- AND `current_balance` MUST be -350.00
+- THEN `statement_balance` MUST be `null`
+- AND `current_balance` reflects the manual `balance`
+
+#### Scenario: Metrics derive from the manual balance
+- GIVEN a card with `credit_limit: "1000.00"` and balance `"-350.00"`
+- WHEN the summary is requested
+- THEN `used_balance` is `"350.00"`, `available_balance` is `"650.00"` and `usage_pct` is `35.00`
+- AND no removed aggregate endpoint is queried
+
+#### Scenario: Cycle days preserved without a statement figure
+- GIVEN a card with `statement_day: 15` and `payment_due_day: 25`
+- WHEN the card renders
+- THEN both days remain editable metadata and no statement figure is shown
 
 ### Requirement: Net Worth Liability Treatment
 
@@ -86,7 +93,7 @@ The FE MUST provide a manual Spanish card-create form over existing `POST /accou
 
 ### Requirement: Card Detail View
 
-The FE MUST render card detail from existing `GET /accounts/{id}` detail (which includes `statement_balance` plus Rust-computed `used/available/usage_pct/alert ok|warn|high`): límite, disponible, día de corte, día de pago, alerta. List views MUST NOT trigger per-card statement queries (anti-N+1 preserved). Amounts MUST be coerced string→number only in the pure transform layer and formatted COP.
+The FE MUST render card detail from existing `GET /accounts/{id}` detail (no statement figure; Rust-computed `used/available/usage_pct/alert ok|warn|high`): límite, disponible, día de corte, día de pago, alerta. No statement figure is rendered — the element is omitted, never a `$ 0.00` placeholder. List views MUST NOT issue per-card queries. Amounts MUST be coerced string→number only in the pure transform layer and formatted COP.
 
 #### Scenario: Detail shows limit and alert
 
@@ -96,7 +103,7 @@ The FE MUST render card detail from existing `GET /accounts/{id}` detail (which 
 
 ### Requirement: No Card Limit Patch
 
-`PATCH` of `credit_limit/statement_day/payment_due_day/balance` SHALL NOT exist. Limit or cycle-day changes MUST be DELETE + recreate so `credit_card_account_id` history is never rewritten. The FE MUST explain this in Spanish copy and confirm destructive recreates.
+`PATCH` of `credit_limit`, `statement_day` or `payment_due_day` SHALL NOT exist; limit or cycle-day changes MUST be DELETE + recreate, explained in Spanish copy with confirmation of the destructive recreate. The manual `balance` write is the single exception: `PATCH /api/accounts/{id}` accepts `balance` for every account type, cards included (see `finance-accounts`).
 
 #### Scenario: Limit change recreates card
 
@@ -104,9 +111,19 @@ The FE MUST render card detail from existing `GET /accounts/{id}` detail (which 
 - WHEN the user confirms the limit change
 - THEN the FE guides DELETE + recreate (no limit-PATCH request is ever sent)
 
+#### Scenario: Card balance edited in place
+- GIVEN a card with balance `"-900.00"`
+- WHEN the user edits the balance to `"-250.00"` inline and confirms
+- THEN the FE sends `PATCH /api/accounts/{id}` with `balance` as a string and the card metrics recompute from the new balance
+
+#### Scenario: Cycle-day change still recreates
+- GIVEN a card whose `payment_due_day` must move to 25
+- WHEN the user applies the change
+- THEN the FE guides DELETE + recreate and never patches the day field
+
 ### Requirement: Card Contract Preserved
 
-The BE card contract MUST remain unchanged: `chk_card_*` CHECKs validated to 422 with Spanish messages (never 500), `deny_unknown_fields`, string money, 401 unauthenticated, 404 foreign (never 403), 409 on delete-with-movements or duplicate name. The FE MUST surface these in Spanish via `finance.*`/`cards.*` i18n keys.
+The BE card contract MUST remain unchanged: `chk_card_*` CHECKs validated to 422 with Spanish messages (never 500), `deny_unknown_fields`, string money, 401 unauthenticated, 404 foreign (never 403), 409 on duplicate name. The delete guard MUST NOT consult removed tables: no surviving table holds a blocking reference to an account, so deleting an owned card MUST return 204. The FE MUST surface these in Spanish via `finance.*`/`cards.*` i18n keys.
 
 #### Scenario: Delete card with movements conflicts
 

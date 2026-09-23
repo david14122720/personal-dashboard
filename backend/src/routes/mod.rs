@@ -15,4 +15,3 @@ pub mod savings;
 pub mod subscriptions;
 pub mod tasks;
 pub mod tokens;
-pub mod transactions;

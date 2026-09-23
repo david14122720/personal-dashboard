@@ -512,3 +512,56 @@ budgets/transactions/MCP/productivity scope change):
   `openspec/specs/frontend-dashboard/spec.md`,
   `openspec/changes/.../tasks.md` (10 S2 boxes checked; parent boxes
   byte-preserved), this file.
+
+---
+
+# Apply progress — S3a Ledger removal + manual balance + migration 0011 + MCP
+
+- change: `2026-09-23-simplify-finance-productivity`
+- slice: S3a only (backend + migration + MCP). No frontend, no objetivo charts, no productivity edits.
+- date: 2026-09-23
+- status: S3a complete — all 14 S3a tasks (S3a.1–S3a.14) marked `- [x]` in `tasks.md`.
+- delivery: auto-chain / stacked-to-main. No commit (parent owns commits). Migration NOT run against any DB in this session (no L2 gate yet).
+
+## Completed
+
+- S3a.1 — `parse_balance_amount` in `backend/src/finance/money.rs`: signed, `scale <= 2`, `|x| < 10^6`, 422 Spanish-compatible message; unit tests for `"980000.00"`, `"-750.50"`, `"0"`, `"10.005"`/`"1000000.00"`/`"abc"`/`""` 422, plus JSON-number deserialization probe. (Found complete in tree; verified by suite.)
+- S3a.2 — `PatchAccountRequest.balance: Option<String>` + `validate_account_patch` + `QueryBuilder` bind; `patch_accepts_balance_but_rejects_structural_edits_as_422`; DB tests: `-750.50` round-trip, bad-values 422 with balance untouched, foreign 404 / no-token 401. (Found complete; verified.)
+- S3a.3 — Delete guard retired: no `ACCOUNT_MOVEMENT_COUNT_SQL`, `map_account_delete_err` 23503→409 kept; `delete_account_with_live_finance_rows_is_204` (debt + savings goal + subscription fixtures); `account_delete_sql_never_references_removed_tables`. (Found complete; verified.)
+- S3a.4 — `STATEMENT_BALANCE_SQL`/`statement_balance_for_card`/`statement_cutoff` gone; `statement_balance` always `None`; `get_card_statement_balance_is_always_none` arranges via direct `UPDATE accounts SET balance`. (Found complete; verified.)
+- S3a.5 — `transaction_id` removed from debts/savings DTOs, SQL, ownership fns, docs; remaining `transaction_id` tokens are intentional `deny_unknown_fields` rejection tests (`ledger_field_rejected_as_unknown`, wire-absence asserts). (Found complete; verified.)
+- S3a.6 — `categories.rs` orphaned-`finance` doc lines present. (Found complete.)
+- S3a.7 — `routes/transactions.rs` deleted; `mod.rs` has no transactions/transfers/budgets modules; `main.rs` doc comment records all three removals. (Found complete; verified.)
+- S3a.8 — `backend/migrations/0011_remove_transactions_budgets.sql` exists with the §7 statement order (columns → tables → functions → enum-in-DO-block). Deviation: three comment-only rewordings so the byte-guard test passes — header "no backup" → "no data migration … (data loss explicitly accepted)", "(b) No CASCADE:" → "Plain drops only:", "(d) never CREATE TYPE + reconversion, never CASCADE" → "never re-create the type plus column re-conversion, never drop dependents implicitly". The test uppercases the whole file and forbids the substrings CASCADE/CREATE TYPE/BACKUP/DUMP, so the design's own comment wording tripped it. Zero SQL statements changed.
+- S3a.9 — `migration_0011_removal.rs` holds the file-guard + all eight §7 post-conditions, SKIP without `DATABASE_URL`. (Found complete; verified — the CASCADE-guard failure above is fixed by the S3a.8 comment reword.)
+- S3a.10 — `migration_0008_credit_cards.rs` keeps only the `accounts` EXPLAIN half. (Found complete.)
+- S3a.11 — Wiring tests: `/api/accounts` 401-mounted, `/accounts` 404, surviving writes + PATCH-balance 401-mounted, removed `/api/transactions|transfers|budgets` 404, plus the `PatchAccountRequest` balance-pair assertion. (Found complete; verified in lib suite.)
+- S3a.12 — MCP (this session): deleted the six transaction tools + four zod schemas from `mcp-dashboard/src/tools.ts`; `UpdateAccountSchema` gains optional `balance`; `update_account` description rewritten to the `balance/notes/color/icon/is_archived` allowlist with user-owned balance note; README header + tool catalog updated with the S3a removal note. `npm run typecheck` clean.
+- S3a.13 — Spec sync (this session): deleted canonical `openspec/specs/finance-transactions/`; rewrote `credit-card-summary` (statement null + metrics-from-balance + balance-exception to no-limit-patch + delete-204 contract); `finance-debts` (self-contained history + ledger-rejected guards + self-contained requirement); `finance-savings` (ledger-rejected write + self-contained requirement); API half of `finance-accounts` (Updates allowlist + SSOT + delete-guard requirements; inline-edit FE requirement deferred to S3b per slice boundary); created canonical `openspec/specs/mcp-dashboard/spec.md` (byte-copy of delta). `finance-core-invariants` canonical is already byte-identical to the delta (S0 synced; post-migration shape + atomic deployability present) — no-op, verified by `diff`.
+- S3a.14 — Verification (see below).
+
+## Verification (exact commands, observed results)
+
+- `cd backend && cargo test`: lib 372 passed / 0 failed; integration 3 + 10 + 10 passed / 0 failed. One pre-existing failure fixed in-slice: `migration_0011_file_exists_and_has_no_cascade_or_recreation` tripped on the migration's own comments (see S3a.8 deviation); after the comment-only reword, full suite green.
+- `cargo test --test migration_0011_removal -- --nocapture` with `DATABASE_URL` unset: all 8 live-DB tests print `SKIP ...: no DATABASE_URL` and pass. Dev-DB run: NOT executed — `DATABASE_URL` is unset in this environment and no credentials were invented; per the task rule ("ONLY if DATABASE_URL points to dev") this is recorded as SKIP. Production never touched (no L2 gate yet).
+- MCP: `npm run typecheck` clean; registry audit via node: 40 tools, zero of the seven removed names, `update_account` present with `balance` prop.
+- Slice atomicity: `p9_finanzas_write_routes_are_wired` asserts PATCH-balance mounted AND removed routes gone in one test (in the 372 green).
+
+## Deviations / follow-ups for parent
+
+- S3a.8 comment-only reword (above); SQL semantics exactly per design §7.
+- `backend/src/finance/validation.rs` module doc still says "`routes/transactions.rs` keeps …" — stale now that the module is deleted. File is outside the S3a allow-list, so untouched; suggest a one-line doc fix in S3b or a parent-owned cleanup.
+- Two pre-existing warnings in `main.rs` tests (`duplicated attribute` on `card_metrics_compute_used_available_usage`, unused `app` binding) — untouched, out of slice scope.
+
+## Remaining / next
+
+- S3a: none. Acceptance criteria met (suite green; 0011 file + balance write in-slice; no removed route resolves; debts/savings free of `transaction_id`; MCP + README list only surviving tools; canonical specs synced).
+- Rollback note: code revertible, data not — 0011 has not been applied anywhere in this session.
+- Next recommended: S3b (frontend + remaining specs). Parent-owned: bounded review for S3a, slice PR, lifecycle tasks L1–L3 incl. the L2 human deploy gate before 0011 runs against production.
+
+## Files changed (S3a)
+
+- Edited this session: `mcp-dashboard/src/tools.ts`, `mcp-dashboard/README.md`, `openspec/specs/credit-card-summary/spec.md`, `openspec/specs/finance-debts/spec.md`, `openspec/specs/finance-savings/spec.md`, `openspec/specs/finance-accounts/spec.md`, `backend/migrations/0011_remove_transactions_budgets.sql` (comments only), `openspec/changes/.../tasks.md` (14 S3a boxes), this file.
+- Created this session: `openspec/specs/mcp-dashboard/spec.md`.
+- Deleted this session: `openspec/specs/finance-transactions/`.
+- Found complete from prior work in tree (uncommitted): `backend/src/finance/money.rs`, `backend/src/routes/{accounts,debts,savings,categories}.rs`, `backend/src/routes/mod.rs`, `backend/src/main.rs`, `backend/tests/migration_0011_removal.rs`, `backend/tests/migration_0008_credit_cards.rs`; deleted: `backend/src/routes/transactions.rs`.

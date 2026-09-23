@@ -71,6 +71,34 @@ pub fn parse_signed_amount(raw: &str) -> Result<Decimal, AppError> {
     Ok(amount)
 }
 
+/// Parse a manual account-balance string into [`Decimal`].
+///
+/// Accepts signed values (debtor cards are negative, e.g. `"-750.50"`)
+/// with at most 2 decimal places and `|x| < 10^6` (`"980000.00"`,
+/// `"-750.50"`, `"0"`). Rejects empty/non-numeric input, `scale > 2`
+/// (`"10.005"`), and `|x| >= 10^6` (`"1000000.00"`) with
+/// [`AppError::Validation`] (422). The balance is user-asserted data:
+/// no trigger or aggregate rewrites it (migration 0011 removes the only
+/// writer). A JSON number never reaches this parser — `balance` is
+/// `Option<String>` on the PATCH DTO, so `deny_unknown_fields` +
+/// deserialization reject numbers at the boundary (422) before parsing.
+pub fn parse_balance_amount(raw: &str) -> Result<Decimal, AppError> {
+    let trimmed = raw.trim();
+    let amount = Decimal::from_str(trimmed).map_err(|_| {
+        AppError::Validation(
+            "balance must be a decimal string with at most 2 decimals and absolute value below 1000000"
+                .into(),
+        )
+    })?;
+    if amount.scale() > 2 || amount.abs() >= Decimal::new(1_000_000, 0) {
+        return Err(AppError::Validation(
+            "balance must be a decimal string with at most 2 decimals and absolute value below 1000000"
+                .into(),
+        ));
+    }
+    Ok(amount)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +223,45 @@ mod tests {
         for raw in ["", "   ", "abc", "12,50"] {
             assert_422(parse_signed_amount(raw).unwrap_err());
         }
+    }
+
+    #[test]
+    fn balance_accepts_signed_zero_and_large_valid() {
+        assert_eq!(
+            parse_balance_amount("980000.00").unwrap(),
+            Decimal::new(98000000, 2)
+        );
+        assert_eq!(
+            parse_balance_amount("-750.50").unwrap(),
+            Decimal::new(-75050, 2)
+        );
+        assert_eq!(parse_balance_amount("0").unwrap(), Decimal::ZERO);
+    }
+
+    #[test]
+    fn balance_rejects_scale_and_range_as_422() {
+        for raw in ["10.005", "1000000.00", "-1000000", "abc", ""] {
+            assert_422(parse_balance_amount(raw).unwrap_err());
+        }
+    }
+
+    #[test]
+    fn balance_json_number_rejected_before_parser() {
+        // `balance` is `Option<String>` on the PATCH DTO: a JSON number
+        // fails deserialization (axum surfaces it as 422) and never
+        // reaches `parse_balance_amount`.
+        let payload = serde_json::json!({"balance": 980000.00});
+        assert!(
+            serde_json::from_value::<BalanceStringProbe>(payload).is_err(),
+            "numeric balance must fail deserialization"
+        );
+        let ok: BalanceStringProbe =
+            serde_json::from_value(serde_json::json!({"balance": "-750.50"})).unwrap();
+        assert_eq!(ok.balance.as_deref(), Some("-750.50"));
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct BalanceStringProbe {
+        balance: Option<String>,
     }
 }
