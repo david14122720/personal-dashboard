@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
 import { t } from "@/lib/i18n";
@@ -35,11 +35,15 @@ import {
   type AccountCardView,
 } from "@/lib/finance/finance";
 import { formatMoney } from "@/lib/api/money";
+import {
+  CUSTOM_CATEGORIES_KEY,
+  listCustomCategories,
+  type CustomCategory,
+} from "@/lib/settings/customCategories";
 import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
 import { DebtEditForm, DebtPayForm, DebtPaymentHistory, DebtProgressBar } from "@/components/finance/DebtPayments";
 import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
-import CardForm from "@/components/finance/CardForm";
-import { CardDetail } from "@/components/finance/CardDetail";
+import { CategoryChartSection } from "@/components/finance/CategoryCharts";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
 /**
@@ -211,6 +215,28 @@ export default function FinanceScreens() {
   const currency = prefs.data?.preferences.currency_code ?? "COP";
   const cards = toAccountCards(accounts.data);
 
+  // Custom categories (Configuración, localStorage) merge with the backend
+  // `finance` categories so classification selects and charts see both.
+  const [customCats, setCustomCats] = useState<CustomCategory[]>([]);
+  useEffect(() => {
+    setCustomCats(listCustomCategories());
+    const onStorage = (event: StorageEvent): void => {
+      if (event.key === null || event.key === CUSTOM_CATEGORIES_KEY) {
+        setCustomCats(listCustomCategories());
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+  const mergedCategories = useMemo(
+    () =>
+      [
+        ...toCategoryOptions(categories.data ?? []),
+        ...customCats.map((c) => ({ id: c.id, name: c.name })),
+      ].sort((a, b) => a.name.localeCompare(b.name, "es")),
+    [categories.data, customCats],
+  );
+
   return (
     <div>
       <h1 className="flex items-center gap-3 font-display text-2xl font-semibold tracking-wide">
@@ -254,7 +280,7 @@ export default function FinanceScreens() {
             <SectionShell
               title={t("finance.accounts")}
               hint={t("finance.accountsHint")}
-              span="col-span-12 xl:col-span-7"
+              span="col-span-12 md:col-span-6 xl:col-span-6"
             >
               <AccountsList accounts={cards} locale={locale} />
               <div className="mt-4 flex flex-col gap-2 border-t border-hull pt-4">
@@ -266,7 +292,7 @@ export default function FinanceScreens() {
             <SectionShell
               title={t("finance.subscriptions")}
               hint={t("finance.subscriptionsHint")}
-              span="col-span-12 md:col-span-6 xl:col-span-4"
+              span="col-span-12 md:col-span-6 xl:col-span-6"
             >
               <CompactMoneyList
                 rows={toSubscriptionRows(subscriptions.data)}
@@ -278,7 +304,7 @@ export default function FinanceScreens() {
             <SectionShell
               title={t("finance.debts")}
               hint={t("finance.debtsHint")}
-              span="col-span-12 md:col-span-6 xl:col-span-4"
+              span="col-span-12 md:col-span-6 xl:col-span-6"
             >
               <CompactMoneyList
                 rows={toDebtRows(debts.data)}
@@ -290,11 +316,12 @@ export default function FinanceScreens() {
             <SectionShell
               title={t("finance.savings")}
               hint={t("finance.savingsHint")}
-              span="col-span-12 xl:col-span-4"
+              span="col-span-12 md:col-span-6 xl:col-span-6"
             >
               <SavingsList goals={toSavingsViews(savings.data)} locale={locale} />
             </SectionShell>
-            <S5Sections categories={toCategoryOptions(categories.data ?? [])} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} debts={debts.data ?? []} savings={savings.data ?? []} cards={cards} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
+            <CategoryChartSection categories={mergedCategories} subs={subscriptions.data ?? []} goals={savings.data ?? []} locale={locale} currency={currency} />
+            <S5Sections categories={mergedCategories} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} debts={debts.data ?? []} savings={savings.data ?? []} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
           </>
         )}
       </div>
@@ -332,11 +359,10 @@ export function toAssetEditInitial(a: AssetWireWithDetails): {
 /* S5 escritura: 6 SectionShell ocultables tras las F1 intactas + patrimonio-número. */
 /* Títulos propios (sin hints de lectura) para no duplicar copy S1. PR-3 FIX: filas */
 /* SubscriptionRow + edición/borrado SavingsGoalForm cableados a listas. */
-function S5Sections({ categories, accounts, subs, debts, savings, cards, assets, netWorth, currency, locale }: { categories: { id: string; name: string }[]; accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: SavingsGoalWire[]; cards: { id: string; name: string; type: string; currency: string; balance: number; isCard: boolean; used: number | null; available: number | null; usagePct: number | null; alertLevel: string | null; statementBalance: number | null }[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
+function S5Sections({ categories, accounts, subs, debts, savings, assets, netWorth, currency, locale }: { categories: { id: string; name: string }[]; accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: SavingsGoalWire[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
   const noop = (): void => undefined;
   const firstDebt = debts[0];
   const firstGoal = savings[0];
-  const firstCard = cards.find((c) => c.isCard);
   const firstAsset = assets[0];
   const worth = netWorth?.per_currency.find((e) => e.currency === currency) ?? netWorth?.per_currency[0];
   return (
@@ -372,10 +398,6 @@ function S5Sections({ categories, accounts, subs, debts, savings, cards, assets,
             <SubscriptionRow sub={sub} />
           </div>
         ))}
-      </SectionShell>
-      <SectionShell title={t("finance.manageCards")} span="col-span-12 xl:col-span-6">
-        <CardForm onDone={noop} />
-        {firstCard ? (<div className="mt-4"><CardDetail card={firstCard} locale={locale} /></div>) : null}
       </SectionShell>
       <SectionShell title={t("finance.manageAssets")} span="col-span-12 xl:col-span-6">
         {firstAsset ? (<><AssetEditForm assetId={firstAsset.id} accounts={accounts} initial={toAssetEditInitial(firstAsset)} onDone={noop} /><div className="mt-4"><AssetValuationForm assetId={firstAsset.id} onDone={noop} /></div></>) : null}

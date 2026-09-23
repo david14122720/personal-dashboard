@@ -27,10 +27,10 @@ export function SectionShell({
   span: string;
 }) {
   return (
-    <section aria-label={title} className={`rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span}`}>
+    <section aria-label={title} className={`flex h-full flex-col rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span}`}>
       <h2 className="font-display text-base font-semibold text-white">{title}</h2>
       {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
-      <div className="mt-4">{children}</div>
+      <div className="mt-4 flex-1">{children}</div>
     </section>
   );
 }

@@ -128,8 +128,10 @@ export function createSubscription(input: Record<string, unknown>) { return apiP
 export function setSubscriptionActive(id: string, is_active: boolean) { return apiPatch(`/subscriptions/${id}`, { is_active }); }
 export function deleteSubscription(id: string): Promise<void> { return apiDelete(`/subscriptions/${id}`); }
 
-export function createCard(input: { name: string; currency?: string; credit_limit: string; statement_day: number; payment_due_day: number; notes?: string }) {
-  return apiPost("/accounts", { ...input, type: "credit_card" });
+/** Create a bank account by name/alias (`POST /accounts {name, type:"bank"}`).
+ * The new account appears automatically in Finanzas (same `dashboard/accounts` read). */
+export function createBankAccount(name: string) {
+  return apiPost("/accounts", { name, type: "bank" });
 }
 
 export interface AssetWire { id: string; name: string; category: string; account_id: string | null; currency: string; acquired_on: string | null; notes: string | null }

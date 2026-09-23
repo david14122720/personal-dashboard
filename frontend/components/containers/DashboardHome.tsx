@@ -177,11 +177,8 @@ export default function DashboardHome() {
     <div>
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
-          <h1 className="flex flex-wrap items-center gap-3 font-display text-2xl font-semibold tracking-wide">
+          <h1 className="font-display text-2xl font-semibold tracking-wide">
             {t("dashboard.overviewTitle")}
-            <span className="shrink-0 whitespace-nowrap rounded-full border border-signal/20 bg-signal/10 px-2.5 py-0.5 font-mono text-xs font-medium text-signal">
-              {t("dashboard.overviewBadge")}
-            </span>
           </h1>
           <p className="mt-1 text-sm text-instrument/60">{t("dashboard.overviewSubtitle")}</p>
         </div>

@@ -90,7 +90,7 @@ describe("DashboardHome ES copy", () => {
   it("renders Spanish widget shells and overview copy without removed charts", () => {
     render(<DashboardHome />);
     expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
-    expect(screen.getByText("v2.4 Telemetría")).toBeInTheDocument();
+    expect(screen.queryByText("v2.4 Telemetría")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "+ Registrar actividad" })).toHaveAttribute(
       "href",
       "/dashboard/finance/",

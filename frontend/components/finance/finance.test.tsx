@@ -134,7 +134,7 @@ describe("finance screens", () => {
     expect(within(accounts).getByText(/25\.0%/)).toBeInTheDocument();
     expect(within(accounts).getAllByText("Wallet").length).toBeGreaterThanOrEqual(1);
     expect(await screen.findByRole("progressbar", { name: "Uso de tarjeta de Visa" })).toBeInTheDocument();
-    expect(await screen.findByText("Saldos y uso de tarjetas de crédito.")).toBeInTheDocument();
+    expect(await screen.findByText("Saldos de tus cuentas bancarias.")).toBeInTheDocument();
   });
 
   it("renders subscriptions, debts, and savings with money detail", async () => {
@@ -221,7 +221,7 @@ describe("finance screens", () => {
 
 // -- S5 escritura (RED: mutadores + 6 forms por dominio, montos string, selects por nombre) --
 import {
-  createCard,
+  createBankAccount,
   createMovement,
   createPayment,
   createSubscription,
@@ -238,12 +238,10 @@ import {
 import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
 import { DebtEditForm, DebtPayForm, DebtPaymentHistory } from "@/components/finance/DebtPayments";
 import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
-import CardForm from "@/components/finance/CardForm";
-import { CardDetail } from "@/components/finance/CardDetail";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
 describe("finance S5 mutators", () => {
-  it("savings/debts/subs/assets/cards usan endpoints PR-1 con montos string", async () => {
+  it("savings/debts/subs/assets/bank-accounts usan endpoints PR-1 con montos string", async () => {
     const seen: string[] = [];
     server.use(
       http.post("http://test.local/api/savings-goals/g1/movements", ({ request }) => { seen.push(`POST ${request.url}`); return HttpResponse.json({ id: "m1" }); }),
@@ -270,7 +268,7 @@ describe("finance S5 mutators", () => {
     await createSubscription({ name: "Streaming", price: "19900", frequency: "monthly" });
     await setSubscriptionActive("s1", false);
     await deleteSubscription("s1");
-    await createCard({ name: "Visa", credit_limit: "5000000", statement_day: 15, payment_due_day: 25 });
+    await createBankAccount("Cuenta nueva");
     await patchAsset("a1", { name: "Apartamento" });
     await createValuation("a1", { value: "1200.00", recorded_on: "2026-09-09" });
     expect(seen).toContain("POST http://test.local/api/savings-goals/g1/movements");
@@ -356,22 +354,8 @@ describe("finance S5 forms", () => {
     expect(screen.getByRole("button", { name: /Cancelar/ })).toBeInTheDocument();
   });
 
-  it("CardForm exige límite+corte+pago y CardDetail explica DELETE+recreate", () => {
-    const card = render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <CardForm onDone={() => undefined} />
-      </SWRConfig>,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /Crear tarjeta/ }));
-    expect(screen.getByRole("alert")).toBeInTheDocument();
-    card.unmount();
-    render(
-      <CardDetail
-        card={{ id: "a1", name: "Visa", type: "credit_card", currency: "COP", balance: 0, isCard: true, used: 910, available: 90, usagePct: 91, alertLevel: "high", statementBalance: 320 }}
-        locale="es-CO"
-      />,
-    );
-    expect(screen.getByText(/elimina y recrea/i)).toBeInTheDocument();
+  it("la sección de tarjetas fue eliminada de Finanzas", () => {
+    expect(screen.queryByRole("button", { name: /Crear tarjeta/ })).not.toBeInTheDocument();
   });
 
   it("AssetForms editan allowlist real y valúan con fecha posterior", async () => {

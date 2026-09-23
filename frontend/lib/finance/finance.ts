@@ -69,7 +69,29 @@ export interface CompactMoneyRow {
   currency: string;
 }
 
-/** Active subscriptions as compact money rows. */
+/** Monthly-equivalent factor per subscription frequency (mirrors `toMonthlyCost`).
+ * Unknown frequencies return null so callers fall back to the raw price. */
+export function subscriptionMonthlyFactor(frequency: string | null | undefined): number | null {
+  switch (frequency) {
+    case "daily": return 30;
+    case "weekly": return 52 / 12;
+    case "biweekly": return 26 / 12;
+    case "monthly": return 1;
+    case "quarterly": return 1 / 3;
+    case "semiannual": return 1 / 6;
+    case "annual": return 1 / 12;
+    default: return null;
+  }
+}
+
+/** Raw price coerced to its monthly equivalent (unknown frequency → raw price). */
+export function toMonthlyPrice(price: string | number | null | undefined, frequency: string | null | undefined): number {
+  return toNumber(price) * (subscriptionMonthlyFactor(frequency) ?? 1);
+}
+
+/** Active subscriptions as compact money rows (simplified view): title is the
+ * name, detail is only the next billing date (or null), amount is the
+ * monthly-equivalent price. No frequency, status, icon or category is shown. */
 export function toSubscriptionRows(
   rows: SubscriptionWire[] | null | undefined,
 ): CompactMoneyRow[] {
@@ -79,8 +101,8 @@ export function toSubscriptionRows(
     .map((row) => ({
       id: row.id,
       title: row.name,
-      detail: row.next_billing_on ? `Next billing ${row.next_billing_on} · ${row.frequency}` : row.frequency,
-      amount: toNumber(row.price),
+      detail: row.next_billing_on ?? null,
+      amount: toMonthlyPrice(row.price, row.frequency),
       currency: row.currency,
     }));
 }
@@ -120,6 +142,33 @@ export function toSavingsViews(rows: SavingsGoalWire[] | null | undefined): Savi
       completed: row.is_completed,
     };
   });
+}
+
+/** Totals for one category: monthly-equivalent active-subscription spend
+ * (gastos) plus saved amounts on savings goals (ahorro). */
+export interface CategoryTotals {
+  expenses: number;
+  savings: number;
+}
+
+export function toCategoryTotals(
+  subs: SubscriptionWire[] | null | undefined,
+  goals: SavingsGoalWire[] | null | undefined,
+  categoryId: string,
+): CategoryTotals {
+  let expenses = 0;
+  let savings = 0;
+  for (const sub of subs ?? []) {
+    if (sub.is_active && (sub.category_id ?? null) === categoryId) {
+      expenses += toMonthlyPrice(sub.price, sub.frequency);
+    }
+  }
+  for (const goal of goals ?? []) {
+    if ((goal.category_id ?? null) === categoryId) {
+      savings += toNumber(goal.saved_amount);
+    }
+  }
+  return { expenses, savings };
 }
 
 // -- S1 (captura manual en COP, sin UUIDs visibles) --

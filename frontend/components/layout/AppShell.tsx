@@ -129,6 +129,7 @@ const PRIMARY_NAV: NavItem[] = [
 ];
 
 const SETTINGS_NAV: NavItem[] = [
+  { href: "/dashboard/ajustes/", labelKey: "nav.general", Icon: GridIcon },
   { href: "/dashboard/ajustes/tokens/", labelKey: "nav.tokens", Icon: KeyIcon },
 ];
 
@@ -137,7 +138,12 @@ const NAV_ITEMS: NavItem[] = [...PRIMARY_NAV, ...SETTINGS_NAV];
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/dashboard/") return pathname === "/dashboard" || pathname === "/dashboard/";
-  return pathname.startsWith(href.replace(/\/$/, ""));
+  const clean = (p: string): string => (p.endsWith("/") && p.length > 1 ? p.slice(0, -1) : p);
+  const target = clean(href);
+  const current = clean(pathname);
+  // The settings hub owns only its own page; children (tokens) highlight alone.
+  if (target === "/dashboard/ajustes") return current === target;
+  return current === target || current.startsWith(`${target}/`);
 }
 
 function formatToday(date: Date): string {
