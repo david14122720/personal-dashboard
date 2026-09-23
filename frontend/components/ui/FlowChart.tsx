@@ -1,8 +1,15 @@
 "use client";
 
 import { Area, AreaChart, CartesianGrid, LabelList, Tooltip, XAxis, YAxis } from "recharts";
-import type { FlowPoint } from "@/lib/dashboard/transforms";
 import { formatMoney } from "@/lib/api/money";
+
+/** Local point shape (S3b: the shared `FlowPoint` transform was deleted with the ledger). */
+export interface FlowPoint {
+  month: string;
+  income: number;
+  expense: number;
+  balance: number;
+}
 import { chartToken, formatMonth, t } from "@/lib/i18n";
 import EmptyState from "@/components/ui/EmptyState";
 

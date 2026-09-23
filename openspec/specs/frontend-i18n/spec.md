@@ -85,3 +85,9 @@ The dictionary MUST NOT retain keys whose only consumers were removed. At minimu
 - GIVEN the productivity «Nuevo» control
 - WHEN its label is resolved
 - THEN it comes from the typed ES dictionary with no hardcoded literal
+
+#### Scenario: S3b copy rewrites and new keys are typed
+
+- GIVEN the dictionary after the change
+- WHEN `finance.subtitle`, `dashboard.overviewSubtitle`, `reports.financeCurrent`, `progress.financeHint` and the `finance.balanceEdit*` keys are resolved
+- THEN no copy names a removed ledger, budget or flow artefact, and every new user-visible string comes from a typed key

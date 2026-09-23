@@ -11,70 +11,7 @@
 import useSWR, { type SWRConfiguration } from "swr";
 import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/api/client";
 
-export interface TransactionWire {
-  id: string;
-  account_id: string;
-  type: string;
-  amount: string | number;
-  currency: string;
-  occurred_on: string;
-  category_id: string | null;
-  description: string | null;
-  notes: string | null;
-  credit_card_account_id: string | null;
-}
-
-export interface TransactionListWire {
-  items: TransactionWire[];
-  next_cursor: string | null;
-  total_count: number;
-}
-
-export interface TransactionFilters {
-  account_id?: string;
-  category_id?: string;
-  type?: "income" | "expense";
-  from?: string;
-  to?: string;
-  limit?: number;
-}
-
 const financeConfig: SWRConfiguration = { revalidateOnFocus: false };
-
-/** Serialize ledger filters + opaque cursor into a `/transactions` path. */
-export function buildTransactionsPath(filters: TransactionFilters, cursor: string | null): string {
-  const params = new URLSearchParams();
-  if (filters.account_id) params.set("account_id", filters.account_id);
-  if (filters.category_id) params.set("category_id", filters.category_id);
-  if (filters.type) params.set("type", filters.type);
-  if (filters.from) params.set("from", filters.from);
-  if (filters.to) params.set("to", filters.to);
-  if (filters.limit) params.set("limit", String(filters.limit));
-  if (cursor) params.set("cursor", cursor);
-  const query = params.toString();
-  return query ? `/transactions?${query}` : "/transactions";
-}
-
-/** Stable SWR key for a ledger page (filters + opaque cursor). */
-export function transactionsPageKey(filters: TransactionFilters, cursor: string | null): string {
-  return `finance${buildTransactionsPath(filters, cursor)}`;
-}
-
-/** Fetch one keyset page of the ledger. Cursor is forwarded opaquely. */
-export function fetchTransactionsPage(
-  filters: TransactionFilters,
-  cursor: string | null,
-): Promise<TransactionListWire> {
-  return apiGet<TransactionListWire>(buildTransactionsPath(filters, cursor));
-}
-
-export function useTransactionsPage(filters: TransactionFilters, cursor: string | null) {
-  return useSWR<TransactionListWire>(
-    transactionsPageKey(filters, cursor),
-    () => fetchTransactionsPage(filters, cursor),
-    financeConfig,
-  );
-}
 
 export interface SubscriptionWire {
   id: string;
@@ -138,31 +75,10 @@ export function useSavingsGoals() {
   );
 }
 
-// -- S1 (captura manual en COP, sin UUIDs visibles) --
-
-/** Wire payload for `POST /transactions` (income/expense). Amount travels as
- * a decimal string (e.g. `"150000.00"`); never a JSON number. */
-export interface CreateTransactionInput {
-  account_id: string;
-  type: "income" | "expense";
-  amount: string;
-  occurred_on: string;
-  category_id?: string | null;
-  description?: string | null;
-  payment_method?: string | null;
-}
-
-/** Create an income or expense. The caller passes the amount string verbatim. */
-export function createTransaction(input: CreateTransactionInput): Promise<TransactionWire> {
-  return apiPost<TransactionWire>("/transactions", {
-    account_id: input.account_id,
-    type: input.type,
-    amount: input.amount,
-    occurred_on: input.occurred_on,
-    ...(input.category_id ? { category_id: input.category_id } : {}),
-    ...(input.description ? { description: input.description } : {}),
-    ...(input.payment_method ? { payment_method: input.payment_method } : {}),
-  });
+/** Manual balance write: `PATCH /api/accounts/{id} { balance }`. Amount travels
+ * as a decimal string (e.g. `"980000.00"`); never a JSON number. */
+export function patchAccount(id: string, body: { balance: string }): Promise<unknown> {
+  return apiPatch(`/accounts/${id}`, body);
 }
 
 export interface CategoryWire {
@@ -199,7 +115,7 @@ export function patchGoal(id: string, body: Record<string, unknown>) { return ap
 export function createMovement(goalId: string, input: { amount: string; occurred_on: string; notes?: string }) { return apiPost(`/savings-goals/${goalId}/movements`, input); }
 export function deleteMovement(goalId: string, mid: string): Promise<void> { return apiDelete(`/savings-goals/${goalId}/movements/${mid}`); }
 
-export interface DebtPaymentWire { id: string; debt_id: string; amount: string | number; paid_on: string; payment_method: string | null; transaction_id: string | null; notes: string | null; created_at: string }
+export interface DebtPaymentWire { id: string; debt_id: string; amount: string | number; paid_on: string; payment_method: string | null; notes: string | null; created_at: string }
 export function patchDebt(id: string, body: Record<string, unknown>) { return apiPatch(`/debts/${id}`, body); }
 export function createPayment(debtId: string, input: { amount: string; paid_on: string; payment_method?: string; notes?: string }) { return apiPost(`/debts/${debtId}/payments`, input); }
 export function deletePayment(debtId: string, pid: string): Promise<void> { return apiDelete(`/debts/${debtId}/payments/${pid}`); }

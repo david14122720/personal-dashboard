@@ -138,57 +138,24 @@ Nota de reversión (2026-09-23): los presupuestos no se usaban; el costo de mant
 
 # Gráficos financieros
 
-La sección financiera debe tener visualizaciones completas pero fáciles de entender.
+La sección financiera muestra valores actuales, sin series reconstruidas del libro mayor.
 
-Debe incluir gráficos como:
+Sobreviven con fuente real:
 
-* Ingresos vs gastos.
-* Evolución del saldo.
-* Gastos por categoría.
-* Ingresos por fuente.
-* Evolución del ahorro.
-* Gastos mensuales.
-* Comparación entre meses.
-* Distribución de gastos.
-* Evolución del patrimonio.
+* Patrimonio (número actual desde activos y deudas).
+* Deuda pendiente (suma de saldos activos por pagar).
+* Costo mensual de suscripciones (equivalente mensual por frecuencia).
+* Distribución de activos.
 
-Debe poder seleccionar diferentes períodos:
-
-* Semana.
-* Mes.
-* Trimestre.
-* Año.
-* Período personalizado.
-
-Los gráficos deben permitir comprender rápidamente en qué estoy gastando mi dinero y cómo está evolucionando mi situación financiera.
+Nota de reversión (2026-09-23): se retiran los gráficos de ingresos vs gastos, evolución del saldo, gastos por categoría, ingresos por fuente, evolución del ahorro, gastos mensuales, comparación entre meses y distribución de gastos — todos se alimentaban del flujo mensual del libro mayor, que fue eliminado sin respaldo (pérdida aceptada explícitamente). La selección de períodos sigue existiendo solo para reportes de hábitos, metas y actividad; el bloque financiero de reportes es una foto actual etiquetada como tal.
 
 ---
 
 # Análisis financiero
 
-La plataforma debe generar indicadores útiles.
+No existe bloque de análisis financiero: la tasa de ahorro, los promedios de gastos e ingresos, la categoría donde más gasto, la variación respecto al mes anterior, los gastos recurrentes y extraordinarios y los meses de mayor gasto o ahorro se calculaban sobre el libro mayor eliminado.
 
-Por ejemplo:
-
-* Tasa de ahorro.
-* Promedio de gastos.
-* Promedio de ingresos.
-* Categoría donde más gasto.
-* Variación respecto al mes anterior.
-* Gastos recurrentes.
-* Gastos extraordinarios.
-* Mes con mayor gasto.
-* Mes con mayor ahorro.
-
-También debe destacar cambios importantes.
-
-Por ejemplo:
-
-"Este mes gastaste 18% más en alimentación que el mes anterior."
-
-"Tu ahorro aumentó respecto al mes pasado."
-
-La información debe presentarse como análisis personal y no como asesoramiento financiero profesional.
+Nota de reversión (2026-09-23): estos indicadores quedan retirados sin reemplazo; si algún día se quieren, es un change nuevo con una fuente de datos diseñada. El único puntaje visible es el de `/progreso`, calculado solo con patrimonio, deuda y ahorro actuales, siempre con su aviso de contenido orientativo.
 
 ---
 

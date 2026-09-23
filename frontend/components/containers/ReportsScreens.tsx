@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useState, type ReactNode } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
@@ -14,26 +13,30 @@ import {
   tasksKey,
   useEvents as useDashboardEvents,
   useGoals as useDashboardGoals,
-  useMonthlyFlow,
-  useSpendByCategory,
+  useNetWorth,
   useTasks as useDashboardTasks,
 } from "@/lib/api/dashboard";
+import {
+  useDebts as useFinanceDebts,
+  useSubscriptions as useFinanceSubscriptions,
+} from "@/lib/api/finance";
 import { GOALS_KEY, HABITS_TODAY_KEY, habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
 import { habitStats } from "@/lib/productivity/habitStats";
 import { formatMoney, toNumber } from "@/lib/api/money";
-import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
+import {
+  toFinanceSnapshot,
+  toMonthlyCost,
+  toOutstandingDebt,
+} from "@/lib/dashboard/transforms";
 
 /**
- * S3 reportes: pantalla FE-only. Un `PeriodSelector` gobierna los 4 bloques
- * (finanzas, hábitos, metas, actividad) sobre endpoints existentes en
- * paralelo; cero endpoints nuevos y sin exportar archivos. Cada bloque
- * aísla loading/error/empty con retry que revalida solo sus keys.
+ * S3 reportes: pantalla FE-only. Un `PeriodSelector` gobierna los bloques
+ * por período (hábitos, metas, actividad) sobre endpoints existentes en
+ * paralelo; el bloque de finanzas es una foto actual (patrimonio, costo
+ * mensual de suscripciones, deuda pendiente) sin ventana de período.
+ * Cero endpoints nuevos y sin exportar archivos. Cada bloque aísla
+ * loading/error/empty con retry que revalida solo sus keys.
  */
-
-const SavingsChart = dynamic(() => import("@/components/ui/SavingsChart"), {
-  ssr: false,
-  loading: () => <BlockLoading />,
-});
 
 type Range = { from: string; to: string } | null;
 
@@ -83,34 +86,48 @@ function BlockShell({
   return <>{children}</>;
 }
 
-function FinanceBlock({ range }: { range: Range }) {
+/**
+ * Foto actual de finanzas (S3b): patrimonio + costo mensual de
+ * suscripciones + deuda pendiente. No la gobierna el período elegido;
+ * lleva la etiqueta `reports.financeCurrent` para no leerse como
+ * "este mes". Ninguna petición toca un endpoint agregado eliminado.
+ */
+function FinanceBlock() {
   const { mutate } = useSWRConfig();
-  const reduced = usePrefersReducedMotion();
-  const flow = useMonthlyFlow(range?.from ?? null, range?.to ?? null);
-  const cats = useSpendByCategory(range?.from ?? null, range?.to ?? null, "expense");
-  const rows = flow.data ?? [];
-  const categories = cats.data ?? [];
-  const income = rows.reduce((acc, row) => acc + toNumber(row.income), 0);
-  const expense = rows.reduce((acc, row) => acc + toNumber(row.expense), 0);
+  const worth = useNetWorth();
+  const subs = useFinanceSubscriptions();
+  const debts = useFinanceDebts();
+  const loading = (!worth.data && !worth.error) || (!subs.data && !subs.error) || (!debts.data && !debts.error);
+  const error = Boolean(worth.error || subs.error || debts.error);
+  const cop = (worth.data?.per_currency ?? []).find((e) => e.currency === "COP") ?? worth.data?.per_currency[0];
+  const snapshot = toFinanceSnapshot({
+    netWorth: cop ? toNumber(cop.net_worth) : 0,
+    monthlySubsCost: toMonthlyCost(subs.data),
+    outstandingDebt: toOutstandingDebt(debts.data),
+  });
+  const hasData = Boolean(worth.data && subs.data && debts.data);
   return (
     <BlockShell
-      loading={!!range && ((!flow.data && !flow.error) || (!cats.data && !cats.error))}
-      error={!!range && (!!flow.error || !!cats.error)}
-      empty={!range || (!!flow.data && !!cats.data && rows.length === 0 && categories.length === 0)}
+      loading={loading}
+      error={error}
+      empty={!loading && !error && !hasData}
       emptyNode={<EmptyState title={t("reports.emptyFinance")} hint={t("reports.emptyFinanceHint")} />}
       onRetry={() =>
         void mutate(
           (key) =>
             typeof key === "string" &&
-            (key.startsWith("dashboard/monthly-flow") || key.startsWith("dashboard/by-category")),
+            (key === "dashboard/net-worth" ||
+              key === "finance/subscriptions" ||
+              key === "finance/debts"),
         )
       }
     >
+      <p className="mb-3 text-xs text-instrument/60">{t("reports.financeCurrent")}</p>
       <dl className="grid grid-cols-3 gap-3">
         {[
-          [t("reports.income"), income],
-          [t("reports.expense"), expense],
-          [t("reports.savings"), income - expense],
+          [t("dashboard.netWorth"), snapshot.netWorth],
+          [t("finance.subscriptions"), snapshot.monthlySubsCost],
+          [t("finance.debts"), snapshot.outstandingDebt],
         ].map(([label, value]) => (
           <div key={label as string} className="rounded-lg border border-hull p-3">
             <dt className="text-xs text-instrument/60">{label as string}</dt>
@@ -118,21 +135,6 @@ function FinanceBlock({ range }: { range: Range }) {
           </div>
         ))}
       </dl>
-      <h3 className="mt-4 font-display text-sm font-medium">{t("reports.topCategories")}</h3>
-      <ul className="mt-2 space-y-1">
-        {categories.map((cat) => (
-          <li key={cat.category_id} className="flex items-center justify-between text-sm">
-            <span>{cat.name}</span>
-            <span className="font-display">{formatMoney(toNumber(cat.total))}</span>
-          </li>
-        ))}
-      </ul>
-      <div className="mt-4">
-        <SavingsChart
-          data={rows.map((row) => ({ month: row.month, savings: toNumber(row.income) - toNumber(row.expense) }))}
-          animate={!reduced}
-        />
-      </div>
     </BlockShell>
   );
 }
@@ -300,7 +302,7 @@ export default function ReportsScreens({ now }: { now?: Date }) {
       </section>
       <div className="mt-4 grid grid-cols-12 gap-4">
         <SectionShell title={t("reports.finance")} hint={t("reports.financeHint")} span="col-span-12 xl:col-span-6">
-          <FinanceBlock range={range} />
+          <FinanceBlock />
         </SectionShell>
         <SectionShell title={t("reports.habits")} hint={t("reports.habitsHint")} span="col-span-12 xl:col-span-6">
           <HabitsBlock range={range} />

@@ -1,12 +1,9 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
 import { t } from "@/lib/i18n";
-import TransactionsLedger from "@/components/finance/TransactionsLedger";
-import { ManualCaptureSection } from "@/components/finance/ManualCapture";
 import {
   AccountsList,
   CompactMoneyList,
@@ -15,12 +12,11 @@ import {
 } from "@/components/finance/FinanceSections";
 import {
   useAccounts,
-  useMonthlyFlow,
   useNetWorth,
   usePreferences,
-  useSpendByCategory,
 } from "@/lib/api/dashboard";
 import {
+  patchAccount,
   useAssets,
   useDebts,
   useFinanceCategories,
@@ -32,18 +28,12 @@ import {
 import {
   toAccountCards,
   toAccountOptions,
-  toBalanceSeries,
   toCategoryOptions,
   toDebtRows,
-  toExpenseSeries,
-  toPeriodRange,
-  toSavingsSeries,
   toSavingsViews,
   toSubscriptionRows,
-  type PeriodSel,
+  type AccountCardView,
 } from "@/lib/finance/finance";
-import { toDonutSlices } from "@/lib/dashboard/transforms";
-import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 import { formatMoney } from "@/lib/api/money";
 import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
 import { DebtEditForm, DebtPayForm, DebtPaymentHistory, DebtProgressBar } from "@/components/finance/DebtPayments";
@@ -51,47 +41,13 @@ import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/Su
 import CardForm from "@/components/finance/CardForm";
 import { CardDetail } from "@/components/finance/CardDetail";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
-import PeriodSelector from "@/components/finance/PeriodSelector";
-import AnalysisSection from "@/components/finance/AnalysisSection";
 
 /**
- * Finance screens container. Owns all aggregate SWR reads (fired in
- * parallel) and money coercion at the boundary; `components/finance/*`
- * sections stay pure. The ledger manages its own keyset pagination below.
+ * Finance screens container. Owns all SWR reads (fired in parallel) and
+ * money coercion at the boundary; `components/finance/*` sections stay
+ * pure. Flow, ledger, capture and analysis blocks were removed in S3b:
+ * every rendered block reads a surviving endpoint.
  */
-
-const BalanceChart = dynamic(() => import("@/components/ui/BalanceChart"), {
-  ssr: false,
-  loading: () => <ChartSkeleton />,
-});
-
-const SavingsChart = dynamic(() => import("@/components/ui/SavingsChart"), {
-  ssr: false,
-  loading: () => <ChartSkeleton />,
-});
-
-const MonthlyExpensesChart = dynamic(() => import("@/components/ui/MonthlyExpensesChart"), {
-  ssr: false,
-  loading: () => <ChartSkeleton />,
-});
-
-const MonthCompareChart = dynamic(() => import("@/components/ui/MonthCompareChart"), {
-  ssr: false,
-  loading: () => <ChartSkeleton />,
-});
-
-const CategoryDonut = dynamic(() => import("@/components/ui/CategoryDonut"), {
-  ssr: false,
-  loading: () => <ChartSkeleton />,
-});
-
-function ChartSkeleton() {
-  return (
-    <div role="status" aria-label={t("common.loading")} className="flex h-40 items-center justify-center">
-      <p className="text-sm text-instrument/50">{t("common.loading")}</p>
-    </div>
-  );
-}
 
 function AggregatesSkeleton() {
   return (
@@ -109,32 +65,143 @@ function AggregatesSkeleton() {
   );
 }
 
+/** Client guard mirroring the server: `/^-?\d{1,6}(\.\d{1,2})?$/` and `|v| < 1e6`. */
+export const BALANCE_INPUT_RE = /^-?\d{1,6}(\.\d{1,2})?$/;
+
+export function isValidBalanceInput(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!BALANCE_INPUT_RE.test(trimmed)) return false;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && Math.abs(value) < 1e6;
+}
+
+/**
+ * Inline balance edit for one account card (design §6.2): the current value
+ * stays visible, `Cancelar` sends nothing, success revalidates the
+ * `finance/` SWR scope. Control is ≥44px with a focus ring and a
+ * per-account `aria-label`.
+ */
+export function AccountBalanceEdit({
+  account,
+  locale,
+}: {
+  account: AccountCardView;
+  locale: string;
+}) {
+  const { mutate } = useSWRConfig();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const currentLabel = formatMoney(account.balance, { locale, currency: account.currency });
+
+  function open() {
+    setDraft(String(account.balance));
+    setError(null);
+    setEditing(true);
+  }
+
+  function cancel() {
+    setEditing(false);
+    setError(null);
+  }
+
+  async function save() {
+    if (!isValidBalanceInput(draft)) {
+      setError(t("finance.balanceInvalid"));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await patchAccount(account.id, { balance: draft.trim() });
+      setEditing(false);
+      await mutate((key) => typeof key === "string" && key.startsWith("finance/"));
+    } catch {
+      setError(t("finance.saveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm">{account.name}</p>
+          <p className="font-mono text-sm tabular-nums">{currentLabel}</p>
+        </div>
+        <button
+          type="button"
+          onClick={open}
+          aria-label={t("finance.balanceEditLabel", { name: account.name })}
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+        >
+          {t("finance.balanceEdit")}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-hull px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="truncate text-sm">{account.name}</p>
+        <p className="shrink-0 font-mono text-sm tabular-nums">{currentLabel}</p>
+      </div>
+      <label
+        htmlFor={`balance-${account.id}`}
+        className="mt-2 block text-xs text-instrument/60"
+      >
+        {t("finance.amountCop")}
+      </label>
+      <input
+        id={`balance-${account.id}`}
+        type="text"
+        inputMode="decimal"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        aria-label={t("finance.balanceEditLabel", { name: account.name })}
+        aria-invalid={error ? true : undefined}
+        className="mt-1 min-h-[44px] w-full rounded-md border border-hull bg-deck px-3 py-2 font-mono text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+      />
+      {error ? (
+        <p role="alert" className="mt-1 text-xs text-alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving}
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-signal px-4 py-2 text-xs font-bold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50"
+        >
+          {saving ? t("finance.saving") : t("finance.save")}
+        </button>
+        <button
+          type="button"
+          onClick={cancel}
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+        >
+          {t("finance.cancel")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function FinanceScreens() {
   const { mutate } = useSWRConfig();
-  const reducedMotion = usePrefersReducedMotion();
 
   const accounts = useAccounts();
   const subscriptions = useSubscriptions();
   const debts = useDebts();
   const savings = useSavingsGoals();
   const prefs = usePreferences();
-  // S5 (no bloquean el skeleton ni el alert de agregados S1).
   const categories = useFinanceCategories();
   const assets = useAssets();
   const netWorth = useNetWorth();
-
-  // S6: período default mes actual → from/to alimentan ambos agregados.
-  const [period, setPeriod] = useState<PeriodSel>({ kind: "month" });
-  const now = new Date();
-  let range: { from: string; to: string } | null = null;
-  try {
-    range = toPeriodRange(period, now);
-  } catch {
-    range = null;
-  }
-  const monthlyFlow = useMonthlyFlow(range?.from ?? null, range?.to ?? null);
-  const spendExpense = useSpendByCategory(range?.from ?? null, range?.to ?? null, "expense");
-  const spendIncome = useSpendByCategory(range?.from ?? null, range?.to ?? null, "income");
 
   const queries = [accounts, subscriptions, debts, savings, prefs];
   const isLoading = queries.some((q) => q.isLoading);
@@ -142,13 +209,7 @@ export default function FinanceScreens() {
 
   const locale = prefs.data?.preferences.locale ?? "es-CO";
   const currency = prefs.data?.preferences.currency_code ?? "COP";
-
-  const flowRows = monthlyFlow.data ?? [];
-  const balanceData = toBalanceSeries(flowRows);
-  const savingsData = toSavingsSeries(flowRows);
-  const expensesData = toExpenseSeries(flowRows);
-  const incomeSlices = toDonutSlices(spendIncome.data);
-  const animate = !reducedMotion;
+  const cards = toAccountCards(accounts.data);
 
   return (
     <div>
@@ -162,12 +223,6 @@ export default function FinanceScreens() {
         {t("finance.subtitle", { currency })}
       </p>
       <div className="mt-6 grid grid-cols-12 gap-6">
-        <div className="col-span-12">
-          <ManualCaptureSection />
-        </div>
-        <div className="col-span-12">
-          <TransactionsLedger locale={locale} />
-        </div>
         {isLoading ? (
           <div className="col-span-12">
             <AggregatesSkeleton />
@@ -201,7 +256,12 @@ export default function FinanceScreens() {
               hint={t("finance.accountsHint")}
               span="col-span-12 xl:col-span-7"
             >
-              <AccountsList accounts={toAccountCards(accounts.data)} locale={locale} />
+              <AccountsList accounts={cards} locale={locale} />
+              <div className="mt-4 flex flex-col gap-2 border-t border-hull pt-4">
+                {cards.map((card) => (
+                  <AccountBalanceEdit key={card.id} account={card} locale={locale} />
+                ))}
+              </div>
             </SectionShell>
             <SectionShell
               title={t("finance.subscriptions")}
@@ -234,35 +294,7 @@ export default function FinanceScreens() {
             >
               <SavingsList goals={toSavingsViews(savings.data)} locale={locale} />
             </SectionShell>
-            <S5Sections categories={toCategoryOptions(categories.data ?? [])} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} debts={debts.data ?? []} savings={savings.data ?? []} cards={toAccountCards(accounts.data)} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
-            <SectionShell title={t("charts.periodLabel")} span="col-span-12">
-              <PeriodSelector value={period} onChange={setPeriod} now={now} />
-            </SectionShell>
-            <SectionShell title={t("charts.balance")} hint={t("charts.balanceHint")} span="col-span-12 xl:col-span-6">
-              <BalanceChart data={balanceData} animate={animate} />
-            </SectionShell>
-            <SectionShell title={t("charts.savings")} hint={t("charts.savingsHint")} span="col-span-12 xl:col-span-6">
-              <SavingsChart data={savingsData} animate={animate} />
-            </SectionShell>
-            <SectionShell title={t("charts.monthlyExpenses")} hint={t("charts.monthlyExpensesHint")} span="col-span-12 xl:col-span-6">
-              <MonthlyExpensesChart data={expensesData} animate={animate} />
-            </SectionShell>
-            <SectionShell title={t("charts.monthCompare")} hint={t("charts.monthCompareHint")} span="col-span-12 xl:col-span-6">
-              <MonthCompareChart data={flowRows} animate={animate} />
-            </SectionShell>
-            <SectionShell title={t("charts.incomeSource")} hint={t("charts.incomeSourceHint")} span="col-span-12 xl:col-span-6">
-              <CategoryDonut data={incomeSlices} animate={animate} />
-            </SectionShell>
-            <SectionShell title={t("analysis.title")} hint={t("analysis.hint")} span="col-span-12 xl:col-span-6">
-              <AnalysisSection
-                flow={flowRows}
-                byCatExpense={(spendExpense.data ?? []).map((row) => ({ name: row.name, total: row.total }))}
-                byCatIncome={(spendIncome.data ?? []).map((row) => ({ name: row.name, total: row.total }))}
-                budgets={[]}
-                locale={locale}
-                currency={currency}
-              />
-            </SectionShell>
+            <S5Sections categories={toCategoryOptions(categories.data ?? [])} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} debts={debts.data ?? []} savings={savings.data ?? []} cards={cards} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
           </>
         )}
       </div>

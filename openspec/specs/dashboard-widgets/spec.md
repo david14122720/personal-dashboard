@@ -2,25 +2,9 @@
 
 ## Purpose
 
-El home responde de un vistazo «¿cómo voy este mes / qué debo pagar?» con 9 widgets componibles desde endpoints existentes, personalizables por usuario, en español y solo COP, sin backend nuevo y sin regresión de Fase 1.
+El home responde de un vistazo «¿cómo voy este mes / qué debo pagar?» con 6 widgets componibles desde endpoints existentes, personalizables por usuario, en español y solo COP, sin backend nuevo y sin regresión de Fase 1.
 
 ## Requirements
-
-### Requirement: Month Split Metrics
-
-The system MUST render month status as three separate `MetricCard` widgets with stable ids `month-income`, `month-expense` and `month-savings`, each with its own visibility toggle. Income and expense MUST derive from the current `monthKey` point of `GET /transactions/stats/monthly-flow?from&to` (expense MAY use `GET /transactions/stats/by-category?from&to&type=expense` as context); savings MUST equal income minus expense with no dedicated endpoint. Amounts MUST display via `formatMoney` under `es-CO`/`COP` from `GET /me`.
-
-#### Scenario: Three separate cards
-
-- GIVEN monthly-flow point `{ income: "1000.00", expense: "400.00" }` for the current month
-- WHEN the home renders
-- THEN three cards show ingreso `$ 1.000`, gasto `$ 400` y ahorro `$ 600` as independent widgets
-
-#### Scenario: String-money boundary
-
-- GIVEN wire amounts as decimal strings
-- WHEN widgets render
-- THEN the UI receives numbers coerced only at the API boundary and never parses strings itself
 
 ### Requirement: Upcoming Payments 7-Day Union
 
@@ -96,7 +80,7 @@ The system MUST render widget `goal-progress` (`chart / md / order 30`) with two
 
 ### Requirement: Widget Loading Error and Empty States
 
-Each widget MUST handle `loading`, `error` and `empty` without breaking the home. Loading MUST show a per-widget placeholder; error MUST show a Spanish panel with retry that revalidates only `dashboard/*` keys; empty MUST show `EmptyState` in Spanish (e.g. no upcoming payments, no debts). Charts in widgets MUST reuse Recharts 3 code-split with `next/dynamic(ssr:false)`.
+Each widget MUST handle `loading`, `error` and `empty` without breaking the home. Loading MUST show a per-widget placeholder; error MUST show a Spanish panel with retry that revalidates only `dashboard/*` keys; empty MUST show `EmptyState` in Spanish (e.g. no upcoming payments, no debts). Charts in widgets MUST reuse Recharts 3 code-split with `next/dynamic(ssr:false)`. A widget whose data source was removed MUST NOT remain in the set as a permanent empty state — the empty state is only legitimate for a surviving source that is currently empty.
 
 #### Scenario: Empty upcoming payments
 
@@ -110,9 +94,15 @@ Each widget MUST handle `loading`, `error` and `empty` without breaking the home
 - WHEN `pending-debts` is in error
 - THEN a Spanish error panel with a retry action appears and the rest of the home keeps rendering
 
+#### Scenario: No permanent empty artefact
+
+- GIVEN the rendered home with real data
+- WHEN the widgets are inspected
+- THEN no block is empty because its source was deleted
+
 ### Requirement: Customization and Persistence
 
-Each of the 9 widgets MUST expose its own visible show/hide toggle in the home (no settings screen). Visibility MUST persist via `PATCH /me/preferences` with the exact envelope `{ dashboard_layout: { widgets: [...] } }` where each entry respects the backend contract (`id` length 1–64, `type ∈ metric|chart|list|ledger|heatmap`, `size ∈ sm|md|lg`, `order ≥ 0`, ≤32 entries, `deny_unknown_fields` → 422 on deviation). A hidden widget MUST NOT trigger any network fetch and MUST NOT render. On first run, empty or invalid layout the system MUST fall back to all 9 visible in default order (10, 11, 12, 20, 21, 22, 23, 24, 30). A `GET→PATCH→GET` round-trip MUST preserve the toggle state across reload.
+Each of the 6 surviving widgets MUST expose its own visible show/hide toggle in the home (no settings screen). Visibility MUST persist via `PATCH /me/preferences` with the exact envelope `{ dashboard_layout: { widgets: [...] } }` where each entry respects the backend contract (`id` length 1–64, `type ∈ metric|chart|list|ledger|heatmap`, `size ∈ sm|md|lg`, `order ≥ 0`, ≤32 entries, `deny_unknown_fields` → 422 on deviation). A hidden widget MUST NOT trigger any network fetch and MUST NOT render. On first run, empty or invalid layout the system MUST fall back to all 6 visible in default order (20, 21, 22, 23, 24, 30). Stored entries whose `id` is not one of the 6 survivors (`month-income`, `month-expense`, `month-savings`) MUST be ignored silently — they MUST NOT render a block, trigger a fetch, or invalidate the remaining layout. A `GET→PATCH→GET` round-trip MUST preserve toggle state across reload.
 
 #### Scenario: Hide stops fetch and render
 
@@ -130,20 +120,26 @@ Each of the 9 widgets MUST expose its own visible show/hide toggle in the home (
 
 - GIVEN `dashboard_layout` missing, empty or rejected as invalid
 - WHEN the home loads
-- THEN all 9 widgets render visible in default order
+- THEN all 6 widgets render visible in default order
+
+#### Scenario: Stale removed-widget entries are ignored
+
+- GIVEN a persisted layout containing `month-savings` together with two surviving widgets
+- WHEN the home loads
+- THEN the surviving widgets render per their stored visibility and the removed entry produces no block, no request and no error
 
 ### Requirement: Composition Constraints
 
-The system MUST compose all 9 widgets FE-only with zero new backend endpoints, zero migrations of `user_preferences`, and zero changes to `backend/src/routes/*`. It MUST respect wire contracts (decimal-string amounts, `deny_unknown_fields`, 401/404/422; `tasks?view=` 422 on unknown view; `goals.progress` and `debts.pending_amount/status` read-only), inherit `frontend-dashboard` rules (bento rail→tabs, keyboard access with visible focus, `prefers-reduced-motion` suppressing entrance and chart animations, theme tokens `--color-*` with no hex, Spanish tooltips with currency, `output: export` + Axum `STATIC_DIR` + SPA fallback, bearer `localStorage` + single-flight 401 redirect to `/login`, nav without `/wealth`), and `frontend-i18n` rules (single ES dictionary, typed keys `dashboard.*`, `t(key, vars)` with `{n}`/`{date}`, no hardcoded strings, `lang="es"`). It MUST NOT modify Fase 1 areas (`FinanceSections`, `ManualCapture`, `TransactionsLedger`, `TransferHistory`, `ProductivitySections`, `ProductivityForms`, tests `s1-capture`/`s2-crud`, Fase 1 DTOs/triggers).
+The system MUST compose all 6 widgets FE-only with zero new backend endpoints, zero migrations of `user_preferences`, and zero changes to `backend/src/routes/*`. It MUST respect wire contracts (decimal-string amounts, `deny_unknown_fields`, 401/404/422; `tasks?view=` 422 on unknown view; `goals.progress` and `debts.pending_amount/status` read-only), inherit `frontend-dashboard` rules (bento rail→tabs, keyboard access with visible focus, `prefers-reduced-motion` suppressing entrance and chart animations, theme tokens `--color-*` with no hex, Spanish tooltips with currency, `output: export` + Axum `STATIC_DIR` + SPA fallback, bearer `localStorage` + single-flight 401 redirect to `/login`, nav without `/wealth`), and `frontend-i18n` rules (single ES dictionary, typed keys `dashboard.*`, `t(key, vars)` with `{n}`/`{date}`, no hardcoded strings, `lang="es"`). No widget MAY import, wrap or depend on a removed component (`ManualCapture`, `TransactionsLedger`, `TransferHistory`, `BudgetBars`, `BudgetsList`), hook or transform.
 
 #### Scenario: No backend change
 
 - GIVEN the backend at its current routes
-- WHEN the 9 widgets load with valid auth
+- WHEN the 6 widgets load with valid auth
 - THEN every request targets a pre-existing endpoint and no 404 for a `/dashboard/*` aggregate occurs
 
 #### Scenario: Spanish typed copy
 
-- GIVEN any of the 9 widgets rendered
+- GIVEN any of the 6 widgets rendered
 - WHEN inspected
 - THEN all visible strings resolve via the typed ES dictionary with no hardcoded English literals

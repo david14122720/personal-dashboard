@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
-import { buildNextLayout, debtsKey, eventsKey, isWidgetVisible, resolveDashboardLayout, subscriptionsKey, tasksKey, useDebts, useEvents, useGoals, useSavingsGoals, useSpendByCategory, useSubscriptions, useTasks, useUpdateLayout } from "./dashboard";
+import { buildNextLayout, debtsKey, eventsKey, isWidgetVisible, resolveDashboardLayout, subscriptionsKey, tasksKey, useDebts, useEvents, useGoals, useSavingsGoals, useSubscriptions, useTasks, useUpdateLayout } from "./dashboard";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 const seen: string[] = [];
@@ -69,13 +69,39 @@ describe("dashboard hooks p8-pr2", () => {
     shell(h(AllProbe, null));
     expect(await screen.findByText("t1:e1:g1:sg1:s1")).toBeInTheDocument();
   });
-  it("resolves empty layout to default and toggles ids", () => {
+  it("resolves empty layout to the 6-widget default and toggles ids", () => {
     const fallback = resolveDashboardLayout({ preferences: { currency_code: "COP", locale: "es-CO" } });
-    expect(fallback.widgets.map((w) => w.id)).toContain("month-income");
-    expect(isWidgetVisible(fallback, "month-income")).toBe(true);
-    const next = buildNextLayout(fallback, "month-income", false);
-    expect(isWidgetVisible(next, "month-income")).toBe(false);
-    expect(isWidgetVisible(buildNextLayout(next, "month-income", true), "month-income")).toBe(true);
+    expect(fallback.widgets.map((w) => w.id)).toEqual([
+      "upcoming-payments",
+      "pending-debts",
+      "active-subs",
+      "pending-tasks",
+      "upcoming-events",
+      "goal-progress",
+    ]);
+    expect(fallback.widgets.map((w) => w.order)).toEqual([20, 21, 22, 23, 24, 30]);
+    expect(isWidgetVisible(fallback, "upcoming-payments")).toBe(true);
+    const next = buildNextLayout(fallback, "upcoming-payments", false);
+    expect(isWidgetVisible(next, "upcoming-payments")).toBe(false);
+    expect(isWidgetVisible(buildNextLayout(next, "upcoming-payments", true), "upcoming-payments")).toBe(true);
+  });
+  it("ignores stale removed-widget entries without fetch or error", () => {
+    const stale = resolveDashboardLayout({
+      preferences: {
+        currency_code: "COP",
+        locale: "es-CO",
+        dashboard_layout: {
+          widgets: [
+            { id: "month-savings", type: "metric", order: 12, size: "sm" },
+            { id: "upcoming-payments", type: "list", order: 20, size: "lg" },
+          ],
+        },
+      },
+    });
+    expect(isWidgetVisible(stale, "month-savings")).toBe(true);
+    expect(isWidgetVisible(stale, "upcoming-payments")).toBe(true);
+    // Re-adding a stale id is a no-op: it has no default definition.
+    expect(buildNextLayout(stale, "month-savings", true)).toBe(stale);
   });
   it("triangulates notification count without duplicating logic", async () => {
     const { toNotificationCount } = await import("@/lib/dashboard/transforms");
@@ -87,7 +113,7 @@ describe("dashboard hooks p8-pr2", () => {
     let done = "";
     function Patcher() {
       const update = useUpdateLayout();
-      return h("button", { type: "button", onClick: () => void update(buildNextLayout(resolveDashboardLayout(null), "month-income", false)).then(() => { done = JSON.stringify(patchBody); }) }, "go");
+      return h("button", { type: "button", onClick: () => void update(buildNextLayout(resolveDashboardLayout(null), "upcoming-payments", false)).then(() => { done = JSON.stringify(patchBody); }) }, "go");
     }
     shell(h(Patcher, null));
     fireEvent.click(screen.getByRole("button", { name: "go" }));
@@ -97,45 +123,10 @@ describe("dashboard hooks p8-pr2", () => {
     let threw = false;
     function Failer() {
       const update = useUpdateLayout();
-      return h("button", { type: "button", onClick: () => void update(buildNextLayout(resolveDashboardLayout(null), "month-income", false)).catch(() => { threw = true; }) }, "fail");
+      return h("button", { type: "button", onClick: () => void update(buildNextLayout(resolveDashboardLayout(null), "upcoming-payments", false)).catch(() => { threw = true; }) }, "fail");
     }
     shell(h(Failer, null));
     fireEvent.click(screen.getByRole("button", { name: "fail" }));
     await waitFor(() => expect(threw).toBe(true));
-  });
-});
-
-// -- PR-3 S6 api-wires RED: useSpendByCategory(from,to,type) con type en key --
-describe("useSpendByCategory type param (PR-3 RED)", () => {
-  const byCatUrls: string[] = [];
-  const byCatServer = setupServer(
-    http.get("http://test.local/api/transactions/stats/by-category", ({ request }) => {
-      byCatUrls.push(request.url);
-      const url = new URL(request.url);
-      const type = url.searchParams.get("type");
-      if (type === "income") return HttpResponse.json([{ category_id: "c9", name: "Salario", total: "2000000.00" }]);
-      return HttpResponse.json([{ category_id: "c1", name: "Mercado", total: "500.00" }]);
-    }),
-  );
-  beforeAll(() => byCatServer.listen());
-  afterEach(() => { byCatServer.resetHandlers(); byCatUrls.length = 0; });
-  afterAll(() => byCatServer.close());
-  function ExpenseProbe() {
-    const { data } = useSpendByCategory("2026-09-01", "2026-09-30");
-    return h("output", null, data ? data[0].name : "loading");
-  }
-  function IncomeProbe() {
-    const { data } = useSpendByCategory("2026-09-01", "2026-09-30", "income");
-    return h("output", null, data ? data[0].name : "loading");
-  }
-  it("defaults to expense preserving legacy behavior", async () => {
-    shell(h(ExpenseProbe, null));
-    expect(await screen.findByText("Mercado")).toBeInTheDocument();
-    expect(byCatUrls.some((u) => u.includes("type=expense"))).toBe(true);
-  });
-  it("fetches income slice with type in key and URL", async () => {
-    shell(h(IncomeProbe, null));
-    expect(await screen.findByText("Salario")).toBeInTheDocument();
-    expect(byCatUrls.some((u) => u.includes("type=income"))).toBe(true);
   });
 });

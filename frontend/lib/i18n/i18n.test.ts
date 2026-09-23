@@ -31,10 +31,7 @@ describe("i18n foundation", () => {
 });
 
 describe("p8 dashboard + notifications copy (PR1 RED)", () => {
-  it("resolves 9 widget titles and hints", () => {
-    expect(t("dashboard.monthIncome")).toBeTruthy();
-    expect(t("dashboard.monthExpense")).toBeTruthy();
-    expect(t("dashboard.monthSavings")).toBeTruthy();
+  it("resolves 6 widget titles and hints", () => {
     expect(t("dashboard.upcomingPayments")).toBeTruthy();
     expect(t("dashboard.pendingDebts")).toBeTruthy();
     expect(t("dashboard.activeSubs")).toBeTruthy();
@@ -87,38 +84,29 @@ describe("chartToken", () => {
   });
 });
 
-describe("p9 finanzas S6 i18n cierre (PR-3 GREEN)", () => {
-  it("resolves 4 chart titles+hints+empties plus period ranges", () => {
-    expect(t("charts.balance")).toBe("Balance");
-    expect(t("charts.savings")).toBe("Ahorro");
-    expect(t("charts.monthlyExpenses")).toBe("Gastos mensuales");
-    expect(t("charts.monthCompare")).toBe("Mes actual frente al anterior");
-    expect(t("charts.emptyBalance")).toContain("Sin datos");
-    expect(t("charts.emptySavings")).toContain("Sin datos");
-    expect(t("charts.emptyExpenses")).toContain("Sin gastos");
-    expect(t("charts.emptyCompare")).toContain("historial");
+describe("S3b snapshot + balance-edit copy", () => {
+  it("resolves the surviving period ranges", () => {
     expect(t("charts.periodWeek")).toBe("Semana");
     expect(t("charts.periodMonth")).toBe("Mes");
     expect(t("charts.periodQuarter")).toBe("Trimestre");
     expect(t("charts.periodYear")).toBe("Año");
     expect(t("charts.periodCustom")).toBe("Personalizado");
     expect(t("charts.periodInvalidRange")).toContain("no es válido");
-    expect(t("charts.incomeSource")).toBe("Ingresos por fuente");
   });
 
-  it("resolves analysis title/hint/disclaimer plus 7 templates and metrics", () => {
-    expect(t("analysis.title")).toBe("Análisis");
-    expect(t("analysis.disclaimer")).toBe("Análisis personal, no asesoramiento financiero.");
-    expect(t("analysis.tplMom", { pct: 18, cat: "Mercado", cur: "$ 500", prev: "$ 400" })).toContain("18%");
-    expect(t("analysis.tplMom", { pct: 18, cat: "Mercado", cur: "$ 500", prev: "$ 400" })).toContain("Mercado");
-    expect(t("analysis.tplSavings", { n: 40, saved: "$ 800", income: "$ 2000" })).toContain("40%");
-    expect(t("analysis.tplWorst", { mes: "sept 2026", amount: "$ 1200" })).toContain("mayor gasto");
-    expect(t("analysis.tplBest", { mes: "jul 2026", amount: "$ 1200" })).toContain("mayor ahorro");
-    expect(t("analysis.tplAvg", { amount: "$ 1000" })).toContain("Promedias");
-    expect(t("analysis.tplBudget", { n: 90, label: "Mercado", spent: "$ 90", amount: "$ 100" })).toContain("90%");
-    expect(t("analysis.tplRecurrent", { name: "Arriendo", count: 3 })).toContain("Arriendo");
-    expect(t("analysis.savingsRate")).toBeTruthy();
-    expect(t("analysis.avgExpense")).toBeTruthy();
-    expect(t("analysis.topCategory")).toBeTruthy();
+  it("labels the finance snapshot as a current value", () => {
+    expect(t("reports.financeCurrent")).toBe("Valor actual");
+    expect(t("reports.finance")).toBe("Finanzas actuales");
+    expect(t("progress.finance")).toBe("Finanzas actuales");
+    expect(t("progress.financeHint")).toContain("ahorro acumulado");
+  });
+
+  it("resolves the inline balance-edit copy with per-account labels", () => {
+    expect(t("finance.balanceEdit")).toBe("Editar saldo");
+    expect(t("finance.balanceEditLabel", { name: "Ahorros" })).toBe("Editar saldo de Ahorros");
+    expect(t("finance.balanceInvalid")).toContain("válido");
+    expect(t("finance.balanceSaved")).toBe("Saldo actualizado.");
+    expect(t("finance.subtitle", { currency: "COP" })).not.toMatch(/mayor|presupuesto/i);
+    expect(t("dashboard.overviewSubtitle")).not.toMatch(/presupuesto/i);
   });
 });

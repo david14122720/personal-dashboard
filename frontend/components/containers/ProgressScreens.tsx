@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import type { ReactNode } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
@@ -9,27 +8,23 @@ import { SectionShell } from "@/components/finance/FinanceSections";
 import EmptyState from "@/components/ui/EmptyState";
 import {
   eventsKey, tasksKey, useEvents as useDashboardEvents, useGoals as useDashboardGoals,
-  useMonthlyFlow, useNetWorth, useSavingsGoals, useTasks as useDashboardTasks,
+  useNetWorth, useSavingsGoals, useTasks as useDashboardTasks,
 } from "@/lib/api/dashboard";
 import { HABITS_TODAY_KEY, habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
 import { toEventRange } from "@/lib/finance/finance";
+import { useDebts as useFinanceDebts, useSavingsGoals as useFinanceSavingsGoals } from "@/lib/api/finance";
 import { aggregateEvolution, habitStats } from "@/lib/productivity/habitStats";
 import { scoreByArea, type AreaKey } from "@/lib/productivity/scoreByArea";
 import { formatMoney, toNumber } from "@/lib/api/money";
-import { toUpcomingEvents } from "@/lib/dashboard/transforms";
+import { toFinanceScore, toOutstandingDebt, toTotalSavings, toUpcomingEvents } from "@/lib/dashboard/transforms";
 import { todayYmdLocal } from "@/lib/productivity/productivity";
-import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 
 /**
  * S4 progreso: combinado FE-only, ventana fija 30 días. Patrimonio = número de
- * solo lectura (valuaciones INSERT-only, sin escritura). Score solo visual +
- * disclaimer fijo siempre visible (precedente `AnalysisSection`).
+ * solo lectura (valuaciones INSERT-only, sin escritura). Finanzas = foto actual
+ * (patrimonio, deuda pendiente, ahorro acumulado) con score vía `toFinanceScore`.
+ * Score solo visual + disclaimer fijo siempre visible.
  */
-
-const SavingsChart = dynamic(() => import("@/components/ui/SavingsChart"), {
-  ssr: false,
-  loading: () => <p role="status" aria-label={t("progress.loadingBlock")} className="py-6 text-center text-sm text-instrument/50">{t("common.loading")}</p>,
-});
 
 function range30(now: Date): { from: string; to: string } {
   return { from: todayYmdLocal(new Date(now.getTime() - 29 * 86_400_000)), to: todayYmdLocal(now) };
@@ -76,9 +71,9 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const ref = now ?? new Date();
   const { from, to } = range30(ref);
   const { mutate } = useSWRConfig();
-  const reduced = usePrefersReducedMotion();
-  const flow = useMonthlyFlow(from, to);
   const worth = useNetWorth();
+  const financeDebts = useFinanceDebts();
+  const financeSavings = useFinanceSavingsGoals();
   const today = useHabitsToday();
   const history = useHabitsHistory(from, to);
   const goals = useDashboardGoals();
@@ -91,7 +86,6 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const events = useDashboardEvents(periodEvents.from, periodEvents.to);
   const upcoming = useDashboardEvents(nextEvents.from, nextEvents.to);
 
-  const rows = flow.data ?? [];
   const habits = today.data ?? [];
   const logs = history.data ?? [];
   const goalItems = goals.data ?? [];
@@ -99,12 +93,14 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const doneTasks = (tasks.data ?? []).filter((task) => inRange((task as { completed_at?: string | null }).completed_at, from, to));
   const upcomingEvents = toUpcomingEvents(upcoming.data ?? [], ref, 14);
 
-  // Score: inputs ya normalizados 0–100 por sus transforms; `null` = sin datos.
-  const last = rows[rows.length - 1];
-  const lastIncome = last ? toNumber(last.income) : 0;
-  const lastExpense = toNumber(last?.expense);
-  const financeScore = rows.length === 0 ? null
-    : Math.round(Math.min(100, Math.max(0, ((lastIncome - lastExpense) / (lastIncome || 1)) * 100)) * 10) / 10;
+  const cop = (worth.data?.per_currency ?? []).find((e) => e.currency === "COP") ?? worth.data?.per_currency[0];
+  const netWorthValue = cop ? toNumber(cop.net_worth) : 0;
+  const outstandingDebt = toOutstandingDebt(financeDebts.data);
+  const totalSavings = toTotalSavings(financeSavings.data);
+
+  // Finance score from surviving inputs only (S3b): null when there is no data.
+  const financeScoreRaw = toFinanceScore({ netWorth: netWorthValue, savings: totalSavings, debt: outstandingDebt });
+  const financeScore = financeScoreRaw === null ? null : Math.round(financeScoreRaw * 10) / 10;
   const compliances = habits.map((h) => habitStats(logs.filter((l) => l.habit_id === h.habit_id), from, to, h.days_of_week).complianceRate);
   const habitsScore = habits.length === 0 || logs.length === 0 ? null
     : Math.round((compliances.reduce((a, b) => a + b, 0) / compliances.length) * 10) / 10;
@@ -121,7 +117,6 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const productivityScore = noProdData ? null : Math.min(100, doneTasks.length * 20);
   const scores = scoreByArea({ finance: financeScore, habits: habitsScore, goals: goalsScore, productivity: productivityScore });
 
-  const cop = (worth.data?.per_currency ?? []).find((e) => e.currency === "COP") ?? worth.data?.per_currency[0];
   const statsOf = (id: string, days?: number[]) => habitStats(logs.filter((l) => l.habit_id === id), from, to, days);
   const pending = habits.filter((h) => h.today_status === "pending");
   const evolution = aggregateEvolution(logs, habits.map((h) => ({ id: h.habit_id, name: h.name })), "week");
@@ -151,20 +146,17 @@ export default function ProgressScreens({ now }: { now?: Date }) {
       </section>
       <div className="mt-4 grid grid-cols-12 gap-4">
         <SectionShell title={t("progress.finance")} hint={t("progress.financeHint")} span="col-span-12 xl:col-span-6">
-          <Block loading={!flow.data && !flow.error} error={!!flow.error} empty={!!flow.data && rows.length === 0}
+          <Block loading={(!worth.data && !worth.error) || (!financeDebts.data && !financeDebts.error) || (!financeSavings.data && !financeSavings.error)} error={Boolean(worth.error || financeDebts.error || financeSavings.error)} empty={Boolean(worth.data && financeDebts.data && financeSavings.data && netWorthValue === 0 && outstandingDebt === 0 && totalSavings === 0)}
             emptyNode={<EmptyState title={t("progress.emptyFinance")} hint={t("progress.emptyFinanceHint")} />}
-            onRetry={() => void mutate((k) => typeof k === "string" && k.startsWith("dashboard/monthly-flow"))}>
+            onRetry={() => void mutate((k) => typeof k === "string" && (k === "dashboard/net-worth" || k === "finance/debts" || k === "finance/savings-goals"))}>
             <dl className="grid grid-cols-3 gap-3">
-              {[[t("progress.income"), lastIncome], [t("progress.expense"), lastExpense], [t("progress.savings"), lastIncome - lastExpense]].map(([label, value]) => (
+              {[[t("dashboard.netWorth"), netWorthValue], [t("finance.debts"), outstandingDebt], [t("finance.savings"), totalSavings]].map(([label, value]) => (
                 <div key={label as string} className="rounded-lg border border-hull p-3">
                   <dt className="text-xs text-instrument/60">{label as string}</dt>
                   <dd className="font-display text-base font-semibold">{formatMoney(value as number)}</dd>
                 </div>
               ))}
             </dl>
-            <div className="mt-4">
-              <SavingsChart data={rows.map((row) => ({ month: row.month, savings: toNumber(row.income) - toNumber(row.expense) }))} animate={!reduced} />
-            </div>
           </Block>
         </SectionShell>
         <SectionShell title={t("progress.netWorth")} hint={t("progress.netWorthHint")} span="col-span-12 xl:col-span-6">

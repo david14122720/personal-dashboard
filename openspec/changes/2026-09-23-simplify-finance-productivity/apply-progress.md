@@ -565,3 +565,70 @@ budgets/transactions/MCP/productivity scope change):
 - Created this session: `openspec/specs/mcp-dashboard/spec.md`.
 - Deleted this session: `openspec/specs/finance-transactions/`.
 - Found complete from prior work in tree (uncommitted): `backend/src/finance/money.rs`, `backend/src/routes/{accounts,debts,savings,categories}.rs`, `backend/src/routes/mod.rs`, `backend/src/main.rs`, `backend/tests/migration_0011_removal.rs`, `backend/tests/migration_0008_credit_cards.rs`; deleted: `backend/src/routes/transactions.rs`.
+
+---
+
+# Apply progress — S3b Frontend + remaining specs
+
+- change: `2026-09-23-simplify-finance-productivity`
+- slice: S3b only (frontend + specs + objetivo charts block; NO backend, NO migrations, NO MCP).
+- date: 2026-09-23
+- status: S3b complete — all 16 S3b tasks (`S3b-WU1` 5/5, `S3b-WU2` 4/4, `S3b-WU3` 3/3, `S3b-WU4` 4/4) marked `- [x]` in `tasks.md`.
+- delivery: auto-chain / stacked-to-main. No commit (parent owns commits).
+
+## Completed (WU1 — Transforms and API layer)
+
+- `lib/dashboard/transforms.ts`: added `toMonthlyCost` (daily×30, weekly×52/12, biweekly×26/12, monthly×1, quarterly÷3, semiannual÷6, annual÷12; inactive excluded; unknown excluded never 1×; empty→0), `toOutstandingDebt`, `toTotalSavings`, `toFinanceSnapshot`, `toFinanceScore` (100·(nw+s)/(nw+s+d), clamp 0..100, null when all zero). Deleted `toFlowPoints`/`FlowPoint`/`MonthlyFlowWire`, `toDonutSlices`/`CategoryWire`/`DonutSlice`, `savingsRate`, `monthBalance`, `toMonthIncome/Expense/Savings`, `toMonthSummary`, `worstAlertLevel`, `longestStreak` (orphan sweep: transforms `longestStreak` only fed DashboardHome — habits uses `lib/productivity/habitDashboard.longestStreak`, a different module).
+- `lib/api/dashboard.ts`: `DEFAULT_DASHBOARD_LAYOUT` → 6 widgets order 20,21,22,23,24,30; deleted `MonthlyFlowRowWire`, `CategoryTotalWire`, `useMonthlyFlow`, `useSpendByCategory`; kept `resolveDashboardLayout`/`isWidgetVisible`/`buildNextLayout`.
+- `lib/api/finance.ts`: deleted transactions block (`TransactionWire`, `TransactionListWire`, `TransactionFilters`, path/key/fetch/page helpers, `CreateTransactionInput`, `createTransaction`); added `patchAccount(id, {balance})`; `DebtPaymentWire` lost `transaction_id`.
+- `lib/finance/finance.ts`: deleted `LedgerRow`/`toLedgerRows`/`ledgerKey`, `FlowLike`/`toMonthOverMonth`/`toBalanceSeries`/`toSavingsSeries`/`toExpenseSeries`/`toMonthCompare`/`MonthCompare`, `toInsights` + `Insight`/`InsightsInput`/`MomDirection`/`BudgetInsightLike`/`CategoryTotalLike`; kept `PeriodSel`/`toPeriodRange`/`toEventRange`.
+
+## Completed (WU2 — Screens)
+
+- `DashboardHome.tsx`: deleted 4-card metric row, flow/category widgets, 3 month-split blocks, removed hooks/imports; 5-KPI strip from `useNetWorth`, `useAccounts().length`, finance `useSubscriptions`+`toMonthlyCost`, finance `useDebts`+`toOutstandingDebt`, finance `useSavingsGoals`+`toTotalSavings`; `customizeRows` → 6 surviving widgets; hidden widgets mount nothing (no fetch).
+- `FinanceScreens.tsx`: deleted `ManualCaptureSection`, `TransactionsLedger`, flow charts + finance `PeriodSelector` + income donut + `AnalysisSection` + removed hooks/transforms; kept grid + `S5Sections` minus budgets; added inline balance edit per design §6.2 (`AccountBalanceEdit` + `isValidBalanceInput`: current value visible, `/^-?\d{1,6}(\.\d{1,2})?$/` + `|v|<1e6` guard, Cancelar sends nothing, success revalidates `finance/` scope, 44px + focus ring + per-account `aria-label`).
+- `ReportsScreens.tsx`: `FinanceBlock` → current snapshot (`useNetWorth` + finance subs/debts + `toFinanceSnapshot`), screen `PeriodSelector` kept, `reports.financeCurrent` label, per-block error isolation, no aggregate request.
+- `ProgressScreens.tsx`: dropped `useMonthlyFlow`; finance score via `toFinanceScore({netWorth, savings, debt})`; figures patrimonio/deuda/ahorro; disclaimer + `progress.score.*` kept.
+
+## Completed (WU3 — Component deletions)
+
+- Deleted `AnalysisSection.tsx` + test; `ManualCapture.tsx`; `TransactionsLedger.tsx`; `BalanceChart`, `SavingsChart`, `MonthlyExpensesChart`, `MonthCompareChart`, `CategoryDonut.tsx`. Orphan verify: no surviving non-test imports (only `s1-capture.test.tsx`, rewritten in WU4); `FlowChart.tsx` is unmounted but left in tree (outside S3b allow-list — recorded below).
+
+## Completed (WU4 — Tests, i18n, specs)
+
+- Tests rewritten: `transforms.test.ts` (7-freq + inactive + unknown + empty, outstanding/savings/snapshot, score 4 cases), `dashboard.test.ts` (6-widget default + stale-id ignore), `finance.test.ts` (lib, surviving only), `jd-round1.test.ts` (lib, score/cost edges), `DashboardHome.test.tsx` (5-KPI strip + removed-items-gone + stale month-split ids), `ReportsScreens.test.tsx` (snapshot + no-aggregate-request), `ProgressScreens.test.tsx` (patrimonio/deuda/ahorro figures), `finance.test.tsx` (no ledger/capture/charts blocks + balance-edit buttons), `s1-capture.test.tsx` (patchAccount wire + `isValidBalanceInput` + edit 3 cases), `jd-round1.test.tsx` (AnalysisSection + analysis tpl assertions removed), `i18n.test.ts` (6 widgets + snapshot/balance-edit copy), `e2e/sections.spec.ts` (S6 → S3b snapshot assertions).
+- `es.ts`: deleted S3 families per `i18n-candidates.txt` (ledger/capture/flow/dashboard/chart/analysis); rewrote `finance.subtitle` + `dashboard.overviewSubtitle`; added `reports.financeCurrent`, `progress.financeHint` rewrite, `finance.save/cancel/balanceEdit/balanceEditLabel/balanceInvalid/balanceSaved`; `tsc` clean.
+- Spec sync: rewrote canonical `frontend-dashboard` (5-KPI strip, no-flow aggregates, S3b inventory + source integrity), `dashboard-widgets` (6-widget fallback + stale-id ignore + no-permanent-empty), `reports-screen` (snapshot), `progress-score` (score from surviving inputs); added `Account Balance Inline Edit` to canonical `finance-accounts`; added S3b scenario to canonical `frontend-i18n`; amended change-delta `finance-core-invariants` one-liner (financial-charts → financial-charts-and-indicators); `objetivo.md` charts + "Análisis financiero" blocks only (D8) with surviving list + withdrawal notes (diff confined to that hunk).
+
+## Required dangling-reference fixes (beyond the allow-list, still S3b-only)
+
+Same precedent as S1/S2 (zero-dangling-references invariant):
+
+1. `components/ui/charts.test.tsx`: dropped deleted-component imports + describes + `donutPalette` token test; FlowChart + EmptyState cases kept.
+2. `components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx`: month-trio describe → S3b strip/toggle cases on `upcoming-payments`; removed `useMonthlyFlow`/`useSpendByCategory` mock keys; added `@/lib/api/finance` mock (strip reads finance hooks).
+3. `components/ui/FlowChart.tsx`: `FlowPoint` type now local (shared transform deleted); file otherwise untouched — still unmounted, retirement deferred (outside S3b allow-list).
+
+## Deviations / retentions (recorded for parent)
+
+- `finance.statementBalance` key RETAINED: `FinanceSections.tsx` (outside S3b allow-list) still references it; runtime-dead (`statement_balance` always null since S3a) but statically imported. Dies with that file in a follow-up.
+- `dashboard.noFlowData`/`noFlowHint` RETAINED for the same reason (`FlowChart.tsx` orphan, outside allow-list).
+- `FlowChart.tsx` file itself left orphaned in tree (not in S3b surfaces); no screen imports it (SWR audit clean).
+
+## Verification (exact commands, observed results)
+
+- `cd frontend && pnpm test`: 309 passed / 0 failed across 32 files.
+- `node node_modules/typescript/bin/tsc --noEmit`: clean, exit 0.
+- SWR key audit: `grep -rn "transactions/stats|/transactions|/transfers|/budgets"` over containers + lib/api + lib/dashboard + lib/finance → zero hits (excluding comments/tests).
+- Orphan sweep: all 115 `i18n-candidates.txt` keys resolved — deleted except the two retentions above; zero `t("analysis.*")` / removed-chart-key consumers anywhere including tests.
+- `LAYOUT_EVIDENCE_PHASE=after E2E_BASE_URL=http://localhost:3101 npx playwright test e2e/productivity-layout.spec.ts` (against `pnpm dev --port 3101`): 1 passed — Track B unregressed.
+
+## Remaining / next
+
+- S3b: none. Acceptance criteria met (suite + tsc green; no removed import/hook/transform; no removed-endpoint request; inline edit 3 states covered; canonical specs truthful; objetivo charts/analysis reversed with date+reason; objetivo diff confined to that hunk).
+- Rollback if needed: `git revert` the slice commit (frontend-only).
+- Next recommended: verify (bounded review for S3b), then parent lifecycle L1–L3. Parent-owned: bounded reviews for all slices, slice PRs, L2 human deploy gate before 0011 runs against production.
+
+## Files changed (S3b)
+
+- Edited: `lib/dashboard/{transforms.ts,transforms.test.ts}`, `lib/api/{dashboard.ts,dashboard.test.ts,finance.ts}`, `lib/finance/{finance.ts,finance.test.ts,jd-round1.test.ts}`, `components/containers/{DashboardHome.tsx,DashboardHome.test.tsx,FinanceScreens.tsx,ReportsScreens.tsx,ReportsScreens.test.tsx,ProgressScreens.tsx,ProgressScreens.test.tsx}`, `components/finance/{finance.test.tsx,jd-round1.test.tsx,s1-capture.test.tsx}`, `components/ui/{FlowChart.tsx,charts.test.tsx}`, `components/dashboard/widgets/__tests__/DashboardHome.widgets.test.tsx`, `lib/i18n/{es.ts,i18n.test.ts}`, `e2e/sections.spec.ts`, `objetivo.md`, canonical `openspec/specs/{frontend-dashboard,dashboard-widgets,reports-screen,progress-score,finance-accounts,frontend-i18n}/spec.md`, change delta `.../specs/finance-core-invariants/spec.md`, `tasks.md`, this file.
+- Deleted: `components/finance/{AnalysisSection.tsx,AnalysisSection.test.tsx,ManualCapture.tsx,TransactionsLedger.tsx}`, `components/ui/{BalanceChart,SavingsChart,MonthlyExpensesChart,MonthCompareChart,CategoryDonut}.tsx`.

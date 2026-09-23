@@ -2,57 +2,25 @@ import { describe, expect, it } from "vitest";
 import {
   currentMonthKey,
   ledDotClass,
-  longestStreak,
-  monthBalance,
   monthsAgoStart,
-  savingsRate,
   toActiveSubs,
-  toDonutSlices,
-  toFlowPoints,
+  toFinanceScore,
+  toFinanceSnapshot,
   toGoalProgress,
   toISODate,
-  toMonthExpense,
-  toMonthIncome,
-  toMonthSavings,
-  toMonthSummary,
+  toMonthlyCost,
   toNotificationCount,
   toNotificationItems,
+  toOutstandingDebt,
   toOverdueItems,
   toPendingDebts,
   toPendingTasks,
+  toTotalSavings,
   toUpcomingEvents,
   toUpcomingPayments,
-  worstAlertLevel,
 } from "./transforms";
 
 describe("dashboard transforms", () => {
-  it("coerces decimal-string aggregates to numbers with balances", () => {
-    const points = toFlowPoints([
-      { month: "2026-09", income: "1000.00", expense: "400.00" },
-    ]);
-    expect(points).toEqual([{ month: "2026-09", income: 1000, expense: 400, balance: 600 }]);
-  });
-
-  it("returns empty arrays for null or empty aggregates", () => {
-    expect(toFlowPoints(null)).toEqual([]);
-    expect(toFlowPoints([])).toEqual([]);
-    expect(toDonutSlices(undefined)).toEqual([]);
-    expect(toDonutSlices([])).toEqual([]);
-  });
-
-  it("coerces invalid money strings to zero instead of NaN", () => {
-    const points = toFlowPoints([{ month: "2026-09", income: "oops", expense: "" }]);
-    expect(points[0].income).toBe(0);
-    expect(points[0].expense).toBe(0);
-    expect(points[0].balance).toBe(0);
-  });
-
-  it("coerces category totals to donut slices", () => {
-    expect(
-      toDonutSlices([{ category_id: "c1", name: "Food", total: "35.75" }]),
-    ).toEqual([{ id: "c1", name: "Food", value: 35.75 }]);
-  });
-
   it("maps backend enums 1:1 to LED tokens", () => {
     expect(ledDotClass("ok")).toBe("bg-flow");
     expect(ledDotClass("warn")).toBe("bg-signal");
@@ -60,33 +28,6 @@ describe("dashboard transforms", () => {
     expect(ledDotClass("high")).toBe("bg-alert");
     expect(ledDotClass("bogus")).toBe("bg-instrument/30");
     expect(ledDotClass(null)).toBe("bg-instrument/30");
-  });
-
-  it("rolls account alerts up with high beating warn", () => {
-    expect(worstAlertLevel([])).toBe("none");
-    expect(worstAlertLevel(["ok", "warn"])).toBe("warn");
-    expect(worstAlertLevel(["warn", "high"])).toBe("high");
-    expect(worstAlertLevel([null, undefined])).toBe("none");
-  });
-
-  it("computes savings rate and guards zero income", () => {
-    expect(savingsRate(1000, 400)).toBeCloseTo(0.6);
-    expect(savingsRate(0, 0)).toBeNull();
-    expect(savingsRate(-50, 10)).toBeNull();
-  });
-
-  it("finds the longest habit streak", () => {
-    expect(longestStreak([])).toBe(0);
-    expect(longestStreak(null)).toBe(0);
-    expect(
-      longestStreak([{ current_streak: 3 }, { current_streak: 12 }, { current_streak: 7 }]),
-    ).toBe(12);
-  });
-
-  it("reads the balance for a month key", () => {
-    const points = toFlowPoints([{ month: "2026-09", income: "1000.00", expense: "400.00" }]);
-    expect(monthBalance(points, "2026-09")).toBe(600);
-    expect(monthBalance(points, "2026-08")).toBe(0);
   });
 
   it("formats date helpers as local calendar strings", () => {
@@ -97,31 +38,91 @@ describe("dashboard transforms", () => {
   });
 });
 
-describe("month split metrics (PR1 RED)", () => {
-  it("derives income/expense/savings from the current monthKey point", () => {
-    const flow = [{ month: "2026-09", income: "1000.00", expense: "400.00" }];
-    expect(toMonthIncome(flow, "2026-09")).toBe(1000);
-    expect(toMonthExpense(flow, "2026-09")).toBe(400);
-    expect(toMonthSavings(1000, 400)).toBe(600);
-    expect(toMonthSummary(flow, "2026-09")).toEqual({ income: 1000, expense: 400, savings: 600 });
+describe("toMonthlyCost (S3b)", () => {
+  const sub = (frequency: string, price: string | number = "12000.00", is_active = true) => ({
+    price,
+    frequency,
+    is_active,
   });
 
-  it("supports negative savings and string-wire coercion", () => {
-    const flow = [{ month: "2026-09", income: "200.00", expense: "500.00" }];
-    expect(toMonthSummary(flow, "2026-09").savings).toBe(-300);
-    expect(toMonthIncome([{ month: "2026-09", income: "1000.50", expense: 0 }], "2026-09")).toBeCloseTo(
-      1000.5,
-    );
+  it.each([
+    ["daily", 30],
+    ["weekly", 52 / 12],
+    ["biweekly", 26 / 12],
+    ["monthly", 1],
+    ["quarterly", 1 / 3],
+    ["semiannual", 1 / 6],
+    ["annual", 1 / 12],
+  ])("converts %s with its factor", (frequency, factor) => {
+    expect(toMonthlyCost([sub(frequency, 1200)])).toBeCloseTo(1200 * (factor as number), 6);
   });
 
-  it("returns zero when the month is absent or flow is null", () => {
-    expect(toMonthIncome(null, "2026-09")).toBe(0);
-    expect(toMonthExpense(undefined, "2026-09")).toBe(0);
-    expect(toMonthSummary([{ month: "2026-08", income: 10, expense: 5 }], "2026-09")).toEqual({
-      income: 0,
-      expense: 0,
-      savings: 0,
+  it("excludes inactive subscriptions", () => {
+    expect(toMonthlyCost([sub("monthly", "5000", false)])).toBe(0);
+    expect(toMonthlyCost([sub("monthly", "5000", false), sub("monthly", "3000")])).toBe(3000);
+  });
+
+  it("excludes unknown frequencies instead of assuming 1x", () => {
+    expect(toMonthlyCost([sub("fortnightly", "9999")])).toBe(0);
+    expect(toMonthlyCost([sub("monthly", "1000"), sub("mystery", "9999")])).toBe(1000);
+  });
+
+  it("returns 0 for empty, null or undefined", () => {
+    expect(toMonthlyCost([])).toBe(0);
+    expect(toMonthlyCost(null)).toBe(0);
+    expect(toMonthlyCost(undefined)).toBe(0);
+  });
+});
+
+describe("toOutstandingDebt / toTotalSavings / toFinanceSnapshot (S3b)", () => {
+  it("sums pending_amount over active debts only", () => {
+    expect(
+      toOutstandingDebt([
+        { pending_amount: "500.00", status: "active" },
+        { pending_amount: "100.00", status: "paid_off" },
+        { pending_amount: 200, status: "active" },
+      ]),
+    ).toBe(700);
+    expect(toOutstandingDebt([])).toBe(0);
+    expect(toOutstandingDebt(null)).toBe(0);
+  });
+
+  it("sums saved_amount over non-completed goals only", () => {
+    expect(
+      toTotalSavings([
+        { saved_amount: "100.00" },
+        { saved: "50.00", is_completed: true },
+        { saved_amount: 25, completed: false },
+      ]),
+    ).toBe(125);
+    expect(toTotalSavings([])).toBe(0);
+    expect(toTotalSavings(undefined)).toBe(0);
+  });
+
+  it("passes the snapshot values through with no period window", () => {
+    expect(toFinanceSnapshot({ netWorth: 80, monthlySubsCost: 10, outstandingDebt: 20 })).toEqual({
+      netWorth: 80,
+      monthlySubsCost: 10,
+      outstandingDebt: 20,
     });
+  });
+});
+
+describe("toFinanceScore (S3b)", () => {
+  it("computes the share of the positive position not owed", () => {
+    expect(toFinanceScore({ netWorth: 80, savings: 20, debt: 100 })).toBeCloseTo(50);
+  });
+
+  it("returns null when all three inputs are zero", () => {
+    expect(toFinanceScore({ netWorth: 0, savings: 0, debt: 0 })).toBeNull();
+  });
+
+  it("returns 100 when debt-free with a positive position", () => {
+    expect(toFinanceScore({ netWorth: 80, savings: 20, debt: 0 })).toBe(100);
+  });
+
+  it("clamps an underwater position to 0", () => {
+    expect(toFinanceScore({ netWorth: -200, savings: 0, debt: 100 })).toBe(0);
   });
 });
 

@@ -40,34 +40,21 @@ test("finance S5 escritura por dominio con montos manuales y selects por nombre"
   await expect(page.getByText("Patrimonio neto")).toBeVisible();
 });
 
-test("finance S6 charts filtran por 5 rangos y muestran insights con disclaimer", async ({ page }) => {
+test("finance S3b snapshot actual sin charts de flujo ni análisis", async ({ page }) => {
   await loginViaApi(page);
   await page.goto("/dashboard/finance/");
 
-  // S6: PeriodSelector default mes actual con 5 rangos.
-  const period = page.getByRole("group", { name: "Período" });
-  await expect(period.getByRole("radio", { name: "Mes" })).toBeChecked();
-  for (const name of ["Semana", "Mes", "Trimestre", "Año", "Personalizado"]) {
-    await expect(period.getByRole("radio", { name })).toBeVisible();
-  }
+  // S3b: cuentas con edición inline de saldo por tarjeta.
+  await expect(page.getByRole("button", { name: /Editar saldo/ }).first()).toBeVisible();
 
-  // S6: 4 charts + donut income renderizan (títulos ES).
-  await expect(page.getByText("Balance", { exact: true })).toBeVisible();
-  await expect(page.getByText("Ahorro", { exact: true })).toBeVisible();
-  await expect(page.getByText("Gastos mensuales")).toBeVisible();
-  await expect(page.getByText("Mes actual frente al anterior")).toBeVisible();
-  await expect(page.getByText("Ingresos por fuente")).toBeVisible();
+  // S3b: sin PeriodSelector de finanzas, sin charts de flujo, sin análisis.
+  await expect(page.getByText("Balance", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Gastos mensuales")).toHaveCount(0);
+  await expect(page.getByText("Mes actual frente al anterior")).toHaveCount(0);
+  await expect(page.getByText("Ingresos por fuente")).toHaveCount(0);
+  await expect(page.getByText("Análisis personal, no asesoramiento financiero.")).toHaveCount(0);
 
-  // S6: custom filtra ambos agregados (date inputs YYYY-MM-DD + error inline si from>to).
-  await period.getByRole("radio", { name: "Personalizado" }).click();
-  await period.getByLabel("Desde").fill("2026-07-01");
-  await period.getByLabel("Hasta").fill("2026-09-09");
-  await expect(period.getByRole("alert")).toHaveCount(0);
-
-  // S6: insights >=3 tono directo + disclaimer siempre visible.
-  await expect(page.getByText("Análisis personal, no asesoramiento financiero.")).toBeVisible();
-  await expect(page.getByText(/Este mes gastaste|Tu tasa de ahorro|Tu mayor gasto/)).toBeVisible();
-
-  // S6: patrimonio-número visible en moneda de /me.
+  // S3b: bloques supervivientes siguen visibles.
+  await expect(page.getByText("Cuentas").first()).toBeVisible();
   await expect(page.getByText("Patrimonio neto")).toBeVisible();
 });
