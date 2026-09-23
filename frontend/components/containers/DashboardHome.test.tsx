@@ -4,6 +4,11 @@ import DashboardHome from "./DashboardHome";
 
 vi.mock("next/dynamic", () => ({ default: () => () => null }));
 vi.mock("swr", () => ({ useSWRConfig: () => ({ mutate: vi.fn() }) }));
+vi.mock("next/link", () => ({
+  default: ({ href, children }: { href: string; children: React.ReactNode }) => (
+    <a href={href}>{children}</a>
+  ),
+}));
 
 const q = (data: unknown) => ({ data, error: undefined, isLoading: false });
 
@@ -46,7 +51,7 @@ describe("DashboardHome ES copy", () => {
     expect(screen.getByText("No se pudo cargar esta sección")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
     // El resto (telemetría, widgets, gráficos, secciones) sigue vivo.
-    expect(screen.getByRole("heading", { name: "Resumen" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
     expect(screen.getByText("Telemetría en vivo de tus cuentas, presupuestos y hábitos.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Próximos pagos" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Flujo mensual" })).toBeInTheDocument();
@@ -57,14 +62,19 @@ describe("DashboardHome ES copy", () => {
   it("renders Spanish telemetry and empty habits", () => {
     render(<DashboardHome />);
     expect(screen.getAllByText("Patrimonio neto").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("Hábitos pendientes")).toBeInTheDocument();
+    expect(screen.getByText("Hábitos de hoy")).toBeInTheDocument();
     expect(screen.getByText("Todo al día por hoy")).toBeInTheDocument();
     expect(screen.getByText("Nada pendiente")).toBeInTheDocument();
   });
 
   it("renders Spanish widget shells and overview copy", () => {
     render(<DashboardHome />);
-    expect(screen.getByRole("heading", { name: "Resumen" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
+    expect(screen.getByText("v2.4 Telemetría")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "+ Registrar actividad" })).toHaveAttribute(
+      "href",
+      "/dashboard/finance/",
+    );
     expect(screen.getByText("Telemetría en vivo de tus cuentas, presupuestos y hábitos.")).toBeInTheDocument();
     expect(screen.getByText("Flujo mensual")).toBeInTheDocument();
     expect(screen.getByText("Ingresos frente a gastos, últimos 12 meses.")).toBeInTheDocument();
@@ -80,7 +90,7 @@ describe("DashboardHome ES copy", () => {
     (globalThis as Record<string, unknown>).__DH__ = "loading";
     render(<DashboardHome />);
     expect(screen.getByRole("status", { name: "Cargando panel" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Resumen" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Próximos pagos" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Deudas pendientes" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Flujo mensual" })).toBeInTheDocument();

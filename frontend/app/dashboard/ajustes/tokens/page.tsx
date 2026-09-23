@@ -111,7 +111,12 @@ export default function TokensPage() {
     <AppShell>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
         <header>
-          <h1 className="font-display text-2xl font-semibold tracking-wide">{t("tokens.title")}</h1>
+          <h1 className="flex items-center gap-3 font-display text-2xl font-semibold tracking-wide">
+            {t("tokens.title")}
+            <span className="rounded-full border border-signal/20 bg-signal/10 px-2.5 py-0.5 font-mono text-xs font-medium text-signal">
+              {t("tokens.activeBadge", { n: tokens.length })}
+            </span>
+          </h1>
           <p className="mt-1 text-sm text-instrument/70">{t("tokens.subtitle")}</p>
         </header>
 
@@ -124,10 +129,12 @@ export default function TokensPage() {
         {created ? (
           <section
             aria-label={t("tokens.createdTitle")}
-            className="rounded-xl border border-signal/60 bg-hull/40 p-5"
+            className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
           >
             <h2 className="font-display text-lg font-semibold tracking-wide">{t("tokens.createdTitle")}</h2>
-            <p className="mt-1 text-sm text-instrument/70">{t("tokens.createdOnce")}</p>
+            <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {t("tokens.createdOnce")}
+            </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
               <code className="min-w-0 flex-1 break-all rounded-md border border-hull bg-deck px-3 py-2 text-sm text-signal">
                 {created.token}
@@ -154,7 +161,7 @@ export default function TokensPage() {
 
         <section
           aria-label={t("tokens.createTitle")}
-          className="rounded-xl border border-hull bg-hull/40 p-5"
+          className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
         >
           <h2 className="font-display text-lg font-semibold tracking-wide">{t("tokens.createTitle")}</h2>
           <form onSubmit={(e) => void onCreate(e)} className="mt-4 flex flex-col gap-4">
@@ -166,7 +173,7 @@ export default function TokensPage() {
                 maxLength={80}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={t("tokens.namePlaceholder")}
-                className="rounded-md border border-hull bg-deck px-3 py-2 text-instrument placeholder:text-instrument/40"
+                className="rounded-md border border-slate-800 bg-[#171b26] px-3 py-2 text-instrument placeholder:text-instrument/40"
               />
             </label>
             <label className="flex flex-col gap-1 text-sm">
@@ -174,7 +181,7 @@ export default function TokensPage() {
               <select
                 value={expiry}
                 onChange={(e) => setExpiry(e.target.value)}
-                className="rounded-md border border-hull bg-deck px-3 py-2 text-instrument"
+                className="rounded-md border border-slate-800 bg-[#171b26] px-3 py-2 text-instrument"
               >
                 <option value="never">{t("tokens.expiryNever")}</option>
                 {EXPIRY_OPTIONS.map((days) => (
@@ -196,7 +203,7 @@ export default function TokensPage() {
 
         <section
           aria-label={t("tokens.listTitle")}
-          className="rounded-xl border border-hull bg-hull/40 p-5"
+          className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
         >
           <h2 className="font-display text-lg font-semibold tracking-wide">{t("tokens.listTitle")}</h2>
           {loading ? (

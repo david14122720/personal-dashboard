@@ -87,6 +87,9 @@ describe("login screen control deck visuals", () => {
   it("renders remember-me checkbox, forgot link, secure note and footer note", () => {
     render(<LoginPage />);
 
+    expect(screen.getByRole("status")).toHaveTextContent("EN LÍNEA");
+    expect(screen.getByText("v1.4")).toBeInTheDocument();
+
     const remember = screen.getByLabelText("Recordar sesión") as HTMLInputElement;
     expect(remember.type).toBe("checkbox");
     fireEvent.click(remember);

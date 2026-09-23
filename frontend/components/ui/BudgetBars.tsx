@@ -1,7 +1,7 @@
 "use client";
 
 import { Bar, BarChart, Cell, LabelList, Tooltip, XAxis, YAxis } from "recharts";
-import { chartToken } from "@/lib/i18n";
+import { chartToken, t } from "@/lib/i18n";
 import EmptyState from "@/components/ui/EmptyState";
 
 export interface BudgetBarDatum {
@@ -35,7 +35,7 @@ export default function BudgetBars({
   animate?: boolean;
 }) {
   if (!data || data.length === 0) {
-    return <EmptyState title="No budgets yet" hint="Create a budget to track spend against it." />;
+    return <EmptyState title={t("dashboard.noBudgetsData")} hint={t("dashboard.noBudgetsHint")} />;
   }
   const plotted = data.map((row) => ({ ...row, plotted: Math.min(row.pct, 1) }));
   const tok = (prop: `--color-${string}`): string => chartToken(prop) || `var(${prop})`;

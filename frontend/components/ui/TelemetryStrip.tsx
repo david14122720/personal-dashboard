@@ -18,7 +18,10 @@ export interface TelemetryItem {
 
 export default function TelemetryStrip({ items }: { items: TelemetryItem[] }) {
   return (
-    <section aria-label={t("dashboard.telemetryStrip")} className="rounded-xl border border-hull bg-deck p-4">
+    <section
+      aria-label={t("dashboard.telemetryStrip")}
+      className="rounded-xl border border-slate-800/80 bg-[#0f131d]/60 p-4"
+    >
       <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
         {items.map((item) => (
           <li key={item.id} className="flex min-w-0 items-start gap-2.5">
@@ -33,10 +36,8 @@ export default function TelemetryStrip({ items }: { items: TelemetryItem[] }) {
               <span aria-hidden="true" className="mt-1.5 inline-block h-2.5 w-2.5 shrink-0" />
             )}
             <div className="min-w-0">
-              <p className="font-display text-[11px] font-medium uppercase tracking-widest text-instrument/60">
-                {item.label}
-              </p>
-              <p className="truncate font-mono text-base font-semibold tabular-nums text-instrument">
+              <p className="label-caps text-slate-400">{item.label}</p>
+              <p className="truncate font-mono text-base font-semibold tabular-nums text-white">
                 {item.display}
               </p>
             </div>

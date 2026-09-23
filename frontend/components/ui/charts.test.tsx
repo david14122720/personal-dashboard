@@ -12,7 +12,7 @@ import MonthCompareChart from "./MonthCompareChart";
 describe("Recharts wrappers", () => {
   it("FlowChart renders an empty state without errors on empty aggregates", () => {
     render(<FlowChart data={[]} />);
-    expect(screen.getByRole("status")).toHaveTextContent("No flow data yet");
+    expect(screen.getByRole("status")).toHaveTextContent("Sin datos de flujo aún");
   });
 
   it("FlowChart plots coerced income and expense series", () => {
@@ -25,7 +25,7 @@ describe("Recharts wrappers", () => {
 
   it("CategoryDonut renders an empty state without errors on empty aggregates", () => {
     render(<CategoryDonut data={[]} />);
-    expect(screen.getByRole("status")).toHaveTextContent("No category data yet");
+    expect(screen.getByRole("status")).toHaveTextContent("Sin datos por categoría aún");
   });
 
   it("CategoryDonut shows direct money values beside each legend entry", () => {
@@ -36,7 +36,7 @@ describe("Recharts wrappers", () => {
 
   it("BudgetBars renders an empty state without errors on empty budgets", () => {
     render(<BudgetBars data={[]} />);
-    expect(screen.getByRole("status")).toHaveTextContent("No budgets yet");
+    expect(screen.getByRole("status")).toHaveTextContent("Sin presupuestos aún");
   });
 
   it("BudgetBars exposes each bar as screen-reader text in Spanish", () => {

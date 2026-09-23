@@ -138,9 +138,9 @@ export function SectionShell({
   span: string;
 }) {
   return (
-    <section aria-label={title} className={`rounded-xl border border-hull bg-hull/40 p-5 ${span}`}>
-      <h2 className="font-display text-base font-semibold tracking-wide">{title}</h2>
-      {hint ? <p className="mt-1 text-sm text-instrument/60">{hint}</p> : null}
+    <section aria-label={title} className={`rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span}`}>
+      <h2 className="font-display text-base font-semibold text-white">{title}</h2>
+      {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
       <div className="mt-4">{children}</div>
     </section>
   );

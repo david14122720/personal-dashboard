@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
@@ -104,6 +105,10 @@ function SectionError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/**
+ * Local Stitch panel. `span` stays optional so shells nested in the 8/4
+ * column blocks do not need grid placement classes.
+ */
 function WidgetShell({
   title,
   hint,
@@ -114,15 +119,18 @@ function WidgetShell({
   title: string;
   hint?: string;
   children: React.ReactNode;
-  span: string;
+  span?: string;
   action?: React.ReactNode;
 }) {
   return (
-    <section aria-label={title} className={`rounded-xl border border-hull bg-hull/40 p-5 ${span}`}>
+    <section
+      aria-label={title}
+      className={`rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span ?? ""}`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-base font-semibold tracking-wide">{title}</h2>
-          {hint ? <p className="mt-1 text-sm text-instrument/60">{hint}</p> : null}
+          <h2 className="font-display text-base font-semibold tracking-wide text-white">{title}</h2>
+          {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
         </div>
         {action}
       </div>
@@ -229,6 +237,9 @@ export default function DashboardHome() {
   const slices = toDonutSlices(categories.data);
   const pendingHabits = (habits.data ?? []).filter((h) => h.today_status === "pending");
   const summary = toMonthSummary(flow.data, monthKey);
+  const habitsTotal = (habits.data ?? []).length;
+  const habitsDone = habitsTotal - pendingHabits.length;
+  const habitsPct = habitsTotal === 0 ? null : habitsDone / habitsTotal;
 
   const customizeRows = [
     { id: "month-income", label: t("dashboard.monthIncome") },
@@ -244,141 +255,223 @@ export default function DashboardHome() {
 
   return (
     <div>
-      <div className="flex items-start justify-between gap-4">
-        <div><h1 className="font-display text-2xl font-semibold tracking-wide">{t("dashboard.overview")}</h1><p className="mt-1 text-sm text-instrument/60">{t("dashboard.overviewSubtitle")}</p></div>
-        <NotificationBell />
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h1 className="flex flex-wrap items-center gap-3 font-display text-2xl font-semibold tracking-wide">
+            {t("dashboard.overviewTitle")}
+            <span className="shrink-0 whitespace-nowrap rounded-full border border-signal/20 bg-signal/10 px-2.5 py-0.5 font-mono text-xs font-medium text-signal">
+              {t("dashboard.overviewBadge")}
+            </span>
+          </h1>
+          <p className="mt-1 text-sm text-instrument/60">{t("dashboard.overviewSubtitle")}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/dashboard/finance/"
+            className="glow-cyan inline-flex items-center rounded-lg bg-signal px-4 py-2 text-xs font-bold text-deck transition-colors hover:bg-signal-soft"
+          >
+            {t("dashboard.logActivity")}
+          </Link>
+          <NotificationBell />
+        </div>
       </div>
-      <div className="mt-6 grid grid-cols-12 gap-4">
-        <div className="col-span-12">
-          {telemetryLoading ? (
-            <SectionSkeleton />
-          ) : telemetryError ? (
-            <SectionError onRetry={retryDashboards} />
-          ) : (
-            <TelemetryStrip items={strip} />
-          )}
-        </div>
-        <div className="col-span-12 md:col-span-6 xl:col-span-4">
-          <MetricCard label={t("dashboard.netWorth")} display={fmt(netWorthValue)} hint={worthEntry?.currency} />
-        </div>
-        <div className="col-span-12 md:col-span-6 xl:col-span-4">
-          <MetricCard
-            label={t("dashboard.monthBalance")}
-            display={fmt(balance)}
-            hint={monthKey}
-            status={balance >= 0 ? "ok" : "warn"}
-          />
-        </div>
-        <div className="col-span-12 md:col-span-6 xl:col-span-4">
-          <MetricCard
-            label={t("dashboard.pendingHabits")}
-            display={`${pendingHabits.length}`}
-            hint={pendingHabits.length === 0 ? t("dashboard.allClear") : t("dashboard.awaitingCheckin")}
-            status={pendingHabits.length === 0 ? "ok" : "warn"}
-          />
-        </div>
-        {flowLoading ? (
-          <div className="col-span-12">
-            <SectionSkeleton />
-          </div>
-        ) : flowError ? (
-          <div className="col-span-12">
-            <SectionError onRetry={retryDashboards} />
-          </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard
+          label={t("dashboard.netWorth")}
+          display={fmt(netWorthValue)}
+          hint={worthEntry?.currency}
+        />
+        <MetricCard
+          label={t("dashboard.monthBalance")}
+          display={fmt(balance)}
+          hint={monthKey}
+          status={balance >= 0 ? "ok" : "warn"}
+          bar={rate === null ? null : rate * 100}
+        />
+        <MetricCard
+          label={t("dashboard.habitsToday")}
+          display={`${habitsDone} / ${habitsTotal}`}
+          hint={habitsPct === null ? t("dashboard.allClear") : `${Math.round(habitsPct * 100)}%`}
+          status={pendingHabits.length === 0 ? "ok" : "warn"}
+          bar={habitsPct === null ? null : habitsPct * 100}
+          footer={
+            pendingHabits.length === 0
+              ? t("habitsDashboard.todayPerfect")
+              : t("habitsDashboard.todayMissing", { n: pendingHabits.length })
+          }
+        />
+        <MetricCard
+          label={t("dashboard.savingsRate")}
+          display={rate === null ? "—" : `${(rate * 100).toFixed(1)}%`}
+          hint={monthKey}
+          status={rate === null ? null : rate >= 0.2 ? "ok" : rate >= 0 ? "warn" : "over"}
+        />
+      </div>
+
+      <div className="mt-6">
+        {telemetryLoading ? (
+          <SectionSkeleton />
+        ) : telemetryError ? (
+          <SectionError onRetry={retryDashboards} />
         ) : (
-          <>
-            {visible("month-income") ? (
-              <div className="col-span-12 md:col-span-6 xl:col-span-4">
-                <div className="mb-2 flex justify-end"><WidgetToggle id="month-income" visible onToggle={(v) => toggle("month-income", v)} /></div>
-                <MetricCard label={t("dashboard.monthIncome")} display={fmt(summary.income)} hint={monthKey} />
-              </div>
-            ) : null}
-            {visible("month-expense") ? (
-              <div className="col-span-12 md:col-span-6 xl:col-span-4">
-                <div className="mb-2 flex justify-end"><WidgetToggle id="month-expense" visible onToggle={(v) => toggle("month-expense", v)} /></div>
-                <MetricCard label={t("dashboard.monthExpense")} display={fmt(summary.expense)} hint={monthKey} />
-              </div>
-            ) : null}
-            {visible("month-savings") ? (
-              <div className="col-span-12 md:col-span-6 xl:col-span-4">
-                <div className="mb-2 flex justify-end"><WidgetToggle id="month-savings" visible onToggle={(v) => toggle("month-savings", v)} /></div>
-                <MetricCard label={t("dashboard.monthSavings")} display={fmt(summary.savings)} hint={t("dashboard.monthSavingsHint")} status={summary.savings >= 0 ? "ok" : "warn"} />
-              </div>
-            ) : null}
-          </>
+          <TelemetryStrip items={strip} />
         )}
-        {visible("upcoming-payments") ? (<WidgetShell title={t("dashboard.upcomingPayments")} hint={t("dashboard.upcomingPaymentsHint")} span="col-span-12 xl:col-span-7" action={<WidgetToggle id="upcoming-payments" visible onToggle={(v) => toggle("upcoming-payments", v)} />}><UpcomingPayments /></WidgetShell>) : null}
-        {visible("pending-debts") ? (<WidgetShell title={t("dashboard.pendingDebts")} hint={t("dashboard.pendingDebtsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="pending-debts" visible onToggle={(v) => toggle("pending-debts", v)} />}><PendingDebts /></WidgetShell>) : null}
-        {visible("active-subs") ? (<WidgetShell title={t("dashboard.activeSubs")} hint={t("dashboard.activeSubsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="active-subs" visible onToggle={(v) => toggle("active-subs", v)} />}><ActiveSubs /></WidgetShell>) : null}
-        {visible("pending-tasks") ? (<WidgetShell title={t("dashboard.pendingTasks")} hint={t("dashboard.pendingTasksHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="pending-tasks" visible onToggle={(v) => toggle("pending-tasks", v)} />}><PendingTasks /></WidgetShell>) : null}
-        {visible("upcoming-events") ? (<WidgetShell title={t("dashboard.upcomingEvents")} hint={t("dashboard.upcomingEventsHint")} span="col-span-12 md:col-span-6 xl:col-span-5" action={<WidgetToggle id="upcoming-events" visible onToggle={(v) => toggle("upcoming-events", v)} />}><UpcomingEvents /></WidgetShell>) : null}
-        {visible("goal-progress") ? (<WidgetShell title={t("dashboard.goalProgress")} hint={t("dashboard.goalProgressHint")} span="col-span-12 xl:col-span-5" action={<WidgetToggle id="goal-progress" visible onToggle={(v) => toggle("goal-progress", v)} />}><GoalProgress /></WidgetShell>) : null}
-        <WidgetShell
-          title={t("dashboard.monthlyFlow")}
-          hint={t("dashboard.monthlyFlowHint")}
-          span="col-span-12 xl:col-span-7"
-        >
-          {flowLoading ? (
-            <SectionSkeleton />
-          ) : flowError ? (
-            <SectionError onRetry={retryDashboards} />
-          ) : (
-            <FlowChart data={points} animate={!reducedMotion} />
-          )}
-        </WidgetShell>
-        <WidgetShell
-          title={t("dashboard.spendByCategory")}
-          hint={t("dashboard.spendByCategoryHint")}
-          span="col-span-12 xl:col-span-5"
-        >
-          {categoriesLoading ? (
-            <SectionSkeleton />
-          ) : categoriesError ? (
-            <SectionError onRetry={retryDashboards} />
-          ) : (
-            <CategoryDonut data={slices} animate={!reducedMotion} />
-          )}
-        </WidgetShell>
-        <WidgetShell
-          title={t("dashboard.budgets")}
-          hint={t("dashboard.budgetsHint")}
-          span="col-span-12 xl:col-span-7"
-        >
-          {budgetsLoading ? (
-            <SectionSkeleton />
-          ) : budgetsError ? (
-            <SectionError onRetry={retryDashboards} />
-          ) : (
-            <BudgetBars data={budgetRows} animate={!reducedMotion} />
-          )}
-        </WidgetShell>
-        <WidgetShell
-          title={t("dashboard.today")}
-          hint={t("dashboard.todayHint")}
-          span="col-span-12 xl:col-span-5"
-        >
-          {habitsLoading ? (
-            <SectionSkeleton />
-          ) : habitsError ? (
-            <SectionError onRetry={retryDashboards} />
-          ) : pendingHabits.length === 0 ? (
-            <EmptyState title={t("dashboard.nothingPending")} hint={t("dashboard.allCheckedIn")} />
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {pendingHabits.map((habit) => (
-                <li
-                  key={habit.habit_id}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
-                >
-                  <span className="truncate text-sm">{habit.name}</span>
-                  <span className="shrink-0 font-mono text-xs tabular-nums text-instrument/60">
-                    {t("dashboard.habitStreak", { n: habit.current_streak })}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </WidgetShell>
+      </div>
+
+      {flowLoading || flowError ? null : (
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+          {visible("month-income") ? (
+            <div>
+              <div className="mb-2 flex justify-end">
+                <WidgetToggle id="month-income" visible onToggle={(v) => toggle("month-income", v)} />
+              </div>
+              <MetricCard label={t("dashboard.monthIncome")} display={fmt(summary.income)} hint={monthKey} />
+            </div>
+          ) : null}
+          {visible("month-expense") ? (
+            <div>
+              <div className="mb-2 flex justify-end">
+                <WidgetToggle id="month-expense" visible onToggle={(v) => toggle("month-expense", v)} />
+              </div>
+              <MetricCard label={t("dashboard.monthExpense")} display={fmt(summary.expense)} hint={monthKey} />
+            </div>
+          ) : null}
+          {visible("month-savings") ? (
+            <div>
+              <div className="mb-2 flex justify-end">
+                <WidgetToggle id="month-savings" visible onToggle={(v) => toggle("month-savings", v)} />
+              </div>
+              <MetricCard
+                label={t("dashboard.monthSavings")}
+                display={fmt(summary.savings)}
+                hint={t("dashboard.monthSavingsHint")}
+                status={summary.savings >= 0 ? "ok" : "warn"}
+              />
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <div className="space-y-6 lg:col-span-8">
+          <WidgetShell title={t("dashboard.monthlyFlow")} hint={t("dashboard.monthlyFlowHint")}>
+            {flowLoading ? (
+              <SectionSkeleton />
+            ) : flowError ? (
+              <SectionError onRetry={retryDashboards} />
+            ) : (
+              <FlowChart data={points} animate={!reducedMotion} />
+            )}
+          </WidgetShell>
+          <WidgetShell title={t("dashboard.budgets")} hint={t("dashboard.budgetsHint")}>
+            {budgetsLoading ? (
+              <SectionSkeleton />
+            ) : budgetsError ? (
+              <SectionError onRetry={retryDashboards} />
+            ) : (
+              <BudgetBars data={budgetRows} animate={!reducedMotion} />
+            )}
+          </WidgetShell>
+        </div>
+        <div className="space-y-6 lg:col-span-4">
+          <WidgetShell
+            title={t("dashboard.spendByCategory")}
+            hint={t("dashboard.spendByCategoryHint")}
+          >
+            {categoriesLoading ? (
+              <SectionSkeleton />
+            ) : categoriesError ? (
+              <SectionError onRetry={retryDashboards} />
+            ) : (
+              <CategoryDonut data={slices} animate={!reducedMotion} />
+            )}
+          </WidgetShell>
+          <WidgetShell title={t("dashboard.today")} hint={t("dashboard.todayHint")}>
+            {habitsLoading ? (
+              <SectionSkeleton />
+            ) : habitsError ? (
+              <SectionError onRetry={retryDashboards} />
+            ) : pendingHabits.length === 0 ? (
+              <EmptyState title={t("dashboard.nothingPending")} hint={t("dashboard.allCheckedIn")} />
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {pendingHabits.map((habit) => (
+                  <li
+                    key={habit.habit_id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
+                  >
+                    <span className="truncate text-sm">{habit.name}</span>
+                    <span className="shrink-0 font-mono text-xs tabular-nums text-instrument/60">
+                      {t("dashboard.habitStreak", { n: habit.current_streak })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </WidgetShell>
+        </div>
+
+        {visible("upcoming-payments") ? (
+          <WidgetShell
+            title={t("dashboard.upcomingPayments")}
+            hint={t("dashboard.upcomingPaymentsHint")}
+            span="col-span-12 lg:col-span-7"
+            action={<WidgetToggle id="upcoming-payments" visible onToggle={(v) => toggle("upcoming-payments", v)} />}
+          >
+            <UpcomingPayments />
+          </WidgetShell>
+        ) : null}
+        {visible("pending-debts") ? (
+          <WidgetShell
+            title={t("dashboard.pendingDebts")}
+            hint={t("dashboard.pendingDebtsHint")}
+            span="col-span-12 lg:col-span-5"
+            action={<WidgetToggle id="pending-debts" visible onToggle={(v) => toggle("pending-debts", v)} />}
+          >
+            <PendingDebts />
+          </WidgetShell>
+        ) : null}
+        {visible("active-subs") ? (
+          <WidgetShell
+            title={t("dashboard.activeSubs")}
+            hint={t("dashboard.activeSubsHint")}
+            span="col-span-12 lg:col-span-5"
+            action={<WidgetToggle id="active-subs" visible onToggle={(v) => toggle("active-subs", v)} />}
+          >
+            <ActiveSubs />
+          </WidgetShell>
+        ) : null}
+        {visible("pending-tasks") ? (
+          <WidgetShell
+            title={t("dashboard.pendingTasks")}
+            hint={t("dashboard.pendingTasksHint")}
+            span="col-span-12 lg:col-span-5"
+            action={<WidgetToggle id="pending-tasks" visible onToggle={(v) => toggle("pending-tasks", v)} />}
+          >
+            <PendingTasks />
+          </WidgetShell>
+        ) : null}
+        {visible("upcoming-events") ? (
+          <WidgetShell
+            title={t("dashboard.upcomingEvents")}
+            hint={t("dashboard.upcomingEventsHint")}
+            span="col-span-12 lg:col-span-5"
+            action={<WidgetToggle id="upcoming-events" visible onToggle={(v) => toggle("upcoming-events", v)} />}
+          >
+            <UpcomingEvents />
+          </WidgetShell>
+        ) : null}
+        {visible("goal-progress") ? (
+          <WidgetShell
+            title={t("dashboard.goalProgress")}
+            hint={t("dashboard.goalProgressHint")}
+            span="col-span-12 lg:col-span-5"
+            action={<WidgetToggle id="goal-progress" visible onToggle={(v) => toggle("goal-progress", v)} />}
+          >
+            <GoalProgress />
+          </WidgetShell>
+        ) : null}
         <WidgetShell
           title={t("dashboard.customize")}
           hint={t("dashboard.customizeHint")}

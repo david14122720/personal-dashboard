@@ -215,14 +215,19 @@ export default function ProductivityScreens() {
 
   return (
     <div>
-      <h1 className="font-display text-2xl font-semibold tracking-wide">{t("productivity.title")}</h1>
+      <h1 className="flex items-center gap-3 font-display text-2xl font-semibold tracking-wide">
+        {t("productivity.title")}
+        <span className="rounded-full border border-signal/20 bg-signal/10 px-2.5 py-0.5 font-mono text-xs font-medium text-signal">
+          {t("productivity.focusBadge")}
+        </span>
+      </h1>
       <p className="mt-1 text-sm text-instrument/60">{t("productivity.subtitle")}</p>
       {actionError ? (
         <p role="alert" className="mt-4 rounded-xl border border-alert/50 bg-alert/10 p-4 text-sm">
           {actionError}
         </p>
       ) : null}
-      <div className="mt-6 grid grid-cols-12 gap-4">
+      <div className="mt-6 grid grid-cols-12 gap-6">
         {isLoading ? (
           <div className="col-span-12">
             <SectionsSkeleton />

@@ -136,13 +136,28 @@ export default function LoginPage() {
           <div aria-hidden="true" className="absolute inset-x-8 top-0 h-[2px] bg-gradient-to-r from-transparent via-signal to-transparent" />
 
           <div className="flex flex-col items-center text-center">
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-[#006edc] to-[#38bdf8] ring-1 ring-white/20">
-              <DeckGlyph className="h-5 w-5 text-white" />
-            </span>
-            <h1 id="login-heading" className="font-deck-display mt-4 text-2xl font-bold tracking-tight">
+            <div className="flex w-full items-center justify-between">
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-[#006edc] to-[#38bdf8] ring-1 ring-white/20">
+                <DeckGlyph className="h-5 w-5 text-white" />
+              </span>
+              <span
+                role="status"
+                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] font-medium tracking-wide text-emerald-400"
+              >
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                {t("login.online")}
+              </span>
+            </div>
+            <h1
+              id="login-heading"
+              className="font-deck-display mt-4 flex flex-wrap items-center justify-center gap-2 text-2xl font-bold tracking-tight"
+            >
               Control{" "}
               <span className="bg-gradient-to-r from-sky-400 to-[#006edc] bg-clip-text text-transparent">
                 Deck
+              </span>
+              <span className="rounded-full border border-signal/20 bg-signal/10 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-signal">
+                {t("login.version")}
               </span>
             </h1>
             <p className="mt-1.5 text-sm text-slate-400">{t("login.subtitle")}</p>

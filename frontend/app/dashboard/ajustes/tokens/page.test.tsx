@@ -112,13 +112,14 @@ describe("tokens page", () => {
     expect(await screen.findByText("cli")).toBeInTheDocument();
     expect(screen.getByText("pd_Ab12Cd")).toBeInTheDocument();
     expect(screen.getByText("Activo")).toBeInTheDocument();
+    expect(screen.getByText("1 activos")).toBeInTheDocument();
   });
 
   it("marks the tokens entry current in the sidebar chrome", async () => {
     render(h(TokensPage, null));
     expect(await screen.findByText("cli")).toBeInTheDocument();
 
-    const tokensLinks = screen.getAllByRole("link", { name: "Tokens" });
+    const tokensLinks = screen.getAllByRole("link", { name: "Tokens de API" });
     expect(tokensLinks.some((l) => l.getAttribute("aria-current") === "page")).toBe(true);
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeInTheDocument();
   });

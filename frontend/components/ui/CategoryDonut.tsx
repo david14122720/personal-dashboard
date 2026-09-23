@@ -3,7 +3,7 @@
 import { Cell, LabelList, Pie, PieChart, Tooltip } from "recharts";
 import type { DonutSlice } from "@/lib/dashboard/transforms";
 import { formatMoney } from "@/lib/api/money";
-import { chartToken } from "@/lib/i18n";
+import { chartToken, t } from "@/lib/i18n";
 import EmptyState from "@/components/ui/EmptyState";
 
 const SLICE_TOKENS = ["--color-flow", "--color-signal", "--color-violet", "--color-sky", "--color-alert", "--color-instrument"] as const;
@@ -24,7 +24,7 @@ export default function CategoryDonut({
   animate?: boolean;
 }) {
   if (!data || data.length === 0) {
-    return <EmptyState title="No category data yet" hint="Categorized expenses will appear here." />;
+    return <EmptyState title={t("dashboard.noCategoryData")} hint={t("dashboard.noCategoryHint")} />;
   }
   const palette = donutPalette();
   const tok = (prop: `--color-${string}`): string => chartToken(prop) || `var(${prop})`;

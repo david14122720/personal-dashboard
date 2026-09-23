@@ -3,7 +3,7 @@
 import { Area, AreaChart, CartesianGrid, LabelList, Tooltip, XAxis, YAxis } from "recharts";
 import type { FlowPoint } from "@/lib/dashboard/transforms";
 import { formatMoney } from "@/lib/api/money";
-import { chartToken, formatMonth } from "@/lib/i18n";
+import { chartToken, formatMonth, t } from "@/lib/i18n";
 import EmptyState from "@/components/ui/EmptyState";
 
 /**
@@ -12,7 +12,7 @@ import EmptyState from "@/components/ui/EmptyState";
  */
 export default function FlowChart({ data, animate = true }: { data: FlowPoint[]; animate?: boolean }) {
   if (!data || data.length === 0) {
-    return <EmptyState title="No flow data yet" hint="Add transactions to plot income versus expense." />;
+    return <EmptyState title={t("dashboard.noFlowData")} hint={t("dashboard.noFlowHint")} />;
   }
   const tok = (prop: `--color-${string}`): string => chartToken(prop) || `var(${prop})`;
   const income = tok("--color-flow");
