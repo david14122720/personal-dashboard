@@ -4,7 +4,6 @@ import {
   ledgerKey,
   toAccountCards,
   toBalanceSeries,
-  toBudgetViews,
   toDebtProgress,
   toDebtRows,
   toExpenseSeries,
@@ -59,30 +58,10 @@ describe("finance transforms", () => {
 
   it("returns empty rows for nullish input", () => {
     expect(toLedgerRows(null)).toEqual([]);
-    expect(toBudgetViews(undefined)).toEqual([]);
     expect(toAccountCards(null)).toEqual([]);
     expect(toSubscriptionRows(undefined)).toEqual([]);
     expect(toDebtRows(null)).toEqual([]);
     expect(toSavingsViews(undefined)).toEqual([]);
-  });
-
-  it("clamps budget pct to [0, 1] for progress bars", () => {
-    const views = toBudgetViews([
-      {
-        id: "b1",
-        category_id: "c1",
-        amount: "100.00",
-        currency: "COP",
-        period_start: "2026-09-01",
-        spent: "120.00",
-        remaining: "-20.00",
-        pct: 1.2,
-        status: "over",
-      },
-    ]);
-    expect(views[0].pct).toBe(1);
-    expect(views[0].spent).toBe(120);
-    expect(views[0].remaining).toBe(-20);
   });
 
   it("coerces account card usage metrics and keeps statement balance", () => {

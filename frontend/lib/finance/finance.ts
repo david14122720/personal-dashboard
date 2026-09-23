@@ -53,46 +53,6 @@ export function ledgerKey(filters: TransactionFilters): string {
   ].join("|");
 }
 
-export interface BudgetView {
-  id: string;
-  label: string;
-  spent: number;
-  remaining: number;
-  /** Spend fraction clamped to [0, 1] for progress-bar width. */
-  pct: number;
-  status: string;
-  currency: string;
-}
-
-export interface BudgetWireLike {
-  id: string;
-  category_id: string;
-  amount: string | number;
-  currency: string;
-  period_start: string;
-  spent: string | number;
-  remaining: string | number;
-  pct: number;
-  status: string;
-}
-
-/** Coerce budget status payloads to progress-bar view models. */
-export function toBudgetViews(rows: BudgetWireLike[] | null | undefined): BudgetView[] {
-  if (!rows) return [];
-  return rows.map((row) => {
-    const pct = Number.isFinite(row.pct) ? row.pct : 0;
-    return {
-      id: row.id,
-      label: `${row.currency} ${toNumber(row.amount).toFixed(0)} · ${row.period_start}`,
-      spent: toNumber(row.spent),
-      remaining: toNumber(row.remaining),
-      pct: Math.min(1, Math.max(0, pct)),
-      status: row.status,
-      currency: row.currency,
-    };
-  });
-}
-
 export interface AccountCardView {
   id: string;
   name: string;

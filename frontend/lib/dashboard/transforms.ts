@@ -55,9 +55,8 @@ export function toDonutSlices(rows: CategoryWire[] | null | undefined): DonutSli
 }
 
 /**
- * Backend LED enums, 1:1 with the API:
+ * Backend LED enum, 1:1 with the API:
  * - account `alert_level` ∈ { ok, warn, high }
- * - budget `status` ∈ { ok, warn, over }
  */
 export type LedStatus = "ok" | "warn" | "over" | "high";
 
@@ -74,17 +73,6 @@ export function ledDotClass(status: string | null | undefined): string {
     default:
       return "bg-instrument/30";
   }
-}
-
-/** Worst-of rollup for budget LEDs: over > warn > ok. Unknowns ignored. */
-export function worstBudgetStatus(statuses: Array<string | null | undefined>): LedStatus | "none" {
-  let worst: LedStatus | "none" = "none";
-  for (const status of statuses) {
-    if (status === "over") return "over";
-    if (status === "warn") worst = "warn";
-    else if (status === "ok" && worst === "none") worst = "ok";
-  }
-  return worst;
 }
 
 /** Worst-of rollup for account alert LEDs: high > warn > ok. */

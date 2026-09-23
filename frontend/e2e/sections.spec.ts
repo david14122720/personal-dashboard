@@ -23,14 +23,13 @@ test("finance S5 escritura por dominio con montos manuales y selects por nombre"
   await page.goto("/dashboard/finance/");
 
   // S5: secciones de escritura visibles tras las F1 intactas.
-  await expect(page.getByText("Presupuestos: crear y editar")).toBeVisible();
   await expect(page.getByText("Suscripciones: crear y gestionar")).toBeVisible();
 
   // S5 subs: crear exige precio manual (string) y la fila cancela/reactiva solo con is_active.
   await expect(page.getByRole("button", { name: "Crear suscripción" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Cancelar|Reactivar/ }).first()).toBeVisible();
 
-  // S5 budgets/savings: edición/borrado cableados a sus listas (botones Eliminar en edits).
+  // S5 savings: edición/borrado cableados a sus listas (botones Eliminar en edits).
   await expect(page.getByRole("button", { name: "Eliminar" }).first()).toBeVisible();
 
   // S5 debts: abono con guard amount<=pending + historial + editar metadata.

@@ -16,7 +16,6 @@ const loadedData = {
   netWorth: q({ per_currency: [{ currency: "COP", assets: "100", debts: "20", net_worth: "80" }] }),
   flow: q([{ month: "2026-09", income: "100", expense: "50" }]),
   categories: q([]),
-  budgets: q([]),
   habits: q([]),
   accounts: q([]),
   prefs: q({ preferences: { currency_code: "COP", locale: "es-CO" } }),
@@ -33,10 +32,9 @@ vi.mock("@/lib/api/dashboard", async (importOriginal) => {
       : loadedData.netWorth,
   useMonthlyFlow: () => loadedData.flow,
   useSpendByCategory: () => loadedData.categories,
-  useBudgets: () => loadedData.budgets,
   useHabitsToday: () => (globalThis as Record<string, unknown>).__HABITS__ ?? loadedData.habits,
   useAccounts: () => loadedData.accounts,
-  usePreferences: () => loadedData.prefs,
+  usePreferences: () => (globalThis as Record<string, unknown>).__LAYOUT__ ?? loadedData.prefs,
   useDebts: () => q([]), useSubscriptions: () => q([]), useTasks: () => q([]), useEvents: () => q([]), useGoals: () => q([]), useSavingsGoals: () => q([]),
   useUpdateLayout: () => async () => {},
   };
@@ -80,7 +78,6 @@ describe("DashboardHome ES copy", () => {
     expect(screen.getByText("Ingresos frente a gastos, últimos 12 meses.")).toBeInTheDocument();
     expect(screen.getByText("Gasto por categoría")).toBeInTheDocument();
     expect(screen.getByText("Gastos del mes actual.")).toBeInTheDocument();
-    expect(screen.getByText("Fracción gastada por presupuesto activo.")).toBeInTheDocument();
     expect(screen.getByText("Hoy")).toBeInTheDocument();
     expect(screen.getByText("Hábitos pendientes de registro.")).toBeInTheDocument();
     expect(screen.getByText("0 días")).toBeInTheDocument();
@@ -95,6 +92,27 @@ describe("DashboardHome ES copy", () => {
     expect(screen.getByRole("heading", { name: "Deudas pendientes" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Flujo mensual" })).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__DH__;
+  });
+
+  it("ignores a persisted dashboard_layout naming a removed widget id (S2 budgets)", () => {
+    (globalThis as Record<string, unknown>).__LAYOUT__ = q({
+      preferences: {
+        currency_code: "COP",
+        locale: "es-CO",
+        dashboard_layout: {
+          widgets: [
+            { id: "budgets", type: "list", order: 1, size: "md" },
+            { id: "pending-debts", type: "list", order: 21, size: "md" },
+          ],
+        },
+      },
+    });
+    render(<DashboardHome />);
+    expect(screen.queryByRole("heading", { name: "Presupuestos" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Ocultar bloque: budgets" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Deudas pendientes" })).toBeInTheDocument();
+    delete (globalThis as Record<string, unknown>).__LAYOUT__;
   });
 
   it("formats habit streak in Spanish", () => {

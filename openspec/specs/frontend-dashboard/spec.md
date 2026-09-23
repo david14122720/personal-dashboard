@@ -8,13 +8,19 @@ Static-export Next.js control center rendering aggregates as Recharts charts, wi
 
 ### Requirement: Telemetry Strip
 
-The dashboard home MUST render a full-width Telemetry Strip showing net worth, current-month balance, savings rate, longest streak, and budget status LEDs. Each LED MUST map backend enums 1:1: `alert_level` ∈ {`ok`, `warn`, `high`} and budget `status` ∈ {`ok`, `warn`, `over`} to their documented visual states. Values MUST be formatted per user `locale`/`currency_code` preferences using the string-money coercion layer.
+The dashboard home MUST render a full-width Telemetry Strip showing net worth, current-month balance, savings rate, longest streak, and card status LEDs. It MUST NOT render any budget status item: the budgeting feature was removed end to end (S2 — routes, UI, LED, MCP tool, i18n keys), so no LED MAY exist for budget `status` values. The card indicator MUST map the backend enum 1:1: `alert_level` ∈ {`ok`, `warn`, `high`} to its documented visual state. Values MUST be formatted per user `locale`/`currency_code` preferences using the string-money coercion layer.
 
 #### Scenario: Enum mapping
 
-- GIVEN a card account with `alert_level: "warn"` and a budget with `status: "over"`
+- GIVEN a card account with `alert_level: "warn"`
 - WHEN the dashboard renders
-- THEN the corresponding LEDs display the warn and over visual states
+- THEN the card LED displays the warn visual state
+
+#### Scenario: No budget LED
+
+- GIVEN the rendered strip
+- WHEN its items are inspected
+- THEN no budget status item, bar or colour is present
 
 #### Scenario: Money formatting
 
@@ -209,15 +215,21 @@ All S6 charts MUST use Recharts 3 with `next/dynamic(ssr:false)`, theme tokens `
 - WHEN grepped for literal hex colors
 - THEN zero matches remain outside token definitions
 
-### Requirement: Existing Charts Intact and Transfer Exclusion
+### Requirement: Removed Budget Visuals Inventory (S2)
 
-`FlowChart` (income vs expense), `CategoryDonut` (expense), and `BudgetBars`/`BudgetsList` MUST remain intact. All S6 charts MUST inherit the existing `transfer` exclusion from aggregates without "fixing" it.
+Removed by name in S2 and MUST NOT be re-mounted or resurrected as empty shells: `BudgetBars`, `BudgetsList`, `BudgetForm`, the `useBudgets` hook, the `BudgetWire` type, the `toBudgetViews` transform, `worstBudgetStatus`, the budget write helpers (`createBudget`/`patchBudget`/`deleteBudget`), the `manageBudgets` section, the `finance.budgets*` and `dashboard.budgets*` i18n key families, and the MCP `list_budgets` tool. Retained and still binding until S3 removes the ledger that feeds them: `FlowChart` (income vs expense), `CategoryDonut` (expense), the S6 charts, the finance `PeriodSelector` and the `AnalysisSection` insight block, all of which MUST keep inheriting the existing `transfer` exclusion from aggregates without "fixing" it.
 
-#### Scenario: Transfers excluded
+#### Scenario: Removed budget visuals are not present
 
-- GIVEN a transfer movement in the period
-- WHEN S6 charts render
-- THEN transfer amounts appear in no income/expense/balance figure
+- GIVEN the finance screen and the dashboard home
+- WHEN their rendered blocks are inspected
+- THEN none of the S2-removed visuals is mounted, and no placeholder stands in for them
+
+#### Scenario: Retained charts keep the contract
+
+- GIVEN the surviving flow/category charts
+- WHEN they render
+- THEN the transfer exclusion still holds: transfer amounts appear in no income/expense/balance figure
 
 <!-- p9-finanzas ADDED from openspec/changes/p9-finanzas/specs/finance-analysis/spec.md (alias draft resolved to wire names) -->
 

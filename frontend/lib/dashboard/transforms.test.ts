@@ -23,7 +23,6 @@ import {
   toUpcomingEvents,
   toUpcomingPayments,
   worstAlertLevel,
-  worstBudgetStatus,
 } from "./transforms";
 
 describe("dashboard transforms", () => {
@@ -61,13 +60,6 @@ describe("dashboard transforms", () => {
     expect(ledDotClass("high")).toBe("bg-alert");
     expect(ledDotClass("bogus")).toBe("bg-instrument/30");
     expect(ledDotClass(null)).toBe("bg-instrument/30");
-  });
-
-  it("rolls budgets up to the worst status", () => {
-    expect(worstBudgetStatus([])).toBe("none");
-    expect(worstBudgetStatus(["ok", "ok"])).toBe("ok");
-    expect(worstBudgetStatus(["ok", "warn"])).toBe("warn");
-    expect(worstBudgetStatus(["warn", "over", "ok"])).toBe("over");
   });
 
   it("rolls account alerts up with high beating warn", () => {

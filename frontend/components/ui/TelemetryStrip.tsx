@@ -2,10 +2,10 @@ import { t } from "@/lib/i18n";
 import { ledDotClass } from "@/lib/dashboard/transforms";
 
 /**
- * Full-width telemetry strip: net worth, month balance, savings rate,
- * longest streak, and budget/card status LEDs. Every LED maps its backend
- * enum 1:1 — account `alert_level` (ok|warn|high) and budget `status`
- * (ok|warn|over) — to the documented visual state.
+ * Full-width telemetry strip: labelled KPIs with optional status LEDs.
+ * Every LED maps its backend enum 1:1 — account `alert_level`
+ * (ok|warn|high) — to the documented visual state. (Slice S2 removed the
+ * budget status LED; no budget item may be passed.)
  */
 
 export interface TelemetryItem {

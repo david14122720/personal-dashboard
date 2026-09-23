@@ -68,34 +68,6 @@ const server = setupServer(
     if (cursor === "CURSOR-PAGE-2") return HttpResponse.json(txPage2);
     return HttpResponse.json(txPage1);
   }),
-  http.get("http://test.local/api/budgets", () => {
-    return HttpResponse.json([
-      {
-        id: "b1",
-        category_id: "c1",
-        amount: "100.00",
-        currency: "COP",
-        period_start: "2026-09-01",
-        period_end: "2026-09-30",
-        spent: "85.00",
-        remaining: "15.00",
-        pct: 0.85,
-        status: "warn",
-      },
-      {
-        id: "b2",
-        category_id: "c2",
-        amount: "50.00",
-        currency: "COP",
-        period_start: "2026-09-01",
-        period_end: "2026-09-30",
-        spent: "60.00",
-        remaining: "-10.00",
-        pct: 1.2,
-        status: "over",
-      },
-    ]);
-  }),
   http.get("http://test.local/api/accounts", () => {
     return HttpResponse.json([
       {
@@ -237,13 +209,9 @@ describe("finance screens", () => {
     expect(seenTxUrls.some((url) => url.includes("cursor=CURSOR-PAGE-2"))).toBe(true);
   });
 
-  it("reuses the shared LED mapping for budget status and card alert levels", async () => {
+  it("reuses the shared LED mapping for card alert levels", async () => {
     renderScreens();
-    expect(await screen.findByRole("img", { name: "COP 100 · 2026-09-01, estado warn" })).toHaveClass("bg-signal");
-    expect(await screen.findByRole("img", { name: "COP 50 · 2026-09-01, estado over" })).toHaveClass("bg-alert");
     expect(await screen.findByRole("img", { name: "Visa, estado warn" })).toHaveClass("bg-signal");
-    expect(await screen.findByRole("progressbar", { name: "Gasto de COP 100 · 2026-09-01" })).toBeInTheDocument();
-    expect(await screen.findByText("Gasto frente a cada presupuesto activo.")).toBeInTheDocument();
   });
 
   it("shows card usage metrics and the statement balance when present", async () => {
@@ -280,8 +248,6 @@ describe("finance screens", () => {
     expect(within(filters).getByRole("button", { name: "Limpiar" })).toBeInTheDocument();
     expect(await within(ledger).findByRole("columnheader", { name: "Fecha" })).toBeInTheDocument();
     expect(await within(ledger).findByRole("columnheader", { name: "Descripción" })).toBeInTheDocument();
-    expect((await screen.findAllByText(/restantes$/)).length).toBe(2);
-    expect((await screen.findAllByText(/% gastado/)).length).toBe(2);
     expect(await screen.findByText(/usados/)).toBeInTheDocument();
     expect(await screen.findByText(/extracto/)).toBeInTheDocument();
   });
@@ -291,7 +257,6 @@ describe("finance screens", () => {
       http.get("http://test.local/api/transactions", () => {
         return HttpResponse.json({ items: [], next_cursor: null, total_count: 0 });
       }),
-      http.get("http://test.local/api/budgets", () => HttpResponse.json([])),
       http.get("http://test.local/api/accounts", () => HttpResponse.json([])),
       http.get("http://test.local/api/subscriptions", () => HttpResponse.json([])),
       http.get("http://test.local/api/debts", () => HttpResponse.json([])),
@@ -304,7 +269,6 @@ describe("finance screens", () => {
     );
     const ledger = ledgerSection();
     expect(await within(ledger).findByText("Sin transacciones aún")).toBeInTheDocument();
-    expect(await screen.findByText("Sin presupuestos aún")).toBeInTheDocument();
     expect(await screen.findByText("Sin cuentas aún")).toBeInTheDocument();
     expect(await screen.findByText("Sin suscripciones activas")).toBeInTheDocument();
     expect(await screen.findByText("Sin deudas")).toBeInTheDocument();
@@ -333,7 +297,7 @@ describe("finance screens", () => {
   });
 
   it("shows an error alert with retry when aggregate reads fail", async () => {
-    server.use(http.get("http://test.local/api/budgets", () => HttpResponse.error()));
+    server.use(http.get("http://test.local/api/accounts", () => HttpResponse.error()));
     render(
       <SWRConfig
         value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}
@@ -377,24 +341,20 @@ describe("finance screens", () => {
 
 // -- S5 escritura (RED: mutadores + 6 forms por dominio, montos string, selects por nombre) --
 import {
-  createBudget,
   createCard,
   createMovement,
   createPayment,
   createSubscription,
   createValuation,
-  deleteBudget,
   deleteMovement,
   deletePayment,
   deleteSubscription,
   fetchDebtPayments,
   patchAsset,
-  patchBudget,
   patchDebt,
   patchGoal,
   setSubscriptionActive,
 } from "@/lib/api/finance";
-import BudgetForm from "@/components/finance/BudgetForm";
 import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
 import { DebtEditForm, DebtPayForm, DebtPaymentHistory } from "@/components/finance/DebtPayments";
 import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
@@ -403,30 +363,6 @@ import { CardDetail } from "@/components/finance/CardDetail";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
 describe("finance S5 mutators", () => {
-  it("budgets: create POST, patch PATCH con warn_threshold real, delete DELETE", async () => {
-    const seen: { method: string; url: string; body?: unknown }[] = [];
-    server.use(
-      http.post("http://test.local/api/budgets", async ({ request }) => {
-        seen.push({ method: "POST", url: request.url, body: await request.json() });
-        return HttpResponse.json({ id: "b9" });
-      }),
-      http.patch("http://test.local/api/budgets/b1", async ({ request }) => {
-        seen.push({ method: "PATCH", url: request.url, body: await request.json() });
-        return HttpResponse.json({ id: "b1" });
-      }),
-      http.delete("http://test.local/api/budgets/b1", ({ request }) => {
-        seen.push({ method: "DELETE", url: request.url });
-        return new HttpResponse(null, { status: 204 });
-      }),
-    );
-    await createBudget({ category_id: "c1", amount: "500.00", period_start: "2026-09-01", period_end: "2026-09-30" });
-    await patchBudget("b1", { amount: "600.00", warn_threshold: 0.8, over_threshold: 1.0 });
-    await deleteBudget("b1");
-    expect(seen.map((s) => s.method)).toEqual(["POST", "PATCH", "DELETE"]);
-    expect((seen[1].body as Record<string, unknown>).warn_threshold).toBe(0.8);
-    expect(seen[1].url).toContain("/budgets/b1");
-  });
-
   it("savings/debts/subs/assets/cards usan endpoints PR-1 con montos string", async () => {
     const seen: string[] = [];
     server.use(
@@ -465,20 +401,6 @@ describe("finance S5 mutators", () => {
 describe("finance S5 forms", () => {
   const cats = [{ id: "c1", name: "Alimentación" }];
   const accs = [{ id: "a1", name: "Billetera" }];
-
-  it("BudgetForm crea con select por nombre y monto manual, sin UUID visible", async () => {
-    server.use(http.post("http://test.local/api/budgets", () => HttpResponse.json({ id: "b9" })));
-    render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <BudgetForm categories={cats} onDone={() => undefined} />
-      </SWRConfig>,
-    );
-    expect(screen.getByText("Alimentación")).toBeInTheDocument();
-    expect(screen.queryByText("c1")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/Monto/), { target: { value: "abc" } });
-    fireEvent.click(screen.getByRole("button", { name: /Guardar/ }));
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-  });
 
   it("SavingsDepositForm bloquea sobrerretiro en cliente y GoalForm edita meta", async () => {
     const first = render(
@@ -595,7 +517,7 @@ describe("finance S5 forms", () => {
 
 // -- PR-3 FIX A + S6 mount (GREEN: SubscriptionRow + ediciones + PeriodSelector/charts/analysis) --
 describe("finance PR-3 FIX A + S6", () => {
-  it("monta SubscriptionRow cancelar/reactivar y ediciones Budget/Savings en sus listas", async () => {
+  it("monta SubscriptionRow cancelar/reactivar y ediciones Savings en sus listas", async () => {
     server.use(
       http.get("http://test.local/api/transactions/stats/monthly-flow", () =>
         HttpResponse.json([

@@ -19,7 +19,7 @@ let savings: unknown[] = [{ id: "sg1", name: "Viaje", goal: "1000.00", saved: "5
 const fixDates = () => { debts = [{ id: "d1", name: "Deuda", pending_amount: "500.00", status: "active", due_date: day(2) }, { id: "dx", name: "Pagada", pending_amount: "10", status: "paid_off", due_date: day(2) }]; subs = [{ id: "s1", name: "Música", price: "9.99", is_active: true, next_billing_on: day(5) }, { id: "sx", name: "Off", price: "5", is_active: false, next_billing_on: day(1) }]; tasks = [{ id: "t1", title: "Tarea", status: "pending", due_date: day(1) }]; events = [{ id: "e1", title: "Cobro", kind: "payment_due", starts_at: day(2) }, { id: "e10", title: "Agenda", kind: "event", starts_at: day(10) }]; };
 vi.mock("@/lib/api/dashboard", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/api/dashboard")>();
-  return { ...mod, useNetWorth: () => q({ per_currency: [] }), useMonthlyFlow: () => q(flowRows), useSpendByCategory: () => q([]), useBudgets: () => q([]), useHabitsToday: () => q([]), useAccounts: () => q([]),
+  return { ...mod, useNetWorth: () => q({ per_currency: [] }), useMonthlyFlow: () => q(flowRows), useSpendByCategory: () => q([]), useHabitsToday: () => q([]), useAccounts: () => q([]),
       useDebts: () => q(debts), useSubscriptions: () => q(subs), useTasks: () => q(tasks), useEvents: () => q(events), useGoals: () => q(goals), useSavingsGoals: () => q(savings),
     usePreferences: () => q({ preferences: { currency_code: "COP", locale: "es-CO", dashboard_layout: layoutWidgets ? { widgets: layoutWidgets } : null } }),
     useUpdateLayout: () => async (next: { widgets: unknown[] }) => { seenPatch.push({ dashboard_layout: next }); layoutWidgets = next.widgets as typeof layoutWidgets; } };

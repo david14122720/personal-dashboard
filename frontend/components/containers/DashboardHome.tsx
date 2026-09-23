@@ -6,7 +6,6 @@ import { useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
 import EmptyState from "@/components/ui/EmptyState";
-import type { BudgetBarDatum } from "@/components/ui/BudgetBars";
 import MetricCard from "@/components/ui/MetricCard";
 import TelemetryStrip, { type TelemetryItem } from "@/components/ui/TelemetryStrip";
 import WidgetToggle from "@/components/ui/WidgetToggle";
@@ -22,7 +21,6 @@ import {
   isWidgetVisible,
   resolveDashboardLayout,
   useAccounts,
-  useBudgets,
   useHabitsToday,
   useMonthlyFlow,
   useNetWorth,
@@ -44,7 +42,6 @@ import {
   toISODate,
   toMonthSummary,
   worstAlertLevel,
-  worstBudgetStatus,
 } from "@/lib/dashboard/transforms";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 
@@ -63,11 +60,6 @@ const FlowChart = dynamic(() => import("@/components/ui/FlowChart"), {
 const CategoryDonut = dynamic(() => import("@/components/ui/CategoryDonut"), {
   ssr: false,
   loading: () => <ChartSkeleton label={t("dashboard.loadingCategory")} />,
-});
-
-const BudgetBars = dynamic(() => import("@/components/ui/BudgetBars"), {
-  ssr: false,
-  loading: () => <ChartSkeleton label={t("dashboard.loadingBudgets")} />,
 });
 
 function ChartSkeleton({ label }: { label: string }) {
@@ -152,7 +144,6 @@ export default function DashboardHome() {
   const netWorth = useNetWorth();
   const flow = useMonthlyFlow(flowFrom, flowTo);
   const categories = useSpendByCategory(monthStart, flowTo);
-  const budgets = useBudgets();
   const habits = useHabitsToday();
   const accounts = useAccounts();
   const prefs = usePreferences();
@@ -174,8 +165,6 @@ export default function DashboardHome() {
   const flowError = Boolean(flow.error);
   const categoriesLoading = Boolean(categories.isLoading);
   const categoriesError = Boolean(categories.error);
-  const budgetsLoading = Boolean(budgets.isLoading);
-  const budgetsError = Boolean(budgets.error);
   const habitsLoading = Boolean(habits.isLoading);
   const habitsError = Boolean(habits.error);
 
@@ -195,13 +184,6 @@ export default function DashboardHome() {
   const current = points.find((p) => p.month === monthKey);
   const rate = current ? savingsRate(current.income, current.expense) : null;
 
-  const budgetRows: BudgetBarDatum[] = (budgets.data ?? []).map((b) => ({
-    id: b.id,
-    label: `${b.currency} ${toNumber(b.amount).toFixed(0)} · ${b.period_start}`,
-    pct: Number.isFinite(b.pct) ? b.pct : 0,
-    status: b.status,
-  }));
-  const budgetLed = worstBudgetStatus((budgets.data ?? []).map((b) => b.status));
   const cardLed = worstAlertLevel((accounts.data ?? []).map((a) => a.alert_level ?? null));
   const streak = longestStreak(habits.data);
 
@@ -220,12 +202,6 @@ export default function DashboardHome() {
       status: rate === null ? null : rate >= 0.2 ? "ok" : rate >= 0 ? "warn" : "over",
     },
     { id: "streak", label: t("dashboard.longestStreak"), display: t("dashboard.streakDays", { n: streak }) },
-    {
-      id: "budgets",
-      label: t("dashboard.budgets"),
-      display: budgetLed === "none" ? t("dashboard.noBudgets") : budgetLed === "ok" ? t("dashboard.onTrack") : budgetLed,
-      status: budgetLed === "none" ? null : budgetLed,
-    },
     {
       id: "cards",
       label: t("dashboard.cards"),
@@ -362,15 +338,6 @@ export default function DashboardHome() {
               <SectionError onRetry={retryDashboards} />
             ) : (
               <FlowChart data={points} animate={!reducedMotion} />
-            )}
-          </WidgetShell>
-          <WidgetShell title={t("dashboard.budgets")} hint={t("dashboard.budgetsHint")}>
-            {budgetsLoading ? (
-              <SectionSkeleton />
-            ) : budgetsError ? (
-              <SectionError onRetry={retryDashboards} />
-            ) : (
-              <BudgetBars data={budgetRows} animate={!reducedMotion} />
             )}
           </WidgetShell>
         </div>

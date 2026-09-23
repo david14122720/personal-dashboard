@@ -1,6 +1,5 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import BudgetBars, { budgetBarFill, budgetBarLabel } from "./BudgetBars";
 import CategoryDonut, { donutPalette } from "./CategoryDonut";
 import EmptyState from "./EmptyState";
 import FlowChart from "./FlowChart";
@@ -34,26 +33,6 @@ describe("Recharts wrappers", () => {
     expect(screen.getByText(/36/)).toBeInTheDocument();
   });
 
-  it("BudgetBars renders an empty state without errors on empty budgets", () => {
-    render(<BudgetBars data={[]} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Sin presupuestos aún");
-  });
-
-  it("BudgetBars exposes each bar as screen-reader text in Spanish", () => {
-    const { container } = render(
-      <BudgetBars data={[{ id: "b1", label: "Groceries", pct: 1.2, status: "over" }]} />,
-    );
-    expect(container.querySelector("svg")).not.toBeNull();
-    expect(screen.getByText("Groceries: 120 por ciento, estado over")).toBeInTheDocument();
-  });
-
-  it("BudgetBars direct value labels keep the true pct including over-budget", () => {
-    // Recharts 3 LabelList SVG text does not render in jsdom (same as Pie
-    // sectors per slice-3b); assert the exported label helper instead.
-    expect(budgetBarLabel(1.2)).toBe("120%");
-    expect(budgetBarLabel(0.455)).toBe("46%");
-  });
-
   it("EmptyState announces itself as a live status", () => {
     render(<EmptyState title="Nothing pending" hint="All clear." />);
     const status = screen.getByRole("status");
@@ -68,7 +47,7 @@ describe("Recharts wrappers", () => {
   });
 
   it("chart fills come from theme tokens (no hardcoded hex)", () => {
-    const fills = [...donutPalette(), budgetBarFill("ok"), budgetBarFill("warn"), budgetBarFill("over")];
+    const fills = [...donutPalette()];
     expect(fills.join(" ")).not.toContain("#");
   });
 });

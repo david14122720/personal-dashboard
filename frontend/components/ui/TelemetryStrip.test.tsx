@@ -13,14 +13,14 @@ describe("TelemetryStrip enum mapping", () => {
       <TelemetryStrip
         items={[
           { id: "card", label: "Cards", display: "warn", status: "warn" },
-          { id: "budgets", label: "Budgets", display: "over", status: "over" },
+          { id: "debts", label: "Debts", display: "over", status: "over" },
           { id: "worth", label: "Net worth", display: "$ 1.500.000" },
         ]}
       />,
     );
 
     const warnLed = screen.getByRole("img", { name: "Cards, estado warn" });
-    const overLed = screen.getByRole("img", { name: "Budgets, estado over" });
+    const overLed = screen.getByRole("img", { name: "Debts, estado over" });
     expect(warnLed.className).toContain("bg-signal");
     expect(overLed.className).toContain("bg-alert");
   });
