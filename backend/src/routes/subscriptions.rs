@@ -853,8 +853,10 @@ mod tests {
         };
         let (state, headers, user_id) = db_state(&pool).await;
         // `finance` is a valid category kind, but subscriptions require
-        // `subscription`.
-        let finance_cat = seed_category(&pool, user_id, "finance", "budgets").await;
+        // `subscription`. The `finance` kind stays accepted (intentionally
+        // orphaned per finance-core-invariants); only the fixture label is
+        // renamed so it no longer borrows the removed budgets name.
+        let finance_cat = seed_category(&pool, user_id, "finance", "general").await;
         let body = Json(
             serde_json::from_value(json!({
                 "name": "Netflix",
