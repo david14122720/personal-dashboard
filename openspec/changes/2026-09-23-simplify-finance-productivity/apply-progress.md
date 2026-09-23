@@ -101,3 +101,116 @@
 - `openspec/changes/2026-09-23-simplify-finance-productivity/evidence/` (6 png + 2 json)
 - `openspec/specs/productivity-layout/spec.md` (new canonical copy)
 - `openspec/changes/.../tasks.md` (15 S4 boxes checked; parent boxes byte-preserved)
+
+---
+
+# Apply progress — S0 Helper extraction + hermetic fixtures
+
+- change: `2026-09-23-simplify-finance-productivity`
+- slice: S0 only (preparatory, no deletions). Surfaces touched are exactly the
+  S0 allow-list: `backend/src/finance/validation.rs` (new),
+  `backend/src/finance/mod.rs`,
+  `backend/src/routes/{accounts,debts,savings,categories,subscriptions}.rs`,
+  `openspec/specs/finance-core-invariants/spec.md` (new canonical copy),
+  plus `tasks.md` / this file. `transactions.rs`, `transfers.rs`,
+  `budgets.rs`, `main.rs`, migrations, frontend, mcp-dashboard and
+  `objetivo.md` untouched.
+- date: 2026-09-23
+- status: S0 complete — all 7 S0 tasks marked `- [x]` in `tasks.md`.
+- delivery: auto-chain / stacked-to-main. No commit (parent owns commits).
+
+## Completed
+
+- Created `backend/src/finance/validation.rs`: verbatim `validate_occurred_on`
+  and `ensure_finance_category` (same logic, same Spanish messages) plus the
+  existing `validate_occurred_on` unit tests and a `CATEGORY_LOOKUP_SQL` shape
+  test. `validate_occurred_on` carries `#[allow(dead_code)]` with an S0/S3a
+  rationale: no surviving writer consumes it yet (debts/savings/accounts keep
+  field-specific validators with different messages; `budgets.rs` /
+  `transfers.rs` keep their copies until S1/S2 delete them), and the tests lock
+  the behaviour for S3a. `transactions.rs` keeps its duplicate until S3a
+  deletes that module (out of S0 scope).
+- `backend/src/finance/mod.rs`: added `pub mod validation;`, rewrote the
+  stale module doc ("Route handlers ... land here in later PRs").
+- Surviving importers (`grep -rn "validate_occurred_on\\|ensure_finance_category"`):
+  `savings.rs` local `ensure_finance_category` duplicate deleted, now imports
+  from `crate::finance::validation` (its `CATEGORY_LOOKUP_SQL` also removed;
+  the SQL-shape test now asserts on the validation module's const, single
+  source of truth). `accounts.rs` / `debts.rs` never imported these helpers
+  (own field-specific validators — swapping would change Spanish messages, so
+  no behaviour-preserving repoint exists). `categories.rs` doc repointed from
+  `transactions.rs` to `crate::finance::validation`. Remaining helper imports
+  from `transactions` live only in the doomed modules `budgets.rs:28` and
+  `transfers.rs:47`, deleted by S1/S2 (out of S0 scope).
+- `debts.rs` / `savings.rs` seeds dropped: `seed_owned_transaction` helpers
+  deleted; `payment_with_unowned_transaction_is_422` and
+  `movement_with_unowned_transaction_is_422` now use `Uuid::new_v4()` — any
+  unowned id (including nonexistent) is 422 via `ensure_transaction_owned`,
+  so the assertions exercise the identical path with zero `transactions` rows.
+- `accounts.rs` statement test converted: `get_card_reports_statement_vs_current_balance`
+  arranges `-350.00` via `UPDATE accounts SET balance`, asserts
+  `statement_balance == Some(Decimal::ZERO)` (empty aggregate); the
+  cash-account seed and all linked-expense inserts are gone. S3a retires this
+  test with `STATEMENT_BALANCE_SQL`.
+- `accounts.rs` delete-guard test (`delete_account_with_movements_is_409`,
+  ~line 1253/1235) deliberately UNTOUCHED: `ACCOUNT_MOVEMENT_COUNT_SQL` is
+  live production code that counts `transactions`, so its 409 test must seed
+  one until S3a retires the guard and rewrites it to 204. This is the "keep
+  the delete-guard fixture shape for S3a" clause.
+- `subscriptions.rs`: fixture label `"budgets"` → `"general"` (kind stays
+  `"finance"`, intentionally orphaned; doc comment lands in S3a).
+- `migration_0008_credit_cards.rs` untouched (S3a retires the `transactions`
+  `EXPLAIN` half).
+- Canonical spec synced: `openspec/specs/finance-core-invariants/spec.md`
+  created as byte-copy of the change delta (`diff` clean).
+
+## Verification (exact commands, observed results)
+
+- `cd backend && cargo test`: 442 passed / 0 failed (lib) + 5 + 3 + 10
+  (integration), `transactions.rs` / `transfers.rs` / `budgets.rs` still
+  present. DB-backed tests SKIP without `DATABASE_URL` (no live DB in this
+  session); pure tests including the 3 new `finance::validation::tests` pass
+  (`cargo test validation`: 5 passed).
+- `cd backend && cargo build`: zero warnings, zero errors.
+- `grep -rn "routes::transactions::{" src`: only `budgets.rs:28` (helpers)
+  plus `budgets.rs:668,943,1147` (create-transaction test helpers) — all in
+  modules S1/S2 delete. No surviving module imports helpers from
+  `transactions`. `grep -rn "INSERT INTO transactions" src` outside the
+  three doomed modules: only `accounts.rs:1235` (intentional guard fixture,
+  see above).
+
+## Deviations from design/task text (scoped, behaviour-preserving)
+
+- Task assumed survivors import helpers from `transactions`; grep proved only
+  `budgets`/`transfers` do (both out of S0 scope, deleted in S1/S2). The real
+  surviving duplication was `savings.rs::ensure_finance_category`, now
+  deduplicated. `validate_occurred_on` is parked with locked tests per the
+  spec's "Helpers have a surviving home" scenario.
+- Task said "moving ... out of `transactions.rs`"; the source duplicate
+  stays until S3a because `transactions.rs` is outside the S0 allow-list.
+  No behaviour change either way (pure functions, identical messages).
+- Debts/savings seeds use the task's "drop the seed" option (random UUID →
+  same 422) rather than balance UPDATEs, which would be meaningless for
+  unowned-link tests.
+
+## Remaining / next
+
+- S0: none. Acceptance criteria met (suite green with all three modules
+  present; helpers defined outside `routes/transactions.rs`; no
+  debts/savings/statement fixture seeds `transactions`).
+- Rollback if needed: `git revert` the slice commit (pure refactor + fixture
+  swap, no schema change).
+- Next recommended: S1 (transfers removal). Parent-owned: bounded review for
+  S0, slice PR, lifecycle tasks L1–L3 (untouched, still `sdd-owner: parent`).
+
+## Files changed (S0 allow-list only)
+
+- `backend/src/finance/validation.rs` (new)
+- `backend/src/finance/mod.rs`
+- `backend/src/routes/savings.rs`
+- `backend/src/routes/debts.rs`
+- `backend/src/routes/accounts.rs`
+- `backend/src/routes/categories.rs` (doc-only)
+- `backend/src/routes/subscriptions.rs` (fixture label only)
+- `openspec/specs/finance-core-invariants/spec.md` (new canonical copy)
+- `openspec/changes/.../tasks.md` (7 S0 boxes checked; parent boxes byte-preserved)

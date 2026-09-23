@@ -5,7 +5,7 @@
 //! `finance|habit|goal|task|subscription`). This module only READS: it lists
 //! the caller's non-archived categories ordered by name, optionally filtered
 //! by `?kind=`. Validation reuses the `ensure_finance_category` convention
-//! from `transactions.rs` (owned + `kind='finance'`, else 422) for writes;
+//! from `crate::finance::validation` (owned + `kind='finance'`, else 422) for writes;
 //! reads validate `kind` against the same enum values and return 422 for
 //! unknown kinds. All queries scope by `user_id` so foreign ids never leak.
 //!

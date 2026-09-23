@@ -30,7 +30,10 @@ use uuid::Uuid;
 use crate::{
     auth::helper::require_user_id,
     error::AppError,
-    finance::money::{parse_money_amount, parse_signed_amount},
+    finance::{
+        money::{parse_money_amount, parse_signed_amount},
+        validation::ensure_finance_category,
+    },
     state::AppState,
 };
 
@@ -44,7 +47,6 @@ const GET_GOAL_SQL: &str = "SELECT id, name, description, target_amount, saved_a
 const DELETE_GOAL_SQL: &str = "DELETE FROM savings_goals WHERE id=$1 AND user_id=$2";
 /// Base for the dynamic PATCH builder (see `patch_goal_handler`).
 const PATCH_GOAL_BASE_SQL: &str = "UPDATE savings_goals SET updated_at = now()";
-const CATEGORY_LOOKUP_SQL: &str = "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
 const CREATE_MOVEMENT_SQL: &str = "INSERT INTO savings_goal_movements (user_id, savings_goal_id, amount, occurred_on, transaction_id, notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, savings_goal_id, amount, occurred_on, transaction_id, notes, created_at";
 const DELETE_MOVEMENT_SQL: &str =
     "DELETE FROM savings_goal_movements WHERE id=$1 AND savings_goal_id=$2 AND user_id=$3";
@@ -228,27 +230,6 @@ fn validate_optional_text(
         }
     }
     Ok(())
-}
-
-/// Verify the category is owned AND `kind='finance'` (else 422 per design:
-/// FK + kind mismatch + unowned all map to 422, never 404).
-pub async fn ensure_finance_category(
-    pool: &sqlx::PgPool,
-    category_id: Uuid,
-    user_id: Uuid,
-) -> Result<(), AppError> {
-    let kind: Option<String> = sqlx::query_scalar(CATEGORY_LOOKUP_SQL)
-        .bind(category_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    match kind.as_deref() {
-        Some("finance") => Ok(()),
-        _ => Err(AppError::Validation(
-            "category must be an owned finance category".into(),
-        )),
-    }
 }
 
 /// JD-SAVE: decide completion from saved vs target, mirroring the PATCH
@@ -778,8 +759,8 @@ mod tests {
             "delete must scope id+user_id, got: {DELETE_GOAL_SQL}"
         );
         assert!(
-            CATEGORY_LOOKUP_SQL.contains("kind::text"),
-            "category check must read kind, got: {CATEGORY_LOOKUP_SQL}"
+            crate::finance::validation::CATEGORY_LOOKUP_SQL.contains("kind::text"),
+            "category check must read kind"
         );
     }
 
@@ -1076,24 +1057,6 @@ mod tests {
             .expect("read goal balance")
     }
 
-    async fn seed_owned_transaction(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
-        let account_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
-        )
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .expect("seed account");
-        sqlx::query_scalar(
-            "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on) VALUES ($1,$2,'income',50, '2026-09-01') RETURNING id",
-        )
-        .bind(user_id)
-        .bind(account_id)
-        .fetch_one(pool)
-        .await
-        .expect("seed transaction")
-    }
-
     #[tokio::test]
     async fn deposit_movement_201_updates_saved_amount_via_trigger() {
         let Some(pool) = test_pool() else {
@@ -1307,7 +1270,10 @@ mod tests {
         };
         let (state_a, _, user_a) = db_state(&pool).await;
         let (state_b, headers_b, user_b) = db_state(&pool).await;
-        let foreign_tx = seed_owned_transaction(&pool, user_a).await;
+        // Hermetic fixture (S0): no `transactions` seed. Any id the caller
+        // does not own — including one that exists for nobody — is 422 via
+        // `ensure_transaction_owned`, so a random id exercises the same path.
+        let foreign_tx = Uuid::new_v4();
         let goal_id = seed_goal(&pool, user_b, "1000.00").await;
         let body = Json(
             serde_json::from_value(json!({

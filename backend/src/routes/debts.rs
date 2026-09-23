@@ -1024,24 +1024,6 @@ mod tests {
             .expect("read debt state")
     }
 
-    async fn seed_owned_transaction(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
-        let account_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
-        )
-        .bind(user_id)
-        .fetch_one(pool)
-        .await
-        .expect("seed account");
-        sqlx::query_scalar(
-            "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on) VALUES ($1,$2,'expense',100, '2026-02-01') RETURNING id",
-        )
-        .bind(user_id)
-        .bind(account_id)
-        .fetch_one(pool)
-        .await
-        .expect("seed transaction")
-    }
-
     #[tokio::test]
     async fn create_debt_201_pending_equals_original_then_get_200_then_delete_204() {
         let Some(pool) = test_pool() else {
@@ -1308,7 +1290,10 @@ mod tests {
         };
         let (state_a, _, user_a) = db_state(&pool).await;
         let (state_b, headers_b, user_b) = db_state(&pool).await;
-        let foreign_tx = seed_owned_transaction(&pool, user_a).await;
+        // Hermetic fixture (S0): no `transactions` seed. Any id the caller
+        // does not own — including one that exists for nobody — is 422 via
+        // `ensure_transaction_owned`, so a random id exercises the same path.
+        let foreign_tx = Uuid::new_v4();
         let debt_id = seed_debt(&pool, user_b).await;
         let body = Json(
             serde_json::from_value(json!({

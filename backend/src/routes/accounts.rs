@@ -1172,38 +1172,20 @@ mod tests {
             create_account_handler(State(state.clone()), headers.clone(), card_body("Visa", Some("5000.00")))
                 .await
                 .expect("valid card create is 201");
-        let cash: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
-        )
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("seed cash account");
-        // Statement day is the 15th: seed two in-cycle purchases and one
-        // post-cutoff purchase, all anchored to the runtime cutoff so the
-        // test is date-independent. Purchases go through raw SQL; the 0002
-        // trigger still posts both legs (card debt) on INSERT.
-        let cutoff = statement_cutoff(15, Utc::now().date_naive());
-        let in_cycle = [cutoff - chrono::Duration::days(5), cutoff - chrono::Duration::days(3)];
-        let next_cycle = cutoff + chrono::Duration::days(5);
-        for (date, amount) in [(in_cycle[0], "100.00"), (in_cycle[1], "50.00"), (next_cycle, "200.00")] {
-            sqlx::query(
-                "INSERT INTO transactions (user_id, account_id, type, amount, occurred_on, credit_card_account_id) VALUES ($1,$2,'expense',$3,$4,$5)",
-            )
-            .bind(user_id)
-            .bind(cash)
-            .bind(amount.parse::<Decimal>().unwrap())
-            .bind(date)
+        // Hermetic fixture (S0): no `transactions` seed. The balance is
+        // arranged directly on the surviving table; with no linked expenses
+        // the statement aggregate over the empty set is zero. S3a retires
+        // this test together with STATEMENT_BALANCE_SQL.
+        sqlx::query("UPDATE accounts SET balance = -350.00 WHERE id=$1")
             .bind(card.id)
             .execute(&pool)
             .await
-            .expect("seed linked expense");
-        }
+            .expect("seed card balance");
         let got = get_account_handler(State(state.clone()), headers, Path(card.id))
             .await
             .expect("get own card is 200");
         assert_eq!(got.balance, Decimal::new(-35000, 2));
-        assert_eq!(got.statement_balance, Some(Decimal::new(-15000, 2)));
+        assert_eq!(got.statement_balance, Some(Decimal::ZERO));
         cleanup_user(&pool, user_id).await;
     }
 
