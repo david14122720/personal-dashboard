@@ -35,8 +35,7 @@ test("finance S5 escritura por dominio con montos manuales y selects por nombre"
   // S5 debts: abono con guard amount<=pending + historial + editar metadata.
   await expect(page.getByText("Historial de abonos")).toBeVisible();
 
-  // S5 cards/assets: crear tarjeta exige límite+corte+pago; valuar con fecha posterior.
-  await expect(page.getByRole("button", { name: "Crear tarjeta" })).toBeVisible();
+  // La sección Tarjetas fue eliminada de Finanzas: solo queda patrimonio-número.
   await expect(page.getByText("Patrimonio neto")).toBeVisible();
 });
 
