@@ -12,12 +12,9 @@ import { usePreferences } from "@/lib/api/dashboard";
 import {
   useFinanceCategories,
   useSavingsGoals,
+  useSubscriptionCategories,
   useSubscriptions,
 } from "@/lib/api/finance";
-import {
-  listCustomCategories,
-  type CustomCategory,
-} from "@/lib/settings/customCategories";
 import { toCategoryOptions, toCategoryTotals } from "@/lib/finance/finance";
 
 const selectClass =
@@ -29,7 +26,6 @@ const selectClass =
  */
 export default function ComparePage() {
   const router = useRouter();
-  const [custom, setCustom] = useState<CustomCategory[]>([]);
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
 
@@ -39,26 +35,25 @@ export default function ComparePage() {
     }
   }, [router]);
 
-  useEffect(() => {
-    setCustom(listCustomCategories());
-  }, []);
-
   const prefs = usePreferences();
   const categories = useFinanceCategories();
+  const subCategories = useSubscriptionCategories();
   const subs = useSubscriptions();
   const goals = useSavingsGoals();
 
   const locale = prefs.data?.preferences.locale ?? "es-CO";
   const currency = prefs.data?.preferences.currency_code ?? "COP";
 
-  const options = useMemo(
-    () =>
-      [
-        ...toCategoryOptions(categories.data ?? []),
-        ...custom.map((c) => ({ id: c.id, name: c.name })),
-      ].sort((a, b) => a.name.localeCompare(b.name, "es")),
-    [categories.data, custom],
-  );
+  // Same honest union as Finanzas: `finance` + `subscription` backend kinds.
+  const options = useMemo(() => {
+    const seen = new Set<string>();
+    return [
+      ...toCategoryOptions(categories.data ?? []),
+      ...toCategoryOptions((subCategories.data ?? []).filter((c) => c.kind === "subscription")),
+    ]
+      .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [categories.data, subCategories.data]);
 
   const totalsA = first ? toCategoryTotals(subs.data, goals.data, first) : null;
   const totalsB = second ? toCategoryTotals(subs.data, goals.data, second) : null;

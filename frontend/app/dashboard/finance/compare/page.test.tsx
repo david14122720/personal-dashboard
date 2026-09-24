@@ -1,5 +1,5 @@
 import { createElement as h } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -23,7 +23,13 @@ const server = setupServer(
   http.get("http://test.local/api/me", () => {
     return HttpResponse.json({ preferences: { currency_code: "COP", locale: "es-CO" } });
   }),
-  http.get("http://test.local/api/categories", () => {
+  http.get("http://test.local/api/categories", ({ request }) => {
+    // La comparativa une finance+subscription; c1/c2 son finance.
+    if (new URL(request.url).searchParams.get("kind") === "subscription") {
+      return HttpResponse.json([
+        { id: "sc1", kind: "subscription", name: "Streaming", color: null, icon: null, is_archived: false, created_at: "2026-09-01T00:00:00Z" },
+      ]);
+    }
     return HttpResponse.json([
       { id: "c1", kind: "finance", name: "Comida", color: null, icon: null, is_archived: false, created_at: "2026-09-01T00:00:00Z" },
       { id: "c2", kind: "finance", name: "Sueldo", color: null, icon: null, is_archived: false, created_at: "2026-09-01T00:00:00Z" },
@@ -69,5 +75,12 @@ describe("compare page", () => {
     expect(await screen.findByRole("heading", { name: "Comida" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Sueldo" })).toBeInTheDocument();
     expect(screen.getByText("Volver a Finanzas")).toHaveAttribute("href", "/dashboard/finance/");
+  });
+
+  it("lists finance and subscription kinds together in each select", async () => {
+    renderPage();
+    const selectA = await screen.findByLabelText("Categoría A");
+    expect(await within(selectA).findByRole("option", { name: "Comida" })).toBeInTheDocument();
+    expect(within(selectA).getByRole("option", { name: "Streaming" })).toBeInTheDocument();
   });
 });

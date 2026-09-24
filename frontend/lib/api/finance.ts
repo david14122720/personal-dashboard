@@ -104,6 +104,20 @@ export function useFinanceCategories() {
   );
 }
 
+/** Fetch subscription categories ordered by name (GET /categories?kind=subscription).
+ * Own SWR key so each classification select dedups/caches independently. */
+export function fetchSubscriptionCategories(): Promise<CategoryWire[]> {
+  return apiGet<CategoryWire[]>("/categories?kind=subscription");
+}
+
+export function useSubscriptionCategories() {
+  return useSWR<CategoryWire[]>(
+    "finance/categories-subscription",
+    fetchSubscriptionCategories,
+    financeConfig,
+  );
+}
+
 /** Physical delete of an empty account (DELETE /accounts/{id}). */
 export function deleteAccount(id: string): Promise<void> {
   return apiDelete(`/accounts/${id}`);

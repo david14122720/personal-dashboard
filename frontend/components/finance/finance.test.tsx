@@ -77,7 +77,21 @@ const server = setupServer(
   http.get("http://test.local/api/me", () => {
     return HttpResponse.json({ preferences: { currency_code: "COP", locale: "es-CO" } });
   }),
-  http.get("http://test.local/api/categories", () => {
+  http.get("http://test.local/api/categories", ({ request }) => {
+    // P6 honesto: cada select clasifica con su kind del backend.
+    if (new URL(request.url).searchParams.get("kind") === "subscription") {
+      return HttpResponse.json([
+        {
+          id: "sc1",
+          kind: "subscription",
+          name: "Streaming",
+          color: null,
+          icon: null,
+          is_archived: false,
+          created_at: "2026-09-01T00:00:00Z",
+        },
+      ]);
+    }
     return HttpResponse.json([
       {
         id: "c1",
@@ -356,6 +370,34 @@ describe("finance S5 forms", () => {
 
   it("la sección de tarjetas fue eliminada de Finanzas", () => {
     expect(screen.queryByRole("button", { name: /Crear tarjeta/ })).not.toBeInTheDocument();
+  });
+
+  it("cada select de clasificación recibe solo su kind del backend", async () => {
+    renderScreens();
+    const subs = await screen.findByRole("region", { name: "Suscripciones: crear y gestionar" });
+    expect(await within(subs).findByRole("option", { name: "Streaming" })).toBeInTheDocument();
+    expect(within(subs).queryByRole("option", { name: "Alimentación" })).not.toBeInTheDocument();
+    const savings = await screen.findByRole("region", { name: "Ahorros: metas y abonos" });
+    // Crear + editar por meta: cada select de ahorro ve las finance…
+    expect((await within(savings).findAllByRole("option", { name: "Alimentación" })).length).toBeGreaterThanOrEqual(1);
+    expect(within(savings).queryByRole("option", { name: "Streaming" })).not.toBeInTheDocument();
+  });
+
+  it("blanquea el límite cuando no hay categorías de suscripción", async () => {
+    server.use(
+      http.get("http://test.local/api/categories", ({ request }) => {
+        if (new URL(request.url).searchParams.get("kind") === "subscription") {
+          return HttpResponse.json([]);
+        }
+        return HttpResponse.json([
+          { id: "c1", kind: "finance", name: "Alimentación", color: null, icon: null, is_archived: false, created_at: "2026-09-01T00:00:00Z" },
+        ]);
+      }),
+    );
+    renderScreens();
+    expect(
+      await screen.findByText("Sin categorías de suscripción en el servidor; este formulario solo acepta categorías de tipo suscripción."),
+    ).toBeInTheDocument();
   });
 
   it("AssetForms editan allowlist real y valúan con fecha posterior", async () => {

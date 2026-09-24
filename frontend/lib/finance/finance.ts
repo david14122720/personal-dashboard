@@ -176,6 +176,9 @@ export function toCategoryTotals(
 export interface NamedOption {
   id: string;
   name: string;
+  /** Backend category kind (`finance`, `subscription`, …). Preserved so
+   * callers can filter defensively; never sent back to the API. */
+  kind?: string;
 }
 
 /** Accounts/categories as name-sorted selector options (never raw UUID inputs). */
@@ -193,7 +196,7 @@ export function toCategoryOptions(
 ): NamedOption[] {
   if (!rows) return [];
   return [...rows]
-    .map((row) => ({ id: row.id, name: row.name }))
+    .map((row) => ({ id: row.id, name: row.name, kind: row.kind }))
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
 }
 
