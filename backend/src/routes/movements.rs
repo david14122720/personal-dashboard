@@ -304,7 +304,10 @@ pub async fn list_movements_handler(
         .bind(user_id)
         .fetch_all(&state.pool)
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|e| {
+            tracing::error!("list_movements failed: {e:?}");
+            AppError::Internal
+        })?;
     Ok(Json(rows.into_iter().map(MovementResponse::from).collect()))
 }
 
