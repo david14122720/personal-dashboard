@@ -76,12 +76,22 @@ describe("ReportsScreens S3b snapshot", () => {
     expect(within(financeRegion).getByText("Valor actual")).toBeInTheDocument();
     expect(within(financeRegion).getByText("Patrimonio neto")).toBeInTheDocument();
     expect(within(financeRegion).getByText("Suscripciones")).toBeInTheDocument();
-    expect(within(financeRegion).getByText("Deudas")).toBeInTheDocument();
+    expect(within(financeRegion).queryByText("Deudas")).not.toBeInTheDocument();
     // No flow figures survive.
     expect(within(financeRegion).queryByText("Ingreso")).not.toBeInTheDocument();
     expect(within(financeRegion).queryByText("Gasto")).not.toBeInTheDocument();
     expect(within(financeRegion).queryByText("Ahorro")).not.toBeInTheDocument();
     expect(within(financeRegion).queryByText("Principales categorías")).not.toBeInTheDocument();
+  });
+
+  it("finance block renders without reading /debts when it fails", async () => {
+    server.use(
+      http.get("http://test.local/api/debts", () => HttpResponse.json({ message: "caído" }, { status: 500 })),
+    );
+    renderReports();
+    const financeRegion = await screen.findByRole("region", { name: "Finanzas actuales" });
+    expect(within(financeRegion).getByText("Patrimonio neto")).toBeInTheDocument();
+    expect(within(financeRegion).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("issues no request to a removed aggregate endpoint", async () => {

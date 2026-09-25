@@ -51,26 +51,6 @@ pub fn parse_money_amount_nonneg(raw: &str) -> Result<Decimal, AppError> {
     Ok(amount)
 }
 
-// Called by the savings movement routes (P3 slice 2b); covered by unit tests.
-/// Parse a signed wire-format money string into [`Decimal`].
-///
-/// Accepts non-zero values (positive deposits, negative withdrawals) with at
-/// most 2 decimal places (`"50.00"`, `"-30.00"`). Rejects empty/non-numeric
-/// input, zero (including `"-0.00"`), and `scale > 2` with
-/// [`AppError::Validation`] (422).
-pub fn parse_signed_amount(raw: &str) -> Result<Decimal, AppError> {
-    let trimmed = raw.trim();
-    let amount = Decimal::from_str(trimmed).map_err(|_| {
-        AppError::Validation("amount must be a non-zero number with at most 2 decimals".into())
-    })?;
-    if amount == Decimal::ZERO || amount.scale() > 2 {
-        return Err(AppError::Validation(
-            "amount must be a non-zero number with at most 2 decimals".into(),
-        ));
-    }
-    Ok(amount)
-}
-
 /// Parse a manual account-balance string into [`Decimal`].
 ///
 /// Accepts signed values (debtor cards are negative, e.g. `"-750.50"`)
@@ -187,41 +167,6 @@ mod tests {
     fn nonneg_rejects_empty_and_non_numeric_as_422() {
         for raw in ["", "   ", "abc", "12,50"] {
             assert_422(parse_money_amount_nonneg(raw).unwrap_err());
-        }
-    }
-
-    #[test]
-    fn signed_accepts_positive_amount() {
-        assert_eq!(parse_signed_amount("50.00").unwrap(), Decimal::new(5000, 2));
-    }
-
-    #[test]
-    fn signed_accepts_negative_amount() {
-        assert_eq!(
-            parse_signed_amount("-30.00").unwrap(),
-            Decimal::new(-3000, 2)
-        );
-        assert_eq!(parse_signed_amount("-0.01").unwrap(), Decimal::new(-1, 2));
-    }
-
-    #[test]
-    fn signed_rejects_zero_as_422() {
-        for raw in ["0.00", "0", "-0.00"] {
-            assert_422(parse_signed_amount(raw).unwrap_err());
-        }
-    }
-
-    #[test]
-    fn signed_rejects_scale_above_two_as_422() {
-        for raw in ["10.005", "-10.005"] {
-            assert_422(parse_signed_amount(raw).unwrap_err());
-        }
-    }
-
-    #[test]
-    fn signed_rejects_empty_and_non_numeric_as_422() {
-        for raw in ["", "   ", "abc", "12,50"] {
-            assert_422(parse_signed_amount(raw).unwrap_err());
         }
     }
 

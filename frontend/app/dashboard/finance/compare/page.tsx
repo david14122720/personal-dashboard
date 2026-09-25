@@ -8,21 +8,20 @@ import { SectionShell } from "@/components/finance/FinanceSections";
 import { CategoryBars } from "@/components/finance/CategoryCharts";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
-import { usePreferences } from "@/lib/api/dashboard";
-import {
-  useFinanceCategories,
-  useSavingsGoals,
-  useSubscriptionCategories,
-  useSubscriptions,
-} from "@/lib/api/finance";
-import { toCategoryOptions, toCategoryTotals } from "@/lib/finance/finance";
+import { useAccounts, usePreferences } from "@/lib/api/dashboard";
+import { useCategories, useMovements } from "@/lib/api/finance";
+import { toCategoryMovementTotals, toCategoryOptions } from "@/lib/finance/finance";
 
 const selectClass =
   "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none";
 
 /**
- * Standalone two-category comparison (P8). Reachable only through the button
- * in Finanzas — there is intentionally no nav entry for this route.
+ * Standalone two-category comparison sourced from `GET /movements` (same
+ * `finance/movements` SWR key as Finance, no new endpoint). Each category
+ * shows expense and income side by side as separate figures — never netted,
+ * never currency-mixed (single-currency guard in `toCategoryMovementTotals`).
+ * A Finance sub-route reached only through the chart button — there is
+ * intentionally no nav entry for this route.
  */
 export default function ComparePage() {
   const router = useRouter();
@@ -36,27 +35,31 @@ export default function ComparePage() {
   }, [router]);
 
   const prefs = usePreferences();
-  const categories = useFinanceCategories();
-  const subCategories = useSubscriptionCategories();
-  const subs = useSubscriptions();
-  const goals = useSavingsGoals();
+  const categories = useCategories();
+  const movements = useMovements();
+  const accounts = useAccounts();
 
   const locale = prefs.data?.preferences.locale ?? "es-CO";
   const currency = prefs.data?.preferences.currency_code ?? "COP";
 
-  // Same honest union as Finanzas: `finance` + `subscription` backend kinds.
-  const options = useMemo(() => {
-    const seen = new Set<string>();
-    return [
-      ...toCategoryOptions(categories.data ?? []),
-      ...toCategoryOptions((subCategories.data ?? []).filter((c) => c.kind === "subscription")),
-    ]
-      .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)))
-      .sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [categories.data, subCategories.data]);
+  // Single unfiltered category set: every owned category together, no
+  // kind split, no badge, no filter.
+  const options = useMemo(
+    () => toCategoryOptions(categories.data ?? []),
+    [categories.data],
+  );
 
-  const totalsA = first ? toCategoryTotals(subs.data, goals.data, first) : null;
-  const totalsB = second ? toCategoryTotals(subs.data, goals.data, second) : null;
+  const currencyByAccountId = useMemo(
+    () => new Map((accounts.data ?? []).map((a) => [a.id, a.currency])),
+    [accounts.data],
+  );
+
+  const totalsA = first
+    ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, first)
+    : null;
+  const totalsB = second
+    ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, second)
+    : null;
   const showHint = first !== "" && first === second;
 
   return (
@@ -112,8 +115,8 @@ export default function ComparePage() {
                   </h3>
                   <div className="mt-2">
                     <CategoryBars
-                      expenses={totalsA.expenses}
-                      savings={totalsA.savings}
+                      expense={totalsA.expense}
+                      income={totalsA.income}
                       locale={locale}
                       currency={currency}
                     />
@@ -125,8 +128,8 @@ export default function ComparePage() {
                   </h3>
                   <div className="mt-2">
                     <CategoryBars
-                      expenses={totalsB.expenses}
-                      savings={totalsB.savings}
+                      expense={totalsB.expense}
+                      income={totalsB.income}
                       locale={locale}
                       currency={currency}
                     />

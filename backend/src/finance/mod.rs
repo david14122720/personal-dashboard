@@ -4,5 +4,6 @@
 //! thin and the S1–S3 removal slices keep a surviving home for behaviour
 //! every finance write depends on.
 
+pub mod dates;
 pub mod money;
 pub mod validation;

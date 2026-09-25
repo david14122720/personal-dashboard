@@ -24,15 +24,16 @@
 //! be recorded against them. An optional `account_id` links the asset to an
 //! owned bank account (else 422); foreign asset ids resolve to 404 without
 //! leaking existence, while valuations against an asset id that exists for
-//! nobody are 422 (orphaned-asset FK guard, mirroring the debts contract).
+//! nobody are 422 (orphaned-asset FK guard, mirroring the surviving routes'
+//! ownership contract).
 //!
 //! Net worth is an on-demand aggregate (no trigger, no materialization):
 //! per currency, `sum(non-archived assets current_value)` minus
-//! `sum(active debts pending_amount)` minus credit-card debt
-//! (`SUM(GREATEST(-balance, 0))` over the caller's non-archived
-//! `credit_card` accounts, so an overpaid card contributes 0, never credit).
-//! Card balances stay negative-as-debt: they reduce net worth through the
-//! liabilities leg, exactly like `debts.pending_amount`.
+//! credit-card debt (`SUM(GREATEST(-balance, 0))` over the caller's
+//! non-archived `credit_card` accounts, so an overpaid card contributes 0,
+//! never credit). Card balances stay negative-as-debt: they reduce net worth
+//! through the liabilities leg. The `debts` wire field is card-only since
+//! S-G (the `debts` table is dropped by gated migration 0013).
 //!
 //! Registered in `routes/mod.rs` (wiring in `main.rs` lands in Phase 6).
 
@@ -94,7 +95,7 @@ const CREATE_VALUATION_SQL: &str = "INSERT INTO asset_valuations (user_id, asset
 // Test-only probe: verifies trigger-synced current_value without going through HTTP.
 #[cfg(test)]
 const ASSET_VALUE_SQL: &str = "SELECT current_value FROM assets WHERE id=$1 AND user_id=$2";
-const NET_WORTH_SQL: &str = "SELECT COALESCE(a.currency, d.currency) AS currency, COALESCE(a.total, 0) AS assets, COALESCE(d.total, 0) AS debts FROM (SELECT currency, SUM(current_value) AS total FROM assets WHERE user_id=$1 AND NOT is_archived GROUP BY currency) a FULL OUTER JOIN (SELECT currency, SUM(total) AS total FROM (SELECT currency, pending_amount AS total FROM debts WHERE user_id=$1 AND status='active' UNION ALL SELECT currency, GREATEST(-balance, 0) AS total FROM accounts WHERE user_id=$1 AND type='credit_card' AND NOT is_archived) card_debts GROUP BY currency) d ON a.currency = d.currency ORDER BY currency ASC";
+const NET_WORTH_SQL: &str = "SELECT COALESCE(a.currency, d.currency) AS currency, COALESCE(a.total, 0) AS assets, COALESCE(d.total, 0) AS debts FROM (SELECT currency, SUM(current_value) AS total FROM assets WHERE user_id=$1 AND NOT is_archived GROUP BY currency) a FULL OUTER JOIN (SELECT currency, SUM(GREATEST(-balance, 0)) AS total FROM accounts WHERE user_id=$1 AND type='credit_card' AND NOT is_archived GROUP BY currency) d ON a.currency = d.currency ORDER BY currency ASC";
 
 type AssetRow = (
     Uuid,
@@ -616,7 +617,8 @@ pub struct NetWorthEntry {
     pub currency: String,
     /// Sum of `current_value` over non-archived assets, as a string.
     pub assets: Decimal,
-    /// Sum of `pending_amount` over active debts, as a string.
+    /// Sum of credit-card liabilities (`GREATEST(-balance, 0)` over
+    /// non-archived `credit_card` accounts), as a string.
     pub debts: Decimal,
     /// `assets - debts`, as a string.
     pub net_worth: Decimal,
@@ -899,8 +901,12 @@ mod tests {
             "net worth must exclude archived assets, got: {NET_WORTH_SQL}"
         );
         assert!(
-            NET_WORTH_SQL.contains("status='active'"),
-            "net worth must count only active debts, got: {NET_WORTH_SQL}"
+            !NET_WORTH_SQL.contains("FROM debts"),
+            "net worth must not read the removed debts table, got: {NET_WORTH_SQL}"
+        );
+        assert!(
+            NET_WORTH_SQL.contains("GREATEST(-balance, 0)"),
+            "net worth debts leg must be card-only with overpaid cards at 0, got: {NET_WORTH_SQL}"
         );
     }
 
@@ -1264,10 +1270,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn net_worth_subtracts_active_debts_from_non_archived_assets() {
+    async fn net_worth_counts_card_debt_only_from_surviving_tables() {
+        // S-G: the `debts` table is gone (gated migration 0013), so the
+        // liabilities leg is arranged through surviving tables only — a
+        // credit-card account whose balance is set directly (hermetic seeds,
+        // no removed-table insert).
         let Some(pool) = test_pool() else {
             eprintln!(
-                "SKIP net_worth_subtracts_active_debts_from_non_archived_assets: no DATABASE_URL"
+                "SKIP net_worth_counts_card_debt_only_from_surviving_tables: no DATABASE_URL"
             );
             return;
         };
@@ -1282,13 +1292,18 @@ mod tests {
         .await
         .expect("valuation is 201");
         assert_eq!(status, StatusCode::CREATED);
-        sqlx::query(
-            "INSERT INTO debts (user_id, name, creditor, original_amount, pending_amount, currency, start_date) VALUES ($1,'Loan','Bank',3000,3000,'COP','2026-01-15')",
+        let card_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, type, credit_limit, statement_day, payment_due_day) VALUES ($1,'Card','credit_card',5000,15,25) RETURNING id",
         )
         .bind(user_id)
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
-        .expect("seed debt");
+        .expect("seed card");
+        sqlx::query("UPDATE accounts SET balance = -3000.00 WHERE id=$1")
+            .bind(card_id)
+            .execute(&pool)
+            .await
+            .expect("seed card debt");
         let worth = get_net_worth_handler(State(state.clone()), headers.clone())
             .await
             .expect("net worth is 200");
@@ -1297,7 +1312,7 @@ mod tests {
         assert_eq!(worth.per_currency[0].assets, Decimal::new(1000000, 2));
         assert_eq!(worth.per_currency[0].debts, Decimal::new(300000, 2));
         assert_eq!(worth.per_currency[0].net_worth, Decimal::new(700000, 2));
-        // Archived assets leave the aggregate; paid-off debts too.
+        // Archived assets leave the aggregate; the card liability survives.
         let status = delete_asset_handler(State(state.clone()), headers.clone(), Path(asset_id))
             .await
             .expect("archive is 204");

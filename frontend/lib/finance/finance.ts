@@ -11,8 +11,7 @@
 import { toNumber } from "@/lib/api/money";
 import type {
   CategoryWire,
-  DebtWire,
-  SavingsGoalWire,
+  MovementWire,
   SubscriptionWire,
 } from "@/lib/api/finance";
 import type { AccountWire } from "@/lib/api/dashboard";
@@ -107,70 +106,6 @@ export function toSubscriptionRows(
     }));
 }
 
-/** Debts as compact money rows showing the pending remainder. */
-export function toDebtRows(rows: DebtWire[] | null | undefined): CompactMoneyRow[] {
-  if (!rows) return [];
-  return rows.map((row) => ({
-    id: row.id,
-    title: `${row.name} · ${row.creditor}`,
-    detail: row.due_date ? `Due ${row.due_date} · ${row.status}` : row.status,
-    amount: toNumber(row.pending_amount),
-    currency: row.currency,
-  }));
-}
-
-export interface SavingsView extends CompactMoneyRow {
-  /** Completion fraction clamped to [0, 1] for progress-bar width. */
-  progress: number;
-  completed: boolean;
-}
-
-/** Savings goals with completion progress. */
-export function toSavingsViews(rows: SavingsGoalWire[] | null | undefined): SavingsView[] {
-  if (!rows) return [];
-  return rows.map((row) => {
-    const target = toNumber(row.target_amount);
-    const saved = toNumber(row.saved_amount);
-    const raw = target > 0 ? saved / target : 0;
-    return {
-      id: row.id,
-      title: row.name,
-      detail: row.target_date ? `Target ${row.target_date}` : null,
-      amount: saved,
-      currency: row.currency,
-      progress: Math.min(1, Math.max(0, raw)),
-      completed: row.is_completed,
-    };
-  });
-}
-
-/** Totals for one category: monthly-equivalent active-subscription spend
- * (gastos) plus saved amounts on savings goals (ahorro). */
-export interface CategoryTotals {
-  expenses: number;
-  savings: number;
-}
-
-export function toCategoryTotals(
-  subs: SubscriptionWire[] | null | undefined,
-  goals: SavingsGoalWire[] | null | undefined,
-  categoryId: string,
-): CategoryTotals {
-  let expenses = 0;
-  let savings = 0;
-  for (const sub of subs ?? []) {
-    if (sub.is_active && (sub.category_id ?? null) === categoryId) {
-      expenses += toMonthlyPrice(sub.price, sub.frequency);
-    }
-  }
-  for (const goal of goals ?? []) {
-    if ((goal.category_id ?? null) === categoryId) {
-      savings += toNumber(goal.saved_amount);
-    }
-  }
-  return { expenses, savings };
-}
-
 // -- S1 (captura manual en COP, sin UUIDs visibles) --
 
 export interface NamedOption {
@@ -198,17 +133,6 @@ export function toCategoryOptions(
   return [...rows]
     .map((row) => ({ id: row.id, name: row.name, kind: row.kind }))
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
-}
-
-export interface DebtProgress { paid: number; remaining: number; pct: number; status: "ok" | "warn" | "paid"; }
-
-/** Debo/aboné/falta desde montos ya coercionados. pct clamp [0,1]; paid si pending<=0, warn si pct>=0.7. */
-export function toDebtProgress(d: { original: number; pending: number }): DebtProgress {
-  const paid = d.original - d.pending;
-  const raw = d.original > 0 ? paid / d.original : 0;
-  const pct = Math.min(1, Math.max(0, raw));
-  const status = d.pending <= 0 ? "paid" : pct >= 0.7 ? "warn" : "ok";
-  return { paid, remaining: d.pending, pct, status };
 }
 
 /**
@@ -307,4 +231,126 @@ export function toPeriodRange(sel: PeriodSel, now: Date = new Date()): { from: s
  */
 export function toEventRange(range: { from: string; to: string }): { from: string; to: string } {
   return { from: `${range.from}T00:00:00.000Z`, to: `${range.to}T23:59:59.999Z` };
+}
+
+// -- Movements ledger (S-C): rows, aggregates, Bogota dates, paid derivation --
+
+/** One movement ready to render: numbers only, names resolved. `displayDate`
+ * is the Spanish rendering of `occurredOn` (see `formatMovementDate`); money
+ * itself stays a number and components format it with `formatMoney`. */
+export interface MovementRowView {
+  id: string;
+  direction: "expense" | "income";
+  amount: number;
+  occurredOn: string;
+  displayDate: string;
+  description: string | null;
+  accountName: string;
+  categoryName: string | null;
+}
+
+/** `YYYY-MM-DD` → Spanish date (e.g. `24 sept 2026`). The input is parsed as
+ * calendar fields (never `new Date(str)`, which is UTC-midnight and shifts
+ * the day under American timezones); unparseable input passes through. */
+export function formatMovementDate(occurredOn: string, locale = "es-CO"): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(occurredOn.trim());
+  if (!match) return occurredOn;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (Number.isNaN(date.getTime())) return occurredOn;
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      timeZone: "America/Bogota",
+    }).format(date);
+  } catch {
+    return occurredOn;
+  }
+}
+
+/** Movement wires → render rows. Unknown account/category ids fall back to
+ * the raw id (never blank); a null category stays null so aggregates can
+ * exclude it. Rows keep API order — callers slice (never re-sort). */
+export function toMovementRows(
+  movements: MovementWire[] | null | undefined,
+  accounts: NamedOption[],
+  categories: NamedOption[],
+  locale = "es-CO",
+): MovementRowView[] {
+  if (!movements) return [];
+  const accountById = new Map(accounts.map((a) => [a.id, a.name]));
+  const categoryById = new Map(categories.map((c) => [c.id, c.name]));
+  return movements.map((m) => ({
+    id: m.id,
+    direction: m.direction,
+    amount: toNumber(m.amount),
+    occurredOn: m.occurred_on,
+    displayDate: formatMovementDate(m.occurred_on, locale),
+    description: m.description,
+    accountName: accountById.get(m.account_id) ?? m.account_id,
+    categoryName: m.category_id == null ? null : (categoryById.get(m.category_id) ?? m.category_id),
+  }));
+}
+
+export interface CategoryMovementTotals {
+  expense: number;
+  income: number;
+}
+
+/** Per-category expense/income over movements, never netted. Rows without a
+ * category are excluded (no "sin categoría" bucket); rows on accounts whose
+ * currency differs from the user currency are excluded, never converted. */
+export function toCategoryMovementTotals(
+  movements: MovementWire[] | null | undefined,
+  currencyByAccountId: Map<string, string>,
+  userCurrency: string,
+  categoryId: string,
+): CategoryMovementTotals {
+  let expense = 0;
+  let income = 0;
+  for (const m of movements ?? []) {
+    if ((m.category_id ?? null) !== categoryId) continue;
+    if ((currencyByAccountId.get(m.account_id) ?? userCurrency) !== userCurrency) continue;
+    const amount = toNumber(m.amount);
+    if (m.direction === "expense") expense += amount;
+    else income += amount;
+  }
+  return { expense, income };
+}
+
+/** Total balance: Σ `accounts.balance` over same-currency accounts only.
+ * Foreign-currency accounts are excluded, never converted. */
+export function toTotalBalance(
+  accounts: AccountCardView[] | null | undefined,
+  currency: string,
+): number {
+  let total = 0;
+  for (const account of accounts ?? []) {
+    if (account.currency !== currency) continue;
+    total += account.balance;
+  }
+  return total;
+}
+
+/** Today in America/Bogota as `YYYY-MM-DD` (`Intl` `en-CA` yields the ISO
+ * shape directly). Colombia has no DST, but the zone-aware formatter keeps
+ * the boundary exact without a date library. */
+export function todayInBogota(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+/** Paid-this-cycle, derived at render time (no effects, no timers): the pay
+ * action stamped `last_paid_on` and advanced `next_billing_on` past today.
+ * Plain string comparison is exact for `YYYY-MM-DD`. */
+export function isPaidThisCycle(
+  sub: { last_paid_on: string | null; next_billing_on: string | null },
+  today: string,
+): boolean {
+  return sub.last_paid_on != null && sub.next_billing_on != null && sub.next_billing_on > today;
 }

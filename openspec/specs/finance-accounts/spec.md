@@ -95,36 +95,75 @@ The system MUST allow updating the manual balance and the non-financial metadata
 - THEN the system returns 404 for the foreign id (never 403) and 401 without a token, and no balance changes
 
 ### Requirement: Manual Balance As Single Source Of Truth
-The account balance MUST be treated as a value the user asserts. The system MUST NOT maintain, derive or expose any history, snapshot or valuation series for an account balance, and no surviving module MAY recompute it from other rows. Every dependent figure — net worth, total assets, card metrics — MUST read the stored `balance`.
+
+The account balance MUST be treated as a value the user asserts or the movement transaction adjusts. The system MUST NOT maintain, derive or expose any history, snapshot or valuation series for an account balance beyond the movement rows themselves, and no surviving module MAY recompute it from other rows. Exactly two write paths MUST exist and no others: the manual `PATCH /api/accounts/{id}` correction and the movement transaction (`finance-movements`: insert/delete/edit with signed-delta reversal). No trigger, cron, aggregate or derived job MAY write `balance`. Every dependent figure — net worth, total assets, card metrics, total balance — MUST read the stored `balance`.
+(Previously: balance was written only by the manual `PATCH`; the statement of truth said "a value the user asserts" and no movement transaction existed.)
 
 #### Scenario: No history is created
-- GIVEN a balance update through the API
+
+- GIVEN a manual balance update through the API
 - WHEN the request succeeds
 - THEN exactly one row changes and no history, audit or snapshot row is written
 
 #### Scenario: Dependents follow the stored balance
+
 - GIVEN an account whose balance was updated manually
 - WHEN net worth and card metrics are read
 - THEN both reflect the new stored balance with no additional source consulted
 
-### Requirement: Account Delete Guard Uses Live References Only
-Account deletion MUST NOT query any removed table. Because the surviving foreign key from assets to accounts is `ON DELETE SET NULL` and no surviving table holds a blocking reference to an account, deleting an owned account MUST succeed with 204 regardless of its debts, savings movements or subscriptions. The existing constraint mapping (`23503→409` with a Spanish message) MUST be preserved for any future blocking reference, and a foreign or missing id MUST still resolve to 404.
+#### Scenario: The movement transaction is the second sanctioned writer
 
-#### Scenario: Delete an account with unrelated finance rows
-- GIVEN an owned account referenced by nothing blocking
+- GIVEN account `A` with balance `"100000.00"`
+- WHEN a movement is created, edited or deleted through `/api/movements`
+- THEN `A.balance` changes by the signed delta inside that transaction and no other module recomputes it
+
+#### Scenario: No third writer exists
+
+- GIVEN the final schema and codebase after the change
+- WHEN writes to `accounts.balance` are searched
+- THEN only the manual `PATCH /api/accounts/{id}` and the movement transaction write it, and no trigger does
+
+### Requirement: Account Delete Guard Uses Live References Only
+
+Account deletion MUST NOT query any removed table. The surviving `movements.account_id` reference is blocking (`ON DELETE RESTRICT`): deleting an owned account that has at least one movement MUST be blocked with 409 Conflict and a Spanish message, surfaced in the UI through a typed `finance.*` i18n key (never a raw status or hardcoded string). Because the surviving `assets.account_id` foreign key is `ON DELETE SET NULL` and no other surviving table blocks, deleting an owned account without movements MUST succeed with 204. The existing constraint mapping (`23503 → 409` with a Spanish message) MUST be preserved, and a foreign or missing id MUST still resolve to 404 (never 403).
+(Previously: the guard was unconditional — deletion succeeded with 204 regardless of debts, savings movements or subscriptions, because no surviving table held a blocking reference.)
+
+#### Scenario: Delete an account without movements
+
+- GIVEN an owned account referenced by no movement and nothing else blocking
 - WHEN `DELETE /api/accounts/{id}`
 - THEN the system returns 204 and the account is gone
 
+#### Scenario: Account with movements is blocked
+
+- GIVEN an owned account with at least one movement
+- WHEN `DELETE /api/accounts/{id}`
+- THEN the system returns 409 with a Spanish message
+- AND the account and its balance are unchanged
+
 #### Scenario: No removed-table query
+
 - GIVEN the delete path after the change
 - WHEN its SQL is inspected
-- THEN it contains no reference to the removed `transactions` table
+- THEN it contains no reference to the removed `transactions`, `savings_goals` or `debts` tables
 
 #### Scenario: Blocking constraint still maps to 409
-- GIVEN a future or unforeseen `RESTRICT` reference that blocks the delete
+
+- GIVEN the `movements.account_id` restriction (or any future `RESTRICT` reference) that blocks the delete
 - WHEN the database rejects it with `23503`
 - THEN the API returns 409 with a Spanish message, never 500
 
+#### Scenario: Foreign delete still reads as not found
+
+- GIVEN an authenticated user
+- WHEN they delete a foreign account id
+- THEN the system returns 404 without leaking existence
+
+#### Scenario: The FE surfaces the block with a typed key
+
+- GIVEN an account with movements and its delete confirmation in Settings
+- WHEN the 409 arrives
+- THEN the UI shows the Spanish block message resolved from a typed `finance.*` key and keeps the account listed
 ### Requirement: Account Balance Inline Edit
 The finance UI MUST expose the manual balance write on the account card as an inline edit: it MUST display the current balance before editing, require an explicit confirmation before saving, send the new value as a string, and refresh the `finance/` SWR scope on success. The control MUST be keyboard reachable with visible focus, MUST have a hit area of at least 44×44 CSS pixels, MUST format values with es-CO/COP through the existing money formatter, and MUST use typed `finance.*` i18n keys with no UUID input and no hardcoded copy.
 

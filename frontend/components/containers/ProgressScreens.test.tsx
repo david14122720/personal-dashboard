@@ -79,14 +79,25 @@ describe("ProgressScreens S4 RED", () => {
     expect(habitsBar).toHaveAttribute("aria-valuenow", "0");
   });
 
-  it("finance block shows patrimonio, deuda y ahorro sin flujo mensual", async () => {
+  it("finance block shows patrimonio neto only, no debt or savings figures", async () => {
     renderProgress();
     const finance = await screen.findByRole("region", { name: "Finanzas actuales" });
     expect(within(finance).getByText("Patrimonio neto")).toBeInTheDocument();
-    expect(within(finance).getByText("Deudas")).toBeInTheDocument();
-    expect(within(finance).getByText("Ahorros")).toBeInTheDocument();
+    expect(within(finance).queryByText("Deudas")).not.toBeInTheDocument();
+    expect(within(finance).queryByText("Ahorros")).not.toBeInTheDocument();
     expect(within(finance).queryByText("Ingreso")).not.toBeInTheDocument();
     expect(within(finance).queryByText("Gasto")).not.toBeInTheDocument();
+  });
+
+  it("finance block renders from net worth alone when /debts and /savings-goals fail", async () => {
+    server.use(
+      http.get("http://test.local/api/debts", () => HttpResponse.json({ message: "caído" }, { status: 500 })),
+      http.get("http://test.local/api/savings-goals", () => HttpResponse.json({ message: "caído" }, { status: 500 })),
+    );
+    renderProgress();
+    const finance = await screen.findByRole("region", { name: "Finanzas actuales" });
+    expect(within(finance).getByText("Patrimonio neto")).toBeInTheDocument();
+    expect(within(finance).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("disclaimer visible en estado poblado y en vacío", async () => {

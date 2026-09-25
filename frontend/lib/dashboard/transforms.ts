@@ -86,80 +86,39 @@ export function toMonthlyCost(subs: SubscriptionCostLike[] | null | undefined): 
   return total;
 }
 
-export interface OutstandingDebtLike {
-  pending_amount?: string | number | null;
-  status?: string | null;
-}
-
-/** Outstanding debt = sum of `pending_amount` over debts with active-ish status. */
-export function toOutstandingDebt(debts: OutstandingDebtLike[] | null | undefined): number {
-  if (!debts) return 0;
-  let total = 0;
-  for (const debt of debts) {
-    if (debt.status !== undefined && debt.status !== null && debt.status !== "active") continue;
-    total += toNumber(debt.pending_amount);
-  }
-  return total;
-}
-
-export interface TotalSavingsLike {
-  saved?: string | number | null;
-  saved_amount?: string | number | null;
-  completed?: boolean | null;
-  is_completed?: boolean | null;
-}
-
-/** Total savings = sum of `saved_amount` (fallback `saved`) over non-completed goals. */
-export function toTotalSavings(goals: TotalSavingsLike[] | null | undefined): number {
-  if (!goals) return 0;
-  let total = 0;
-  for (const goal of goals) {
-    if (goal.completed === true || goal.is_completed === true) continue;
-    total += toNumber(goal.saved_amount ?? goal.saved);
-  }
-  return total;
-}
-
 export interface FinanceSnapshotInput {
   netWorth: number;
   monthlySubsCost: number;
-  outstandingDebt: number;
 }
 
 export interface FinanceSnapshot {
   netWorth: number;
   monthlySubsCost: number;
-  outstandingDebt: number;
 }
 
-/** Reports finance snapshot: three current values, no period window. */
+/** Reports finance snapshot: two current values, no period window. */
 export function toFinanceSnapshot(input: FinanceSnapshotInput): FinanceSnapshot {
   return {
     netWorth: input.netWorth,
     monthlySubsCost: input.monthlySubsCost,
-    outstandingDebt: input.outstandingDebt,
   };
 }
 
 export interface FinanceScoreInput {
-  netWorth: number;
-  savings: number;
-  debt: number;
+  /** Net worth, or null/undefined when no net-worth data is available. */
+  netWorth: number | null | undefined;
 }
 
 /**
- * Progress finance score from surviving inputs only: share of the positive
- * position not owed — 100·(netWorth+savings)/(netWorth+savings+debt),
- * clamped 0..100. All three inputs zero → null ("sin datos").
+ * Progress finance score from the only surviving input: 100 when net worth
+ * is greater than zero, 0 when it is zero or negative, and null (neutral
+ * empty visual, never a fabricated score) when no net-worth data exists.
+ * Presentational only — never a verdict.
  */
 export function toFinanceScore(input: FinanceScoreInput): number | null {
-  const positive = input.netWorth + input.savings;
-  if (input.netWorth === 0 && input.savings === 0 && input.debt === 0) return null;
-  const denom = positive + input.debt;
-  if (denom <= 0) return 0;
-  const score = (positive / denom) * 100;
-  if (!Number.isFinite(score)) return null;
-  return Math.min(100, Math.max(0, score));
+  if (input.netWorth === null || input.netWorth === undefined) return null;
+  if (!Number.isFinite(input.netWorth)) return null;
+  return input.netWorth > 0 ? 100 : 0;
 }
 
 /* -- p8-home-pagos PR1: upcoming 7d + overdue (S3/S4) -- */
@@ -174,15 +133,6 @@ export interface UpcomingSubLike {
   price?: string | number | null;
   is_active?: boolean | null;
   next_billing_on?: string | null;
-}
-
-export interface UpcomingDebtLike {
-  id: string;
-  name?: string | null;
-  pending_amount?: string | number | null;
-  status?: string | null;
-  due_date?: string | null;
-  installment?: string | number | null;
 }
 
 export interface UpcomingEventLike {
@@ -201,7 +151,7 @@ export interface OverdueTaskLike {
 
 export interface UpcomingPaymentItem {
   id: string;
-  kind: "debt" | "event" | "subscription";
+  kind: "event" | "subscription";
   title: string;
   due: string;
   amount?: number;
@@ -210,7 +160,7 @@ export interface UpcomingPaymentItem {
 
 export interface OverdueItem {
   id: string;
-  kind: "task" | "debt" | "event";
+  kind: "task" | "event";
   title: string;
   due: string;
   amount?: number;
@@ -247,19 +197,17 @@ function parseDueDate(raw: string | null | undefined): Date | null {
 }
 
 function upcomingRank(kind: UpcomingPaymentItem["kind"] | OverdueItem["kind"]): number {
-  if (kind === "debt") return 0;
-  if (kind === "event") return 1;
-  if (kind === "subscription") return 2;
-  return 3;
+  if (kind === "event") return 0;
+  if (kind === "subscription") return 1;
+  return 2;
 }
 
 /**
- * Union 7d `[hoy00:00, hoy+7 23:59]` local `es-CO`, orden asc + desempate deudas>events>subs.
- * Deudas sin `due_date` válida se excluyen (nunca se inventa fecha desde `installment`).
+ * Union 7d `[hoy00:00, hoy+7 23:59]` local `es-CO`: subs + `payment_due`
+ * events, orden asc + desempate events>subs.
  */
 export function toUpcomingPayments(
   subs: UpcomingSubLike[] | null | undefined,
-  debts: UpcomingDebtLike[] | null | undefined,
   events: UpcomingEventLike[] | null | undefined,
   now: Date = new Date(),
 ): UpcomingPaymentItem[] {
@@ -279,26 +227,6 @@ export function toUpcomingPayments(
       due: (sub.next_billing_on as string).trim(),
       amount: sub.price === undefined || sub.price === null ? undefined : toNumber(sub.price),
       source: "subscription",
-      dueTime: at.getTime(),
-    });
-  }
-
-  for (const debt of debts ?? []) {
-    if (debt.status !== undefined && debt.status !== null && debt.status !== "active") continue;
-    // installment is money, never a date: dateless debts stay excluded here.
-    const at = parseDueDate(debt.due_date);
-    if (!at) continue;
-    if (at < start || at > end) continue;
-    out.push({
-      id: debt.id,
-      kind: "debt",
-      title: debt.name?.trim() || debt.id,
-      due: (debt.due_date as string).trim(),
-      amount:
-        debt.pending_amount === undefined || debt.pending_amount === null
-          ? undefined
-          : toNumber(debt.pending_amount),
-      source: "debt",
       dueTime: at.getTime(),
     });
   }
@@ -323,13 +251,12 @@ export function toUpcomingPayments(
 }
 
 /**
- * Vencidas: tasks `due_date < hoy` no completadas + deudas `active` con `due_date < hoy`
- * + events `payment_due` con `starts_at` en día anterior a hoy (pasado estricto por día,
- * igual que tasks/debts: hoy queda solo en Próximos, nunca en ambas). Orden asc, desempate deudas>events>tasks.
+ * Vencidas: tasks `due_date < hoy` no completadas + events `payment_due`
+ * con `starts_at` en día anterior a hoy (pasado estricto por día: hoy queda
+ * solo en Próximos, nunca en ambas). Orden asc, desempate events>tasks.
  */
 export function toOverdueItems(
   tasks: OverdueTaskLike[] | null | undefined,
-  debts: UpcomingDebtLike[] | null | undefined,
   events: UpcomingEventLike[] | null | undefined,
   now: Date = new Date(),
 ): OverdueItem[] {
@@ -347,25 +274,6 @@ export function toOverdueItems(
       title: task.title?.trim() || task.id,
       due: (task.due_date as string).trim(),
       source: "task",
-      dueTime: at.getTime(),
-    });
-  }
-
-  for (const debt of debts ?? []) {
-    if (debt.status !== "active") continue;
-    const at = parseDueDate(debt.due_date);
-    if (!at) continue;
-    if (at >= start) continue;
-    out.push({
-      id: debt.id,
-      kind: "debt",
-      title: debt.name?.trim() || debt.id,
-      due: (debt.due_date as string).trim(),
-      amount:
-        debt.pending_amount === undefined || debt.pending_amount === null
-          ? undefined
-          : toNumber(debt.pending_amount),
-      source: "debt",
       dueTime: at.getTime(),
     });
   }
@@ -391,14 +299,6 @@ export function toOverdueItems(
 }
 
 /* -- p8-home-pagos PR1: pending lists + goals + notifications -- */
-
-export interface PendingDebt {
-  id: string;
-  name: string;
-  pending: number;
-  due_date: string | null;
-  status: string;
-}
 
 export interface ActiveSub {
   id: string;
@@ -429,40 +329,19 @@ export interface GoalLike {
   status?: string | null;
 }
 
-export interface SavingsGoalLike {
-  id: string;
-  name?: string | null;
-  goal?: string | number | null;
-  saved?: string | number | null;
-  target_amount?: string | number | null;
-  saved_amount?: string | number | null;
-  completed?: boolean | null;
-  is_completed?: boolean | null;
-}
-
 export interface GoalSegment {
   id: string;
   name: string;
   pct: number;
 }
 
-export interface SavingsSegment {
-  id: string;
-  name: string;
-  pct: number;
-  saved: number;
-  goal: number;
-  completed: boolean;
-}
-
 export interface GoalProgress {
   goals: GoalSegment[];
-  savings: SavingsSegment[];
 }
 
 export interface NotificationItem {
   id: string;
-  kind: "task" | "debt" | "event" | "subscription";
+  kind: "task" | "event" | "subscription";
   title: string;
   due: string;
   amount?: number;
@@ -476,20 +355,6 @@ function compareDayAscNullsLast(a: string | null, b: string | null): number {
   if (!ta) return 1;
   if (!tb) return -1;
   return ta.getTime() - tb.getTime();
-}
-
-/** Deudas `status=active` con `pending_amount` numérico, ordenadas por `due_date` asc (nulas al final). */
-export function toPendingDebts(debts: UpcomingDebtLike[] | null | undefined): PendingDebt[] {
-  const rows = (debts ?? []).filter((d) => d.status === "active");
-  const mapped: PendingDebt[] = rows.map((d) => ({
-    id: d.id,
-    name: d.name?.trim() || d.id,
-    pending: toNumber(d.pending_amount),
-    due_date: d.due_date ?? null,
-    status: d.status ?? "active",
-  }));
-  mapped.sort((a, b) => compareDayAscNullsLast(a.due_date, b.due_date));
-  return mapped;
 }
 
 /** Subs `is_active` con `price` numérico, ordenadas por `next_billing_on` asc (nulas al final). */
@@ -554,32 +419,16 @@ function clampPct(value: number): number {
   return value;
 }
 
-/** Dos segmentos en el mismo widget: Metas (`progress`) + Ahorro (`saved/goal`). */
+/** Un segmento en el widget: Metas (`progress` de `GET /goals`, solo lectura). */
 export function toGoalProgress(
   goals: GoalLike[] | null | undefined,
-  savingsGoals: SavingsGoalLike[] | null | undefined,
 ): GoalProgress {
   const goalSegments: GoalSegment[] = (goals ?? []).map((g) => ({
     id: g.id,
     name: g.name?.trim() || g.id,
     pct: clampPct(typeof g.progress === "number" ? g.progress : 0),
   }));
-  const savings: SavingsSegment[] = (savingsGoals ?? []).map((s) => {
-    const goalRaw = s.goal ?? s.target_amount ?? 0;
-    const savedRaw = s.saved ?? s.saved_amount ?? 0;
-    const goal = toNumber(goalRaw);
-    const saved = toNumber(savedRaw);
-    const pct = goal > 0 ? clampPct((saved / goal) * 100) : 0;
-    return {
-      id: s.id,
-      name: s.name?.trim() || s.id,
-      pct,
-      saved,
-      goal,
-      completed: Boolean(s.completed ?? s.is_completed ?? pct >= 100),
-    };
-  });
-  return { goals: goalSegments, savings };
+  return { goals: goalSegments };
 }
 
 /** Unión vencidas + próximos para la campanita (mismo orden de entrada). */

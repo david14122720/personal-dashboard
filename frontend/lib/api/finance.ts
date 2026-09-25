@@ -23,54 +23,14 @@ export interface SubscriptionWire {
   is_active: boolean;
   payment_method?: string | null;
   category_id?: string | null;
+  /** Set by the pay action (`POST /subscriptions/{id}/pay`); absent on older rows. */
+  last_paid_on?: string | null;
 }
 
 export function useSubscriptions() {
   return useSWR<SubscriptionWire[]>(
     "finance/subscriptions",
     () => apiGet<SubscriptionWire[]>("/subscriptions"),
-    financeConfig,
-  );
-}
-
-export interface DebtWire {
-  id: string;
-  name: string;
-  creditor: string;
-  original_amount: string | number;
-  pending_amount: string | number;
-  currency: string;
-  status: string;
-  due_date: string | null;
-  installment?: string | number | null;
-  start_date?: string | null;
-}
-
-export function useDebts() {
-  return useSWR<DebtWire[]>(
-    "finance/debts",
-    () => apiGet<DebtWire[]>("/debts"),
-    financeConfig,
-  );
-}
-
-export interface SavingsGoalWire {
-  id: string;
-  name: string;
-  target_amount: string | number;
-  saved_amount: string | number;
-  currency: string;
-  is_completed: boolean;
-  target_date: string | null;
-  description?: string | null;
-  category_id?: string | null;
-  color?: string | null;
-}
-
-export function useSavingsGoals() {
-  return useSWR<SavingsGoalWire[]>(
-    "finance/savings-goals",
-    () => apiGet<SavingsGoalWire[]>("/savings-goals"),
     financeConfig,
   );
 }
@@ -123,24 +83,100 @@ export function deleteAccount(id: string): Promise<void> {
   return apiDelete(`/accounts/${id}`);
 }
 
-// -- S5 escritura (montos string, allowlists reales PR-1, sin parseo local) --
-
-export function patchGoal(id: string, body: Record<string, unknown>) { return apiPatch(`/savings-goals/${id}`, body); }
-export function createMovement(goalId: string, input: { amount: string; occurred_on: string; notes?: string }) { return apiPost(`/savings-goals/${goalId}/movements`, input); }
-export function deleteMovement(goalId: string, mid: string): Promise<void> { return apiDelete(`/savings-goals/${goalId}/movements/${mid}`); }
-
-export interface DebtPaymentWire { id: string; debt_id: string; amount: string | number; paid_on: string; payment_method: string | null; notes: string | null; created_at: string }
-export function patchDebt(id: string, body: Record<string, unknown>) { return apiPatch(`/debts/${id}`, body); }
-export function createPayment(debtId: string, input: { amount: string; paid_on: string; payment_method?: string; notes?: string }) { return apiPost(`/debts/${debtId}/payments`, input); }
-export function deletePayment(debtId: string, pid: string): Promise<void> { return apiDelete(`/debts/${debtId}/payments/${pid}`); }
-export function fetchDebtPayments(debtId: string): Promise<DebtPaymentWire[]> { return apiGet<DebtPaymentWire[]>(`/debts/${debtId}/payments`); }
-export function useDebtPayments(debtId: string | null) {
-  return useSWR<DebtPaymentWire[]>(debtId ? `finance/debt-payments/${debtId}` : null, () => fetchDebtPayments(debtId as string), financeConfig);
-}
-
 export function createSubscription(input: Record<string, unknown>) { return apiPost("/subscriptions", input); }
 export function setSubscriptionActive(id: string, is_active: boolean) { return apiPatch(`/subscriptions/${id}`, { is_active }); }
 export function deleteSubscription(id: string): Promise<void> { return apiDelete(`/subscriptions/${id}`); }
+
+/** Widened subscription metadata write (S-D owns the tests): exactly
+ * `name|price|next_billing_on|is_active`, omitted fields keep their value. */
+export function patchSubscription(
+  id: string,
+  body: { name?: string; price?: string; next_billing_on?: string; is_active?: boolean },
+): Promise<SubscriptionWire> {
+  return apiPatch<SubscriptionWire>(`/subscriptions/${id}`, body);
+}
+
+/** Pay action (S-D owns the tests): debits the account, inserts the audit
+ * movement and advances the cycle. The body carries only `{account_id}`. */
+export function paySubscription(id: string, accountId: string): Promise<SubscriptionWire> {
+  return apiPost<SubscriptionWire>(`/subscriptions/${id}/pay`, { account_id: accountId });
+}
+
+// -- Movements ledger (S-C): expense/income records with atomic balance effect --
+
+/** Movement row as served by `GET /movements`: amount is a decimal string
+ * (e.g. `"25000.00"`), `occurred_on` is `YYYY-MM-DD`. */
+export interface MovementWire {
+  id: string;
+  direction: "expense" | "income";
+  amount: string | number;
+  occurred_on: string;
+  description: string | null;
+  account_id: string;
+  category_id: string | null;
+  subscription_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateMovementInput {
+  direction: "expense" | "income";
+  amount: string;
+  account_id: string;
+  category_id: string;
+  occurred_on: string;
+  description?: string;
+}
+
+export interface PatchMovementInput {
+  direction?: "expense" | "income";
+  amount?: string;
+  account_id?: string;
+  category_id?: string;
+  occurred_on?: string;
+  description?: string;
+}
+
+/** All movements of the caller in API order (`occurred_on DESC,
+ * `created_at DESC, `id DESC`); no pagination in v1. */
+export function useMovements() {
+  return useSWR<MovementWire[]>(
+    "finance/movements",
+    () => apiGet<MovementWire[]>("/movements"),
+    financeConfig,
+  );
+}
+
+/** Create a movement (amount travels as a decimal string, never a number). */
+export function createMovement(input: CreateMovementInput): Promise<MovementWire> {
+  return apiPost<MovementWire>("/movements", input);
+}
+
+/** Edit a movement; omitted fields keep their stored value. */
+export function patchMovement(id: string, body: PatchMovementInput): Promise<MovementWire> {
+  return apiPatch<MovementWire>(`/movements/${id}`, body);
+}
+
+/** Delete a movement and reverse its balance effect. */
+export function deleteMovement(id: string): Promise<void> {
+  return apiDelete(`/movements/${id}`);
+}
+
+// -- Kind-free categories (S-C): one unfiltered set for every picker/chart --
+
+/** Fetch every owned category in one unfiltered set (`GET /categories`,
+ * no `kind` param), ordered by name. */
+export function fetchCategories(): Promise<CategoryWire[]> {
+  return apiGet<CategoryWire[]>("/categories");
+}
+
+export function useCategories() {
+  return useSWR<CategoryWire[]>(
+    "finance/categories",
+    fetchCategories,
+    financeConfig,
+  );
+}
 
 /** Create a bank account by name/alias (`POST /accounts {name, type:"bank"}`).
  * The new account appears automatically in Finanzas (same `dashboard/accounts` read). */

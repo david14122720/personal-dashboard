@@ -522,29 +522,38 @@ pub async fn patch_account_handler(
         .ok_or(AppError::NotFound)
 }
 
-// -- S3a (ledger removal): physical delete with no movement guard --
+// -- S-A (finance-simplify-movements): physical delete with a movement guard --
 
 const DELETE_ACCOUNT_SQL: &str = "DELETE FROM accounts WHERE id=$1 AND user_id=$2";
 const ACCOUNT_OWNERSHIP_CHECK_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
+/// Live-reference probe for the delete guard: counts the caller's movements
+/// on the account. Never touches a removed table.
+const ACCOUNT_MOVEMENT_COUNT_SQL: &str =
+    "SELECT count(*) FROM movements WHERE account_id=$1 AND user_id=$2";
 
 fn map_account_delete_err(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db) = &e {
-        // Dead-man's switch for a future blocking `RESTRICT` reference:
-        // map it to the same clear 409 instead of leaking a 500.
+        // Backstop for the `ON DELETE RESTRICT` reference from
+        // `movements.account_id` (or any future blocking reference): the
+        // application check below catches the normal case, the constraint
+        // catches the race — both map to the same Spanish 409, never a 500.
         if db.code().as_deref() == Some("23503") {
             return AppError::Conflict(
-                "account has movements and cannot be deleted".into(),
+                "la cuenta tiene movimientos y no se puede eliminar".into(),
             );
         }
     }
     AppError::Internal
 }
 
-/// Delete an owned account (204). No surviving table holds a blocking
-/// reference to `accounts(id)` (`assets.account_id` is `ON DELETE SET
-/// NULL`; debts, savings and subscriptions carry no `account_id`), so the
-/// delete always succeeds for an owned id. Foreign/missing ids resolve to
-/// 404 without leaking existence. Only COP is used; no conversion applies.
+/// Delete an owned account (204) unless it has movements (409).
+///
+/// The surviving `movements.account_id` reference is blocking
+/// (`ON DELETE RESTRICT`): deleting an owned account with at least one
+/// movement returns 409 Conflict with a Spanish message and leaves the
+/// account and its balance unchanged. Foreign/missing ids resolve to 404
+/// without leaking existence. (`assets.account_id` is `ON DELETE SET
+/// NULL`, so assets never block.)
 pub async fn delete_account_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -559,6 +568,18 @@ pub async fn delete_account_handler(
         .map_err(|_| AppError::Internal)?;
     if owned.is_none() {
         return Err(AppError::NotFound);
+    }
+    let movement_count: i64 = sqlx::query_scalar(ACCOUNT_MOVEMENT_COUNT_SQL)
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?
+        .unwrap_or(0);
+    if movement_count > 0 {
+        return Err(AppError::Conflict(
+            "la cuenta tiene movimientos y no se puede eliminar".into(),
+        ));
     }
     let res = sqlx::query(DELETE_ACCOUNT_SQL)
         .bind(id)
@@ -739,12 +760,23 @@ mod tests {
 
     #[test]
     fn account_delete_sql_never_references_removed_tables() {
-        for sql in [DELETE_ACCOUNT_SQL, ACCOUNT_OWNERSHIP_CHECK_SQL] {
+        for sql in [
+            DELETE_ACCOUNT_SQL,
+            ACCOUNT_OWNERSHIP_CHECK_SQL,
+            ACCOUNT_MOVEMENT_COUNT_SQL,
+        ] {
             assert!(
                 sql.contains("user_id"),
                 "account delete SQL must scope by user_id, got: {sql}"
             );
-            for token in ["transactions", "budgets"] {
+            for token in [
+                "transactions",
+                "budgets",
+                "savings_goals",
+                "savings_goal_movements",
+                "debts",
+                "debt_payments",
+            ] {
                 assert!(
                     !sql.contains(token),
                     "account delete SQL must never reference removed table `{token}`, got: {sql}"
@@ -754,6 +786,10 @@ mod tests {
         assert!(
             DELETE_ACCOUNT_SQL.contains("id=$1 AND user_id=$2"),
             "delete must scope id+user_id, got: {DELETE_ACCOUNT_SQL}"
+        );
+        assert!(
+            ACCOUNT_MOVEMENT_COUNT_SQL.contains("movements"),
+            "delete guard must probe the live movements reference, got: {ACCOUNT_MOVEMENT_COUNT_SQL}"
         );
     }
 
@@ -1123,37 +1159,33 @@ mod tests {
             cleanup_user(&pool, user_id).await;
         }
 
+        // -- S-A (finance-simplify-movements): the delete guard blocks
+        // accounts with movements (409) and lets the rest go (204) --
+
         #[tokio::test]
-        async fn delete_account_with_live_finance_rows_is_204() {
+        async fn delete_account_without_movements_is_204() {
             let Some(pool) = test_pool() else {
-                eprintln!("SKIP delete_account_with_live_finance_rows_is_204: no DATABASE_URL");
+                eprintln!("SKIP delete_account_without_movements_is_204: no DATABASE_URL");
                 return;
             };
             let (state, headers, user_id) = db_state(&pool).await;
-            // S3a: no surviving table blocks the delete. Seed live finance
-            // rows for the same user (debt + savings goal + subscription)
-            // and prove the owned account still deletes with 204.
+            // A balance arranged directly on the surviving table plus live
+            // rows in surviving companions (category, subscription): none of
+            // them blocks the delete — only movements do.
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Wallet','cash',25000) RETURNING id",
             )
             .bind(user_id)
             .fetch_one(&pool)
             .await
             .expect("seed account");
             sqlx::query(
-                "INSERT INTO debts (user_id, name, creditor, original_amount, pending_amount, currency, start_date) VALUES ($1,'Loan','Bank',500,500,'COP','2026-01-15')",
+                "INSERT INTO categories (user_id, kind, name) VALUES ($1,'finance','Mercado')",
             )
             .bind(user_id)
             .execute(&pool)
             .await
-            .expect("seed debt");
-            sqlx::query(
-                "INSERT INTO savings_goals (user_id, name, target_amount) VALUES ($1,'Trip',1000)",
-            )
-            .bind(user_id)
-            .execute(&pool)
-            .await
-            .expect("seed savings goal");
+            .expect("seed category");
             sqlx::query(
                 "INSERT INTO subscriptions (user_id, name, price, currency, frequency) VALUES ($1,'Music',999,'COP','monthly')",
             )
@@ -1163,7 +1195,7 @@ mod tests {
             .expect("seed subscription");
             let status = delete_account_handler(State(state.clone()), headers.clone(), Path(account_id))
                 .await
-                .expect("delete with live finance rows is 204");
+                .expect("delete without movements is 204");
             assert_eq!(status, StatusCode::NO_CONTENT);
             let gone: Option<Uuid> =
                 sqlx::query_scalar("SELECT id FROM accounts WHERE id=$1")
@@ -1172,6 +1204,71 @@ mod tests {
                     .await
                     .expect("probe delete");
             assert!(gone.is_none());
+            cleanup_user(&pool, user_id).await;
+        }
+
+        #[tokio::test]
+        async fn delete_account_with_movements_is_409() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP delete_account_with_movements_is_409: no DATABASE_URL");
+                return;
+            };
+            let (state, headers, user_id) = db_state(&pool).await;
+            let account_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Wallet','cash',75000) RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed account");
+            let category_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO categories (user_id, kind, name) VALUES ($1,'finance','Mercado') RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed category");
+            // Hermetic fixture: the movement goes through the surviving
+            // `movements` table (never a removed table).
+            sqlx::query(
+                "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on) VALUES ($1,$2,$3,'expense',25000,'2026-09-24')",
+            )
+            .bind(user_id)
+            .bind(account_id)
+            .bind(category_id)
+            .execute(&pool)
+            .await
+            .expect("seed movement");
+            let err = delete_account_handler(State(state.clone()), headers.clone(), Path(account_id))
+                .await
+                .expect_err("delete with movements must be 409");
+            let resp = err.into_response();
+            assert_eq!(resp.status(), axum::http::StatusCode::CONFLICT);
+            let bytes = axum::body::to_bytes(resp.into_body(), 8192)
+                .await
+                .expect("conflict body is readable");
+            let v: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("conflict body is JSON");
+            let message = v["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                message.contains("movimientos"),
+                "409 must carry the Spanish block message, got: {message}"
+            );
+            // The account still exists with its balance unchanged.
+            let balance: rust_decimal::Decimal =
+                sqlx::query_scalar("SELECT balance FROM accounts WHERE id=$1")
+                    .bind(account_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("account survives the blocked delete");
+            assert_eq!(balance, rust_decimal::Decimal::new(7_500_000, 2));
+            // `movements.account_id` is ON DELETE RESTRICT: movements go
+            // before the user cascade on cleanup.
+            sqlx::query("DELETE FROM movements WHERE user_id=$1")
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .expect("cleanup movements");
             cleanup_user(&pool, user_id).await;
         }
 

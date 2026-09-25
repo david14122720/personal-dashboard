@@ -3,7 +3,7 @@
 MCP HTTP server for the personal-dashboard Axum backend, using the
 Streamable HTTP transport from `@modelcontextprotocol/sdk`. Exposes login plus
 CRUD for accounts, tasks, habits, notes, events and goals, plus
-list/read access to categories, debts, subscriptions, assets and
+list/read access to categories, subscriptions, assets and
 net-worth.
 
 > Removed by change 2026-09-23-simplify-finance-productivity (S2):
@@ -138,7 +138,7 @@ Events: `list_events`, `get_event`, `create_event`, `update_event`,
 Notes: `list_notes`, `get_note`, `create_note`, `update_note`,
 `delete_note`, `search_notes`.
 
-Catalogs: `list_categories`, `list_debts`,
+Catalogs: `list_categories`,
 `list_subscriptions`, `list_assets`, `get_net_worth`.
 
 > Removed by change 2026-09-23-simplify-finance-productivity (S2):
@@ -148,6 +148,10 @@ Catalogs: `list_categories`, `list_debts`,
 > `stats_transactions_by_category`, `stats_transactions_monthly_flow`
 > (ledger eradicated end to end, migration 0011; cached clients receive an
 > unknown-tool error, accepted for this single-user deployment).
+> Removed by change finance-simplify-movements (S-G): `list_debts`
+> (debts eradicated end to end — routes `/debts*` gone, tables dropped by
+> gated migration 0013; cached clients receive an unknown-tool error,
+> accepted for this single-user deployment). No movements tool exists.
 
 ## Typecheck
 

@@ -17,7 +17,6 @@ import {
   useTasks as useDashboardTasks,
 } from "@/lib/api/dashboard";
 import {
-  useDebts as useFinanceDebts,
   useSubscriptions as useFinanceSubscriptions,
 } from "@/lib/api/finance";
 import { GOALS_KEY, HABITS_TODAY_KEY, habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
@@ -26,14 +25,13 @@ import { formatMoney, toNumber } from "@/lib/api/money";
 import {
   toFinanceSnapshot,
   toMonthlyCost,
-  toOutstandingDebt,
 } from "@/lib/dashboard/transforms";
 
 /**
  * S3 reportes: pantalla FE-only. Un `PeriodSelector` gobierna los bloques
  * por período (hábitos, metas, actividad) sobre endpoints existentes en
- * paralelo; el bloque de finanzas es una foto actual (patrimonio, costo
- * mensual de suscripciones, deuda pendiente) sin ventana de período.
+ * paralelo; el bloque de finanzas es una foto actual (patrimonio + costo
+ * mensual de suscripciones) sin ventana de período.
  * Cero endpoints nuevos y sin exportar archivos. Cada bloque aísla
  * loading/error/empty con retry que revalida solo sus keys.
  */
@@ -87,8 +85,8 @@ function BlockShell({
 }
 
 /**
- * Foto actual de finanzas (S3b): patrimonio + costo mensual de
- * suscripciones + deuda pendiente. No la gobierna el período elegido;
+ * Foto actual de finanzas (S-H): patrimonio + costo mensual de
+ * suscripciones. No la gobierna el período elegido;
  * lleva la etiqueta `reports.financeCurrent` para no leerse como
  * "este mes". Ninguna petición toca un endpoint agregado eliminado.
  */
@@ -96,16 +94,14 @@ function FinanceBlock() {
   const { mutate } = useSWRConfig();
   const worth = useNetWorth();
   const subs = useFinanceSubscriptions();
-  const debts = useFinanceDebts();
-  const loading = (!worth.data && !worth.error) || (!subs.data && !subs.error) || (!debts.data && !debts.error);
-  const error = Boolean(worth.error || subs.error || debts.error);
+  const loading = (!worth.data && !worth.error) || (!subs.data && !subs.error);
+  const error = Boolean(worth.error || subs.error);
   const cop = (worth.data?.per_currency ?? []).find((e) => e.currency === "COP") ?? worth.data?.per_currency[0];
   const snapshot = toFinanceSnapshot({
     netWorth: cop ? toNumber(cop.net_worth) : 0,
     monthlySubsCost: toMonthlyCost(subs.data),
-    outstandingDebt: toOutstandingDebt(debts.data),
   });
-  const hasData = Boolean(worth.data && subs.data && debts.data);
+  const hasData = Boolean(worth.data && subs.data);
   return (
     <BlockShell
       loading={loading}
@@ -117,17 +113,15 @@ function FinanceBlock() {
           (key) =>
             typeof key === "string" &&
             (key === "dashboard/net-worth" ||
-              key === "finance/subscriptions" ||
-              key === "finance/debts"),
+              key === "finance/subscriptions"),
         )
       }
     >
       <p className="mb-3 text-xs text-instrument/60">{t("reports.financeCurrent")}</p>
-      <dl className="grid grid-cols-3 gap-3">
+      <dl className="grid grid-cols-2 gap-3">
         {[
           [t("dashboard.netWorth"), snapshot.netWorth],
           [t("finance.subscriptions"), snapshot.monthlySubsCost],
-          [t("finance.debts"), snapshot.outstandingDebt],
         ].map(([label, value]) => (
           <div key={label as string} className="rounded-lg border border-hull p-3">
             <dt className="text-xs text-instrument/60">{label as string}</dt>

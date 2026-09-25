@@ -8,21 +8,20 @@ import { SectionShell } from "@/components/finance/FinanceSections";
 import EmptyState from "@/components/ui/EmptyState";
 import {
   eventsKey, tasksKey, useEvents as useDashboardEvents, useGoals as useDashboardGoals,
-  useNetWorth, useSavingsGoals, useTasks as useDashboardTasks,
+  useNetWorth, useTasks as useDashboardTasks,
 } from "@/lib/api/dashboard";
 import { HABITS_TODAY_KEY, habitsHistoryKey, useHabitsHistory, useHabitsToday } from "@/lib/api/productivity";
 import { toEventRange } from "@/lib/finance/finance";
-import { useDebts as useFinanceDebts, useSavingsGoals as useFinanceSavingsGoals } from "@/lib/api/finance";
 import { aggregateEvolution, habitStats } from "@/lib/productivity/habitStats";
 import { scoreByArea, type AreaKey } from "@/lib/productivity/scoreByArea";
 import { formatMoney, toNumber } from "@/lib/api/money";
-import { toFinanceScore, toOutstandingDebt, toTotalSavings, toUpcomingEvents } from "@/lib/dashboard/transforms";
+import { toFinanceScore, toUpcomingEvents } from "@/lib/dashboard/transforms";
 import { todayYmdLocal } from "@/lib/productivity/productivity";
 
 /**
  * S4 progreso: combinado FE-only, ventana fija 30 días. Patrimonio = número de
- * solo lectura (valuaciones INSERT-only, sin escritura). Finanzas = foto actual
- * (patrimonio, deuda pendiente, ahorro acumulado) con score vía `toFinanceScore`.
+ * solo lectura (valuaciones INSERT-only, sin escritura). Finanzas = patrimonio
+ * neto actual con score vía `toFinanceScore` (100/0/null, solo visual).
  * Score solo visual + disclaimer fijo siempre visible.
  */
 
@@ -72,12 +71,9 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const { from, to } = range30(ref);
   const { mutate } = useSWRConfig();
   const worth = useNetWorth();
-  const financeDebts = useFinanceDebts();
-  const financeSavings = useFinanceSavingsGoals();
   const today = useHabitsToday();
   const history = useHabitsHistory(from, to);
   const goals = useDashboardGoals();
-  const savingsGoals = useSavingsGoals();
   const tasks = useDashboardTasks("done");
   // `GET /events` exige RFC 3339 (una fecha desnuda es 422): el período alimenta el
   // score y la ventana propia de próximos 14 días alimenta la agenda.
@@ -89,28 +85,19 @@ export default function ProgressScreens({ now }: { now?: Date }) {
   const habits = today.data ?? [];
   const logs = history.data ?? [];
   const goalItems = goals.data ?? [];
-  const savingItems = savingsGoals.data ?? [];
   const doneTasks = (tasks.data ?? []).filter((task) => inRange((task as { completed_at?: string | null }).completed_at, from, to));
   const upcomingEvents = toUpcomingEvents(upcoming.data ?? [], ref, 14);
 
   const cop = (worth.data?.per_currency ?? []).find((e) => e.currency === "COP") ?? worth.data?.per_currency[0];
-  const netWorthValue = cop ? toNumber(cop.net_worth) : 0;
-  const outstandingDebt = toOutstandingDebt(financeDebts.data);
-  const totalSavings = toTotalSavings(financeSavings.data);
+  const netWorthValue = cop ? toNumber(cop.net_worth) : null;
 
-  // Finance score from surviving inputs only (S3b): null when there is no data.
-  const financeScoreRaw = toFinanceScore({ netWorth: netWorthValue, savings: totalSavings, debt: outstandingDebt });
+  // Finance score from the only surviving input (net worth): null when no data.
+  const financeScoreRaw = toFinanceScore({ netWorth: netWorthValue });
   const financeScore = financeScoreRaw === null ? null : Math.round(financeScoreRaw * 10) / 10;
   const compliances = habits.map((h) => habitStats(logs.filter((l) => l.habit_id === h.habit_id), from, to, h.days_of_week).complianceRate);
   const habitsScore = habits.length === 0 || logs.length === 0 ? null
     : Math.round((compliances.reduce((a, b) => a + b, 0) / compliances.length) * 10) / 10;
-  const goalPcts = [
-    ...goalItems.map((g) => g.progress ?? 0),
-    ...savingItems.map((s) => {
-      const goal = toNumber(s.goal ?? s.target_amount);
-      return goal > 0 ? (toNumber(s.saved ?? s.saved_amount) / goal) * 100 : 0;
-    }),
-  ];
+  const goalPcts = goalItems.map((g) => g.progress ?? 0);
   const goalsScore = goalPcts.length === 0 ? null : Math.round((goalPcts.reduce((a, b) => a + b, 0) / goalPcts.length) * 10) / 10;
   // Escala visual documentada: 5+ completadas ≈ 100; sin tareas ni eventos → sin datos.
   const noProdData = !tasks.data || !events.data || (doneTasks.length === 0 && upcomingEvents.length === 0 && tasks.data.length === 0 && (events.data ?? []).length === 0);
@@ -146,17 +133,17 @@ export default function ProgressScreens({ now }: { now?: Date }) {
       </section>
       <div className="mt-4 grid grid-cols-12 gap-4">
         <SectionShell title={t("progress.finance")} hint={t("progress.financeHint")} span="col-span-12 xl:col-span-6">
-          <Block loading={(!worth.data && !worth.error) || (!financeDebts.data && !financeDebts.error) || (!financeSavings.data && !financeSavings.error)} error={Boolean(worth.error || financeDebts.error || financeSavings.error)} empty={Boolean(worth.data && financeDebts.data && financeSavings.data && netWorthValue === 0 && outstandingDebt === 0 && totalSavings === 0)}
+          <Block loading={!worth.data && !worth.error} error={Boolean(worth.error)} empty={Boolean(worth.data && !cop)}
             emptyNode={<EmptyState title={t("progress.emptyFinance")} hint={t("progress.emptyFinanceHint")} />}
-            onRetry={() => void mutate((k) => typeof k === "string" && (k === "dashboard/net-worth" || k === "finance/debts" || k === "finance/savings-goals"))}>
-            <dl className="grid grid-cols-3 gap-3">
-              {[[t("dashboard.netWorth"), netWorthValue], [t("finance.debts"), outstandingDebt], [t("finance.savings"), totalSavings]].map(([label, value]) => (
-                <div key={label as string} className="rounded-lg border border-hull p-3">
-                  <dt className="text-xs text-instrument/60">{label as string}</dt>
-                  <dd className="font-display text-base font-semibold">{formatMoney(value as number)}</dd>
+            onRetry={() => void mutate("dashboard/net-worth")}>
+            {cop ? (
+              <dl className="grid grid-cols-1 gap-3">
+                <div className="rounded-lg border border-hull p-3">
+                  <dt className="text-xs text-instrument/60">{t("dashboard.netWorth")}</dt>
+                  <dd className="font-display text-base font-semibold">{formatMoney(netWorthValue as number)}</dd>
                 </div>
-              ))}
-            </dl>
+              </dl>
+            ) : null}
           </Block>
         </SectionShell>
         <SectionShell title={t("progress.netWorth")} hint={t("progress.netWorthHint")} span="col-span-12 xl:col-span-6">
@@ -167,16 +154,13 @@ export default function ProgressScreens({ now }: { now?: Date }) {
           </Block>
         </SectionShell>
         <SectionShell title={t("progress.goals")} hint={t("progress.goalsHint")} span="col-span-12 xl:col-span-6">
-          <Block loading={(!goals.data && !goals.error) || (!savingsGoals.data && !savingsGoals.error)} error={!!goals.error || !!savingsGoals.error}
-            empty={!!goals.data && !!savingsGoals.data && goalItems.length === 0 && savingItems.length === 0}
+          <Block loading={!goals.data && !goals.error} error={!!goals.error}
+            empty={!!goals.data && goalItems.length === 0}
             emptyNode={<EmptyState title={t("progress.emptyGoals")} hint={t("progress.emptyGoalsHint")} />}
-            onRetry={() => void mutate((k) => k === "dashboard/goals" || k === "dashboard/savings-goals")}>
+            onRetry={() => void mutate("dashboard/goals")}>
             <ul className="space-y-2">
               {goalItems.map((g) => (
                 <li key={g.id} className="flex items-center justify-between rounded-lg border border-hull p-3 text-sm"><span>{g.name}</span><span className="font-display">{g.progress ?? 0} %</span></li>
-              ))}
-              {savingItems.map((s) => (
-                <li key={s.id} className="flex items-center justify-between rounded-lg border border-hull p-3 text-sm"><span>{s.name}</span><span className="font-display">{formatMoney(toNumber(s.saved ?? s.saved_amount))}</span></li>
               ))}
             </ul>
           </Block>

@@ -1,22 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { toFinanceScore, toMonthlyCost } from "@/lib/dashboard/transforms";
 
-// JD-INSIGHT retired with the ledger (S3b): the finance score now comes from
-// surviving inputs only. Triangulate its edges: zero, debt-free, underwater.
-describe("JD-INSIGHT toFinanceScore bordes (S3b)", () => {
-  it("todo cero → null, nunca un puntaje inventado", () => {
-    expect(toFinanceScore({ netWorth: 0, savings: 0, debt: 0 })).toBeNull();
+// S-H: the finance score is net-worth-only (100/0/null, presentational).
+// Triangulate its edges: no data, positive, zero, negative.
+describe("JD-INSIGHT toFinanceScore bordes (S-H)", () => {
+  it("sin datos → null, nunca un puntaje inventado", () => {
+    expect(toFinanceScore({ netWorth: null })).toBeNull();
+    expect(toFinanceScore({ netWorth: undefined })).toBeNull();
   });
-  it("sin deuda con posición positiva → 100", () => {
-    expect(toFinanceScore({ netWorth: 80, savings: 20, debt: 0 })).toBe(100);
+  it("patrimonio positivo → 100", () => {
+    expect(toFinanceScore({ netWorth: 80 })).toBe(100);
   });
-  it("posición negativa → 0 (clamp, sin negativo)", () => {
-    expect(toFinanceScore({ netWorth: -200, savings: 0, debt: 100 })).toBe(0);
-    expect(toFinanceScore({ netWorth: 50, savings: 0, debt: 150 })).toBeLessThanOrEqual(100);
-  });
-  it("proporción exacta 100·(nw+s)/(nw+s+d)", () => {
-    expect(toFinanceScore({ netWorth: 80, savings: 20, debt: 100 })).toBeCloseTo(50);
-    expect(toFinanceScore({ netWorth: 0, savings: 30, debt: 70 })).toBeCloseTo(30);
+  it("cero o negativo → 0 (presentacional, sin veredicto)", () => {
+    expect(toFinanceScore({ netWorth: 0 })).toBe(0);
+    expect(toFinanceScore({ netWorth: -200 })).toBe(0);
   });
 });
 

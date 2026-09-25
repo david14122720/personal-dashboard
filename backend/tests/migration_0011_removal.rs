@@ -147,6 +147,20 @@ async fn post_0011_inbound_fk_columns_gone_own_columns_remain() {
         return;
     };
     ensure_0011_applied(&pool).await;
+    // S-G (gated migration 0013) supersedes these probes: once 0013 drops
+    // `debt_payments`/`savings_goal_movements`, the tables are absent and the
+    // column assertions below are vacuous — record the removal instead.
+    for table in ["debt_payments", "savings_goal_movements"] {
+        let gone: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NULL")
+            .bind(format!("public.{table}"))
+            .fetch_one(&pool)
+            .await
+            .expect("probe 0013-removed table");
+        if gone {
+            eprintln!("NOTE post_0011_inbound_fk: {table} gone via 0013 (superseeded)");
+            return;
+        }
+    }
     for (table, own_columns) in [
         ("debt_payments", vec!["amount", "paid_on"]),
         ("savings_goal_movements", vec!["amount", "occurred_on"]),
@@ -251,9 +265,41 @@ async fn post_0011_surviving_triggers_intact() {
         return;
     };
     ensure_0011_applied(&pool).await;
+    // S-G (gated migration 0013) supersedes the debt/savings apply triggers:
+    // once 0013 drops their tables, the triggers fall with them.
+    let removed_tables_gone: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.debts') IS NULL AND to_regclass('public.savings_goals') IS NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("probe 0013-removed tables");
+    if removed_tables_gone {
+        for trigger in ["trg_debt_payments_apply", "trg_savings_movements_apply"] {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT count(*) = 1 FROM pg_trigger WHERE tgname=$1 AND NOT tgisinternal",
+            )
+            .bind(trigger)
+            .fetch_one(&pool)
+            .await
+            .expect("probe 0013-removed trigger");
+            assert!(!exists, "0013-removed trigger {trigger} must be gone with its table");
+        }
+        eprintln!("NOTE post_0011_triggers: debt/savings apply triggers gone via 0013 (superseeded)");
+    } else {
+        for trigger in [
+            "trg_debt_payments_apply",
+            "trg_savings_movements_apply",
+        ] {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT count(*) = 1 FROM pg_trigger WHERE tgname=$1 AND NOT tgisinternal",
+            )
+            .bind(trigger)
+            .fetch_one(&pool)
+            .await
+            .expect("probe surviving trigger");
+            assert!(exists, "surviving trigger {trigger} must be intact after 0011");
+        }
+    }
     for trigger in [
-        "trg_debt_payments_apply",
-        "trg_savings_movements_apply",
         "trg_tasks_goal_progress_insert",
         "trg_tasks_goal_progress_update",
         "trg_tasks_goal_progress_delete",

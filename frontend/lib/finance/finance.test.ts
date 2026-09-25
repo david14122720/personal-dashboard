@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   toAccountCards,
-  toCategoryTotals,
-  toDebtProgress,
-  toDebtRows,
   toMonthlyPrice,
   toPeriodRange,
-  toSavingsViews,
   toSubscriptionRows,
 } from "./finance";
 
@@ -14,8 +10,6 @@ describe("finance transforms", () => {
   it("returns empty rows for nullish input", () => {
     expect(toAccountCards(null)).toEqual([]);
     expect(toSubscriptionRows(undefined)).toEqual([]);
-    expect(toDebtRows(null)).toEqual([]);
-    expect(toSavingsViews(undefined)).toEqual([]);
   });
 
   it("coerces account card usage metrics and keeps statement balance", () => {
@@ -64,57 +58,8 @@ describe("finance transforms", () => {
     expect(subs[0].detail).toBe("2026-10-01");
     expect(subs[0].amount).toBeCloseTo(9.99, 6);
     expect(subs[1].amount).toBeCloseTo(10, 6);
-
-    const debts = toDebtRows([
-      { id: "d1", name: "Loan", creditor: "Bank", original_amount: "500.00", pending_amount: "320.00", currency: "COP", status: "active", due_date: "2026-12-01" },
-    ]);
-    expect(debts[0].amount).toBe(320);
   });
 
-  it("computes savings progress as a clamped fraction", () => {
-    const goals = toSavingsViews([
-      { id: "g1", name: "Trip", target_amount: "1000.00", saved_amount: "250.00", currency: "COP", is_completed: false, target_date: "2026-12-31" },
-    ]);
-    expect(goals[0].progress).toBe(0.25);
-    expect(goals[0].completed).toBe(false);
-  });
-});
-
-describe("toDebtProgress (S5 RED)", () => {
-  it("computes paid/remaining/pct from original and pending", () => {
-    expect(toDebtProgress({ original: 500, pending: 400 })).toEqual({
-      paid: 100,
-      remaining: 400,
-      pct: 0.2,
-      status: "ok",
-    });
-  });
-
-  it("marks paid when pending<=0 and warns past 70% paid", () => {
-    expect(toDebtProgress({ original: 500, pending: 0 }).status).toBe("paid");
-    expect(toDebtProgress({ original: 500, pending: 100 }).status).toBe("warn");
-    expect(toDebtProgress({ original: 500, pending: 500 }).pct).toBe(0);
-  });
-});
-
-describe("toCategoryTotals (P7)", () => {
-  const subs = [
-    { id: "s1", name: "Music", price: "12000", currency: "COP", frequency: "monthly", next_billing_on: null, is_active: true, category_id: "c1" },
-    { id: "s2", name: "Annual", price: "120000", currency: "COP", frequency: "annual", next_billing_on: null, is_active: true, category_id: "c1" },
-    { id: "s3", name: "Other", price: "5000", currency: "COP", frequency: "monthly", next_billing_on: null, is_active: true, category_id: "c2" },
-    { id: "s4", name: "Off", price: "9999", currency: "COP", frequency: "monthly", next_billing_on: null, is_active: false, category_id: "c1" },
-  ];
-  const goals = [
-    { id: "g1", name: "Trip", target_amount: "100000", saved_amount: "25000", currency: "COP", is_completed: false, target_date: null, category_id: "c1" },
-    { id: "g2", name: "NoCat", target_amount: "100", saved_amount: "50", currency: "COP", is_completed: false, target_date: null },
-  ];
-  it("sums monthly-equivalent spend plus saved amounts for one category", () => {
-    expect(toCategoryTotals(subs, goals, "c1")).toEqual({ expenses: 22000, savings: 25000 });
-  });
-  it("ignores other categories, inactive subs and uncategorized goals", () => {
-    expect(toCategoryTotals(subs, goals, "c2")).toEqual({ expenses: 5000, savings: 0 });
-    expect(toCategoryTotals(subs, goals, "missing")).toEqual({ expenses: 0, savings: 0 });
-  });
   it("converts unknown frequencies at face value", () => {
     expect(toMonthlyPrice("100", "mystery")).toBe(100);
     expect(toMonthlyPrice("120", "annual")).toBe(10);

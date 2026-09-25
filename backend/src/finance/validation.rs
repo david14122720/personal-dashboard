@@ -1,29 +1,25 @@
 //! Shared finance validation helpers (survives the S1–S3 removals).
 //!
-//! Canonical home of [`validate_occurred_on`] (date parse → 422) and
-//! [`ensure_finance_category`] (owned + `kind='finance'` → 422), moved here
-//! verbatim from `routes/transactions.rs` (same logic, same Spanish messages)
-//! so the later removal slices stay compilable. Every surviving consumer
-//! imports from `crate::finance::validation`; `routes/transactions.rs` keeps
-//! its own duplicate until S3a deletes that module, and `routes/budgets.rs`
-//! / `routes/transfers.rs` keep theirs until S1/S2 delete them.
+//! Canonical home of [`validate_occurred_on`] (date parse → 422) and the
+//! category/account ownership checks used by the surviving finance writers.
+//! Every surviving consumer imports from `crate::finance::validation`.
+//!
+//! Kind gates (finance-simplify-movements D3): [`ensure_owned_category`] and
+//! [`ensure_owned_account`] verify ownership only — any owned kind is
+//! accepted for movements and subscriptions. The legacy
+//! `ensure_finance_category` (`kind='finance'` gate) is gone with
+//! `routes::savings` (S-G); new code MUST use [`ensure_owned_category`].
 
 use chrono::NaiveDate;
 use uuid::Uuid;
 
 use crate::error::AppError;
 
-pub(crate) const CATEGORY_LOOKUP_SQL: &str =
-    "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
-
 /// Parse `occurred_on` as a calendar date (strict `YYYY-MM-DD`), else 422.
 ///
-/// S0 preparatory home: no surviving writer consumes this yet (debts /
-/// savings / accounts keep their field-specific date validators with
-/// different messages, and `budgets.rs` / `transfers.rs` keep their own
-/// copies until S1/S2 delete them). The unit tests below lock the behaviour
-/// so S3a can resolve every remaining date validation against this module.
-#[allow(dead_code)]
+/// First live consumer: the movements routes (S-A). Previously only covered
+/// by unit tests while debts / savings / accounts kept their field-specific
+/// date validators.
 pub fn validate_occurred_on(raw: &str) -> Result<NaiveDate, AppError> {
     let trimmed = raw.trim();
     let well_formed =
@@ -37,23 +33,64 @@ pub fn validate_occurred_on(raw: &str) -> Result<NaiveDate, AppError> {
         .map_err(|_| AppError::Validation("occurred_on must be a calendar date YYYY-MM-DD".into()))
 }
 
-/// Verify the category is owned AND `kind='finance'` (else 422 per design:
-/// FK + kind mismatch + unowned all map to 422, never 404).
-pub async fn ensure_finance_category(
-    pool: &sqlx::PgPool,
+/// Verify the category is owned by the caller, regardless of kind
+/// (finance-simplify-movements D3: kind no longer gates writes).
+///
+/// Foreign or missing → 422 with a Spanish message, never 404 (same
+/// convention as every surviving finance route: referenced body ids are
+/// 422, URL-addressed ids are 404).
+///
+/// Generic over the executor so movement transactions can probe inside
+/// their `sqlx::Transaction` (`&mut *tx`) while plain callers pass `&pool`.
+pub async fn ensure_owned_category<'e, E>(
+    db: E,
     category_id: Uuid,
     user_id: Uuid,
-) -> Result<(), AppError> {
-    let kind: Option<String> = sqlx::query_scalar(CATEGORY_LOOKUP_SQL)
-        .bind(category_id)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    match kind.as_deref() {
-        Some("finance") => Ok(()),
-        _ => Err(AppError::Validation(
-            "category must be an owned finance category".into(),
+) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let owned: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM categories WHERE id=$1 AND user_id=$2")
+            .bind(category_id)
+            .bind(user_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|_| AppError::Internal)?;
+    match owned {
+        Some(_) => Ok(()),
+        None => Err(AppError::Validation(
+            "la categoria debe pertenecer al usuario".into(),
+        )),
+    }
+}
+
+/// Verify the account exists and is owned by the caller (existence +
+/// ownership, no locking).
+///
+/// This is the fail-fast pre-transaction check. Inside a movement
+/// transaction the locking variant (`SELECT ... FOR UPDATE`, inline in
+/// `routes::movements`) runs instead, so concurrent writers serialize on
+/// the account row. Foreign or missing → 422 Spanish, never 404.
+pub async fn ensure_owned_account<'e, E>(
+    db: E,
+    account_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let owned: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM accounts WHERE id=$1 AND user_id=$2")
+            .bind(account_id)
+            .bind(user_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|_| AppError::Internal)?;
+    match owned {
+        Some(_) => Ok(()),
+        None => Err(AppError::Validation(
+            "la cuenta debe pertenecer al usuario".into(),
         )),
     }
 }
@@ -88,17 +125,5 @@ mod tests {
         ] {
             assert_422(validate_occurred_on(raw).unwrap_err());
         }
-    }
-
-    #[test]
-    fn category_lookup_scopes_by_user_and_reads_kind() {
-        assert!(
-            CATEGORY_LOOKUP_SQL.contains("user_id"),
-            "category check must scope by user_id, got: {CATEGORY_LOOKUP_SQL}"
-        );
-        assert!(
-            CATEGORY_LOOKUP_SQL.contains("kind::text"),
-            "category check must read kind, got: {CATEGORY_LOOKUP_SQL}"
-        );
     }
 }

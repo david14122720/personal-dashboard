@@ -54,11 +54,10 @@ export interface DashboardLayout {
   widgets: DashboardWidgetPref[];
 }
 
-/** Default 6-widget layout (first run / empty / invalid → all visible). Order per S3b. */
+/** Default 5-widget layout (first run / empty / invalid → all visible). Order per D1/S-H. */
 export const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
   widgets: [
     { id: "upcoming-payments", type: "list", order: 20, size: "lg" },
-    { id: "pending-debts", type: "list", order: 21, size: "md" },
     { id: "active-subs", type: "list", order: 22, size: "md" },
     { id: "pending-tasks", type: "list", order: 23, size: "md" },
     { id: "upcoming-events", type: "list", order: 24, size: "md" },
@@ -115,14 +114,11 @@ export function usePreferences() {
 
 /* -- p8-home-pagos PR2: wires + hooks SWR (montos string|number, coercion solo en transforms) -- */
 
-export interface DebtWire { id: string; name?: string | null; pending_amount?: string | number | null; status?: string | null; due_date?: string | null; }
 export interface SubscriptionWire { id: string; name: string; price?: string | number | null; is_active?: boolean | null; next_billing_on?: string | null; frequency?: string | null; }
 export interface TaskWire { id: string; title: string; status?: string | null; priority?: string | null; due_date?: string | null; goal_id?: string | null; }
 export interface EventWire { id: string; title: string; kind: string; starts_at: string; ends_at?: string | null; }
 export interface GoalWire { id: string; name?: string | null; progress?: number | null; status?: string | null; }
-export interface SavingsGoalWire { id: string; name?: string | null; goal?: string | number | null; saved?: string | number | null; target_amount?: string | number | null; saved_amount?: string | number | null; completed?: boolean | null; is_completed?: boolean | null; }
 
-export const debtsKey = (v: boolean): string | null => (v ? "dashboard/debts" : null);
 export const subscriptionsKey = (v: boolean): string | null => (v ? "dashboard/subscriptions" : null);
 export const tasksKey = (view: string | null, v: boolean): string | null => (!v ? null : view ? `dashboard/tasks?view=${view}` : "dashboard/tasks");
 export function eventsKey(from: string | null, to: string | null, v: boolean): string | null {
@@ -134,7 +130,6 @@ export function eventsKey(from: string | null, to: string | null, v: boolean): s
   return qs ? `dashboard/events?${qs}` : "dashboard/events";
 }
 export const goalsKey = (v: boolean): string | null => (v ? "dashboard/goals" : null);
-export const savingsGoalsKey = (v: boolean): string | null => (v ? "dashboard/savings-goals" : null);
 
 export function resolveDashboardLayout(me: MeWire | null | undefined): DashboardLayout {
   const w = me?.preferences?.dashboard_layout?.widgets;
@@ -153,10 +148,6 @@ export function buildNextLayout(cur: DashboardLayout, id: string, visible: boole
   return cur;
 }
 
-export function useDebts(v = true) {
-  const key = debtsKey(v);
-  return useSWR<DebtWire[]>(key, () => apiGet<DebtWire[]>("/debts"), config);
-}
 export function useSubscriptions(v = true) {
   const key = subscriptionsKey(v);
   return useSWR<SubscriptionWire[]>(key, () => apiGet<SubscriptionWire[]>("/subscriptions"), config);
@@ -176,10 +167,6 @@ export function useEvents(from: string | null, to: string | null, v = true) {
 export function useGoals(v = true) {
   const key = goalsKey(v);
   return useSWR<GoalWire[]>(key, () => apiGet<GoalWire[]>("/goals"), config);
-}
-export function useSavingsGoals(v = true) {
-  const key = savingsGoalsKey(v);
-  return useSWR<SavingsGoalWire[]>(key, () => apiGet<SavingsGoalWire[]>("/savings-goals"), config);
 }
 /** Optimistic `PATCH /me/preferences { dashboard_layout }` with rollback on 422. */
 export function useUpdateLayout() {

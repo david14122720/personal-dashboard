@@ -4,10 +4,12 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import FinanceScreens from "@/components/containers/FinanceScreens";
-import { SavingsList } from "@/components/finance/FinanceSections";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
+// S-F: no handler serves /debts or /savings-goals anymore. Any regression
+// reintroducing a read of those routes fails the type check (the hooks are
+// deleted) or lands here as an unhandled request.
 const server = setupServer(
   http.get("http://test.local/api/accounts", () => {
     return HttpResponse.json([
@@ -47,51 +49,11 @@ const server = setupServer(
       },
     ]);
   }),
-  http.get("http://test.local/api/debts", () => {
-    return HttpResponse.json([
-      {
-        id: "d1",
-        name: "Loan",
-        creditor: "Bank",
-        original_amount: "500.00",
-        pending_amount: "320.00",
-        currency: "COP",
-        status: "active",
-        due_date: "2026-12-01",
-      },
-    ]);
-  }),
-  http.get("http://test.local/api/savings-goals", () => {
-    return HttpResponse.json([
-      {
-        id: "g1",
-        name: "Trip",
-        target_amount: "1000.00",
-        saved_amount: "250.00",
-        currency: "COP",
-        is_completed: false,
-        target_date: "2026-12-31",
-      },
-    ]);
-  }),
   http.get("http://test.local/api/me", () => {
     return HttpResponse.json({ preferences: { currency_code: "COP", locale: "es-CO" } });
   }),
-  http.get("http://test.local/api/categories", ({ request }) => {
-    // P6 honesto: cada select clasifica con su kind del backend.
-    if (new URL(request.url).searchParams.get("kind") === "subscription") {
-      return HttpResponse.json([
-        {
-          id: "sc1",
-          kind: "subscription",
-          name: "Streaming",
-          color: null,
-          icon: null,
-          is_archived: false,
-          created_at: "2026-09-01T00:00:00Z",
-        },
-      ]);
-    }
+  http.get("http://test.local/api/categories", () => {
+    // S-C kind-free: a single unfiltered set for every picker and chart.
     return HttpResponse.json([
       {
         id: "c1",
@@ -104,12 +66,40 @@ const server = setupServer(
       },
       {
         id: "c2",
-        kind: "finance",
+        kind: "subscription",
         name: "Transporte",
         color: null,
         icon: null,
         is_archived: false,
         created_at: "2026-09-01T00:00:00Z",
+      },
+    ]);
+  }),
+  http.get("http://test.local/api/movements", () => {
+    return HttpResponse.json([
+      {
+        id: "m2",
+        direction: "income",
+        amount: "80000.00",
+        occurred_on: "2026-09-08",
+        description: "Sueldo",
+        account_id: "a2",
+        category_id: "c1",
+        subscription_id: null,
+        created_at: "2026-09-08T10:00:00Z",
+        updated_at: "2026-09-08T10:00:00Z",
+      },
+      {
+        id: "m1",
+        direction: "expense",
+        amount: "25000.00",
+        occurred_on: "2026-09-07",
+        description: "Mercado semanal",
+        account_id: "a1",
+        category_id: "c1",
+        subscription_id: null,
+        created_at: "2026-09-07T10:00:00Z",
+        updated_at: "2026-09-07T10:00:00Z",
       },
     ]);
   }),
@@ -151,17 +141,39 @@ describe("finance screens", () => {
     expect(await screen.findByText("Saldos de tus cuentas bancarias.")).toBeInTheDocument();
   });
 
-  it("renders subscriptions, debts, and savings with money detail", async () => {
+  it("renders subscriptions with money detail and no debts/savings sections", async () => {
     renderScreens();
     // PR-3 FIX A: SubscriptionRow duplica el nombre (lectura + gestión); ambas visibles.
     expect((await screen.findAllByText("Music")).length).toBeGreaterThanOrEqual(1);
-    expect(await screen.findByText("Loan · Bank")).toBeInTheDocument();
-    expect(await screen.findByText("Trip")).toBeInTheDocument();
-    expect(await screen.findByText("25% ahorrado")).toBeInTheDocument();
-    expect(await screen.findByRole("progressbar", { name: "Progreso de Trip" })).toBeInTheDocument();
     expect(await screen.findByText("Cargos recurrentes activos.")).toBeInTheDocument();
-    expect(await screen.findByText("Saldos restantes.")).toBeInTheDocument();
-    expect(await screen.findByText("Progreso de las metas.")).toBeInTheDocument();
+    // S-F: the Savings and Debts sections, controls and placeholders are gone.
+    expect(screen.queryByRole("region", { name: "Deudas" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Ahorros" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Saldos restantes.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Progreso de las metas.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sin deudas")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sin metas de ahorro aún")).not.toBeInTheDocument();
+  });
+
+  it("renders the movements history from GET /movements in API order", async () => {
+    renderScreens();
+    const history = await screen.findByRole("region", { name: "Movimientos" });
+    // Descriptions render inside a shared meta line — match by substring.
+    expect(await within(history).findByText(/Sueldo/)).toBeInTheDocument();
+    expect(within(history).getByText(/Mercado semanal/)).toBeInTheDocument();
+  });
+
+  it("renders the two-series category chart from movement aggregates", async () => {
+    renderScreens();
+    const chart = await screen.findByRole("region", { name: "Gastos e ingresos por categoría" });
+    // The kind-free picker lists finance + subscription kinds together.
+    const select = within(chart).getByLabelText("Categoría");
+    expect(within(select).getByRole("option", { name: "Alimentación" })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: "Transporte" })).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: "c1" } });
+    // Both directions aggregate without netting: gasto + ingreso series mount.
+    expect(await within(chart).findByRole("progressbar", { name: "Gastos" })).toBeInTheDocument();
+    expect(within(chart).getByRole("progressbar", { name: "Ingresos" })).toBeInTheDocument();
   });
 
   it("exposes the inline balance edit per account with the current value", async () => {
@@ -180,12 +192,11 @@ describe("finance screens", () => {
     expect(screen.queryByText("Análisis")).not.toBeInTheDocument();
   });
 
-  it("shows empty states when every finance endpoint returns nothing", async () => {
+  it("shows empty states when every surviving finance endpoint returns nothing", async () => {
     server.use(
       http.get("http://test.local/api/accounts", () => HttpResponse.json([])),
       http.get("http://test.local/api/subscriptions", () => HttpResponse.json([])),
-      http.get("http://test.local/api/debts", () => HttpResponse.json([])),
-      http.get("http://test.local/api/savings-goals", () => HttpResponse.json([])),
+      http.get("http://test.local/api/movements", () => HttpResponse.json([])),
     );
     render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -194,29 +205,8 @@ describe("finance screens", () => {
     );
     expect(await screen.findByText("Sin cuentas aún")).toBeInTheDocument();
     expect(await screen.findByText("Sin suscripciones activas")).toBeInTheDocument();
-    expect(await screen.findByText("Sin deudas")).toBeInTheDocument();
-    expect(await screen.findByText("Sin metas de ahorro aún")).toBeInTheDocument();
-    expect(await screen.findByText("Crea una meta para seguir tu progreso aquí.")).toBeInTheDocument();
-  });
-
-  it("marks completed savings goals with a Spanish badge", () => {
-    render(
-      <SavingsList
-        goals={[
-          {
-            id: "g1",
-            title: "Trip",
-            detail: null,
-            amount: 1000,
-            currency: "COP",
-            progress: 1,
-            completed: true,
-          },
-        ]}
-        locale="es-CO"
-      />,
-    );
-    expect(screen.getByText("Completada")).toBeInTheDocument();
+    expect(await screen.findByText("Sin movimientos aún")).toBeInTheDocument();
+    expect(await screen.findByText("Sin movimientos en esta categoría aún")).toBeInTheDocument();
   });
 
   it("shows an error alert with retry when aggregate reads fail", async () => {
@@ -233,38 +223,21 @@ describe("finance screens", () => {
   });
 });
 
-// -- S5 escritura (RED: mutadores + 6 forms por dominio, montos string, selects por nombre) --
+// -- S5 escritura superviviente (RED: mutadores + forms por dominio, montos string) --
 import {
   createBankAccount,
-  createMovement,
-  createPayment,
   createSubscription,
   createValuation,
-  deleteMovement,
-  deletePayment,
   deleteSubscription,
-  fetchDebtPayments,
   patchAsset,
-  patchDebt,
-  patchGoal,
   setSubscriptionActive,
 } from "@/lib/api/finance";
-import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
-import { DebtEditForm, DebtPayForm, DebtPaymentHistory } from "@/components/finance/DebtPayments";
-import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
+import { SubscriptionRow } from "@/components/finance/SubscriptionForms";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
 describe("finance S5 mutators", () => {
-  it("savings/debts/subs/assets/bank-accounts usan endpoints PR-1 con montos string", async () => {
-    const seen: string[] = [];
+  it("subs/assets/bank-accounts usan endpoints PR-1 con montos string", async () => {
     server.use(
-      http.post("http://test.local/api/savings-goals/g1/movements", ({ request }) => { seen.push(`POST ${request.url}`); return HttpResponse.json({ id: "m1" }); }),
-      http.delete("http://test.local/api/savings-goals/g1/movements/m1", ({ request }) => { seen.push(`DELETE ${request.url}`); return new HttpResponse(null, { status: 204 }); }),
-      http.patch("http://test.local/api/savings-goals/g1", () => HttpResponse.json({ id: "g1" })),
-      http.post("http://test.local/api/debts/d1/payments", () => HttpResponse.json({ id: "p1" })),
-      http.delete("http://test.local/api/debts/d1/payments/p1", () => new HttpResponse(null, { status: 204 })),
-      http.get("http://test.local/api/debts/d1/payments", () => HttpResponse.json([])),
-      http.patch("http://test.local/api/debts/d1", () => HttpResponse.json({ id: "d1" })),
       http.post("http://test.local/api/subscriptions", () => HttpResponse.json({ id: "s9" })),
       http.patch("http://test.local/api/subscriptions/s1", () => HttpResponse.json({ id: "s1" })),
       http.delete("http://test.local/api/subscriptions/s1", () => new HttpResponse(null, { status: 204 })),
@@ -272,99 +245,30 @@ describe("finance S5 mutators", () => {
       http.patch("http://test.local/api/assets/a1", () => HttpResponse.json({ id: "a1" })),
       http.post("http://test.local/api/assets/a1/valuations", () => HttpResponse.json({ id: "v1" })),
     );
-    await createMovement("g1", { amount: "50.00", occurred_on: "2026-09-09" });
-    await deleteMovement("g1", "m1");
-    await patchGoal("g1", { name: "Viaje playa" });
-    await createPayment("d1", { amount: "100.00", paid_on: "2026-09-09" });
-    await deletePayment("d1", "p1");
-    await fetchDebtPayments("d1");
-    await patchDebt("d1", { creditor: "Banco X" });
-    await createSubscription({ name: "Streaming", price: "19900", frequency: "monthly" });
+    await createSubscription({ name: "Streaming", price: "19900" });
     await setSubscriptionActive("s1", false);
     await deleteSubscription("s1");
     await createBankAccount("Cuenta nueva");
     await patchAsset("a1", { name: "Apartamento" });
     await createValuation("a1", { value: "1200.00", recorded_on: "2026-09-09" });
-    expect(seen).toContain("POST http://test.local/api/savings-goals/g1/movements");
-    expect(seen).toContain("DELETE http://test.local/api/savings-goals/g1/movements/m1");
   });
 });
 
 describe("finance S5 forms", () => {
-  const cats = [{ id: "c1", name: "Alimentación" }];
   const accs = [{ id: "a1", name: "Billetera" }];
 
-  it("SavingsDepositForm bloquea sobrerretiro en cliente y GoalForm edita meta", async () => {
-    const first = render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <SavingsDepositForm goalId="g1" saved={100} currency="COP" onDone={() => undefined} />
-      </SWRConfig>,
-    );
-    fireEvent.change(screen.getByLabelText(/Monto/), { target: { value: "150" } });
-    fireEvent.click(screen.getByRole("button", { name: /Retirar/ }));
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    first.unmount();
-    render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <SavingsGoalForm categories={cats} onDone={() => undefined} />
-      </SWRConfig>,
-    );
-    expect(screen.getByLabelText(/Nombre/)).toBeInTheDocument();
-  });
-
-  it("DebtPayForm valida amount<=pending y el historial corrige vía DELETE+recreate", async () => {
+  it("SubscriptionRow muestra precio y cancela/reactiva por PATCH widened (crear/editar vive en Ajustes)", async () => {
     server.use(
-      http.get("http://test.local/api/debts/d1/payments", () => HttpResponse.json([
-        { id: "p1", debt_id: "d1", amount: "100.00", paid_on: "2026-09-02", payment_method: null, notes: null, created_at: "2026-09-02T00:00:00Z" },
-      ])),
-      http.delete("http://test.local/api/debts/d1/payments/p1", () => new HttpResponse(null, { status: 204 })),
-    );
-    const stub = window.confirm;
-    window.confirm = () => true;
-    const pay = render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <DebtPayForm debtId="d1" pending={100} currency="COP" onDone={() => undefined} />
-      </SWRConfig>,
-    );
-    fireEvent.change(screen.getByLabelText(/Monto/), { target: { value: "150" } });
-    fireEvent.click(screen.getByRole("button", { name: /Abonar/ }));
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    pay.unmount();
-    render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <DebtPaymentHistory debtId="d1" onCorrect={() => undefined} />
-      </SWRConfig>,
-    );
-    expect(await screen.findByText(/100/)).toBeInTheDocument();
-    const hist = render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <DebtEditForm debtId="d1" onDone={() => undefined} />
-      </SWRConfig>,
-    );
-    void hist;
-    expect(screen.getByLabelText(/Acreedor/)).toBeInTheDocument();
-    window.confirm = stub;
-  });
-
-  it("SubscriptionCreateForm exige precio manual y la fila cancela/reactiva solo con is_active", async () => {
-    server.use(
-      http.post("http://test.local/api/subscriptions", () => HttpResponse.json({ id: "s9" })),
       http.patch("http://test.local/api/subscriptions/s1", () => HttpResponse.json({ id: "s1" })),
     );
-    const created = render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <SubscriptionCreateForm categories={cats} onDone={() => undefined} />
-      </SWRConfig>,
-    );
-    fireEvent.change(screen.getByLabelText(/Precio/), { target: { value: "abc" } });
-    fireEvent.click(screen.getByRole("button", { name: /Crear suscripción/ }));
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    created.unmount();
     render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <SubscriptionRow sub={{ id: "s1", name: "Música", price: "9.99", currency: "COP", frequency: "monthly", next_billing_on: null, is_active: true }} />
+        <SubscriptionRow sub={{ id: "s1", name: "Música", price: "19900.00", currency: "COP", frequency: "monthly", next_billing_on: null, is_active: true }} />
       </SWRConfig>,
     );
+    // Row shows the COP price; the create/edit form is no longer Finance-resident.
+    expect(screen.getByText(/19\.900/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Crear suscripción/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Cancelar/ })).toBeInTheDocument();
   });
 
@@ -372,32 +276,15 @@ describe("finance S5 forms", () => {
     expect(screen.queryByRole("button", { name: /Crear tarjeta/ })).not.toBeInTheDocument();
   });
 
-  it("cada select de clasificación recibe solo su kind del backend", async () => {
+  it("la shell de suscripciones muestra filas con Pay y sin formulario residente (crear vive en Ajustes)", async () => {
     renderScreens();
     const subs = await screen.findByRole("region", { name: "Suscripciones: crear y gestionar" });
-    expect(await within(subs).findByRole("option", { name: "Streaming" })).toBeInTheDocument();
-    expect(within(subs).queryByRole("option", { name: "Alimentación" })).not.toBeInTheDocument();
-    const savings = await screen.findByRole("region", { name: "Ahorros: metas y abonos" });
-    // Crear + editar por meta: cada select de ahorro ve las finance…
-    expect((await within(savings).findAllByRole("option", { name: "Alimentación" })).length).toBeGreaterThanOrEqual(1);
-    expect(within(savings).queryByRole("option", { name: "Streaming" })).not.toBeInTheDocument();
-  });
-
-  it("blanquea el límite cuando no hay categorías de suscripción", async () => {
-    server.use(
-      http.get("http://test.local/api/categories", ({ request }) => {
-        if (new URL(request.url).searchParams.get("kind") === "subscription") {
-          return HttpResponse.json([]);
-        }
-        return HttpResponse.json([
-          { id: "c1", kind: "finance", name: "Alimentación", color: null, icon: null, is_archived: false, created_at: "2026-09-01T00:00:00Z" },
-        ]);
-      }),
-    );
-    renderScreens();
-    expect(
-      await screen.findByText("Sin categorías de suscripción en el servidor; este formulario solo acepta categorías de tipo suscripción."),
-    ).toBeInTheDocument();
+    // Rows (with Pay) survive; the create/edit form — and its kind-split
+    // category select — moved to Settings in S-D.
+    expect(await within(subs).findByText("Music")).toBeInTheDocument();
+    expect(await within(subs).findByRole("button", { name: "Pagar" })).toBeInTheDocument();
+    expect(within(subs).queryByLabelText("Categoría")).not.toBeInTheDocument();
+    expect(within(subs).queryByRole("button", { name: /Crear suscripción/ })).not.toBeInTheDocument();
   });
 
   it("AssetForms editan allowlist real y valúan con fecha posterior", async () => {
@@ -421,11 +308,12 @@ describe("finance S5 forms", () => {
   });
 });
 
-// -- PR-3 FIX A (GREEN: SubscriptionRow cancelar/reactivar + ediciones Savings) --
+// -- PR-3 FIX A (GREEN: SubscriptionRow cancelar/reactivar/eliminar + Pay) --
 describe("finance PR-3 FIX A", () => {
-  it("monta SubscriptionRow cancelar/reactivar y ediciones Savings en sus listas", async () => {
+  it("monta SubscriptionRow cancelar/reactivar/eliminar con Pay en su lista", async () => {
     renderScreens();
     expect(await screen.findByRole("button", { name: /Cancelar/ })).toBeInTheDocument();
-    expect((await screen.findAllByRole("button", { name: "Eliminar" })).length).toBeGreaterThanOrEqual(2);
+    expect((await screen.findAllByRole("button", { name: "Eliminar" })).length).toBeGreaterThanOrEqual(1);
+    expect((await screen.findAllByRole("button", { name: "Pagar" })).length).toBeGreaterThanOrEqual(1);
   });
 });

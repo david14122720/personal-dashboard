@@ -1,14 +1,13 @@
 //! Events CRUD with range queries and cross-domain ownership probes.
 //!
 //! Wire conventions follow the P4 habits/goals/tasks slices (`habits.rs`,
-//! `goals.rs`, `tasks.rs`) and the P3 route slices (`debts.rs`,
-//! `subscriptions.rs`): `require_user_id` auth (bad session → 401),
+//! `goals.rs`, `tasks.rs`) and the P3 route slice (`subscriptions.rs`): `require_user_id` auth (bad session → 401),
 //! `deny_unknown_fields` DTOs, `user_id`-scoped SQL (foreign event ids → 404
 //! without leaking existence), `23505 → 409` and `23503 / 23514 / 22P02 →
 //! 422`.
 //!
-//! Ownership matrix: an event may link to entities in six domains — habits,
-//! goals, tasks, debts, subscriptions, and categories. Each provided link id
+//! Ownership matrix: an event may link to entities in five domains — habits,
+//! goals, tasks, subscriptions, and categories. Each provided link id
 //! is probed in two steps: a `user_id`-scoped probe (owned → Ok), then an
 //! unscoped exists-probe (exists for another user → 422, exists for nobody →
 //! 404). `category_id` is ownership-only (any kind — the `category_kind`
@@ -57,13 +56,13 @@ const EVENT_KINDS: &[&str] = &[
     "habit_reminder",
 ];
 
-const CREATE_EVENT_SQL: &str = "INSERT INTO events (user_id, title, description, kind, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id) VALUES ($1,$2,$3,$4::event_kind,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id, created_at, updated_at";
-const LIST_EVENTS_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 ORDER BY starts_at ASC";
-const LIST_EVENTS_FROM_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
-const LIST_EVENTS_TO_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $2 ORDER BY starts_at ASC";
-const LIST_EVENTS_RANGE_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $3 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
-const GET_EVENT_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id, created_at, updated_at FROM events WHERE id=$1 AND user_id=$2";
-const PATCH_EVENT_SQL: &str = "UPDATE events SET title=COALESCE($3,title), description=COALESCE($4,description), kind=COALESCE($5::event_kind,kind), starts_at=COALESCE($6,starts_at), ends_at=COALESCE($7,ends_at), all_day=COALESCE($8,all_day), location=COALESCE($9,location), habit_id=COALESCE($10,habit_id), goal_id=COALESCE($11,goal_id), task_id=COALESCE($12,task_id), debt_id=COALESCE($13,debt_id), subscription_id=COALESCE($14,subscription_id), category_id=COALESCE($15,category_id), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, debt_id, subscription_id, category_id, created_at, updated_at";
+const CREATE_EVENT_SQL: &str = "INSERT INTO events (user_id, title, description, kind, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id) VALUES ($1,$2,$3,$4::event_kind,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at";
+const LIST_EVENTS_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 ORDER BY starts_at ASC";
+const LIST_EVENTS_FROM_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
+const LIST_EVENTS_TO_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $2 ORDER BY starts_at ASC";
+const LIST_EVENTS_RANGE_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $3 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
+const GET_EVENT_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE id=$1 AND user_id=$2";
+const PATCH_EVENT_SQL: &str = "UPDATE events SET title=COALESCE($3,title), description=COALESCE($4,description), kind=COALESCE($5::event_kind,kind), starts_at=COALESCE($6,starts_at), ends_at=COALESCE($7,ends_at), all_day=COALESCE($8,all_day), location=COALESCE($9,location), habit_id=COALESCE($10,habit_id), goal_id=COALESCE($11,goal_id), task_id=COALESCE($12,task_id), subscription_id=COALESCE($13,subscription_id), category_id=COALESCE($14,category_id), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at";
 const DELETE_EVENT_SQL: &str = "DELETE FROM events WHERE id=$1 AND user_id=$2";
 
 const HABIT_OWNERSHIP_SQL: &str = "SELECT id FROM habits WHERE id=$1 AND user_id=$2";
@@ -72,13 +71,11 @@ const GOAL_OWNERSHIP_SQL: &str = "SELECT id FROM goals WHERE id=$1 AND user_id=$
 const GOAL_EXISTS_SQL: &str = "SELECT id FROM goals WHERE id=$1";
 const TASK_OWNERSHIP_SQL: &str = "SELECT id FROM tasks WHERE id=$1 AND user_id=$2";
 const TASK_EXISTS_SQL: &str = "SELECT id FROM tasks WHERE id=$1";
-const DEBT_OWNERSHIP_SQL: &str = "SELECT id FROM debts WHERE id=$1 AND user_id=$2";
-const DEBT_EXISTS_SQL: &str = "SELECT id FROM debts WHERE id=$1";
 const SUBSCRIPTION_OWNERSHIP_SQL: &str = "SELECT id FROM subscriptions WHERE id=$1 AND user_id=$2";
 const SUBSCRIPTION_EXISTS_SQL: &str = "SELECT id FROM subscriptions WHERE id=$1";
 const CATEGORY_OWNERSHIP_SQL: &str = "SELECT id FROM categories WHERE id=$1 AND user_id=$2";
 
-/// Row mirror of the event SELECT lists (16 columns — `reminder_id` is
+/// Row mirror of the event SELECT lists (15 columns — `reminder_id` is
 /// deliberately not selected: sqlx `FromRow` tuples cap at 16 columns and no
 /// API path writes `reminder_id`, so it is always NULL; re-add it to the
 /// SELECT lists when reminder linking lands).
@@ -91,7 +88,6 @@ type EventRow = (
     Option<DateTime<Utc>>,
     bool,
     Option<String>,
-    Option<Uuid>,
     Option<Uuid>,
     Option<Uuid>,
     Option<Uuid>,
@@ -119,7 +115,6 @@ pub struct CreateEventRequest {
     pub habit_id: Option<Uuid>,
     pub goal_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
-    pub debt_id: Option<Uuid>,
     pub subscription_id: Option<Uuid>,
     pub category_id: Option<Uuid>,
 }
@@ -141,7 +136,6 @@ pub struct PatchEventRequest {
     pub habit_id: Option<Uuid>,
     pub goal_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
-    pub debt_id: Option<Uuid>,
     pub subscription_id: Option<Uuid>,
     pub category_id: Option<Uuid>,
 }
@@ -168,7 +162,6 @@ pub struct EventResponse {
     pub habit_id: Option<Uuid>,
     pub goal_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
-    pub debt_id: Option<Uuid>,
     pub subscription_id: Option<Uuid>,
     /// Always `None` on write (linking out of scope) — read back for
     /// completeness.
@@ -194,7 +187,6 @@ impl From<EventRow> for EventResponse {
             Option<Uuid>,
             Option<Uuid>,
             Option<Uuid>,
-            Option<Uuid>,
             DateTime<Utc>,
             DateTime<Utc>,
         ),
@@ -211,7 +203,6 @@ impl From<EventRow> for EventResponse {
             habit_id,
             goal_id,
             task_id,
-            debt_id,
             subscription_id,
             category_id,
             created_at,
@@ -229,7 +220,6 @@ impl From<EventRow> for EventResponse {
             habit_id,
             goal_id,
             task_id,
-            debt_id,
             subscription_id,
             // Never selected (see `EventRow`): no API path writes it.
             reminder_id: None,
@@ -327,7 +317,6 @@ pub fn validate_event_patch(body: &PatchEventRequest) -> Result<(), AppError> {
         && body.habit_id.is_none()
         && body.goal_id.is_none()
         && body.task_id.is_none()
-        && body.debt_id.is_none()
         && body.subscription_id.is_none()
         && body.category_id.is_none()
     {
@@ -390,19 +379,18 @@ pub async fn ensure_event_category(
     ))
 }
 
-/// The six cross-domain link ids carried by both write DTOs.
+/// The five cross-domain link ids carried by both write DTOs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EventLinks {
     pub habit_id: Option<Uuid>,
     pub goal_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
-    pub debt_id: Option<Uuid>,
     pub subscription_id: Option<Uuid>,
     pub category_id: Option<Uuid>,
 }
 
 /// Validate every provided link id against the ownership matrix (habits,
-/// goals, tasks, debts, subscriptions: owned → Ok, foreign → 422, missing →
+/// goals, tasks, subscriptions: owned → Ok, foreign → 422, missing →
 /// 404; categories: owned → Ok, else 422).
 pub async fn ensure_event_links(
     pool: &sqlx::PgPool,
@@ -439,17 +427,6 @@ pub async fn ensure_event_links(
             id,
             user_id,
             "task",
-        )
-        .await?;
-    }
-    if let Some(id) = links.debt_id {
-        ensure_event_link(
-            pool,
-            DEBT_OWNERSHIP_SQL,
-            DEBT_EXISTS_SQL,
-            id,
-            user_id,
-            "debt",
         )
         .await?;
     }
@@ -513,7 +490,6 @@ pub async fn create_event_handler(
             habit_id: body.habit_id,
             goal_id: body.goal_id,
             task_id: body.task_id,
-            debt_id: body.debt_id,
             subscription_id: body.subscription_id,
             category_id: body.category_id,
         },
@@ -531,7 +507,6 @@ pub async fn create_event_handler(
         .bind(body.habit_id)
         .bind(body.goal_id)
         .bind(body.task_id)
-        .bind(body.debt_id)
         .bind(body.subscription_id)
         .bind(body.category_id)
         .fetch_one(&state.pool)
@@ -659,7 +634,6 @@ pub async fn patch_event_handler(
             habit_id: body.habit_id,
             goal_id: body.goal_id,
             task_id: body.task_id,
-            debt_id: body.debt_id,
             subscription_id: body.subscription_id,
             category_id: body.category_id,
         },
@@ -678,7 +652,6 @@ pub async fn patch_event_handler(
         .bind(body.habit_id)
         .bind(body.goal_id)
         .bind(body.task_id)
-        .bind(body.debt_id)
         .bind(body.subscription_id)
         .bind(body.category_id)
         .fetch_optional(&state.pool)
@@ -881,7 +854,6 @@ mod tests {
             HABIT_EXISTS_SQL,
             GOAL_EXISTS_SQL,
             TASK_EXISTS_SQL,
-            DEBT_EXISTS_SQL,
             SUBSCRIPTION_EXISTS_SQL,
         ] {
             assert!(
@@ -1018,17 +990,6 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("seed task")
-    }
-
-    async fn seed_debt(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
-        sqlx::query_scalar(
-            "INSERT INTO debts (user_id, name, creditor, original_amount, pending_amount, start_date) VALUES ($1,$2,'bank',100,100,CURRENT_DATE) RETURNING id",
-        )
-        .bind(user_id)
-        .bind(format!("debt-{}", Uuid::new_v4()))
-        .fetch_one(pool)
-        .await
-        .expect("seed debt")
     }
 
     async fn seed_subscription(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
@@ -1170,7 +1131,6 @@ mod tests {
             ("habit_id", seed_habit(&pool, user_a).await),
             ("goal_id", seed_goal(&pool, user_a).await),
             ("task_id", seed_task(&pool, user_a).await),
-            ("debt_id", seed_debt(&pool, user_a).await),
             ("subscription_id", seed_subscription(&pool, user_a).await),
         ];
         for (field, id) in links {
@@ -1226,7 +1186,6 @@ mod tests {
             "habit_id",
             "goal_id",
             "task_id",
-            "debt_id",
             "subscription_id",
         ] {
             let body = Json(

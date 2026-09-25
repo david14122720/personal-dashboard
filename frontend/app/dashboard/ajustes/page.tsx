@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import BankAccountsSection from "@/components/settings/BankAccountsSection";
+import SubscriptionsSection from "@/components/settings/SubscriptionsSection";
 import CustomCategoriesSection from "@/components/settings/CustomCategoriesSection";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
@@ -26,6 +27,7 @@ export default function AjustesPage() {
           <p className="mt-1 text-sm text-instrument/70">{t("settings.subtitle")}</p>
         </header>
         <BankAccountsSection />
+        <SubscriptionsSection />
         <CustomCategoriesSection />
       </div>
     </AppShell>

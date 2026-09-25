@@ -5,7 +5,6 @@ import { ledDotClass } from "@/lib/dashboard/transforms";
 import type {
   AccountCardView,
   CompactMoneyRow,
-  SavingsView,
 } from "@/lib/finance/finance";
 
 /**
@@ -61,50 +60,87 @@ function ProgressBar({ pct, status, label }: { pct: number; status: string; labe
   );
 }
 
-export function AccountsList({ accounts, locale }: { accounts: AccountCardView[]; locale: string }) {
+export function AccountsList({
+  accounts,
+  locale,
+  activeAccountId,
+  onSelect,
+}: {
+  accounts: AccountCardView[];
+  locale: string;
+  /** Selected account id for the movements history filter (S-C). */
+  activeAccountId?: string | null;
+  /** Account-card click sets the history filter; undefined keeps cards inert. */
+  onSelect?: (id: string | null) => void;
+}) {
   if (accounts.length === 0) {
     return <EmptyState title={t("finance.noAccounts")} hint={t("finance.noAccountsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-3">
-      {accounts.map((account) => (
-        <li key={account.id} className="rounded-lg border border-hull px-4 py-3">
-          <div className="flex items-start gap-2.5">
-            {account.alertLevel ? <LedDot label={account.name} status={account.alertLevel} /> : null}
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <p className="truncate text-sm font-medium">
-                  {account.name}
-                  <span className="ml-2 text-xs font-normal text-instrument/50">{account.type}</span>
-                </p>
-                <p className="font-mono text-sm tabular-nums">
-                  {formatMoney(account.balance, { locale, currency: account.currency })}
-                </p>
-              </div>
-              {account.isCard && account.used !== null ? (
-                <div className="mt-2">
-                  <ProgressBar
-                    pct={Math.min(1, Math.max(0, (account.usagePct ?? 0) / 100))}
-                    status={account.alertLevel ?? "ok"}
-                    label={t("finance.cardUsageLabel", { name: account.name })}
-                  />
-                  <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
-                    {t("finance.usedAvailable", {
-                      used: formatMoney(account.used, { locale, currency: account.currency }),
-                      available: formatMoney(account.available ?? 0, { locale, currency: account.currency }),
-                      pct: (account.usagePct ?? 0).toFixed(1),
-                    })}
-                    {account.statementBalance !== null
-                      ? ` · ${t("finance.statementBalance", { amount: formatMoney(account.statementBalance, { locale, currency: account.currency }) })}`
-                      : ""}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </li>
-      ))}
+      {accounts.map((account) => {
+        const active = activeAccountId === account.id;
+        const selectable = onSelect !== undefined;
+        return (
+          <li
+            key={account.id}
+            className={`rounded-lg border px-4 py-3 ${active ? "border-signal" : "border-hull"}`}
+          >
+            {selectable ? (
+              <button
+                type="button"
+                onClick={() => onSelect(active ? null : account.id)}
+                aria-pressed={active}
+                aria-label={account.name}
+                className="block min-h-[44px] w-full rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+              >
+                <AccountCardBody account={account} locale={locale} />
+              </button>
+            ) : (
+              <AccountCardBody account={account} locale={locale} />
+            )}
+          </li>
+        );
+      })}
     </ul>
+  );
+}
+
+function AccountCardBody({ account, locale }: { account: AccountCardView; locale: string }) {
+  return (
+    <div className="flex items-start gap-2.5">
+      {account.alertLevel ? <LedDot label={account.name} status={account.alertLevel} /> : null}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <p className="truncate text-sm font-medium">
+            {account.name}
+            <span className="ml-2 text-xs font-normal text-instrument/50">{account.type}</span>
+          </p>
+          <p className="font-mono text-sm tabular-nums">
+            {formatMoney(account.balance, { locale, currency: account.currency })}
+          </p>
+        </div>
+        {account.isCard && account.used !== null ? (
+          <div className="mt-2">
+            <ProgressBar
+              pct={Math.min(1, Math.max(0, (account.usagePct ?? 0) / 100))}
+              status={account.alertLevel ?? "ok"}
+              label={t("finance.cardUsageLabel", { name: account.name })}
+            />
+            <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
+              {t("finance.usedAvailable", {
+                used: formatMoney(account.used, { locale, currency: account.currency }),
+                available: formatMoney(account.available ?? 0, { locale, currency: account.currency }),
+                pct: (account.usagePct ?? 0).toFixed(1),
+              })}
+              {account.statementBalance !== null
+                ? ` · ${t("finance.statementBalance", { amount: formatMoney(account.statementBalance, { locale, currency: account.currency }) })}`
+                : ""}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -142,40 +178,3 @@ export function CompactMoneyList({
   );
 }
 
-export function SavingsList({ goals, locale }: { goals: SavingsView[]; locale: string }) {
-  if (goals.length === 0) {
-    return <EmptyState title={t("finance.noSavings")} hint={t("finance.noSavingsHint")} />;
-  }
-  return (
-    <ul className="flex flex-col gap-3">
-      {goals.map((goal) => (
-        <li key={goal.id} className="rounded-lg border border-hull px-4 py-3">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="truncate text-sm font-medium">
-              {goal.title}
-              {goal.completed ? (
-                <span className="ml-2 rounded-full border border-flow/40 px-2 py-0.5 font-display text-[11px] text-flow">
-                  {t("finance.completedBadge")}
-                </span>
-              ) : null}
-            </p>
-            <p className="font-mono text-sm tabular-nums">
-              {formatMoney(goal.amount, { locale, currency: goal.currency })}
-            </p>
-          </div>
-          {goal.detail ? <p className="mt-0.5 text-xs text-instrument/60">{goal.detail}</p> : null}
-          <div className="mt-2">
-            <ProgressBar
-              pct={goal.progress}
-              status={goal.completed ? "ok" : goal.progress >= 0.7 ? "warn" : "ok"}
-              label={t("finance.goalProgressLabel", { title: goal.title })}
-            />
-          </div>
-          <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
-            {t("finance.savedPct", { n: Math.round(goal.progress * 100) })}
-          </p>
-        </li>
-      ))}
-    </ul>
-  );
-}

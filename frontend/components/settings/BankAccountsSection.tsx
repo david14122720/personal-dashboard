@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
 import { useAccounts } from "@/lib/api/dashboard";
+import { ApiError } from "@/lib/api/client";
 import { createBankAccount, deleteAccount } from "@/lib/api/finance";
 
 const inputClass =
@@ -58,8 +59,11 @@ export default function BankAccountsSection() {
     try {
       await deleteAccount(id);
       await revalidate();
-    } catch {
-      setError(t("finance.deleteFailed"));
+    } catch (err) {
+      // 409: the account owns movements and stays listed with its balance.
+      setError(err instanceof ApiError && err.status === 409
+        ? t("finance.accountDeleteBlocked")
+        : t("finance.deleteFailed"));
     } finally {
       setDeletingId(null);
     }

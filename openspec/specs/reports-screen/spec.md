@@ -39,27 +39,26 @@ were computed over the selected window.
 
 ### Requirement: Finance Snapshot Block From Surviving Sources
 
-The finance block of `/reportes` MUST show only values with a surviving source:
-net worth from the existing net-worth read (valuations stay INSERT-only and
-read-only here), the current monthly cost of active subscriptions, and the total
-outstanding debt from active debts. It MUST NOT show period income, expense or
-savings, top categories, or any figure derived from the removed ledger. Amounts
-MUST display via `formatMoney` under `es-CO`/`COP`, with wire decimals coerced
-only at the boundary.
+The finance block of `/reportes` MUST show only values with a surviving source: net worth from the existing net-worth read (valuations stay INSERT-only and read-only here) and the current monthly cost of active subscriptions. It MUST NOT show total outstanding debt, period income, expense or savings, top categories, or any figure derived from the removed ledger or from the retired debts/savings capabilities. Amounts MUST display via `formatMoney` under `es-CO`/`COP`, with wire decimals coerced only at the boundary.
+(Previously: the block also showed the total outstanding debt from active debts.)
 
 #### Scenario: Snapshot renders from live sources
 
-- GIVEN net worth, two active subscriptions and one active debt with a pending
-  amount
+- GIVEN net worth and two active subscriptions
 - WHEN the finance block renders
-- THEN patrimonio, costo mensual de suscripciones and deuda pendiente appear
-  with COP formatting
+- THEN patrimonio and costo mensual de suscripciones appear with COP formatting and no debt figure exists
 
-#### Scenario: No flow figures
+#### Scenario: No flow or debt figures
 
 - GIVEN the rendered finance block
 - WHEN its figures are inspected
-- THEN no ingreso, gasto, ahorro del período or top-categorías item is present
+- THEN no ingreso, gasto, ahorro del período, top-categorías or deuda pendiente item is present
+
+#### Scenario: No debt request
+
+- GIVEN `/reportes` rendered
+- WHEN the network activity is inspected
+- THEN no request targets `/debts` or `/savings-goals`
 
 #### Scenario: Net worth stays read-only
 
@@ -69,11 +68,9 @@ only at the boundary.
 
 #### Scenario: Legitimately empty source
 
-- GIVEN a user with no subscriptions and no debts
+- GIVEN a user with no subscriptions
 - WHEN the snapshot renders
-- THEN each figure shows a neutral zero or Spanish empty label from its live
-  source
-
+- THEN the subscription figure shows a neutral zero or Spanish empty label from its live source
 ### Requirement: Habits Period Block
 
 The habits block MUST show period compliance per habit computed with the

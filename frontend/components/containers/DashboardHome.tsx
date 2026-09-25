@@ -10,10 +10,11 @@ import WidgetToggle from "@/components/ui/WidgetToggle";
 import NotificationBell from "@/components/notifications/NotificationBell";
 import ActiveSubs from "@/components/dashboard/widgets/ActiveSubs";
 import GoalProgress from "@/components/dashboard/widgets/GoalProgress";
-import PendingDebts from "@/components/dashboard/widgets/PendingDebts";
+import MovementsSnapshot from "@/components/dashboard/widgets/MovementsSnapshot";
 import PendingTasks from "@/components/dashboard/widgets/PendingTasks";
 import UpcomingEvents from "@/components/dashboard/widgets/UpcomingEvents";
 import UpcomingPayments from "@/components/dashboard/widgets/UpcomingPayments";
+import UpcomingSubs from "@/components/dashboard/widgets/UpcomingSubs";
 import {
   buildNextLayout,
   isWidgetVisible,
@@ -26,23 +27,18 @@ import {
   type DashboardLayout,
 } from "@/lib/api/dashboard";
 import {
-  useDebts as useFinanceDebts,
-  useSavingsGoals as useFinanceSavingsGoals,
   useSubscriptions as useFinanceSubscriptions,
 } from "@/lib/api/finance";
 import { formatMoney, toNumber } from "@/lib/api/money";
 import { t } from "@/lib/i18n";
-import {
-  toMonthlyCost,
-  toOutstandingDebt,
-  toTotalSavings,
-} from "@/lib/dashboard/transforms";
+import { toMonthlyCost } from "@/lib/dashboard/transforms";
+import { toAccountCards, toTotalBalance } from "@/lib/finance/finance";
 
 /**
  * Dashboard home container. Owns all SWR reads (fired in parallel) and
  * coercion at the boundary; `components/ui/*` stay pure. The telemetry
- * strip reads five live sources only (S3b): net worth, account count,
- * monthly subscription cost, outstanding debt and total savings — no
+ * strip reads four live sources only (D1): net worth, account count,
+ * monthly subscription cost and total balance — no debts, no savings, no
  * flow, budget or category aggregate is queried.
  */
 
@@ -117,8 +113,6 @@ export default function DashboardHome() {
   const prefs = usePreferences();
   // Strip-only finance reads (finance/* scope, independent of widget visibility).
   const financeSubs = useFinanceSubscriptions();
-  const financeDebts = useFinanceDebts();
-  const financeSavings = useFinanceSavingsGoals();
   const updateLayout = useUpdateLayout();
   const baseLayout = resolveDashboardLayout(prefs.data);
   const layout = layoutOverride ?? baseLayout;
@@ -132,10 +126,10 @@ export default function DashboardHome() {
     void mutate((key) => typeof key === "string" && key.startsWith("dashboard/"));
 
   const telemetryLoading = Boolean(
-    netWorth.isLoading || accounts.isLoading || financeSubs.isLoading || financeDebts.isLoading || financeSavings.isLoading,
+    netWorth.isLoading || accounts.isLoading || financeSubs.isLoading,
   );
   const telemetryError = Boolean(
-    netWorth.error || accounts.error || financeSubs.error || financeDebts.error || financeSavings.error,
+    netWorth.error || accounts.error || financeSubs.error,
   );
   const habitsLoading = Boolean(habits.isLoading);
   const habitsError = Boolean(habits.error);
@@ -149,24 +143,23 @@ export default function DashboardHome() {
     netWorth.data?.per_currency.find((e) => e.currency === currency) ??
     netWorth.data?.per_currency[0];
   const netWorthValue = worthEntry ? toNumber(worthEntry.net_worth) : 0;
+  // The accounts list endpoint already hides archived rows server-side
+  // (`NOT is_archived`), so its length is the non-archived account count.
   const accountsCount = (accounts.data ?? []).length;
   const monthlyCost = toMonthlyCost(financeSubs.data);
-  const outstandingDebt = toOutstandingDebt(financeDebts.data);
-  const totalSavings = toTotalSavings(financeSavings.data);
+  const totalBalance = toTotalBalance(toAccountCards(accounts.data), currency);
 
   const strip: TelemetryItem[] = [
     { id: "net-worth", label: t("dashboard.netWorth"), display: fmt(netWorthValue) },
     { id: "accounts", label: t("finance.accounts"), display: String(accountsCount) },
     { id: "subscriptions", label: t("finance.subscriptions"), display: fmt(monthlyCost) },
-    { id: "debts", label: t("finance.debts"), display: fmt(outstandingDebt) },
-    { id: "savings", label: t("finance.savings"), display: fmt(totalSavings) },
+    { id: "total-balance", label: t("dashboard.totalBalance"), display: fmt(totalBalance) },
   ];
 
   const pendingHabits = (habits.data ?? []).filter((h) => h.today_status === "pending");
 
   const customizeRows = [
     { id: "upcoming-payments", label: t("dashboard.upcomingPayments") },
-    { id: "pending-debts", label: t("dashboard.pendingDebts") },
     { id: "active-subs", label: t("dashboard.activeSubs") },
     { id: "pending-tasks", label: t("dashboard.pendingTasks") },
     { id: "upcoming-events", label: t("dashboard.upcomingEvents") },
@@ -204,6 +197,23 @@ export default function DashboardHome() {
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <WidgetShell
+          title={t("dashboard.latestMovementsTitle")}
+          hint={t("dashboard.latestMovementsHint")}
+          span="col-span-12 lg:col-span-6"
+        >
+          <MovementsSnapshot />
+        </WidgetShell>
+        <WidgetShell
+          title={t("dashboard.upcomingSubscriptionsTitle")}
+          hint={t("dashboard.upcomingSubscriptionsHint")}
+          span="col-span-12 lg:col-span-6"
+        >
+          <UpcomingSubs />
+        </WidgetShell>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="space-y-6 lg:col-span-4">
           <WidgetShell title={t("dashboard.today")} hint={t("dashboard.todayHint")}>
             {habitsLoading ? (
@@ -238,16 +248,6 @@ export default function DashboardHome() {
             action={<WidgetToggle id="upcoming-payments" visible onToggle={(v) => toggle("upcoming-payments", v)} />}
           >
             <UpcomingPayments />
-          </WidgetShell>
-        ) : null}
-        {visible("pending-debts") ? (
-          <WidgetShell
-            title={t("dashboard.pendingDebts")}
-            hint={t("dashboard.pendingDebtsHint")}
-            span="col-span-12 lg:col-span-5"
-            action={<WidgetToggle id="pending-debts" visible onToggle={(v) => toggle("pending-debts", v)} />}
-          >
-            <PendingDebts />
           </WidgetShell>
         ) : null}
         {visible("active-subs") ? (

@@ -84,42 +84,23 @@ fn api_routes() -> Router<AppState> {
             "/categories",
             get(routes::categories::list_categories_handler),
         )
+        // S-A (finance-simplify-movements): movements ledger + atomic
+        // balance effect. One request runs one transaction; the frontend
+        // never orchestrates a double write.
         .route(
-            "/savings-goals",
-            post(routes::savings::create_goal_handler).get(routes::savings::list_goals_handler),
+            "/movements",
+            post(routes::movements::create_movement_handler)
+                .get(routes::movements::list_movements_handler),
         )
         .route(
-            "/savings-goals/{id}",
-            get(routes::savings::get_goal_handler)
-                .patch(routes::savings::patch_goal_handler)
-                .delete(routes::savings::delete_goal_handler),
+            "/movements/{id}",
+            get(routes::movements::get_movement_handler)
+                .patch(routes::movements::patch_movement_handler)
+                .delete(routes::movements::delete_movement_handler),
         )
-        .route(
-            "/savings-goals/{id}/movements",
-            post(routes::savings::create_movement_handler),
-        )
-        .route(
-            "/savings-goals/{id}/movements/{mid}",
-            delete(routes::savings::delete_movement_handler),
-        )
-        .route(
-            "/debts",
-            post(routes::debts::create_debt_handler).get(routes::debts::list_debts_handler),
-        )
-        .route(
-            "/debts/{id}",
-            get(routes::debts::get_debt_handler)
-                .patch(routes::debts::patch_debt_handler)
-                .delete(routes::debts::delete_debt_handler),
-        )
-        .route(
-            "/debts/{id}/payments",
-            post(routes::debts::create_payment_handler).get(routes::debts::list_payments_handler),
-        )
-        .route(
-            "/debts/{id}/payments/{pid}",
-            delete(routes::debts::delete_payment_handler),
-        )
+        // S-G (finance-simplify-movements): `/savings-goals*` and `/debts*`
+        // routes removed with their tables (gated migration 0013). No
+        // savings/debts endpoint, UI, or MCP tool remains.
         .route(
             "/habits",
             post(routes::habits::create_habit_handler).get(routes::habits::list_habits_handler),
@@ -199,6 +180,13 @@ fn api_routes() -> Router<AppState> {
             get(routes::subscriptions::get_subscription_handler)
                 .patch(routes::subscriptions::patch_subscription_handler)
                 .delete(routes::subscriptions::delete_subscription_handler),
+        )
+        // S-B (finance-simplify-movements): dedicated pay action. One
+        // transaction inserts the audit movement, debits the account, stamps
+        // `last_paid_on` and advances `next_billing_on`.
+        .route(
+            "/subscriptions/{id}/pay",
+            post(routes::subscriptions::pay_subscription_handler),
         )
         .route(
             "/assets",
@@ -502,19 +490,20 @@ mod api_nest_tests {
     #[tokio::test]
     async fn p9_finanzas_write_routes_are_wired() {
         // Slice S3a: transactions gone with the ledger; budgets gone (S2).
-        // Las rutas supervivientes deben existir: sin sesion llegan al
-        // handler (401), no a 404/405.
+        // S-G (finance-simplify-movements): savings-goals and debts gone
+        // with gated migration 0013. Las rutas supervivientes deben existir:
+        // sin sesion llegan al handler (401), no a 404/405.
         let _app = build_router(lazy_state(), None);
         let id = uuid::Uuid::new_v4();
         let pid = uuid::Uuid::new_v4();
         for (method, uri) in [
-            ("GET", format!("/api/debts/{id}")),
-            ("DELETE", format!("/api/savings-goals/{id}")),
-            ("PATCH", format!("/api/savings-goals/{id}")),
-            ("PATCH", format!("/api/debts/{id}")),
-            ("GET", format!("/api/debts/{id}/payments")),
-            ("DELETE", format!("/api/debts/{id}/payments/{pid}")),
             ("PATCH", format!("/api/assets/{id}")),
+            // S-A (finance-simplify-movements): the movements ledger must
+            // be reachable — without a session every route answers 401.
+            ("GET", "/api/movements".to_string()),
+            ("GET", format!("/api/movements/{id}")),
+            ("PATCH", format!("/api/movements/{id}")),
+            ("DELETE", format!("/api/movements/{id}")),
         ] {
             let app = build_router(lazy_state(), None);
             let res = app
@@ -555,10 +544,83 @@ mod api_nest_tests {
             StatusCode::UNAUTHORIZED,
             "PATCH /api/accounts/{{id}} with balance must reach the handler (401), proving the balance write is wired"
         );
+        // S-A atomicity: the movement write lands in the same slice as the
+        // ledger removal it reverses. Axum deserializes `Json` before the
+        // handler runs `require_user_id`, so a 401 (not 422) on a VALID
+        // body proves `POST /api/movements` is mounted and its DTO accepts
+        // exactly the movement fields; `{}` alone would 422 on the missing
+        // fields instead of proving the wiring.
+        let app = build_router(lazy_state(), None);
+        let movement_body = serde_json::json!({
+            "direction": "expense",
+            "amount": "25000.00",
+            "account_id": id,
+            "category_id": id,
+            "occurred_on": "2026-09-24"
+        });
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/movements")
+                    .header("content-type", "application/json")
+                    .body(Body::from(movement_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "POST /api/movements with a valid body must reach the handler (401), proving the route is wired"
+        );
+        // S-B atomicity: the pay action lands in the same chain as the
+        // ledger it writes to. Axum deserializes `Json` before the handler
+        // runs `require_user_id`, so a 401 (not 422) on a VALID body proves
+        // `POST /api/subscriptions/{id}/pay` is mounted and its DTO accepts
+        // exactly `{account_id}`; `{}` alone would 422 on the missing field
+        // instead of proving the wiring.
+        let app = build_router(lazy_state(), None);
+        let pay_body = serde_json::json!({ "account_id": id });
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/subscriptions/{id}/pay"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(pay_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "POST /api/subscriptions/{{id}}/pay with a valid body must reach the handler (401), proving the route is wired"
+        );
         // Removed routes resolve to the JSON 404 fallback, never to a
         // handler: no /api/transactions, /api/transfers or /api/budgets
-        // path may survive S3a.
+        // path may survive S3a; no /api/savings-goals* or /api/debts* path
+        // may survive S-G (movements + pay still mounted above).
         for (method, uri) in [
+            ("GET", "/api/savings-goals".to_string()),
+            ("POST", "/api/savings-goals".to_string()),
+            ("GET", format!("/api/savings-goals/{id}")),
+            ("PATCH", format!("/api/savings-goals/{id}")),
+            ("DELETE", format!("/api/savings-goals/{id}")),
+            ("POST", format!("/api/savings-goals/{id}/movements")),
+            (
+                "DELETE",
+                format!("/api/savings-goals/{id}/movements/{pid}"),
+            ),
+            ("GET", "/api/debts".to_string()),
+            ("POST", "/api/debts".to_string()),
+            ("GET", format!("/api/debts/{id}")),
+            ("PATCH", format!("/api/debts/{id}")),
+            ("DELETE", format!("/api/debts/{id}")),
+            ("GET", format!("/api/debts/{id}/payments")),
+            ("POST", format!("/api/debts/{id}/payments")),
+            ("DELETE", format!("/api/debts/{id}/payments/{pid}")),
             ("GET", "/api/transactions".to_string()),
             ("POST", "/api/transactions".to_string()),
             (

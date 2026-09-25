@@ -4,35 +4,44 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { t } from "@/lib/i18n";
 import { formatMoney } from "@/lib/api/money";
-import { toCategoryTotals, type NamedOption } from "@/lib/finance/finance";
-import type { SavingsGoalWire, SubscriptionWire } from "@/lib/api/finance";
+import { useAccounts } from "@/lib/api/dashboard";
+import { useMovements } from "@/lib/api/finance";
+import { toCategoryMovementTotals, type NamedOption } from "@/lib/finance/finance";
 import { SectionShell } from "@/components/finance/FinanceSections";
 import EmptyState from "@/components/ui/EmptyState";
 
 const selectClass =
   "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none";
 
-/** Two labeled bars (gastos vs ahorro) with amounts, no chart dependency. */
+/** Two labeled div-bars (gasto/ingreso) with COP amounts, no chart dependency.
+ * A series mounts only when its aggregated value is greater than zero, so an
+ * expense-only category renders a single bar and the two directions are never
+ * netted. Widths are static (no animated properties), so there is nothing to
+ * suppress under `prefers-reduced-motion`. */
 export function CategoryBars({
-  expenses,
-  savings,
+  expense,
+  income,
   locale,
   currency,
 }: {
-  expenses: number;
-  savings: number;
+  expense: number;
+  income: number;
   locale: string;
   currency: string;
 }) {
-  const max = Math.max(expenses, savings, 1);
+  const max = Math.max(expense, income, 1);
   const rows = [
-    { label: t("finance.chartExpenses"), value: expenses, className: "bg-signal" },
-    { label: t("finance.chartSavings"), value: savings, className: "bg-flow" },
+    ...(expense > 0
+      ? [{ key: "expense", label: t("finance.chartExpenses"), value: expense, className: "bg-signal" }]
+      : []),
+    ...(income > 0
+      ? [{ key: "income", label: t("finance.chartIncome"), value: income, className: "bg-flow" }]
+      : []),
   ];
   return (
     <div className="flex flex-col gap-3">
       {rows.map((row) => (
-        <div key={row.label}>
+        <div key={row.key}>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <p className="text-xs text-instrument/60">{row.label}</p>
             <p className="font-mono text-sm tabular-nums">
@@ -59,26 +68,34 @@ export function CategoryBars({
 }
 
 /**
- * Per-category gastos/ahorro chart (P7). The compare view (P8) lives on its
- * own page and is reached only through the button below — never the nav.
+ * Per-category gasto/ingreso chart sourced from `GET /movements` (same
+ * `finance/movements` SWR key as the history list, no new endpoint).
+ * Aggregates are single-currency and never netted (see
+ * `toCategoryMovementTotals`). The compare view lives on its own
+ * sub-route and is reached only through the button below — never the nav.
  */
 export function CategoryChartSection({
   categories,
-  subs,
-  goals,
   locale,
   currency,
 }: {
   categories: NamedOption[];
-  subs: SubscriptionWire[];
-  goals: SavingsGoalWire[];
   locale: string;
   currency: string;
 }) {
   const [selected, setSelected] = useState("");
+  const movements = useMovements();
+  const accounts = useAccounts();
+  const currencyByAccountId = useMemo(
+    () => new Map((accounts.data ?? []).map((a) => [a.id, a.currency])),
+    [accounts.data],
+  );
   const totals = useMemo(
-    () => (selected ? toCategoryTotals(subs, goals, selected) : null),
-    [subs, goals, selected],
+    () =>
+      selected
+        ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, selected)
+        : null,
+    [movements.data, currencyByAccountId, currency, selected],
   );
   return (
     <SectionShell
@@ -105,10 +122,10 @@ export function CategoryChartSection({
         </label>
         {!totals ? (
           <EmptyState title={t("finance.chartEmpty")} hint={t("finance.chartEmptyHint")} />
-        ) : totals.expenses === 0 && totals.savings === 0 ? (
+        ) : totals.expense === 0 && totals.income === 0 ? (
           <EmptyState title={t("finance.chartEmpty")} hint={t("finance.chartEmptyHint")} />
         ) : (
-          <CategoryBars expenses={totals.expenses} savings={totals.savings} locale={locale} currency={currency} />
+          <CategoryBars expense={totals.expense} income={totals.income} locale={locale} currency={currency} />
         )}
         <div>
           <Link

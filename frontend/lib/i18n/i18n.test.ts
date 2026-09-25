@@ -31,13 +31,24 @@ describe("i18n foundation", () => {
 });
 
 describe("p8 dashboard + notifications copy (PR1 RED)", () => {
-  it("resolves 6 widget titles and hints", () => {
+  it("resolves 5 widget titles and hints", () => {
     expect(t("dashboard.upcomingPayments")).toBeTruthy();
-    expect(t("dashboard.pendingDebts")).toBeTruthy();
     expect(t("dashboard.activeSubs")).toBeTruthy();
     expect(t("dashboard.pendingTasks")).toBeTruthy();
     expect(t("dashboard.upcomingEvents")).toBeTruthy();
     expect(t("dashboard.goalProgress")).toBeTruthy();
+  });
+
+  it("resolves the S-H Resumen strip and section copy", () => {
+    expect(t("dashboard.totalBalance")).toBe("Saldo total");
+    expect(t("dashboard.latestMovementsTitle")).toBe("Últimos movimientos");
+    expect(t("dashboard.latestMovementsHint")).toBeTruthy();
+    expect(t("dashboard.latestMovementsEmpty")).toBeTruthy();
+    expect(t("dashboard.upcomingSubscriptionsTitle")).toBe("Próximas suscripciones");
+    expect(t("dashboard.upcomingSubscriptionsHint")).toBeTruthy();
+    expect(t("dashboard.upcomingSubscriptionsEmpty")).toBeTruthy();
+    expect(t("dashboard.goalVsSavings")).not.toMatch(/ahorro/i);
+    expect(t("dashboard.overviewSubtitle")).not.toMatch(/deuda/i);
   });
 
   it("resolves toggles, links and empties", () => {
@@ -98,7 +109,7 @@ describe("S3b snapshot + balance-edit copy", () => {
     expect(t("reports.financeCurrent")).toBe("Valor actual");
     expect(t("reports.finance")).toBe("Finanzas actuales");
     expect(t("progress.finance")).toBe("Finanzas actuales");
-    expect(t("progress.financeHint")).toContain("ahorro acumulado");
+    expect(t("progress.financeHint")).toContain("Patrimonio");
   });
 
   it("resolves the inline balance-edit copy with per-account labels", () => {

@@ -4,10 +4,9 @@
 //! `UNIQUE(user_id, kind, name)` guard and `category_kind` enum
 //! `finance|habit|goal|task|subscription`). This module only READS: it lists
 //! the caller's non-archived categories ordered by name, optionally filtered
-//! by `?kind=`. Validation reuses the `ensure_finance_category` convention
-//! from `crate::finance::validation` (owned + `kind='finance'`, else 422) for writes;
-//! reads validate `kind` against the same enum values and return 422 for
-//! unknown kinds. All queries scope by `user_id` so foreign ids never leak.
+//! by `?kind=`. Reads validate `kind` against the same enum values and
+//! return 422 for unknown kinds (writes use the ownership-only
+//! `ensure_owned_category` from `crate::finance::validation`). All queries scope by `user_id` so foreign ids never leak.
 //! Since S3a (migration 0011) `kind='finance'` is intentionally orphaned:
 //! it stays accepted and stored (existing rows keep working) but no finance
 //! writer consumes it.

@@ -1,7 +1,6 @@
 pub mod accounts;
 pub mod assets;
 pub mod categories;
-pub mod debts;
 pub mod events;
 pub mod goals;
 pub mod habits;
@@ -9,9 +8,9 @@ pub mod health;
 pub mod login;
 pub mod logout;
 pub mod me;
+pub mod movements;
 pub mod notes;
 pub mod ready;
-pub mod savings;
 pub mod subscriptions;
 pub mod tasks;
 pub mod tokens;

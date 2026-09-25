@@ -1,13 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
 import { t } from "@/lib/i18n";
 import {
   AccountsList,
   CompactMoneyList,
-  SavingsList,
   SectionShell,
 } from "@/components/finance/FinanceSections";
 import {
@@ -18,28 +17,22 @@ import {
 import {
   patchAccount,
   useAssets,
-  useDebts,
-  useFinanceCategories,
-  useSavingsGoals,
-  useSubscriptionCategories,
+  useCategories,
   useSubscriptions,
-  type SavingsGoalWire,
+  type MovementWire,
   type SubscriptionWire,
 } from "@/lib/api/finance";
 import {
   toAccountCards,
   toAccountOptions,
   toCategoryOptions,
-  toDebtRows,
-  toSavingsViews,
   toSubscriptionRows,
   type AccountCardView,
-  type NamedOption,
 } from "@/lib/finance/finance";
 import { formatMoney } from "@/lib/api/money";
-import { SavingsDepositForm, SavingsGoalForm } from "@/components/finance/SavingsForms";
-import { DebtEditForm, DebtPayForm, DebtPaymentHistory, DebtProgressBar } from "@/components/finance/DebtPayments";
-import { SubscriptionCreateForm, SubscriptionRow } from "@/components/finance/SubscriptionForms";
+import { SubscriptionRow } from "@/components/finance/SubscriptionForms";
+import { MovementModal, type MovementModalMode } from "@/components/finance/MovementForms";
+import { MovementHistory } from "@/components/finance/MovementHistory";
 import { CategoryChartSection } from "@/components/finance/CategoryCharts";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
@@ -197,15 +190,28 @@ export default function FinanceScreens() {
 
   const accounts = useAccounts();
   const subscriptions = useSubscriptions();
-  const debts = useDebts();
-  const savings = useSavingsGoals();
   const prefs = usePreferences();
-  const categories = useFinanceCategories();
-  const subCategories = useSubscriptionCategories();
+  const allCategories = useCategories();
   const assets = useAssets();
   const netWorth = useNetWorth();
 
-  const queries = [accounts, subscriptions, debts, savings, prefs];
+  // S-C movements UI: account-click filter + add/edit modal state. The
+  // subscription-pay wiring belongs to S-D and chart props to S-E.
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+  const [movementModal, setMovementModal] = useState<MovementModalMode | null>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const expenseBtnRef = useRef<HTMLButtonElement>(null);
+  const incomeBtnRef = useRef<HTMLButtonElement>(null);
+
+  function openMovementModal(mode: MovementModalMode): void {
+    openerRef.current =
+      mode.kind === "create" && mode.direction === "income"
+        ? incomeBtnRef.current
+        : expenseBtnRef.current;
+    setMovementModal(mode);
+  }
+
+  const queries = [accounts, subscriptions, prefs];
   const isLoading = queries.some((q) => q.isLoading);
   const failed = queries.filter((q) => q.error);
 
@@ -213,26 +219,22 @@ export default function FinanceScreens() {
   const currency = prefs.data?.preferences.currency_code ?? "COP";
   const cards = toAccountCards(accounts.data);
 
-  // Backend kinds are authoritative: savings goals accept only `finance`
-  // categories and subscriptions only `subscription` (else 422). Each
-  // classification select gets its own kind; charts/comparisons see the
-  // union. Local custom categories are intentionally excluded — their IDs
-  // are unknown to the API and persisting them fails with 422.
-  const financeOptions = useMemo(
-    () => toCategoryOptions(categories.data ?? []),
-    [categories.data],
+  // Single unfiltered category set (S-C kind-free, S-E chart/compare):
+  // every owned category together for the movement modals and the chart.
+  const movementCategoryOptions = useMemo(
+    () => toCategoryOptions(allCategories.data ?? []),
+    [allCategories.data],
   );
-  const subscriptionOptions = useMemo(
+  const movementAccountOptions = useMemo(
     () =>
-      toCategoryOptions((subCategories.data ?? []).filter((c) => c.kind === "subscription")),
-    [subCategories.data],
+      toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name }))),
+    [accounts.data],
   );
-  const chartOptions = useMemo(() => {
-    const seen = new Set<string>();
-    return [...financeOptions, ...subscriptionOptions]
-      .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)))
-      .sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [financeOptions, subscriptionOptions]);
+
+  function openMovementEditor(movement: MovementWire): void {
+    openerRef.current = document.activeElement as HTMLElement | null;
+    setMovementModal({ kind: "edit", movement });
+  }
 
   return (
     <div>
@@ -279,7 +281,12 @@ export default function FinanceScreens() {
               hint={t("finance.accountsHint")}
               span="col-span-12 md:col-span-6 xl:col-span-6"
             >
-              <AccountsList accounts={cards} locale={locale} />
+              <AccountsList
+                accounts={cards}
+                locale={locale}
+                activeAccountId={activeAccountId}
+                onSelect={setActiveAccountId}
+              />
               <div className="mt-4 flex flex-col gap-2 border-t border-hull pt-4">
                 {cards.map((card) => (
                   <AccountBalanceEdit key={card.id} account={card} locale={locale} />
@@ -299,26 +306,55 @@ export default function FinanceScreens() {
               />
             </SectionShell>
             <SectionShell
-              title={t("finance.debts")}
-              hint={t("finance.debtsHint")}
+              title={t("finance.addMovementTitle")}
+              hint={t("finance.addMovementHint")}
               span="col-span-12 md:col-span-6 xl:col-span-6"
             >
-              <CompactMoneyList
-                rows={toDebtRows(debts.data)}
-                locale={locale}
-                emptyTitle={t("finance.noDebts")}
-                emptyHint={t("finance.noDebtsHint")}
-              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  ref={expenseBtnRef}
+                  type="button"
+                  onClick={() => openMovementModal({ kind: "create", direction: "expense" })}
+                  className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-signal px-4 py-2 text-sm font-bold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                >
+                  {t("finance.addExpense")}
+                </button>
+                <button
+                  ref={incomeBtnRef}
+                  type="button"
+                  onClick={() => openMovementModal({ kind: "create", direction: "income" })}
+                  className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                >
+                  {t("finance.addIncome")}
+                </button>
+              </div>
             </SectionShell>
             <SectionShell
-              title={t("finance.savings")}
-              hint={t("finance.savingsHint")}
+              title={t("finance.movementsTitle")}
+              hint={t("finance.movementsHint")}
               span="col-span-12 md:col-span-6 xl:col-span-6"
             >
-              <SavingsList goals={toSavingsViews(savings.data)} locale={locale} />
+              <MovementHistory
+                accounts={movementAccountOptions}
+                categories={movementCategoryOptions}
+                locale={locale}
+                currency={currency}
+                activeAccountId={activeAccountId}
+                onSelectAccount={setActiveAccountId}
+                onEdit={openMovementEditor}
+              />
             </SectionShell>
-            <CategoryChartSection categories={chartOptions} subs={subscriptions.data ?? []} goals={savings.data ?? []} locale={locale} currency={currency} />
-            <S5Sections financeCategories={financeOptions} subscriptionCategories={subscriptionOptions} accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} debts={debts.data ?? []} savings={savings.data ?? []} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
+            <CategoryChartSection categories={movementCategoryOptions} locale={locale} currency={currency} />
+            <S5Sections accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
+            {movementModal ? (
+              <MovementModal
+                mode={movementModal}
+                accounts={movementAccountOptions}
+                categories={movementCategoryOptions}
+                openerRef={openerRef}
+                onClose={() => setMovementModal(null)}
+              />
+            ) : null}
           </>
         )}
       </div>
@@ -353,46 +389,16 @@ export function toAssetEditInitial(a: AssetWireWithDetails): {
   };
 }
 
-/* S5 escritura: 6 SectionShell ocultables tras las F1 intactas + patrimonio-número. */
-/* Títulos propios (sin hints de lectura) para no duplicar copy S1. PR-3 FIX: filas */
-/* SubscriptionRow + edición/borrado SavingsGoalForm cableados a listas. */
-function S5Sections({ financeCategories, subscriptionCategories, accounts, subs, debts, savings, assets, netWorth, currency, locale }: { financeCategories: NamedOption[]; subscriptionCategories: NamedOption[]; accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; debts: { id: string; name: string; creditor: string; original_amount: string | number; pending_amount: string | number; currency: string }[]; savings: SavingsGoalWire[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
+/* S5 escritura: SubscriptionRow (Pay) + Assets shells tras las F1 intactas. */
+/* The savings/debts write sections were deleted in S-F with their ledgers. */
+function S5Sections({ accounts, subs, assets, netWorth, currency, locale }: { accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
   const noop = (): void => undefined;
-  const firstDebt = debts[0];
-  const firstGoal = savings[0];
   const firstAsset = assets[0];
   const worth = netWorth?.per_currency.find((e) => e.currency === currency) ?? netWorth?.per_currency[0];
   return (
     <>
-      <SectionShell title={t("finance.manageSavings")} span="col-span-12 xl:col-span-6">
-        <SavingsGoalForm categories={financeCategories} onDone={noop} />
-        {savings.map((g) => (
-          <div key={g.id} className="mt-4 border-t border-hull pt-4">
-            <SavingsGoalForm
-              categories={financeCategories}
-              goal={{
-                id: g.id,
-                name: g.name,
-                description: g.description ?? null,
-                target_amount: g.target_amount,
-                target_date: g.target_date ?? null,
-                category_id: g.category_id ?? null,
-                color: g.color ?? null,
-              }}
-              onDone={noop}
-            />
-          </div>
-        ))}
-        {firstGoal ? (<div className="mt-4"><SavingsDepositForm goalId={firstGoal.id} saved={Number(firstGoal.saved_amount) || 0} currency={firstGoal.currency} onDone={noop} /></div>) : null}
-      </SectionShell>
-      <SectionShell title={t("finance.manageDebts")} span="col-span-12 xl:col-span-6">
-        {firstDebt ? (<><DebtProgressBar original={Number(firstDebt.original_amount) || 0} pendingAmount={Number(firstDebt.pending_amount) || 0} /><div className="mt-4"><DebtPayForm debtId={firstDebt.id} pending={Number(firstDebt.pending_amount) || 0} currency={firstDebt.currency} onDone={noop} /></div><div className="mt-4"><DebtPaymentHistory debtId={firstDebt.id} onCorrect={noop} /></div><div className="mt-4"><DebtEditForm debtId={firstDebt.id} onDone={noop} /></div></>) : null}
-      </SectionShell>
       <SectionShell title={t("finance.manageSubs")} span="col-span-12 xl:col-span-6">
-        {subscriptionCategories.length === 0 ? (
-          <p className="mb-3 text-xs text-instrument/60">{t("finance.noSubscriptionCategories")}</p>
-        ) : null}
-        <SubscriptionCreateForm categories={subscriptionCategories} onDone={noop} />
+        {/* Create/edit lives in Settings (SubscriptionsSection); Finance keeps the rows with Pay. */}
         {subs.map((sub) => (
           <div key={sub.id} className="mt-2">
             <SubscriptionRow sub={sub} />

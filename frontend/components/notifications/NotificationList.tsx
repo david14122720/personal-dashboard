@@ -9,7 +9,7 @@ const prodHref = "/dashboard/productivity/";
 const byDueAsc = (a: NotificationItem, b: NotificationItem) => new Date(a.due).getTime() - new Date(b.due).getTime();
 function Row({ item, muted, onToggleMute }: { item: NotificationItem; muted: Record<string, boolean | true>; onToggleMute: (id: string) => void }) {
   const isMuted = Boolean(muted[item.id]);
-  const finance = item.kind === "debt" || item.kind === "subscription";
+  const finance = item.kind === "subscription";
   return (
     <li className={`flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2 ${isMuted ? "opacity-60" : ""}`}>
       <div className="min-w-0">

@@ -17,23 +17,27 @@ test("productivity page renders its heading", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Productividad" })).toBeVisible();
 });
 
-// -- p9-finanzas PR-3 S5/S6 (live smoke only; skipped without E2E_SMOKE_LIVE=1) --
-test("finance S5 escritura por dominio con montos manuales y selects por nombre", async ({ page }) => {
+// -- S-F (live smoke only; skipped without E2E_SMOKE_LIVE=1): surviving shells --
+test("finance surviving shells: subs rows with Pay, movements, chart, assets", async ({ page }) => {
   await loginViaApi(page);
   await page.goto("/dashboard/finance/");
 
-  // S5: secciones de escritura visibles tras las F1 intactas.
+  // Surviving write shells after the savings/debts removal.
   await expect(page.getByText("Suscripciones: crear y gestionar")).toBeVisible();
+  await expect(page.getByText("Activos y patrimonio")).toBeVisible();
 
-  // S5 subs: crear exige precio manual (string) y la fila cancela/reactiva solo con is_active.
-  await expect(page.getByRole("button", { name: "Crear suscripción" })).toBeVisible();
+  // S5 subs: rows cancel/reactivate plus Pay (create lives in Settings).
   await expect(page.getByRole("button", { name: /Cancelar|Reactivar/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pagar" }).first()).toBeVisible();
 
-  // S5 savings: edición/borrado cableados a sus listas (botones Eliminar en edits).
-  await expect(page.getByRole("button", { name: "Eliminar" }).first()).toBeVisible();
+  // Movements history + two-series chart read GET /movements.
+  await expect(page.getByRole("region", { name: "Movimientos" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Gastos e ingresos por categoría" })).toBeVisible();
 
-  // S5 debts: abono con guard amount<=pending + historial + editar metadata.
-  await expect(page.getByText("Historial de abonos")).toBeVisible();
+  // S-F: no Savings and no Debts section, control or placeholder remains.
+  await expect(page.getByRole("region", { name: "Deudas" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Ahorros" })).toHaveCount(0);
+  await expect(page.getByText("Historial de abonos")).toHaveCount(0);
 
   // La sección Tarjetas fue eliminada de Finanzas: solo queda patrimonio-número.
   await expect(page.getByText("Patrimonio neto")).toBeVisible();

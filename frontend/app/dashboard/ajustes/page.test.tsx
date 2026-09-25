@@ -60,16 +60,17 @@ describe("ajustes page", () => {
     expect((within(section).getByLabelText("Nombre o alias") as HTMLInputElement).value).toBe("");
   });
 
-  it("creates gasto/ingreso categories and deletes them", async () => {
+  it("creates name-only categories with no kind control and deletes them", async () => {
     window.confirm = vi.fn(() => true);
     renderPage();
     const section = await screen.findByRole("region", { name: "Categorías" });
     expect(within(section).getByText("Sin categorías aún")).toBeInTheDocument();
+    expect(within(section).queryByLabelText("Tipo")).not.toBeInTheDocument();
     fireEvent.change(within(section).getByLabelText("Nombre"), { target: { value: "Comida" } });
-    fireEvent.change(within(section).getByLabelText("Tipo"), { target: { value: "gasto" } });
     fireEvent.click(within(section).getByRole("button", { name: "Crear categoría" }));
     expect(await within(section).findByText("Comida")).toBeInTheDocument();
-    expect(within(section).getAllByText("Gasto").length).toBeGreaterThanOrEqual(1);
+    expect(within(section).queryByText("Gasto")).not.toBeInTheDocument();
+    expect(within(section).queryByText("Ingreso")).not.toBeInTheDocument();
     fireEvent.click(within(section).getByRole("button", { name: "Eliminar: Comida" }));
     expect(within(section).queryByText("Comida")).not.toBeInTheDocument();
   });

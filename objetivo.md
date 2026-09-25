@@ -50,6 +50,8 @@ Debe existir un módulo completo para gestionar mis finanzas personales.
 
 Decisión: todo se maneja solo en pesos colombianos (COP), sin multi-moneda ni conversiones. Toda carga es 100% manual: los montos se escriben a mano y cuentas/categorías/métodos se eligen por nombre en selectores simples, sin UUIDs ni IDs técnicos visibles.
 
+Nota de reversión (2026-09-24): se reintroduce el libro mayor como movimientos (gasto/ingreso por cuenta con efecto atómico en el saldo). El saldo se escribe por corrección manual (`PATCH` directo) Y por la transacción de cada movimiento registrado; ambas son las únicas escritoras. Las reglas de ahorro y deudas quedan retiradas (ver secciones #Ahorros y #Deudas): sus módulos, endpoints y tablas se eliminan sin respaldo (pérdida aceptada explícitamente, migración 0013).
+
 ## Cuentas
 
 Debe permitir registrar diferentes cuentas y fuentes de dinero.
@@ -142,12 +144,15 @@ La sección financiera muestra valores actuales, sin series reconstruidas del li
 
 Sobreviven con fuente real:
 
-* Patrimonio (número actual desde activos y deudas).
-* Deuda pendiente (suma de saldos activos por pagar).
+* Patrimonio (número actual: activos menos deuda de tarjetas).
+* Gasto e ingreso por categoría desde movimientos (dos series, sin neteo).
+* Últimos movimientos y próximas suscripciones.
 * Costo mensual de suscripciones (equivalente mensual por frecuencia).
 * Distribución de activos.
 
 Nota de reversión (2026-09-23): se retiran los gráficos de ingresos vs gastos, evolución del saldo, gastos por categoría, ingresos por fuente, evolución del ahorro, gastos mensuales, comparación entre meses y distribución de gastos — todos se alimentaban del flujo mensual del libro mayor, que fue eliminado sin respaldo (pérdida aceptada explícitamente). La selección de períodos sigue existiendo solo para reportes de hábitos, metas y actividad; el bloque financiero de reportes es una foto actual etiquetada como tal.
+
+Nota de reversión (2026-09-24): el gráfico de gasto/ingreso por categoría y la comparación vuelven con fuente en movimientos (no en el flujo retirado). La deuda pendiente como figura queda retirada con el módulo de deudas (migración 0013); el patrimonio resta solo deuda de tarjetas.
 
 ---
 
@@ -160,6 +165,8 @@ Nota de reversión (2026-09-23): estos indicadores quedan retirados sin reemplaz
 ---
 
 # Ahorros
+
+Nota de reversión (2026-09-24): regla retirada — el módulo de objetivos de ahorro no se usaba; endpoints `/savings-goals*`, UI, hooks y tablas (`savings_goals`, `savings_goal_movements`) se eliminan sin respaldo (pérdida aceptada explícitamente, migración 0013). El texto original se conserva abajo como historia.
 
 Debe existir un módulo para objetivos de ahorro.
 
@@ -186,6 +193,8 @@ También debe mostrar cuánto falta para alcanzar el objetivo.
 ---
 
 # Deudas
+
+Nota de reversión (2026-09-24): regla retirada — el módulo de deudas no se usaba; endpoints `/debts*`, UI, hooks, herramienta MCP `list_debts` y tablas (`debts`, `debt_payments`) se eliminan sin respaldo (pérdida aceptada explícitamente, migración 0013). El texto original se conserva abajo como historia.
 
 Debe existir un módulo para administrar deudas.
 
