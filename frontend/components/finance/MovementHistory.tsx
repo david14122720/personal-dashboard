@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSWRConfig } from "swr";
 import EmptyState from "@/components/ui/EmptyState";
 import { t } from "@/lib/i18n";
@@ -16,15 +16,19 @@ import {
 } from "@/lib/finance/finance";
 
 /**
- * Movements history (`/dashboard/finance`): the latest 50 movements in API
- * order with composable account/category/direction filters. The account
- * filter is owned by `FinanceScreens` (account-card click sets it); category
- * and direction live here. Loading/error/empty render independently in
- * Spanish so the rest of Finance keeps rendering; retry revalidates only
- * `finance/movements`.
+ * Movements history (`/dashboard/finance`): the movements in API order
+ * (`occurred_on DESC`) with composable account/category/direction filters,
+ * paginated for presentation. `INITIAL_VISIBLE` rows render initially and
+ * each "Ver más" activation appends `PAGE_STEP` more, accumulatively, until
+ * the filtered list is exhausted; changing any filter resets the window to
+ * the first `INITIAL_VISIBLE` filtered rows. The account filter is owned by
+ * `FinanceScreens` and driven by the select below; category and direction
+ * live here. Loading/error/empty render independently in Spanish so the rest
+ * of Finance keeps rendering; retry revalidates only `finance/movements`.
  */
 
-const HISTORY_LIMIT = 50;
+const INITIAL_VISIBLE = 5;
+const PAGE_STEP = 10;
 
 export function MovementHistory({
   accounts,
@@ -47,18 +51,23 @@ export function MovementHistory({
   const movements = useMovements();
   const [categoryId, setCategoryId] = useState("");
   const [direction, setDirection] = useState<"" | "expense" | "income">("");
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE);
+  }, [activeAccountId, categoryId, direction]);
+
   const wires = movements.data ?? [];
-  const latest = wires.slice(0, HISTORY_LIMIT);
-  const visible = latest.filter(
+  const filtered = wires.filter(
     (m) =>
       (!activeAccountId || m.account_id === activeAccountId) &&
       (!categoryId || (m.category_id ?? "") === categoryId) &&
       (!direction || m.direction === direction),
   );
+  const visible = filtered.slice(0, visibleCount);
   const rows = toMovementRows(visible, accounts, categories, locale);
   const hasFilters = activeAccountId !== null || categoryId !== "" || direction !== "";
 
@@ -191,83 +200,94 @@ export function MovementHistory({
           <EmptyState title={t("finance.movementsEmpty")} hint={t("finance.movementsEmptyHint")} />
         </div>
       ) : (
-        <ul className="mt-3 flex flex-col gap-2">
-          {rows.map((row) => {
-            const wire = visible.find((w) => w.id === row.id) as MovementWire;
-            const confirming = confirmingDeleteId === row.id;
-            return (
-              <li
-                key={row.id}
-                style={{ contentVisibility: "auto", containIntrinsicSize: "0 72px" }}
-                className="rounded-lg border border-hull px-3 py-2"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">
-                      {row.direction === "expense"
-                        ? t("finance.movementDirectionExpense")
-                        : t("finance.movementDirectionIncome")}{" "}
-                      · {row.categoryName ?? "—"}
-                    </p>
-                    <p className="truncate text-xs text-instrument/60">
-                      {row.displayDate} · {row.accountName}
-                      {row.description ? ` · ${row.description}` : ""}
+        <>
+          <ul className="mt-3 flex flex-col gap-2">
+            {rows.map((row) => {
+              const wire = visible.find((w) => w.id === row.id) as MovementWire;
+              const confirming = confirmingDeleteId === row.id;
+              return (
+                <li
+                  key={row.id}
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "0 72px" }}
+                  className="rounded-lg border border-hull px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">
+                        {row.direction === "expense"
+                          ? t("finance.movementDirectionExpense")
+                          : t("finance.movementDirectionIncome")}{" "}
+                        · {row.categoryName ?? "—"}
+                      </p>
+                      <p className="truncate text-xs text-instrument/60">
+                        {row.displayDate} · {row.accountName}
+                        {row.description ? ` · ${row.description}` : ""}
+                      </p>
+                    </div>
+                    <p className="shrink-0 font-mono text-sm tabular-nums">
+                      {formatMoney(row.amount, { locale, currency })}
                     </p>
                   </div>
-                  <p className="shrink-0 font-mono text-sm tabular-nums">
-                    {formatMoney(row.amount, { locale, currency })}
-                  </p>
-                </div>
-                <div className="mt-2 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onEdit(wire)}
-                    aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
-                    className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
-                  >
-                    {t("finance.editMovement")}
-                  </button>
-                  {!confirming ? (
+                  <div className="mt-2 flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setConfirmingDeleteId(row.id)}
-                      aria-label={`${t("finance.movementDelete")}: ${row.displayDate}`}
-                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-alert hover:text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert"
+                      onClick={() => onEdit(wire)}
+                      aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
+                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
                     >
-                      {t("finance.movementDelete")}
+                      {t("finance.editMovement")}
                     </button>
-                  ) : (
-                    <>
-                      <span className="inline-flex min-h-[44px] items-center text-xs text-instrument/70">
-                        {t("finance.movementDeleteConfirm")}
-                      </span>
+                    {!confirming ? (
                       <button
                         type="button"
-                        disabled={deleting}
-                        onClick={() => void remove(row.id)}
-                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-alert px-3 py-2 text-xs font-bold text-deck transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert disabled:opacity-50"
+                        onClick={() => setConfirmingDeleteId(row.id)}
+                        aria-label={`${t("finance.movementDelete")}: ${row.displayDate}`}
+                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-alert hover:text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert"
                       >
                         {t("finance.movementDelete")}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmingDeleteId(null)}
-                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
-                      >
-                        {t("finance.cancel")}
-                      </button>
-                    </>
-                  )}
-                </div>
-                {confirming && actionError ? (
-                  <p role="alert" className="mt-1 text-xs text-alert">
-                    {actionError}
-                  </p>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+                    ) : (
+                      <>
+                        <span className="inline-flex min-h-[44px] items-center text-xs text-instrument/70">
+                          {t("finance.movementDeleteConfirm")}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={deleting}
+                          onClick={() => void remove(row.id)}
+                          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-alert px-3 py-2 text-xs font-bold text-deck transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert disabled:opacity-50"
+                        >
+                          {t("finance.movementDelete")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingDeleteId(null)}
+                          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                        >
+                          {t("finance.cancel")}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {confirming && actionError ? (
+                    <p role="alert" className="mt-1 text-xs text-alert">
+                      {actionError}
+                    </p>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          {filtered.length > visibleCount ? (
+            <button
+              type="button"
+              onClick={() => setVisibleCount((count) => count + PAGE_STEP)}
+              className="mt-3 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+            >
+              {t("finance.movementShowMore")}
+            </button>
+          ) : null}
+        </>
       )}
     </div>
   );

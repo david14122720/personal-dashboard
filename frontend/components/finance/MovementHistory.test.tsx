@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -31,6 +32,13 @@ function wire(id: string, overrides: Partial<MovementWire> = {}): MovementWire {
     updated_at: "2026-09-24T10:00:00Z",
     ...overrides,
   };
+}
+
+/** Movement `m{n}` with `occurred_on` descending from 2026-09-30: API order. */
+function dated(n: number, overrides: Partial<MovementWire> = {}): MovementWire {
+  const date = new Date(Date.UTC(2026, 8, 30));
+  date.setUTCDate(date.getUTCDate() - n);
+  return wire(`m${n}`, { occurred_on: date.toISOString().slice(0, 10), ...overrides });
 }
 
 let movements: MovementWire[] = [];
@@ -72,15 +80,145 @@ function renderHistory(props: Partial<typeof baseProps> = {}) {
   );
 }
 
+/** Simulates `FinanceScreens`, which owns `activeAccountId`. */
+function renderHistoryWithAccountFilter() {
+  function Host() {
+    const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+    return (
+      <MovementHistory
+        {...baseProps}
+        activeAccountId={activeAccountId}
+        onSelectAccount={setActiveAccountId}
+      />
+    );
+  }
+  return render(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <Host />
+    </SWRConfig>,
+  );
+}
+
 describe("MovementHistory", () => {
-  it("renders the latest 50 in API order", async () => {
-    movements = Array.from({ length: 60 }, (_, n) => wire(`m${n}`));
+  it("renders the first five rows in API order with a Ver más control", async () => {
+    movements = Array.from({ length: 34 }, (_, n) => dated(n));
     const { container } = renderHistory();
-    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(50));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
     const items = container.querySelectorAll("li");
     expect(items[0].textContent).toContain("desc-m0");
-    expect(items[49].textContent).toContain("desc-m49");
-    expect(container.textContent).not.toContain("desc-m59");
+    expect(items[1].textContent).toContain("desc-m1");
+    expect(items[4].textContent).toContain("desc-m4");
+    expect(container.textContent).not.toContain("desc-m5");
+    expect(screen.getByRole("button", { name: "Ver más" })).toBeInTheDocument();
+  });
+
+  it("appends ten rows per activation, accumulatively, without replacing them", async () => {
+    movements = Array.from({ length: 44 }, (_, n) => dated(n));
+    const { container } = renderHistory();
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(15));
+    let items = container.querySelectorAll("li");
+    expect(items[0].textContent).toContain("desc-m0");
+    expect(items[4].textContent).toContain("desc-m4");
+    expect(items[14].textContent).toContain("desc-m14");
+    expect(container.textContent).not.toContain("desc-m15");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(35));
+    items = container.querySelectorAll("li");
+    expect(items[0].textContent).toContain("desc-m0");
+    expect(items[34].textContent).toContain("desc-m34");
+  });
+
+  it("shows every row and hides Ver más once the list is exhausted", async () => {
+    movements = Array.from({ length: 23 }, (_, n) => dated(n));
+    const { container } = renderHistory();
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(15));
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(23));
+    expect(container.querySelectorAll("li")[22].textContent).toContain("desc-m22");
+    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
+  });
+
+  it("renders three rows and no Ver más control with three movements", async () => {
+    movements = Array.from({ length: 3 }, (_, n) => dated(n));
+    const { container } = renderHistory();
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(3));
+    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
+  });
+
+  it("resets to five rows when the direction filter changes without changing the filter", async () => {
+    movements = Array.from({ length: 30 }, (_, n) =>
+      dated(n, { direction: n % 2 === 0 ? "expense" : "income" }),
+    );
+    const { container } = renderHistory();
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
+
+    const directionSelect = screen.getByLabelText("Tipo") as HTMLSelectElement;
+    fireEvent.change(directionSelect, { target: { value: "income" } });
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+    expect(directionSelect.value).toBe("income");
+    let items = container.querySelectorAll("li");
+    expect(items[0].textContent).toContain("desc-m1");
+    expect(items[4].textContent).toContain("desc-m9");
+    expect(container.textContent).not.toContain("desc-m0");
+
+    // Returning to "Todas" must not restore the previously expanded window.
+    fireEvent.change(directionSelect, { target: { value: "" } });
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+    expect(directionSelect.value).toBe("");
+    items = container.querySelectorAll("li");
+    expect(items[0].textContent).toContain("desc-m0");
+  });
+
+  it("resets to five rows when the category filter changes without changing the filter", async () => {
+    movements = Array.from({ length: 30 }, (_, n) =>
+      dated(n, { category_id: n % 2 === 0 ? "c1" : "c2" }),
+    );
+    const { container } = renderHistory();
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
+
+    const categorySelect = screen.getByLabelText("Categoría") as HTMLSelectElement;
+    fireEvent.change(categorySelect, { target: { value: "c2" } });
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+    expect(categorySelect.value).toBe("c2");
+    const items = container.querySelectorAll("li");
+    expect(items[0].textContent).toContain("desc-m1");
+    expect(items[4].textContent).toContain("desc-m9");
+  });
+
+  it("resets to five rows when the parent-owned account filter changes", async () => {
+    movements = Array.from({ length: 30 }, (_, n) =>
+      dated(n, { account_id: n % 2 === 0 ? "a1" : "a2" }),
+    );
+    const { container } = renderHistoryWithAccountFilter();
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
+
+    const accountSelect = screen.getByLabelText("Cuenta") as HTMLSelectElement;
+    fireEvent.change(accountSelect, { target: { value: "a2" } });
+    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+    expect(accountSelect.value).toBe("a2");
+    const items = container.querySelectorAll("li");
+    expect(items[0].textContent).toContain("desc-m1");
+    expect(items[4].textContent).toContain("desc-m9");
   });
 
   it("composes direction and category filters", async () => {
@@ -113,6 +251,7 @@ describe("MovementHistory", () => {
     movements = [];
     renderHistory();
     expect(await screen.findByText("Sin movimientos aún")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
   });
 
   it("renders an independent error panel whose retry revalidates only finance/movements", async () => {

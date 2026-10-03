@@ -3,40 +3,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
-import { CategoryBars, CategoryChartSection } from "@/components/finance/CategoryCharts";
+import { CategoryChartSection } from "@/components/finance/CategoryCharts";
+import { trendBuckets } from "@/lib/finance/finance";
 import type { MovementWire } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
-
-function bars(expenses: number, incomes: number) {
-  return render(<CategoryBars expense={expenses} income={incomes} locale="es-CO" currency="COP" />);
-}
-
-describe("CategoryBars (movement two-series)", () => {
-  it("mounts gasto + ingreso series when both directions exist, never netted", () => {
-    const { container } = bars(100, 50);
-    const series = within(container).getAllByRole("progressbar");
-    expect(series).toHaveLength(2);
-    expect(series.map((s) => s.getAttribute("aria-valuenow")).sort()).toEqual(["100", "50"]);
-    expect(screen.getByText("Gastos")).toBeInTheDocument();
-    expect(screen.getByText("Ingresos")).toBeInTheDocument();
-  });
-
-  it("mounts a single series otherwise", () => {
-    const first = bars(100, 0);
-    expect(within(first.container).getAllByRole("progressbar")).toHaveLength(1);
-    expect(first.container.textContent).not.toContain("Ingresos");
-    first.unmount();
-    const second = bars(0, 50);
-    expect(within(second.container).getAllByRole("progressbar")).toHaveLength(1);
-    expect(second.container.textContent).not.toContain("Gastos");
-  });
-
-  it("uses theme tokens only (no hardcoded hex)", () => {
-    const { container } = bars(100, 50);
-    expect(container.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-  });
-});
 
 function movement(id: string, overrides: Partial<MovementWire> = {}): MovementWire {
   return {
@@ -89,6 +60,12 @@ function renderSection() {
   );
 }
 
+/** Axis labels of `period` buckets that are currently rendered as text. */
+function renderedPeriodLabels(container: HTMLElement, period: "day" | "month") {
+  const text = container.textContent ?? "";
+  return trendBuckets(period).filter((window) => text.includes(window.label));
+}
+
 describe("CategoryChartSection (movement source)", () => {
   it("lists every owned kind together with no kind split", async () => {
     renderSection();
@@ -98,18 +75,59 @@ describe("CategoryChartSection (movement source)", () => {
     expect(within(select).getByRole("option", { name: "Ejercicio" })).toBeInTheDocument();
   });
 
-  it("renders gasto + ingreso without netting and excludes foreign-currency rows", async () => {
-    const { container } = renderSection();
-    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
-    const series = await within(container).findAllByRole("progressbar");
-    expect(series.map((s) => s.getAttribute("aria-valuenow")).sort()).toEqual(["100", "20"]);
+  it("renders the four period pills with Mes active by default", async () => {
+    renderSection();
+    await screen.findByLabelText("Categoría");
+    expect(screen.getByRole("group", { name: "Periodo" })).toBeInTheDocument();
+    expect(screen.getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual([
+      "day",
+      "week",
+      "month",
+      "year",
+    ]);
+    expect(screen.getByRole("radio", { name: "Mes" })).toBeChecked();
   });
 
-  it("renders a single series for an expense-only category", async () => {
+  it("keeps the empty state and hides the chart until a category is selected", async () => {
+    renderSection();
+    await screen.findByLabelText("Categoría");
+    expect(screen.getByRole("status")).toHaveTextContent("Sin movimientos en esta categoría aún");
+    expect(
+      screen.queryByRole("img", { name: "Tendencia de gastos e ingresos" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the gasto/ingreso trend for the selected category", async () => {
+    renderSection();
+    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
+    expect(
+      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Gastos")).toBeInTheDocument();
+    expect(screen.getByText("Ingresos")).toBeInTheDocument();
+  });
+
+  it("switches the rendered bucket count and labels between Mes and Día", async () => {
     const { container } = renderSection();
-    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c2" } });
-    const series = await within(container).findAllByRole("progressbar");
-    expect(series).toHaveLength(1);
-    expect(series[0].getAttribute("aria-valuenow")).toBe("50");
+    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+
+    expect(renderedPeriodLabels(container, "month")).toHaveLength(12);
+    expect(renderedPeriodLabels(container, "day")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
+
+    expect(renderedPeriodLabels(container, "day")).toHaveLength(14);
+    expect(renderedPeriodLabels(container, "month")).toHaveLength(0);
+  });
+
+  it("draws the flat trend plus the no-data note for a category with no movements in range", async () => {
+    renderSection();
+    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c3" } });
+    expect(
+      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Sin movimientos en este periodo")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });

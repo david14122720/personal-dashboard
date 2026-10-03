@@ -5,28 +5,35 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import { SectionShell } from "@/components/finance/FinanceSections";
-import { CategoryBars } from "@/components/finance/CategoryCharts";
+import CategoryTrendChart, {
+  type TrendRow,
+  type TrendSeries,
+} from "@/components/finance/CategoryTrendChart";
+import TrendPeriodSelector from "@/components/finance/TrendPeriodSelector";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 import { useAccounts, usePreferences } from "@/lib/api/dashboard";
 import { useCategories, useMovements } from "@/lib/api/finance";
-import { toCategoryMovementTotals, toCategoryOptions } from "@/lib/finance/finance";
+import { toCategoryOptions, toCategoryTrend, type TrendPeriod } from "@/lib/finance/finance";
 
 const selectClass =
   "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none";
 
 /**
  * Standalone two-category comparison sourced from `GET /movements` (same
- * `finance/movements` SWR key as Finance, no new endpoint). Each category
- * shows expense and income side by side as separate figures — never netted,
- * never currency-mixed (single-currency guard in `toCategoryMovementTotals`).
- * A Finance sub-route reached only through the chart button — there is
- * intentionally no nav entry for this route.
+ * `finance/movements` SWR key as Finance, no new endpoint). Both categories
+ * are bucketed over the same period (`toCategoryTrend`) and merged by bucket
+ * index into one four-line trend: expense and income per category, never
+ * netted, never currency-mixed (single-currency guard in `toCategoryTrend`).
+ * Category A is solid and category B is dashed, so line style — not only
+ * color — separates the two categories. A Finance sub-route reached only
+ * through the chart button — there is intentionally no nav entry.
  */
 export default function ComparePage() {
   const router = useRouter();
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
+  const [period, setPeriod] = useState<TrendPeriod>("month");
 
   useEffect(() => {
     if (!getToken()) {
@@ -54,12 +61,56 @@ export default function ComparePage() {
     [accounts.data],
   );
 
-  const totalsA = first
-    ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, first)
-    : null;
-  const totalsB = second
-    ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, second)
-    : null;
+  const rows: TrendRow[] = useMemo(() => {
+    if (!first || !second) return [];
+    const trendA = toCategoryTrend(movements.data, {
+      categoryId: first,
+      period,
+      currencyByAccountId,
+      userCurrency: currency,
+    });
+    const trendB = toCategoryTrend(movements.data, {
+      categoryId: second,
+      period,
+      currencyByAccountId,
+      userCurrency: currency,
+    });
+    return trendA.map((bucket, index) => ({
+      bucket: bucket.bucket,
+      label: bucket.label,
+      a_expense: bucket.expense,
+      a_income: bucket.income,
+      b_expense: trendB[index].expense,
+      b_income: trendB[index].income,
+    }));
+  }, [first, second, movements.data, currencyByAccountId, currency, period]);
+
+  const nameA = options.find((c) => c.id === first)?.name ?? first;
+  const nameB = options.find((c) => c.id === second)?.name ?? second;
+  const series: TrendSeries[] = [
+    {
+      key: "a_expense",
+      label: t("finance.trendExpensesOf", { name: nameA }),
+      token: "--color-signal",
+    },
+    {
+      key: "a_income",
+      label: t("finance.trendIncomeOf", { name: nameA }),
+      token: "--color-flow",
+    },
+    {
+      key: "b_expense",
+      label: t("finance.trendExpensesOf", { name: nameB }),
+      token: "--color-alert",
+      dashed: true,
+    },
+    {
+      key: "b_income",
+      label: t("finance.trendIncomeOf", { name: nameB }),
+      token: "--color-violet",
+      dashed: true,
+    },
+  ];
   const showHint = first !== "" && first === second;
 
   return (
@@ -105,37 +156,18 @@ export default function ComparePage() {
             </label>
           </div>
           <div className="mt-4">
+            <TrendPeriodSelector value={period} onChange={setPeriod} />
+          </div>
+          <div className="mt-4">
             {showHint ? (
               <p className="text-xs text-signal">{t("compare.sameHint")}</p>
-            ) : totalsA && totalsB ? (
-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                <div>
-                  <h3 className="font-display text-sm font-semibold">
-                    {options.find((c) => c.id === first)?.name ?? first}
-                  </h3>
-                  <div className="mt-2">
-                    <CategoryBars
-                      expense={totalsA.expense}
-                      income={totalsA.income}
-                      locale={locale}
-                      currency={currency}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <h3 className="font-display text-sm font-semibold">
-                    {options.find((c) => c.id === second)?.name ?? second}
-                  </h3>
-                  <div className="mt-2">
-                    <CategoryBars
-                      expense={totalsB.expense}
-                      income={totalsB.income}
-                      locale={locale}
-                      currency={currency}
-                    />
-                  </div>
-                </div>
-              </div>
+            ) : first && second ? (
+              <CategoryTrendChart
+                data={rows}
+                series={series}
+                locale={locale}
+                currency={currency}
+              />
             ) : (
               <p className="text-xs text-instrument/60">{t("finance.chartEmptyHint")}</p>
             )}

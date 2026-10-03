@@ -361,3 +361,169 @@ export function isPaidThisCycle(
 ): boolean {
   return sub.last_paid_on != null && sub.next_billing_on != null && sub.next_billing_on > today;
 }
+
+// -- W3: categoría en el tiempo (buckets puros, sin JSX, sin fetch) --
+
+export type TrendPeriod = "day" | "week" | "month" | "year";
+
+/** Pill order of the Día/Semana/Mes/Año selector. */
+export const TREND_PERIODS: readonly TrendPeriod[] = ["day", "week", "month", "year"];
+
+/** Fixed number of consecutive buckets rendered per period (owner-tunable). */
+export const TREND_BUCKETS: Record<TrendPeriod, number> = {
+  day: 14,
+  week: 8,
+  month: 12,
+  year: 5,
+};
+
+export interface TrendBucket {
+  /** Stable key: `2026-10-03` | `2026-W40` | `2026-10` | `2026`. */
+  bucket: string;
+  /** Short es-CO axis label: `3 oct` | `sem 28 sep` | `oct 26` | `2026`. */
+  label: string;
+  expense: number;
+  income: number;
+}
+
+const SHORT_MONTH_ES = new Intl.DateTimeFormat("es-CO", {
+  month: "short",
+  timeZone: "UTC",
+});
+
+/** `oct.` → `oct` (ICU adds a trailing dot to es-CO short months). */
+function monthShort(year: number, monthIndex: number): string {
+  return SHORT_MONTH_ES.format(new Date(Date.UTC(year, monthIndex, 1))).replace(/\.$/, "");
+}
+
+function dayMonthLabel(d: Date): string {
+  return `${d.getDate()} ${monthShort(d.getFullYear(), d.getMonth())}`;
+}
+
+function addLocalDays(d: Date, days: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
+}
+
+/** First local calendar day of the unit containing `now` (Monday-first week). */
+function trendUnitStart(period: TrendPeriod, now: Date): Date {
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  switch (period) {
+    case "day":
+      return day;
+    case "week":
+      return addLocalDays(day, -((day.getDay() + 6) % 7));
+    case "month":
+      return new Date(day.getFullYear(), day.getMonth(), 1);
+    case "year":
+      return new Date(day.getFullYear(), 0, 1);
+  }
+}
+
+function shiftUnits(period: TrendPeriod, unitStart: Date, steps: number): Date {
+  switch (period) {
+    case "day":
+      return addLocalDays(unitStart, -steps);
+    case "week":
+      return addLocalDays(unitStart, -steps * 7);
+    case "month":
+      return new Date(unitStart.getFullYear(), unitStart.getMonth() - steps, 1);
+    case "year":
+      return new Date(unitStart.getFullYear() - steps, 0, 1);
+  }
+}
+
+/** ISO week key `YYYY-Www` for the Monday `unitStart` (week of its Thursday). */
+function isoWeekKey(unitStart: Date): string {
+  const thursday = addLocalDays(unitStart, 3);
+  const isoYear = thursday.getFullYear();
+  const jan4 = new Date(isoYear, 0, 4);
+  const firstMonday = addLocalDays(jan4, -((jan4.getDay() + 6) % 7));
+  const week = 1 + Math.round((thursday.getTime() - firstMonday.getTime()) / (7 * 24 * 60 * 60 * 1000));
+  return `${isoYear}-W${pad2(week)}`;
+}
+
+function trendWindow(
+  period: TrendPeriod,
+  unitStart: Date,
+): { key: string; label: string; from: string; to: string } {
+  switch (period) {
+    case "day": {
+      const day = toISODateLocal(unitStart);
+      return { key: day, label: dayMonthLabel(unitStart), from: day, to: day };
+    }
+    case "week":
+      return {
+        key: isoWeekKey(unitStart),
+        label: `sem ${dayMonthLabel(unitStart)}`,
+        from: toISODateLocal(unitStart),
+        to: toISODateLocal(addLocalDays(unitStart, 6)),
+      };
+    case "month": {
+      const year = unitStart.getFullYear();
+      const month = unitStart.getMonth();
+      return {
+        key: `${year}-${pad2(month + 1)}`,
+        label: `${monthShort(year, month)} ${String(year).slice(-2)}`,
+        from: `${year}-${pad2(month + 1)}-01`,
+        to: toISODateLocal(new Date(year, month + 1, 0)),
+      };
+    }
+    case "year": {
+      const year = unitStart.getFullYear();
+      return { key: `${year}`, label: `${year}`, from: `${year}-01-01`, to: `${year}-12-31` };
+    }
+  }
+}
+
+/** N consecutive trend windows for `period`, oldest → newest; the last one is
+ * the unit in progress at `now`. Boundaries are local `YYYY-MM-DD` strings, so
+ * plain string comparison against `occurred_on` is exact (never `new
+ * Date(wire)`: that parses as UTC midnight and shifts the day). */
+export function trendBuckets(
+  period: TrendPeriod,
+  now: Date = new Date(),
+  buckets?: number,
+): { key: string; label: string; from: string; to: string }[] {
+  const count = buckets ?? TREND_BUCKETS[period];
+  const current = trendUnitStart(period, now);
+  const windows: { key: string; label: string; from: string; to: string }[] = [];
+  for (let steps = count - 1; steps >= 0; steps -= 1) {
+    windows.push(trendWindow(period, shiftUnits(period, current, steps)));
+  }
+  return windows;
+}
+
+/** One category's movements split into the N period buckets. Applies the
+ * single-currency rule of `toCategoryMovementTotals` (never converts), keeps
+ * expense and income separate (never nets) and always returns every bucket,
+ * empty ones as 0/0 so the trend has no gaps. */
+export function toCategoryTrend(
+  movements: MovementWire[] | undefined,
+  opts: {
+    categoryId: string;
+    period: TrendPeriod;
+    currencyByAccountId: Map<string, string>;
+    userCurrency: string;
+    now?: Date;
+    buckets?: number;
+  },
+): TrendBucket[] {
+  const windows = trendBuckets(opts.period, opts.now, opts.buckets);
+  const totals = new Map<string, { expense: number; income: number }>(
+    windows.map((w) => [w.key, { expense: 0, income: 0 }]),
+  );
+  for (const m of movements ?? []) {
+    if ((m.category_id ?? null) !== opts.categoryId) continue;
+    if ((opts.currencyByAccountId.get(m.account_id) ?? opts.userCurrency) !== opts.userCurrency) continue;
+    const window = windows.find((w) => w.from <= m.occurred_on && m.occurred_on <= w.to);
+    if (!window) continue;
+    const total = totals.get(window.key)!;
+    const amount = toNumber(m.amount);
+    if (m.direction === "expense") total.expense += amount;
+    else total.income += amount;
+  }
+  return windows.map((w) => {
+    const total = totals.get(w.key)!;
+    return { bucket: w.key, label: w.label, expense: total.expense, income: total.income };
+  });
+}

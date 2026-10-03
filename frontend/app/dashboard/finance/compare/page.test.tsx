@@ -16,6 +16,7 @@ vi.mock("next/link", () => ({
 }));
 
 import ComparePage from "./page";
+import { trendBuckets } from "@/lib/finance/finance";
 import type { MovementWire } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
@@ -82,6 +83,17 @@ function renderPage() {
   );
 }
 
+async function pickCategories() {
+  fireEvent.change(await screen.findByLabelText("Categoría A"), { target: { value: "c1" } });
+  fireEvent.change(screen.getByLabelText("Categoría B"), { target: { value: "c2" } });
+}
+
+/** Axis labels of `period` buckets that are currently rendered as text. */
+function renderedPeriodLabels(container: HTMLElement, period: "day" | "month") {
+  const text = container.textContent ?? "";
+  return trendBuckets(period).filter((window) => text.includes(window.label));
+}
+
 describe("compare page (movement split)", () => {
   it("warns when both picks are the same category", async () => {
     renderPage();
@@ -91,29 +103,33 @@ describe("compare page (movement split)", () => {
     expect(await screen.findByText("Elegí dos categorías distintas para compararlas.")).toBeInTheDocument();
   });
 
-  it("shows expense and income side by side with no netted figure", async () => {
+  it("renders one four-line chart labeling expense and income of both categories", async () => {
     renderPage();
-    fireEvent.change(await screen.findByLabelText("Categoría A"), { target: { value: "c1" } });
-    fireEvent.change(screen.getByLabelText("Categoría B"), { target: { value: "c2" } });
-    expect(await screen.findByRole("heading", { name: "Comida" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Sueldo" })).toBeInTheDocument();
-    const values = screen
-      .getAllByRole("progressbar")
-      .map((bar) => bar.getAttribute("aria-valuenow"));
-    expect(values).toContain("100");
-    expect(values).toContain("20");
-    expect(values).not.toContain("80");
+    await pickCategories();
+    expect(
+      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(4);
+    expect(screen.getByText("Gastos · Comida")).toBeInTheDocument();
+    expect(screen.getByText("Ingresos · Comida")).toBeInTheDocument();
+    expect(screen.getByText("Gastos · Sueldo")).toBeInTheDocument();
+    expect(screen.getByText("Ingresos · Sueldo")).toBeInTheDocument();
     expect(screen.getByText("Volver a Finanzas")).toHaveAttribute("href", "/dashboard/finance/");
   });
 
-  it("excludes foreign-currency movements instead of mixing them", async () => {
-    renderPage();
-    fireEvent.change(await screen.findByLabelText("Categoría A"), { target: { value: "c1" } });
-    fireEvent.change(screen.getByLabelText("Categoría B"), { target: { value: "c2" } });
-    const values = (await screen.findAllByRole("progressbar")).map((bar) =>
-      bar.getAttribute("aria-valuenow"),
-    );
-    expect(values).not.toContain("999");
+  it("switches the shared chart bucket labels between Mes and Día", async () => {
+    const { container } = renderPage();
+    await pickCategories();
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+
+    expect(renderedPeriodLabels(container, "month")).toHaveLength(12);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
+
+    expect(screen.getByRole("radio", { name: "Día" })).toBeChecked();
+    expect(renderedPeriodLabels(container, "day")).toHaveLength(14);
+    expect(renderedPeriodLabels(container, "month")).toHaveLength(0);
+    expect(screen.getAllByRole("listitem")).toHaveLength(4);
   });
 
   it("fetches one unfiltered category set and lists every kind together", async () => {

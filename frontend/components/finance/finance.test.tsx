@@ -126,19 +126,25 @@ function renderScreens() {
 }
 
 describe("finance screens", () => {
-  it("reuses the shared LED mapping for card alert levels", async () => {
-    renderScreens();
-    expect(await screen.findByRole("img", { name: "Visa, estado warn" })).toHaveClass("bg-signal");
-  });
-
-  it("shows card usage metrics and balances without a ledger", async () => {
+  it("renders each account exactly once with its raw type in the editable row", async () => {
     renderScreens();
     const accounts = await screen.findByRole("region", { name: "Cuentas" });
-    expect(within(accounts).getAllByText("Visa").length).toBeGreaterThanOrEqual(1);
-    expect(within(accounts).getByText(/25\.0%/)).toBeInTheDocument();
-    expect(within(accounts).getAllByText("Wallet").length).toBeGreaterThanOrEqual(1);
-    expect(await screen.findByRole("progressbar", { name: "Uso de tarjeta de Visa" })).toBeInTheDocument();
+    expect(within(accounts).getAllByText("Visa")).toHaveLength(1);
+    expect(within(accounts).getAllByText("Wallet")).toHaveLength(1);
+    // The card type moves to the surviving row, raw and untranslated.
+    expect(within(accounts).getAllByText("credit_card")).toHaveLength(1);
+    expect(within(accounts).getAllByText("cash")).toHaveLength(1);
+    expect(within(accounts).getAllByLabelText("Tipo")).toHaveLength(2);
+    expect(within(accounts).getAllByRole("button", { name: /^Editar saldo de/ })).toHaveLength(2);
     expect(await screen.findByText("Saldos de tus cuentas bancarias.")).toBeInTheDocument();
+  });
+
+  it("drops the card-only decoration (LED, credit usage) without a ledger", async () => {
+    renderScreens();
+    const accounts = await screen.findByRole("region", { name: "Cuentas" });
+    expect(within(accounts).queryByRole("img")).not.toBeInTheDocument();
+    expect(within(accounts).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(within(accounts).queryByText(/25\.0%/)).not.toBeInTheDocument();
   });
 
   it("renders subscriptions with money detail and no debts/savings sections", async () => {
@@ -163,7 +169,7 @@ describe("finance screens", () => {
     expect(within(history).getByText(/Mercado semanal/)).toBeInTheDocument();
   });
 
-  it("renders the two-series category chart from movement aggregates", async () => {
+  it("renders the two-series category trend from movement aggregates", async () => {
     renderScreens();
     const chart = await screen.findByRole("region", { name: "Gastos e ingresos por categoría" });
     // The kind-free picker lists finance + subscription kinds together.
@@ -171,9 +177,12 @@ describe("finance screens", () => {
     expect(within(select).getByRole("option", { name: "Alimentación" })).toBeInTheDocument();
     expect(within(select).getByRole("option", { name: "Transporte" })).toBeInTheDocument();
     fireEvent.change(select, { target: { value: "c1" } });
-    // Both directions aggregate without netting: gasto + ingreso series mount.
-    expect(await within(chart).findByRole("progressbar", { name: "Gastos" })).toBeInTheDocument();
-    expect(within(chart).getByRole("progressbar", { name: "Ingresos" })).toBeInTheDocument();
+    // Both directions aggregate over time without netting: the gasto and ingreso
+    // lines mount, and the period pills stay available.
+    expect(await within(chart).findByRole("img", { name: "Tendencia de gastos e ingresos" })).toBeInTheDocument();
+    expect(within(chart).getByText("Gastos")).toBeInTheDocument();
+    expect(within(chart).getByText("Ingresos")).toBeInTheDocument();
+    expect(within(chart).getByRole("radio", { name: "Mes" })).toBeChecked();
   });
 
   it("exposes the inline balance edit per account with the current value", async () => {

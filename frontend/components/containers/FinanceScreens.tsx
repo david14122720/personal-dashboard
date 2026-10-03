@@ -3,9 +3,9 @@
 import { useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
+import EmptyState from "@/components/ui/EmptyState";
 import { t } from "@/lib/i18n";
 import {
-  AccountsList,
   CompactMoneyList,
   SectionShell,
 } from "@/components/finance/FinanceSections";
@@ -70,7 +70,7 @@ export function isValidBalanceInput(raw: string): boolean {
 }
 
 /**
- * Inline balance edit for one account card (design §6.2): the current value
+ * Inline balance edit for one account row (design §6.2): the current value
  * stays visible, `Cancelar` sends nothing, success revalidates the
  * `finance/` SWR scope. Control is ≥44px with a focus ring and a
  * per-account `aria-label`.
@@ -122,7 +122,15 @@ export function AccountBalanceEdit({
     return (
       <div className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2">
         <div className="min-w-0">
-          <p className="truncate text-sm">{account.name}</p>
+          <p className="flex items-baseline gap-2 text-sm">
+            <span className="min-w-0 truncate">{account.name}</span>
+            <span
+              aria-label={t("finance.accountTypeLabel")}
+              className="shrink-0 text-xs text-instrument/60"
+            >
+              {account.type}
+            </span>
+          </p>
           <p className="font-mono text-sm tabular-nums">{currentLabel}</p>
         </div>
         <button
@@ -281,13 +289,10 @@ export default function FinanceScreens() {
               hint={t("finance.accountsHint")}
               span="col-span-12 md:col-span-6 xl:col-span-6"
             >
-              <AccountsList
-                accounts={cards}
-                locale={locale}
-                activeAccountId={activeAccountId}
-                onSelect={setActiveAccountId}
-              />
-              <div className="mt-4 flex flex-col gap-2 border-t border-hull pt-4">
+              <div className="flex flex-col gap-2">
+                {cards.length === 0 ? (
+                  <EmptyState title={t("finance.noAccounts")} hint={t("finance.noAccountsHint")} />
+                ) : null}
                 {cards.map((card) => (
                   <AccountBalanceEdit key={card.id} account={card} locale={locale} />
                 ))}
