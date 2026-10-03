@@ -26,7 +26,8 @@ test("bell badge, 2 secciones y mute persiste", async ({ page }) => {
 test("ocultar widget excluye categoria del badge", async ({ page }) => {
   await loginViaApi(page);
   await page.goto("/dashboard/");
-  await page.getByRole("switch", { name: /active-subs/ }).click();
+  // The removed active-subscriptions widget is gone; the surviving payments widget gates the category.
+  await page.getByRole("switch", { name: /upcoming-payments/ }).click();
   await expect(page.getByRole("button", { name: /avisos pendientes/ })).toBeVisible();
-  await page.getByRole("switch", { name: /active-subs/ }).click();
+  await page.getByRole("switch", { name: /upcoming-payments/ }).click();
 });

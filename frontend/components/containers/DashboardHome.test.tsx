@@ -45,13 +45,13 @@ vi.mock("@/lib/api/dashboard", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/api/dashboard")>();
   return {
     ...mod,
-  useNetWorth: () => (globalThis as Record<string, unknown>).__DH__ === "error"
+  useNetWorth: () => loadedData.netWorth,
+  useHabitsToday: () => (globalThis as Record<string, unknown>).__HABITS__ ?? loadedData.habits,
+  useAccounts: () => (globalThis as Record<string, unknown>).__DH__ === "error"
     ? { data: undefined, error: new Error("boom"), isLoading: false }
     : (globalThis as Record<string, unknown>).__DH__ === "loading"
       ? { data: undefined, error: undefined, isLoading: true }
-      : loadedData.netWorth,
-  useHabitsToday: () => (globalThis as Record<string, unknown>).__HABITS__ ?? loadedData.habits,
-  useAccounts: () => loadedData.accounts,
+      : loadedData.accounts,
   usePreferences: () => (globalThis as Record<string, unknown>).__LAYOUT__ ?? loadedData.prefs,
   useSubscriptions: () => q([]), useTasks: () => q([]), useEvents: () => q([]), useGoals: () => q([]),
   useUpdateLayout: () => async () => {},
@@ -75,10 +75,11 @@ describe("DashboardHome ES copy", () => {
   it("error en un hook: panel de error localizado y el resto sigue renderizando (JD-B-002)", () => {
     (globalThis as Record<string, unknown>).__DH__ = "error";
     render(<DashboardHome />);
-    // Panel de error SOLO en la sección que falló (telemetría), no toda la home.
-    expect(screen.getByRole("alert")).toBeInTheDocument();
+    // `useAccounts` feeds the telemetry strip and «Últimos movimientos», so both
+    // show their local error panel while the rest of the home keeps rendering.
+    expect(screen.getAllByRole("alert").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("No se pudo cargar esta sección")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Reintentar" }).length).toBeGreaterThanOrEqual(1);
     // El resto (widgets, secciones) sigue vivo.
     expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
     expect(screen.getByText("Telemetría en vivo de tus cuentas, suscripciones y hábitos.")).toBeInTheDocument();
@@ -87,9 +88,9 @@ describe("DashboardHome ES copy", () => {
     delete (globalThis as Record<string, unknown>).__DH__;
   });
 
-  it("renders the 4-KPI strip with no debts/savings KPIs and no removed requests", () => {
+  it("renders the 3-KPI strip with no patrimonio, no debts/savings KPIs and no removed requests", () => {
     render(<DashboardHome />);
-    expect(screen.getAllByText("Patrimonio neto").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Patrimonio neto")).not.toBeInTheDocument();
     expect(screen.getByText("Cuentas")).toBeInTheDocument();
     expect(screen.getByText("Suscripciones")).toBeInTheDocument();
     expect(screen.getByText("Saldo total")).toBeInTheDocument();
@@ -132,7 +133,7 @@ describe("DashboardHome ES copy", () => {
     render(<DashboardHome />);
     expect(screen.getByText("No se pudieron cargar los movimientos")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
-    expect(screen.getAllByText("Patrimonio neto").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Saldo total")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Próximas suscripciones" })).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__MOV__;
   });
@@ -171,6 +172,7 @@ describe("DashboardHome ES copy", () => {
           widgets: [
             { id: "budgets", type: "list", order: 1, size: "md" },
             { id: "pending-debts", type: "list", order: 21, size: "md" },
+            { id: "active-subs", type: "list", order: 22, size: "md" },
           ],
         },
       },
@@ -180,6 +182,9 @@ describe("DashboardHome ES copy", () => {
     expect(screen.queryByRole("switch", { name: "Ocultar bloque: budgets" })).not.toBeInTheDocument();
     // The retired pending-debts entry renders no block, no error.
     expect(screen.queryByRole("heading", { name: "Deudas pendientes" })).not.toBeInTheDocument();
+    // The active-subscriptions widget retired by the consolidation is ignored too.
+    expect(screen.queryByText("Suscripciones activas")).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: /active-subs/ })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Últimos movimientos" })).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__LAYOUT__;

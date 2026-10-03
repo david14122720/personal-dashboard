@@ -64,16 +64,15 @@ describe("dashboard hooks p8-pr2", () => {
     shell(h(AllProbe, null));
     expect(await screen.findByText("t1:e1:g1:s1")).toBeInTheDocument();
   });
-  it("resolves empty layout to the 5-widget default and toggles ids", () => {
+  it("resolves empty layout to the 4-widget default and toggles ids", () => {
     const fallback = resolveDashboardLayout({ preferences: { currency_code: "COP", locale: "es-CO" } });
     expect(fallback.widgets.map((w) => w.id)).toEqual([
       "upcoming-payments",
-      "active-subs",
       "pending-tasks",
       "upcoming-events",
       "goal-progress",
     ]);
-    expect(fallback.widgets.map((w) => w.order)).toEqual([20, 22, 23, 24, 30]);
+    expect(fallback.widgets.map((w) => w.order)).toEqual([20, 22, 23, 30]);
     expect(isWidgetVisible(fallback, "upcoming-payments")).toBe(true);
     const next = buildNextLayout(fallback, "upcoming-payments", false);
     expect(isWidgetVisible(next, "upcoming-payments")).toBe(false);

@@ -3,7 +3,6 @@ import {
   currentMonthKey,
   ledDotClass,
   monthsAgoStart,
-  toActiveSubs,
   toFinanceScore,
   toFinanceSnapshot,
   toGoalProgress,
@@ -236,16 +235,6 @@ describe("pending lists + goal progress + notifications (S-H)", () => {
     const day = `${d.getDate()}`.padStart(2, "0");
     return `${d.getFullYear()}-${m}-${day}`;
   };
-
-  it("filters active subs ordered asc", () => {
-    const subs = [
-      { id: "s1", name: "On", price: "9000.00", is_active: true, next_billing_on: isoDay(4) },
-      { id: "s2", name: "Off", price: 10, is_active: false, next_billing_on: isoDay(1) },
-    ];
-    const active = toActiveSubs(subs);
-    expect(active.map((s) => s.id)).toEqual(["s1"]);
-    expect(active[0].price).toBe(9000);
-  });
 
   it("filters pending tasks and orders by due asc", () => {
     const tasks = [

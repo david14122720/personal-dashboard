@@ -16,15 +16,17 @@ function readMuted(): MutedMap {
 }
 const overdueVisible = (layout: ReturnType<typeof resolveDashboardLayout>, i: NotificationItem) =>
   i.kind === "task" ? isWidgetVisible(layout, "pending-tasks") : isWidgetVisible(layout, "upcoming-events");
+// The removed active-subscriptions widget MUST NOT gate notifications:
+// subscription items follow the surviving upcoming-payments widget only.
 const upcomingVisible = (layout: ReturnType<typeof resolveDashboardLayout>, i: NotificationItem) => {
   if (!isWidgetVisible(layout, "upcoming-payments")) return false;
-  return i.kind === "subscription" ? isWidgetVisible(layout, "active-subs") : isWidgetVisible(layout, "upcoming-events");
+  return i.kind === "subscription" ? true : isWidgetVisible(layout, "upcoming-events");
 };
 /** Deriva avisos de hooks S3, cero endpoints nuevos. Vencidas + 7d − muteados − ocultos. SSR-safe. */
 export function useNotifications(now: Date = new Date()) {
   const prefs = usePreferences();
   const layout = resolveDashboardLayout(prefs.data);
-  const subsOn = isWidgetVisible(layout, "active-subs") || isWidgetVisible(layout, "upcoming-payments");
+  const subsOn = isWidgetVisible(layout, "upcoming-payments");
   const tasksOn = isWidgetVisible(layout, "pending-tasks");
   const eventsOn = isWidgetVisible(layout, "upcoming-events") || isWidgetVisible(layout, "upcoming-payments");
   const subs = useSubscriptions(subsOn);

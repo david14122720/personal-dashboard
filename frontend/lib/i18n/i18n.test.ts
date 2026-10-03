@@ -31,9 +31,8 @@ describe("i18n foundation", () => {
 });
 
 describe("p8 dashboard + notifications copy (PR1 RED)", () => {
-  it("resolves 5 widget titles and hints", () => {
+  it("resolves 4 widget titles and hints", () => {
     expect(t("dashboard.upcomingPayments")).toBeTruthy();
-    expect(t("dashboard.activeSubs")).toBeTruthy();
     expect(t("dashboard.pendingTasks")).toBeTruthy();
     expect(t("dashboard.upcomingEvents")).toBeTruthy();
     expect(t("dashboard.goalProgress")).toBeTruthy();

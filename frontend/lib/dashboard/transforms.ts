@@ -300,14 +300,6 @@ export function toOverdueItems(
 
 /* -- p8-home-pagos PR1: pending lists + goals + notifications -- */
 
-export interface ActiveSub {
-  id: string;
-  name: string;
-  price: number;
-  next_billing_on: string | null;
-  is_active: boolean;
-}
-
 export interface PendingTask {
   id: string;
   title: string;
@@ -355,20 +347,6 @@ function compareDayAscNullsLast(a: string | null, b: string | null): number {
   if (!ta) return 1;
   if (!tb) return -1;
   return ta.getTime() - tb.getTime();
-}
-
-/** Subs `is_active` con `price` numérico, ordenadas por `next_billing_on` asc (nulas al final). */
-export function toActiveSubs(subs: UpcomingSubLike[] | null | undefined): ActiveSub[] {
-  const rows = (subs ?? []).filter((s) => s.is_active === true);
-  const mapped: ActiveSub[] = rows.map((s) => ({
-    id: s.id,
-    name: s.name?.trim() || s.id,
-    price: toNumber(s.price),
-    next_billing_on: s.next_billing_on ?? null,
-    is_active: true,
-  }));
-  mapped.sort((a, b) => compareDayAscNullsLast(a.next_billing_on, b.next_billing_on));
-  return mapped;
 }
 
 /** Tareas no completadas/canceladas, ordenadas por `due_date` asc (nulas al final). */

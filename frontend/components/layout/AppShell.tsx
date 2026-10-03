@@ -265,17 +265,6 @@ function TopBar() {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-3">
-        {/* Decorative status pill: there is no live feed yet. */}
-        <div
-          role="status"
-          className="hidden items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400 md:flex"
-        >
-          <span aria-hidden="true" className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-          </span>
-          <span>{t("nav.live")}</span>
-        </div>
         <p className="hidden rounded-lg border border-slate-800 bg-[#171b26] px-3 py-1.5 text-xs font-medium text-slate-400 md:block">
           {today}
         </p>

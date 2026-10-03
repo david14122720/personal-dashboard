@@ -169,6 +169,42 @@ describe("finance screens", () => {
     expect(within(history).getByText(/Mercado semanal/)).toBeInTheDocument();
   });
 
+  it("merges the add controls and the history into one Movimientos panel", async () => {
+    renderScreens();
+    const panel = await screen.findByRole("region", { name: "Movimientos" });
+    expect(screen.getAllByRole("region", { name: "Movimientos" })).toHaveLength(1);
+    // The former "Agregar movimiento" card is gone; its controls moved inside.
+    expect(screen.queryByRole("region", { name: "Agregar movimiento" })).not.toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Agregar gasto" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Agregar ingreso" })).toBeInTheDocument();
+    // The history list and its three filters live in the same card, below the controls.
+    expect(within(panel).getByLabelText("Cuenta")).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Categoría")).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Tipo")).toBeInTheDocument();
+    expect(await within(panel).findByText(/Sueldo/)).toBeInTheDocument();
+    expect(within(panel).getByText(/Mercado semanal/)).toBeInTheDocument();
+  });
+
+  it("keeps both entry controls when the movements history is empty", async () => {
+    server.use(http.get("http://test.local/api/movements", () => HttpResponse.json([])));
+    renderScreens();
+    const panel = await screen.findByRole("region", { name: "Movimientos" });
+    expect(await within(panel).findByText("Sin movimientos aún")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Agregar gasto" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Agregar ingreso" })).toBeInTheDocument();
+  });
+
+  it("keeps both entry controls when the movements history fails", async () => {
+    server.use(
+      http.get("http://test.local/api/movements", () => HttpResponse.json(null, { status: 500 })),
+    );
+    renderScreens();
+    const panel = await screen.findByRole("region", { name: "Movimientos" });
+    expect(await within(panel).findByText("No se pudieron cargar los movimientos")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Agregar gasto" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Agregar ingreso" })).toBeInTheDocument();
+  });
+
   it("renders the two-series category trend from movement aggregates", async () => {
     renderScreens();
     const chart = await screen.findByRole("region", { name: "Gastos e ingresos por categoría" });

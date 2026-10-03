@@ -11,7 +11,6 @@ import {
 } from "@/components/finance/FinanceSections";
 import {
   useAccounts,
-  useNetWorth,
   usePreferences,
 } from "@/lib/api/dashboard";
 import {
@@ -201,7 +200,6 @@ export default function FinanceScreens() {
   const prefs = usePreferences();
   const allCategories = useCategories();
   const assets = useAssets();
-  const netWorth = useNetWorth();
 
   // S-C movements UI: account-click filter + add/edit modal state. The
   // subscription-pay wiring belongs to S-D and chart props to S-E.
@@ -311,9 +309,9 @@ export default function FinanceScreens() {
               />
             </SectionShell>
             <SectionShell
-              title={t("finance.addMovementTitle")}
-              hint={t("finance.addMovementHint")}
-              span="col-span-12 md:col-span-6 xl:col-span-6"
+              title={t("finance.movementsTitle")}
+              hint={t("finance.movementsHint")}
+              span="col-span-12"
             >
               <div className="flex flex-wrap gap-2">
                 <button
@@ -333,24 +331,20 @@ export default function FinanceScreens() {
                   {t("finance.addIncome")}
                 </button>
               </div>
-            </SectionShell>
-            <SectionShell
-              title={t("finance.movementsTitle")}
-              hint={t("finance.movementsHint")}
-              span="col-span-12 md:col-span-6 xl:col-span-6"
-            >
-              <MovementHistory
-                accounts={movementAccountOptions}
-                categories={movementCategoryOptions}
-                locale={locale}
-                currency={currency}
-                activeAccountId={activeAccountId}
-                onSelectAccount={setActiveAccountId}
-                onEdit={openMovementEditor}
-              />
+              <div className="mt-4 border-t border-hull/60 pt-4">
+                <MovementHistory
+                  accounts={movementAccountOptions}
+                  categories={movementCategoryOptions}
+                  locale={locale}
+                  currency={currency}
+                  activeAccountId={activeAccountId}
+                  onSelectAccount={setActiveAccountId}
+                  onEdit={openMovementEditor}
+                />
+              </div>
             </SectionShell>
             <CategoryChartSection categories={movementCategoryOptions} locale={locale} currency={currency} />
-            <S5Sections accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} assets={assets.data ?? []} netWorth={netWorth.data ?? null} currency={currency} locale={locale} />
+            <S5Sections accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} assets={assets.data ?? []} />
             {movementModal ? (
               <MovementModal
                 mode={movementModal}
@@ -396,10 +390,9 @@ export function toAssetEditInitial(a: AssetWireWithDetails): {
 
 /* S5 escritura: SubscriptionRow (Pay) + Assets shells tras las F1 intactas. */
 /* The savings/debts write sections were deleted in S-F with their ledgers. */
-function S5Sections({ accounts, subs, assets, netWorth, currency, locale }: { accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; assets: AssetWireWithDetails[]; netWorth: { per_currency: { currency: string; net_worth: string | number }[] } | null; currency: string; locale: string }) {
+function S5Sections({ accounts, subs, assets }: { accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; assets: AssetWireWithDetails[] }) {
   const noop = (): void => undefined;
   const firstAsset = assets[0];
-  const worth = netWorth?.per_currency.find((e) => e.currency === currency) ?? netWorth?.per_currency[0];
   return (
     <>
       <SectionShell title={t("finance.manageSubs")} span="col-span-12 xl:col-span-6">
@@ -412,7 +405,6 @@ function S5Sections({ accounts, subs, assets, netWorth, currency, locale }: { ac
       </SectionShell>
       <SectionShell title={t("finance.manageAssets")} span="col-span-12 xl:col-span-6">
         {firstAsset ? (<><AssetEditForm assetId={firstAsset.id} accounts={accounts} initial={toAssetEditInitial(firstAsset)} onDone={noop} /><div className="mt-4"><AssetValuationForm assetId={firstAsset.id} onDone={noop} /></div></>) : null}
-        <p className="mt-4 font-mono text-sm tabular-nums">{t("dashboard.netWorth")}: {worth ? formatMoney(worth.net_worth, { locale, currency: worth.currency }) : "—"}</p>
       </SectionShell>
     </>
   );

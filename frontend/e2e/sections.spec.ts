@@ -39,8 +39,9 @@ test("finance surviving shells: subs rows with Pay, movements, chart, assets", a
   await expect(page.getByRole("region", { name: "Ahorros" })).toHaveCount(0);
   await expect(page.getByText("Historial de abonos")).toHaveCount(0);
 
-  // La sección Tarjetas fue eliminada de Finanzas: solo queda patrimonio-número.
-  await expect(page.getByText("Patrimonio neto")).toBeVisible();
+  // Este cambio quitó la línea de patrimonio de Finanzas: queda la tarjeta de activos.
+  await expect(page.getByText("Patrimonio neto")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Activos y patrimonio" })).toBeVisible();
 });
 
 test("finance S3b snapshot actual sin charts de flujo ni análisis", async ({ page }) => {
@@ -57,7 +58,8 @@ test("finance S3b snapshot actual sin charts de flujo ni análisis", async ({ pa
   await expect(page.getByText("Ingresos por fuente")).toHaveCount(0);
   await expect(page.getByText("Análisis personal, no asesoramiento financiero.")).toHaveCount(0);
 
-  // S3b: bloques supervivientes siguen visibles.
+  // S3b: bloques supervivientes siguen visibles (el patrimonio numérico ya no está).
   await expect(page.getByText("Cuentas").first()).toBeVisible();
-  await expect(page.getByText("Patrimonio neto")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Movimientos" })).toBeVisible();
+  await expect(page.getByText("Patrimonio neto")).toHaveCount(0);
 });

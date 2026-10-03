@@ -12,12 +12,13 @@ const q = (data: unknown) => ({ data, error: undefined, isLoading: false });
 // module instead of excluding removed hooks. Any regression reintroducing a
 // /debts or /savings-goals read fails the type check.
 let subs: unknown[] | null = null;
+let subsVisibleArg: boolean | undefined;
 let tasks: unknown[] | null = null;
 let events: unknown[] | null = null;
 let layout: { widgets: Array<{ id: string; type: string; order: number; size: string }> } | null = null;
 vi.mock("@/lib/api/dashboard", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/api/dashboard")>();
-  return { ...mod, useSubscriptions: () => q(subs ?? []), useTasks: () => q(tasks ?? []), useEvents: () => q(events ?? []),
+  return { ...mod, useSubscriptions: (v?: boolean) => { subsVisibleArg = v; return q(subs ?? []); }, useTasks: () => q(tasks ?? []), useEvents: () => q(events ?? []),
     usePreferences: () => q({ preferences: { currency_code: "COP", locale: "es-CO", dashboard_layout: layout } }) };
 });
 const day = (off: number) => {
@@ -29,7 +30,7 @@ function Probe() {
   return (<div><output data-testid="p8-count">{`${n.count}|${n.overdue.length}|${n.upcoming.length}`}</output>
     <button type="button" onClick={() => n.toggleMute("s-3")}>mute-s-3</button></div>);
 }
-beforeEach(() => { subs = []; tasks = []; events = []; layout = null; localStorage.clear(); });
+beforeEach(() => { subs = []; subsVisibleArg = undefined; tasks = []; events = []; layout = null; localStorage.clear(); });
 
 describe("useNotifications S-H (sin deudas)", () => {
   it("badge = vencidas (tasks + eventos pasados) + 7d visibles, sin deudas", async () => {
@@ -56,6 +57,19 @@ describe("useNotifications S-H (sin deudas)", () => {
     render(<Probe />);
     expect(await screen.findByTestId("p8-count")).toHaveTextContent("1|0|1");
   });
+  it("un layout sin el widget retirado conserva los cobros de suscripción (W2 RED)", async () => {
+    layout = {
+      widgets: [
+        { id: "upcoming-payments", type: "list", order: 20, size: "lg" },
+        { id: "pending-tasks", type: "list", order: 22, size: "md" },
+        { id: "upcoming-events", type: "list", order: 23, size: "md" },
+        { id: "goal-progress", type: "chart", order: 30, size: "md" },
+      ],
+    };
+    subs = [{ id: "s-3", name: "Música", price: "9.99", is_active: true, next_billing_on: day(3) }];
+    render(<Probe />);
+    expect(await screen.findByTestId("p8-count")).toHaveTextContent("1|0|1");
+  });
   it("mute por item resta del badge, sigue listado y persiste reload", async () => {
     subs = [{ id: "s-3", name: "Música", price: 10, is_active: true, next_billing_on: day(3) }];
     const { unmount } = render(<Probe />);
@@ -74,11 +88,13 @@ describe("useNotifications S-H (sin deudas)", () => {
   });
   it("mute por categoria via layout excluye del badge", async () => {
     const { DEFAULT_DASHBOARD_LAYOUT } = await import("@/lib/api/dashboard");
-    layout = { widgets: DEFAULT_DASHBOARD_LAYOUT.widgets.filter((w) => w.id !== "active-subs" && w.id !== "upcoming-payments") };
+    layout = { widgets: DEFAULT_DASHBOARD_LAYOUT.widgets.filter((w) => w.id !== "upcoming-payments") };
     subs = [{ id: "s-3", name: "Música", price: 5, is_active: true, next_billing_on: day(3) }];
     tasks = [{ id: "t-old", title: "Tarea", status: "pending", due_date: day(-1) }];
     render(<Probe />);
     expect(await screen.findByTestId("p8-count")).toHaveTextContent("1|1|0");
+    // Hiding the surviving upcoming-payments widget stops its subscriptions fetch too.
+    expect(subsVisibleArg).toBe(false);
   });
 });
 

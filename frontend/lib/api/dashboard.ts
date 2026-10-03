@@ -54,13 +54,12 @@ export interface DashboardLayout {
   widgets: DashboardWidgetPref[];
 }
 
-/** Default 5-widget layout (first run / empty / invalid → all visible). Order per D1/S-H. */
+/** Default 4-widget layout (first run / empty / invalid → all visible). Order per the 2026-10-03 delta spec. */
 export const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
   widgets: [
     { id: "upcoming-payments", type: "list", order: 20, size: "lg" },
-    { id: "active-subs", type: "list", order: 22, size: "md" },
-    { id: "pending-tasks", type: "list", order: 23, size: "md" },
-    { id: "upcoming-events", type: "list", order: 24, size: "md" },
+    { id: "pending-tasks", type: "list", order: 22, size: "md" },
+    { id: "upcoming-events", type: "list", order: 23, size: "md" },
     { id: "goal-progress", type: "chart", order: 30, size: "md" },
   ],
 };

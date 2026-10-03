@@ -8,7 +8,6 @@ import EmptyState from "@/components/ui/EmptyState";
 import TelemetryStrip, { type TelemetryItem } from "@/components/ui/TelemetryStrip";
 import WidgetToggle from "@/components/ui/WidgetToggle";
 import NotificationBell from "@/components/notifications/NotificationBell";
-import ActiveSubs from "@/components/dashboard/widgets/ActiveSubs";
 import GoalProgress from "@/components/dashboard/widgets/GoalProgress";
 import MovementsSnapshot from "@/components/dashboard/widgets/MovementsSnapshot";
 import PendingTasks from "@/components/dashboard/widgets/PendingTasks";
@@ -21,7 +20,6 @@ import {
   resolveDashboardLayout,
   useAccounts,
   useHabitsToday,
-  useNetWorth,
   usePreferences,
   useUpdateLayout,
   type DashboardLayout,
@@ -29,7 +27,7 @@ import {
 import {
   useSubscriptions as useFinanceSubscriptions,
 } from "@/lib/api/finance";
-import { formatMoney, toNumber } from "@/lib/api/money";
+import { formatMoney } from "@/lib/api/money";
 import { t } from "@/lib/i18n";
 import { toMonthlyCost } from "@/lib/dashboard/transforms";
 import { toAccountCards, toTotalBalance } from "@/lib/finance/finance";
@@ -37,9 +35,9 @@ import { toAccountCards, toTotalBalance } from "@/lib/finance/finance";
 /**
  * Dashboard home container. Owns all SWR reads (fired in parallel) and
  * coercion at the boundary; `components/ui/*` stay pure. The telemetry
- * strip reads four live sources only (D1): net worth, account count,
- * monthly subscription cost and total balance — no debts, no savings, no
- * flow, budget or category aggregate is queried.
+ * strip reads three live sources only (D4): account count, monthly
+ * subscription cost and total balance — no net worth, no debts, no
+ * savings, no flow, budget or category aggregate is queried.
  */
 
 function SectionSkeleton() {
@@ -107,7 +105,6 @@ export default function DashboardHome() {
   const { mutate } = useSWRConfig();
   const [layoutOverride, setLayoutOverride] = useState<DashboardLayout | null>(null);
 
-  const netWorth = useNetWorth();
   const accounts = useAccounts();
   const habits = useHabitsToday();
   const prefs = usePreferences();
@@ -125,12 +122,8 @@ export default function DashboardHome() {
   const retryDashboards = () =>
     void mutate((key) => typeof key === "string" && key.startsWith("dashboard/"));
 
-  const telemetryLoading = Boolean(
-    netWorth.isLoading || accounts.isLoading || financeSubs.isLoading,
-  );
-  const telemetryError = Boolean(
-    netWorth.error || accounts.error || financeSubs.error,
-  );
+  const telemetryLoading = Boolean(accounts.isLoading || financeSubs.isLoading);
+  const telemetryError = Boolean(accounts.error || financeSubs.error);
   const habitsLoading = Boolean(habits.isLoading);
   const habitsError = Boolean(habits.error);
 
@@ -139,10 +132,6 @@ export default function DashboardHome() {
   const fmt = (value: string | number | null | undefined) =>
     formatMoney(value, { locale, currency });
 
-  const worthEntry =
-    netWorth.data?.per_currency.find((e) => e.currency === currency) ??
-    netWorth.data?.per_currency[0];
-  const netWorthValue = worthEntry ? toNumber(worthEntry.net_worth) : 0;
   // The accounts list endpoint already hides archived rows server-side
   // (`NOT is_archived`), so its length is the non-archived account count.
   const accountsCount = (accounts.data ?? []).length;
@@ -150,7 +139,6 @@ export default function DashboardHome() {
   const totalBalance = toTotalBalance(toAccountCards(accounts.data), currency);
 
   const strip: TelemetryItem[] = [
-    { id: "net-worth", label: t("dashboard.netWorth"), display: fmt(netWorthValue) },
     { id: "accounts", label: t("finance.accounts"), display: String(accountsCount) },
     { id: "subscriptions", label: t("finance.subscriptions"), display: fmt(monthlyCost) },
     { id: "total-balance", label: t("dashboard.totalBalance"), display: fmt(totalBalance) },
@@ -160,7 +148,6 @@ export default function DashboardHome() {
 
   const customizeRows = [
     { id: "upcoming-payments", label: t("dashboard.upcomingPayments") },
-    { id: "active-subs", label: t("dashboard.activeSubs") },
     { id: "pending-tasks", label: t("dashboard.pendingTasks") },
     { id: "upcoming-events", label: t("dashboard.upcomingEvents") },
     { id: "goal-progress", label: t("dashboard.goalProgress") },
@@ -248,16 +235,6 @@ export default function DashboardHome() {
             action={<WidgetToggle id="upcoming-payments" visible onToggle={(v) => toggle("upcoming-payments", v)} />}
           >
             <UpcomingPayments />
-          </WidgetShell>
-        ) : null}
-        {visible("active-subs") ? (
-          <WidgetShell
-            title={t("dashboard.activeSubs")}
-            hint={t("dashboard.activeSubsHint")}
-            span="col-span-12 lg:col-span-5"
-            action={<WidgetToggle id="active-subs" visible onToggle={(v) => toggle("active-subs", v)} />}
-          >
-            <ActiveSubs />
           </WidgetShell>
         ) : null}
         {visible("pending-tasks") ? (
