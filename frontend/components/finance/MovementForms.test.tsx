@@ -87,6 +87,26 @@ describe("MovementModal", () => {
     await waitFor(() => expect(movementsGets).toBeGreaterThanOrEqual(2));
   });
 
+  it("surfaces the server Spanish message when the API rejects with 422", async () => {
+    server.use(
+      http.post("http://test.local/api/movements", () =>
+        HttpResponse.json(
+          { error: { code: "VALIDATION_ERROR", message: "el monto debe ser menor a 1000000000" } },
+          { status: 422 },
+        ),
+      ),
+    );
+    render(<Harness />);
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.change(screen.getByLabelText("Cuenta"), { target: { value: "a1" } });
+    fireEvent.change(screen.getByLabelText("Categoría"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "el monto debe ser menor a 1000000000",
+    );
+  });
+
   it("closes on Esc with no request and restores focus to the opener", async () => {
     function EscHarness() {
       const opener = useRef<HTMLButtonElement>(null);

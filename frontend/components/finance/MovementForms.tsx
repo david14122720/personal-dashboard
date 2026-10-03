@@ -9,6 +9,7 @@ import {
   patchMovement,
   type MovementWire,
 } from "@/lib/api/finance";
+import { ApiError } from "@/lib/api/client";
 import {
   normalizeManualAmount,
   todayInBogota,
@@ -103,6 +104,13 @@ export function MovementModal({
     return null;
   }
 
+  /** Prefer the server's Spanish validation message (it names the exact
+   * rejected field) over the generic save fallback, so a 422 is actionable. */
+  function serverMessage(err: unknown, fallback: string): string {
+    if (err instanceof ApiError && err.message) return err.message;
+    return fallback;
+  }
+
   async function save(): Promise<void> {
     const failure = validate();
     if (failure) {
@@ -129,8 +137,8 @@ export function MovementModal({
         setSaved("created");
       }
       await revalidate();
-    } catch {
-      setError(t("finance.saveFailed"));
+    } catch (err) {
+      setError(serverMessage(err, t("finance.saveFailed")));
     } finally {
       setSaving(false);
     }
@@ -145,8 +153,8 @@ export function MovementModal({
       setConfirmingDelete(false);
       setSaved("deleted");
       await revalidate();
-    } catch {
-      setError(t("finance.deleteFailed"));
+    } catch (err) {
+      setError(serverMessage(err, t("finance.deleteFailed")));
     } finally {
       setSaving(false);
     }

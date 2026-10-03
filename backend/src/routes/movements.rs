@@ -46,9 +46,10 @@ use crate::{
     state::AppState,
 };
 
-/// Absolute cap for a single movement: `|amount| < 10^6` so a
-/// `NUMERIC(18,2)` overflow can never surface as a 500.
-const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000;
+/// Absolute cap for a single movement: `|amount| < 10^9` so a
+/// `NUMERIC(18,2)` overflow can never surface as a 500. The bound is
+/// deliberately COP-scale (a 3.500.000 monthly salary must fit in one row).
+const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000_000;
 /// Descriptions are free text passthrough capped at 2000 bytes (same bound
 /// as every other finance free-text field).
 const MAX_DESCRIPTION_LEN: usize = 2000;
@@ -198,7 +199,7 @@ pub fn validate_movement_amount(raw: &str) -> Result<Decimal, AppError> {
     })?;
     if amount >= Decimal::from(MAX_MOVEMENT_AMOUNT) {
         return Err(AppError::Validation(
-            "el monto debe ser menor a 1000000".into(),
+            "el monto debe ser menor a 1000000000".into(),
         ));
     }
     Ok(amount)
@@ -550,6 +551,10 @@ mod tests {
             validate_movement_amount("999999.99").unwrap(),
             Decimal::new(99_999_999, 2)
         );
+        assert_eq!(
+            validate_movement_amount("3500000.00").unwrap(),
+            Decimal::new(350_000_000, 2)
+        );
     }
 
     #[test]
@@ -560,8 +565,8 @@ mod tests {
     }
 
     #[test]
-    fn movement_amount_rejects_million_and_above_as_422() {
-        for raw in ["1000000.00", "1000000", "2500000.50"] {
+    fn movement_amount_rejects_billion_and_above_as_422() {
+        for raw in ["1000000000.00", "1000000000", "2500000000.50"] {
             assert_422(validate_movement_amount(raw).unwrap_err());
         }
     }
