@@ -63,6 +63,28 @@ function Harness({
 }
 
 describe("MovementModal", () => {
+  async function submitAmount(value: string): Promise<string> {
+    render(<Harness />);
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value } });
+    fireEvent.change(screen.getByLabelText("Cuenta"), { target: { value: "a1" } });
+    fireEvent.change(screen.getByLabelText("Categoría"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    return (posted[0] as Record<string, unknown>).amount as string;
+  }
+
+  it("posts 25000,50 without scaling it 100x", async () => {
+    expect(await submitAmount("25000,50")).toBe("25000.50");
+  });
+
+  it("posts 0,01 without turning it into 1 COP", async () => {
+    expect(await submitAmount("0,01")).toBe("0.01");
+  });
+
+  it("posts 999999999.99 unscaled (server accepts below 1e9)", async () => {
+    expect(await submitAmount("999999999.99")).toBe("999999999.99");
+  });
+
   it("blocks the request with Spanish validation when required fields are missing", async () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
@@ -105,6 +127,45 @@ describe("MovementModal", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "el monto debe ser menor a 1000000000",
     );
+  });
+
+  it("falls back to the Spanish save message for a 500 with a non-JSON body", async () => {
+    server.use(
+      http.post("http://test.local/api/movements", () =>
+        HttpResponse.text("Internal Server Error", { status: 500 }),
+      ),
+    );
+    render(<Harness />);
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.change(screen.getByLabelText("Cuenta"), { target: { value: "a1" } });
+    fireEvent.change(screen.getByLabelText("Categoría"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "No se pudo guardar. Revisa los datos e inténtalo de nuevo.",
+    );
+    expect(screen.queryByText("Request failed with status 500")).not.toBeInTheDocument();
+  });
+
+  it("falls back to Spanish for a non-Spanish server code (404 NOT_FOUND)", async () => {
+    server.use(
+      http.post("http://test.local/api/movements", () =>
+        HttpResponse.json(
+          { error: { code: "NOT_FOUND", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    );
+    render(<Harness />);
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.change(screen.getByLabelText("Cuenta"), { target: { value: "a1" } });
+    fireEvent.change(screen.getByLabelText("Categoría"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "No se pudo guardar. Revisa los datos e inténtalo de nuevo.",
+    );
+    expect(screen.queryByText("Not found")).not.toBeInTheDocument();
   });
 
   it("closes on Esc with no request and restores focus to the opener", async () => {

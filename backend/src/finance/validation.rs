@@ -15,22 +15,23 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
-/// Parse `occurred_on` as a calendar date (strict `YYYY-MM-DD`), else 422.
+/// Parse `occurred_on` as a calendar date (strict `YYYY-MM-DD`), else 422
+/// with a Spanish message (the frontend passes `VALIDATION_ERROR` through
+/// verbatim, so English text would leak into the UI).
 ///
 /// First live consumer: the movements routes (S-A). Previously only covered
 /// by unit tests while debts / savings / accounts kept their field-specific
 /// date validators.
 pub fn validate_occurred_on(raw: &str) -> Result<NaiveDate, AppError> {
+    const MSG: &str = "la fecha (occurred_on) debe tener el formato YYYY-MM-DD";
     let trimmed = raw.trim();
     let well_formed =
         trimmed.len() == 10 && trimmed.as_bytes()[4] == b'-' && trimmed.as_bytes()[7] == b'-';
     if !well_formed {
-        return Err(AppError::Validation(
-            "occurred_on must be a calendar date YYYY-MM-DD".into(),
-        ));
+        return Err(AppError::Validation(MSG.into()));
     }
     NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
-        .map_err(|_| AppError::Validation("occurred_on must be a calendar date YYYY-MM-DD".into()))
+        .map_err(|_| AppError::Validation(MSG.into()))
 }
 
 /// Verify the category is owned by the caller, regardless of kind
@@ -124,6 +125,21 @@ mod tests {
             "not-a-date",
         ] {
             assert_422(validate_occurred_on(raw).unwrap_err());
+        }
+    }
+
+    #[test]
+    fn malformed_and_unparseable_dates_share_the_spanish_422_message() {
+        // Shape branch ("01/09/2026") and parse branch ("2026-13-01") must both
+        // speak Spanish: the frontend passes VALIDATION_ERROR through as-is.
+        for raw in ["01/09/2026", "2026-13-01"] {
+            match validate_occurred_on(raw).unwrap_err() {
+                AppError::Validation(msg) => assert_eq!(
+                    msg,
+                    "la fecha (occurred_on) debe tener el formato YYYY-MM-DD"
+                ),
+                other => panic!("expected Validation for {raw:?}, got {other:?}"),
+            }
         }
     }
 }

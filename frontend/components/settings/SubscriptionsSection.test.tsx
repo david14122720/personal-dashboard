@@ -141,4 +141,48 @@ describe("SubscriptionsSection", () => {
     expect(body.price).toBe("29900");
     expect(body.next_billing_on).toBe("2026-11-15");
   });
+
+  it("surfaces the server's Spanish reason when a legacy oversized price is rejected (F11.3)", async () => {
+    subs = [sub("s1", { name: "Streaming", price: "2000000000.00" })];
+    server.use(
+      http.patch("http://test.local/api/subscriptions/:id", () =>
+        HttpResponse.json(
+          { error: { code: "VALIDATION_ERROR", message: "el precio debe ser menor a 1000000000" } },
+          { status: 422 },
+        ),
+      ),
+    );
+    render(<Harness />);
+    await screen.findByText("Streaming");
+
+    fireEvent.click(screen.getByRole("button", { name: "Editar" }));
+    const form = await screen.findByRole("form", { name: "Editar" });
+    // Name-only edit: the legacy oversized stored price is sent back unchanged.
+    fireEvent.change(within(form).getByLabelText("Nombre"), { target: { value: "Streaming Plus" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Guardar" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("el precio debe ser menor a 1000000000");
+    expect(alert).not.toHaveTextContent(/No se pudo guardar/i);
+  });
+
+  it("falls back to the generic Spanish message for a 500 with a non-JSON body (F11.3)", async () => {
+    subs = [sub("s1", { name: "Streaming" })];
+    server.use(
+      http.patch(
+        "http://test.local/api/subscriptions/:id",
+        () => new HttpResponse("boom", { status: 500 }),
+      ),
+    );
+    render(<Harness />);
+    await screen.findByText("Streaming");
+
+    fireEvent.click(screen.getByRole("button", { name: "Editar" }));
+    const form = await screen.findByRole("form", { name: "Editar" });
+    fireEvent.click(within(form).getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "No se pudo guardar. Revisa los datos e inténtalo de nuevo.",
+    );
+  });
 });

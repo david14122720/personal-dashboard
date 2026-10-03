@@ -2,12 +2,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import {
+  ApiError,
   TOKEN_KEY,
   apiGet,
   apiPatch,
   clearToken,
   login,
   resetAuthRedirectForTests,
+  serverMessage,
   setLoginNavigator,
   setToken,
   toApiError,
@@ -185,5 +187,34 @@ describe("toApiError envelope parsing", () => {
   it("falls back to status-derived defaults for non-JSON bodies", async () => {
     const err = await toApiError(new Response("boom", { status: 500 }));
     expect(err).toMatchObject({ status: 500, code: "REQUEST_FAILED" });
+  });
+});
+
+describe("serverMessage gate (F11.1)", () => {
+  it("returns the server's Spanish message for VALIDATION_ERROR", () => {
+    const err = new ApiError(422, "VALIDATION_ERROR", "el precio debe ser menor a 1000000000");
+    expect(serverMessage(err, "fallback")).toBe("el precio debe ser menor a 1000000000");
+  });
+
+  it("returns the server's Spanish message for CONFLICT", () => {
+    const err = new ApiError(409, "CONFLICT", "ya está pagada este ciclo");
+    expect(serverMessage(err, "fallback")).toBe("ya está pagada este ciclo");
+  });
+
+  it.each(["NOT_FOUND", "INTERNAL_ERROR", "UNAUTHORIZED", "REQUEST_FAILED"])(
+    "falls back for the non-Spanish code %s",
+    (code) => {
+      const err = new ApiError(500, code, "English server message");
+      expect(serverMessage(err, "fallback")).toBe("fallback");
+    },
+  );
+
+  it("falls back for a plain Error", () => {
+    expect(serverMessage(new Error("boom"), "fallback")).toBe("fallback");
+  });
+
+  it("falls back when a gated ApiError carries an empty message", () => {
+    const err = new ApiError(422, "VALIDATION_ERROR", "");
+    expect(serverMessage(err, "fallback")).toBe("fallback");
   });
 });

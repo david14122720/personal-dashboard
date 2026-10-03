@@ -134,7 +134,8 @@ describe("S1 transforms (números solo en la frontera)", () => {
     expect(normalizeManualAmount(" 150000.50 ")).toBe("150000.50");
     expect(normalizeManualAmount("0")).toBeNull();
     expect(normalizeManualAmount("-10")).toBeNull();
-    expect(normalizeManualAmount("10.005")).toBeNull();
+    // A dot before exactly 3 digits can only be a thousands separator in COP (max 2 decimals).
+    expect(normalizeManualAmount("10.005")).toBe("10005");
     expect(normalizeManualAmount("")).toBeNull();
     expect(normalizeManualAmount("abc")).toBeNull();
   });
@@ -172,12 +173,16 @@ describe("S1 transforms (números solo en la frontera)", () => {
 });
 
 describe("inline balance edit (S3b, diseño §6.2)", () => {
-  it("guards the client input with the server shape and |v| < 1e6", () => {
+  it("guards the client input with the server shape and |v| < 1e9", () => {
     expect(isValidBalanceInput("980000.00")).toBe(true);
     expect(isValidBalanceInput("-750.50")).toBe(true);
     expect(isValidBalanceInput("0")).toBe(true);
     expect(isValidBalanceInput("10.005")).toBe(false);
-    expect(isValidBalanceInput("1000000.00")).toBe(false);
+    // The cap moved to 1e9 (COP scale): a balance above 1e6 stays editable.
+    expect(isValidBalanceInput("1000000.00")).toBe(true);
+    expect(isValidBalanceInput("2500000.00")).toBe(true);
+    expect(isValidBalanceInput("999999999.99")).toBe(true);
+    expect(isValidBalanceInput("1000000000.00")).toBe(false);
     expect(isValidBalanceInput("abc")).toBe(false);
     expect(isValidBalanceInput("")).toBe(false);
   });

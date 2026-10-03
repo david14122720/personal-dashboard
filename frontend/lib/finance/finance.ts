@@ -136,19 +136,26 @@ export function toCategoryOptions(
 }
 
 /**
- * Normalize a hand-typed COP amount to a wire string. Accepts digits with an
- * optional decimal part of up to 2 places (e.g. `"150000"`, `"150000.50"`).
- * Returns the trimmed string for the API, or null when the input is not a
- * positive amount (the form then shows a Spanish inline error).
+ * Normalize a hand-typed COP amount to a wire string. Accepted shapes:
+ * plain digits with optional dot decimals (`"150000"`, `"150000.50"`),
+ * COP thousands dots with optional comma decimals (`"3.500.000"`,
+ * `"1.500.000,50"`), US thousands commas with optional dot decimals
+ * (`"1,500,000.50"`), and a lone decimal comma (`"25,50"`, `"0,01"`).
+ * Spaces are stripped. Returns the numeric wire string with at most 2
+ * decimals, or null when the input is not a positive amount (the form
+ * then shows a Spanish inline error).
  */
 export function normalizeManualAmount(raw: string | null | undefined): string | null {
   if (raw == null) return null;
-  const trimmed = raw.trim().replace(/\s+/g, "");
-  if (!trimmed) return null;
-  // Allow thousand separators the user may type by hand (dots/commas) only
-  // when they are unambiguous: strip plain thousand dots for COP, keep the
-  // decimal part. Keep it simple: remove commas, then validate shape.
-  const compact = trimmed.replace(/,/g, "");
+  const s = raw.trim().replace(/\s+/g, "");
+  if (!s) return null;
+  let compact = s;
+  // COP style: dots as thousands, optional comma decimals ("3.500.000", "1.500.000,50")
+  if (/^[1-9]\d{0,2}(\.\d{3})+(,\d{1,2})?$/.test(s)) compact = s.replace(/\./g, "").replace(",", ".");
+  // US style: commas as thousands, optional dot decimals ("1,500,000.50")
+  else if (/^[1-9]\d{0,2}(,\d{3})+(\.\d{1,2})?$/.test(s)) compact = s.replace(/,/g, "");
+  // decimal comma only ("25,50", "0,01")
+  else if (/^\d+,\d{1,2}$/.test(s)) compact = s.replace(",", ".");
   if (!/^\d+(\.\d{1,2})?$/.test(compact)) return null;
   const value = Number(compact);
   if (!Number.isFinite(value) || value <= 0) return null;

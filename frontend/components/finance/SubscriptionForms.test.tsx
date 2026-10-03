@@ -155,4 +155,34 @@ describe("SubscriptionRow pay flow", () => {
     await waitFor(() => expect(screen.getByText("Streaming")).toBeDefined());
     expect(deleted).toEqual([]);
   });
+
+  it("surfaces the pay guard's Spanish 422 message (F11.4)", async () => {
+    server.use(
+      http.post("http://test.local/api/subscriptions/:id/pay", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              message:
+                "el precio de la suscripcion supera el maximo permitido; editalo antes de pagar",
+            },
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+    render(<Harness row={sub("s1")} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pagar" }));
+    await screen.findByRole("dialog", { name: "Pagar suscripción" });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Elige una cuenta").querySelector("option[value=a1]")).not.toBeNull(),
+    );
+    fireEvent.change(screen.getByLabelText("Elige una cuenta"), { target: { value: "a1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pago" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "el precio de la suscripcion supera el maximo permitido; editalo antes de pagar",
+    );
+  });
 });

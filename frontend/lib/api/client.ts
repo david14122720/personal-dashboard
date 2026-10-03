@@ -20,6 +20,19 @@ export class ApiError extends Error {
   }
 }
 
+/** Server codes whose messages are written in Spanish and may be shown to the
+ * user as-is; every other code (NOT_FOUND, INTERNAL_ERROR, UNAUTHORIZED,
+ * REQUEST_FAILED) falls back to the caller's Spanish copy. */
+export const SPANISH_SERVER_CODES = new Set(["VALIDATION_ERROR", "CONFLICT"]);
+
+/** Return the server's Spanish message for a gated ApiError, else `fallback`. */
+export function serverMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && SPANISH_SERVER_CODES.has(err.code) && err.message) {
+    return err.message;
+  }
+  return fallback;
+}
+
 export function apiBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_URL ?? "/api";
 }

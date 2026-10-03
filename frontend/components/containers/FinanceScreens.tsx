@@ -59,14 +59,14 @@ function AggregatesSkeleton() {
   );
 }
 
-/** Client guard mirroring the server: `/^-?\d{1,6}(\.\d{1,2})?$/` and `|v| < 1e6`. */
-export const BALANCE_INPUT_RE = /^-?\d{1,6}(\.\d{1,2})?$/;
+/** Client guard mirroring the server: `/^-?\d{1,9}(\.\d{1,2})?$/` and `|v| < 1e9`. */
+export const BALANCE_INPUT_RE = /^-?\d{1,9}(\.\d{1,2})?$/;
 
 export function isValidBalanceInput(raw: string): boolean {
   const trimmed = raw.trim();
   if (!BALANCE_INPUT_RE.test(trimmed)) return false;
   const value = Number(trimmed);
-  return Number.isFinite(value) && Math.abs(value) < 1e6;
+  return Number.isFinite(value) && Math.abs(value) < 1e9;
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   useSubscriptions,
   type SubscriptionWire,
 } from "@/lib/api/finance";
+import { serverMessage } from "@/lib/api/client";
 import {
   isPaidThisCycle,
   normalizeManualAmount,
@@ -270,8 +271,8 @@ export function SubscriptionEditForm({
         next_billing_on: nextBilling.trim(),
       });
       onDone();
-    } catch {
-      setError(t("finance.saveFailed"));
+    } catch (err) {
+      setError(serverMessage(err, t("finance.saveFailed")));
     } finally {
       setPending(false);
     }

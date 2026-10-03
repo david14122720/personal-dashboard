@@ -9,6 +9,12 @@ use std::str::FromStr;
 
 use crate::error::AppError;
 
+/// Single canonical COP-scale money cap shared by movement writes and
+/// balance edits: `|amount| < MAX_MONEY_AMOUNT`. A `NUMERIC(18,2)` overflow
+/// remains impossible (10^9 is far below 10^16) while real COP values — a
+/// 3.500.000 salary or a multi-million balance — stay representable.
+pub const MAX_MONEY_AMOUNT: i64 = 1_000_000_000;
+
 // Money parsers share one shape: trim → Decimal::from_str → range/scale guard →
 // AppError::Validation (422). `parse_money_amount` is live in P2 routes; the two
 // new variants carry #[allow(dead_code)] until the P3 route slices call them.
@@ -54,9 +60,9 @@ pub fn parse_money_amount_nonneg(raw: &str) -> Result<Decimal, AppError> {
 /// Parse a manual account-balance string into [`Decimal`].
 ///
 /// Accepts signed values (debtor cards are negative, e.g. `"-750.50"`)
-/// with at most 2 decimal places and `|x| < 10^6` (`"980000.00"`,
+/// with at most 2 decimal places and `|x| < 10^9` (`"2500000.00"`,
 /// `"-750.50"`, `"0"`). Rejects empty/non-numeric input, `scale > 2`
-/// (`"10.005"`), and `|x| >= 10^6` (`"1000000.00"`) with
+/// (`"10.005"`), and `|x| >= 10^9` (`"1000000000.00"`) with
 /// [`AppError::Validation`] (422). The balance is user-asserted data:
 /// no trigger or aggregate rewrites it (migration 0011 removes the only
 /// writer). A JSON number never reaches this parser — `balance` is
@@ -66,13 +72,13 @@ pub fn parse_balance_amount(raw: &str) -> Result<Decimal, AppError> {
     let trimmed = raw.trim();
     let amount = Decimal::from_str(trimmed).map_err(|_| {
         AppError::Validation(
-            "balance must be a decimal string with at most 2 decimals and absolute value below 1000000"
+            "balance must be a decimal string with at most 2 decimals and absolute value below 1000000000"
                 .into(),
         )
     })?;
-    if amount.scale() > 2 || amount.abs() >= Decimal::new(1_000_000, 0) {
+    if amount.scale() > 2 || amount.abs() >= Decimal::from(MAX_MONEY_AMOUNT) {
         return Err(AppError::Validation(
-            "balance must be a decimal string with at most 2 decimals and absolute value below 1000000"
+            "balance must be a decimal string with at most 2 decimals and absolute value below 1000000000"
                 .into(),
         ));
     }
@@ -181,11 +187,20 @@ mod tests {
             Decimal::new(-75050, 2)
         );
         assert_eq!(parse_balance_amount("0").unwrap(), Decimal::ZERO);
+        // 1e9-scale balances stay editable (same cap as movements).
+        assert_eq!(
+            parse_balance_amount("2500000.00").unwrap(),
+            Decimal::new(250_000_000, 2)
+        );
+        assert_eq!(
+            parse_balance_amount("999999999.99").unwrap(),
+            Decimal::new(99_999_999_999, 2)
+        );
     }
 
     #[test]
     fn balance_rejects_scale_and_range_as_422() {
-        for raw in ["10.005", "1000000.00", "-1000000", "abc", ""] {
+        for raw in ["10.005", "1000000000.00", "-1000000000", "abc", ""] {
             assert_422(parse_balance_amount(raw).unwrap_err());
         }
     }

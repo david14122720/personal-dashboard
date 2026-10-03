@@ -9,7 +9,7 @@ import {
   patchMovement,
   type MovementWire,
 } from "@/lib/api/finance";
-import { ApiError } from "@/lib/api/client";
+import { serverMessage } from "@/lib/api/client";
 import {
   normalizeManualAmount,
   todayInBogota,
@@ -102,13 +102,6 @@ export function MovementModal({
       return t("finance.requiredFieldError");
     }
     return null;
-  }
-
-  /** Prefer the server's Spanish validation message (it names the exact
-   * rejected field) over the generic save fallback, so a 422 is actionable. */
-  function serverMessage(err: unknown, fallback: string): string {
-    if (err instanceof ApiError && err.message) return err.message;
-    return fallback;
   }
 
   async function save(): Promise<void> {

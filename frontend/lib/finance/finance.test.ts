@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeManualAmount,
   toAccountCards,
   toMonthlyPrice,
   toPeriodRange,
   toSubscriptionRows,
+  todayInBogota,
 } from "./finance";
 
 describe("finance transforms", () => {
@@ -83,6 +85,62 @@ describe("toPeriodRange (PR-3 RED)", () => {
   it("computes natural quarter and year ranges", () => {
     expect(toPeriodRange({ kind: "quarter" }, now)).toEqual({ from: "2026-07-01", to: "2026-09-30" });
     expect(toPeriodRange({ kind: "year" }, now)).toEqual({ from: "2026-01-01", to: "2026-12-31" });
+  });
+});
+
+// -- S1: manual amount normalizer (F1, 100x corruption) --
+describe("normalizeManualAmount (formatos COP/US)", () => {
+  it("normaliza miles con punto y decimales con coma (COP)", () => {
+    expect(normalizeManualAmount("3.500.000")).toBe("3500000");
+    expect(normalizeManualAmount("25.000")).toBe("25000");
+    expect(normalizeManualAmount("1.000")).toBe("1000");
+    expect(normalizeManualAmount("1.500.000,50")).toBe("1500000.50");
+    expect(normalizeManualAmount("1.234,56")).toBe("1234.56");
+  });
+
+  it("normaliza miles con coma y decimales con punto (US)", () => {
+    expect(normalizeManualAmount("25,000")).toBe("25000");
+    expect(normalizeManualAmount("1,500")).toBe("1500");
+    expect(normalizeManualAmount("1,500,000.50")).toBe("1500000.50");
+  });
+
+  it("acepta coma decimal sola y punto decimal solo", () => {
+    expect(normalizeManualAmount("25,50")).toBe("25.50");
+    expect(normalizeManualAmount("0,01")).toBe("0.01");
+    expect(normalizeManualAmount("25.50")).toBe("25.50");
+  });
+
+  it("ignora espacios de miles tecleados a mano", () => {
+    expect(normalizeManualAmount("1 000 000")).toBe("1000000");
+  });
+
+  it("rechaza formas ambiguas o no positivas", () => {
+    expect(normalizeManualAmount(null)).toBeNull();
+    expect(normalizeManualAmount("")).toBeNull();
+    expect(normalizeManualAmount("abc")).toBeNull();
+    expect(normalizeManualAmount("0")).toBeNull();
+    expect(normalizeManualAmount("-5")).toBeNull();
+    expect(normalizeManualAmount("1.2.3")).toBeNull();
+    expect(normalizeManualAmount("1.000.00")).toBeNull();
+    expect(normalizeManualAmount("1.2345")).toBeNull();
+  });
+
+  it("rechaza un cero inicial en el agrupado de miles", () => {
+    // A leading zero cannot start a thousands grouping in COP.
+    expect(normalizeManualAmount("0.500")).toBeNull();
+    expect(normalizeManualAmount("0.001")).toBeNull();
+    expect(normalizeManualAmount("0,500")).toBeNull();
+    expect(normalizeManualAmount("0.501")).toBeNull();
+  });
+});
+
+// -- todayInBogota: exact UTC midnight boundary (probe f7 fold) --
+describe("todayInBogota (borde UTC medianoche)", () => {
+  it("permanece en la fecha local de Bogotá alrededor de la medianoche UTC", () => {
+    expect(todayInBogota(new Date("2026-09-24T02:00:00Z"))).toBe("2026-09-23");
+    expect(todayInBogota(new Date("2026-09-24T04:59:59Z"))).toBe("2026-09-23");
+    expect(todayInBogota(new Date("2026-09-24T05:00:00Z"))).toBe("2026-09-24");
+    expect(todayInBogota(new Date("2026-09-24T23:59:59Z"))).toBe("2026-09-24");
   });
 });
 

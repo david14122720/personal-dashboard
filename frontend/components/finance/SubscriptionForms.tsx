@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
-import { ApiError } from "@/lib/api/client";
+import { ApiError, serverMessage } from "@/lib/api/client";
 import { useAccounts } from "@/lib/api/dashboard";
 import {
   deleteSubscription,
@@ -198,7 +198,7 @@ export function PaySubscriptionModal({
       if (err instanceof ApiError && err.status === 409) {
         setError(t("finance.subscriptionPaidThisCycle"));
       } else {
-        setError(t("finance.saveFailed"));
+        setError(serverMessage(err, t("finance.saveFailed")));
       }
     } finally {
       setPending(false);

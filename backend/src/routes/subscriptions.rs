@@ -5,7 +5,11 @@
 //! [`parse_money_amount_nonneg`][crate::finance::money::parse_money_amount_nonneg]
 //! (`>= 0`, `scale <= 2`, else 422): zero-price records are valid (free
 //! tiers), unlike the strictly positive P2 money parser. The price is
-//! additionally capped below `10^16` so a `NUMERIC(18,2)` overflow can never
+//! additionally capped below [`MAX_MONEY_AMOUNT`][crate::finance::money::MAX_MONEY_AMOUNT]
+//! (10^9, shared with the movements ledger) on create/patch, and Pay
+//! re-checks the locked stored price before inserting its audit movement, so
+//! a pre-existing row written under the old 1e16 cap is 422 instead of
+//! creating an invalid ledger row; `NUMERIC(18,2)` overflow can never
 //! surface as a 500. `frequency` is monthly-only at the API level (absent or
 //! `"monthly"` accepted, anything else 422, never a DB error); the
 //! `subscription_frequency` column/enum stay in the database as vestigial.
@@ -20,7 +24,8 @@
 //!
 //! Pay (`POST /api/subscriptions/{id}/pay`) runs one transaction that locks
 //! the account first, then the subscription (`SELECT ... FOR UPDATE`), guards
-//! (inactive → 422, price zero → 422, paid this cycle → 409), idempotently
+//! (inactive → 422, price zero → 422, stored price at/above the cap → 422,
+//! paid this cycle → 409), idempotently
 //! seeds the fixed `Suscripciones` category, inserts the audit movement,
 //! debits the account, stamps `last_paid_on` and advances `next_billing_on`.
 //! The lock-first order mirrors the movements ledger discipline (design
@@ -43,7 +48,7 @@ use crate::{
     error::AppError,
     finance::{
         dates::{advance_next_billing, today_bogota},
-        money::parse_money_amount_nonneg,
+        money::{parse_money_amount_nonneg, MAX_MONEY_AMOUNT},
         validation::ensure_owned_category,
     },
     state::AppState,
@@ -55,12 +60,14 @@ const MAX_METHOD_LEN: usize = 200;
 const MAX_URL_LEN: usize = 2000;
 
 /// Parse the subscription price: non-negative money (`>= 0`, `scale <= 2`)
-/// capped below `10^16` so `NUMERIC(18,2)` overflow is 422, never a 500.
+/// capped below the shared `MAX_MONEY_AMOUNT` (10^9). The cap is enforced on
+/// create/patch and guarded again on Pay (see `pay_subscription_handler`), so
+/// a pre-existing oversized row cannot insert an invalid ledger movement.
 pub fn validate_price(raw: &str) -> Result<Decimal, AppError> {
     let price = parse_money_amount_nonneg(raw)?;
-    if price >= Decimal::new(10_000_000_000_000_000, 0) {
+    if price >= Decimal::from(MAX_MONEY_AMOUNT) {
         return Err(AppError::Validation(
-            "price exceeds the maximum storable amount".into(),
+            "el precio debe ser menor a 1000000000".into(),
         ));
     }
     Ok(price)
@@ -512,6 +519,14 @@ pub async fn pay_subscription_handler(
             "las suscripciones gratuitas no se pueden pagar".into(),
         ));
     }
+    // Pre-existing rows (written under the old 1e16 cap) must not reach the
+    // ledger: guard the locked stored price, not just the create/patch input.
+    if price >= Decimal::from(MAX_MONEY_AMOUNT) {
+        return Err(AppError::Validation(
+            "el precio de la suscripcion supera el maximo permitido; editalo antes de pagar"
+                .into(),
+        ));
+    }
     if is_paid_this_cycle(last_paid_on, next_billing_on, today) {
         return Err(AppError::Conflict(
             "la suscripción ya está pagada en este ciclo".into(),
@@ -624,9 +639,10 @@ mod tests {
         assert_eq!(validate_price("0").unwrap(), Decimal::ZERO);
         assert_eq!(validate_price("9.99").unwrap(), Decimal::new(999, 2));
         assert_eq!(validate_price("  5.00  ").unwrap(), Decimal::new(500, 2));
+        // Same COP-scale cap as the ledger: just below 1e9.
         assert_eq!(
-            validate_price("9999999999999999.99").unwrap(),
-            Decimal::new(999999999999999999i64, 2)
+            validate_price("999999999.99").unwrap(),
+            Decimal::new(99_999_999_999, 2)
         );
     }
 
@@ -635,6 +651,9 @@ mod tests {
         for raw in ["abc", "", "-5.00", "-0.01", "10.005"] {
             assert_422(validate_price(raw).unwrap_err());
         }
+        // The cap is MAX_MONEY_AMOUNT (1e9): Pay inserts the price into movements.
+        assert_422(validate_price("1000000000").unwrap_err());
+        assert_422(validate_price("2000000000").unwrap_err());
         // 17+ integer digits cannot fit NUMERIC(18,2): 422, never a 500.
         assert_422(validate_price("99999999999999999.99").unwrap_err());
         assert_422(validate_price("100000000000000000.00").unwrap_err());
@@ -1504,6 +1523,59 @@ mod tests {
         assert_422(err);
         assert_eq!(movement_count(&pool, user_id).await, 0);
         assert_eq!(balance_of(&pool, account_id).await, Decimal::new(10_000_000, 2));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn pay_pre_existing_oversized_price_is_422_and_persists_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP pay_pre_existing_oversized_price_is_422_and_persists_nothing: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let account_id = seed_account(&pool, user_id, "6000000000").await;
+        // A row written under the old 1e16 cap (direct SQL bypasses today's
+        // create validation) must not be payable: it would insert an invalid
+        // ledger movement the movements API rejects.
+        let oversized_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO subscriptions (user_id, name, price, frequency, next_billing_on) VALUES ($1,'Legacy Oversized',$2::numeric,'monthly'::subscription_frequency,'2026-10-15') RETURNING id",
+        )
+        .bind(user_id)
+        .bind("5000000000.00")
+        .fetch_one(&pool)
+        .await
+        .expect("seed pre-existing oversized subscription");
+        let err = pay(state.clone(), headers.clone(), oversized_id, account_id)
+            .await
+            .expect_err("stored price above the cap must be 422");
+        assert_422(err);
+        assert_eq!(movement_count(&pool, user_id).await, 0);
+        assert_eq!(
+            balance_of(&pool, account_id).await,
+            Decimal::new(600_000_000_000, 2)
+        );
+        // Boundary: a stored price just below the cap still pays and writes
+        // exactly one ledger movement.
+        let boundary_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO subscriptions (user_id, name, price, frequency, next_billing_on) VALUES ($1,'Legacy Boundary',$2::numeric,'monthly'::subscription_frequency,'2026-10-15') RETURNING id",
+        )
+        .bind(user_id)
+        .bind("999999999.99")
+        .fetch_one(&pool)
+        .await
+        .expect("seed boundary subscription");
+        let paid = pay(state.clone(), headers.clone(), boundary_id, account_id)
+            .await
+            .expect("price just below the cap still pays");
+        assert_eq!(paid.price, Decimal::new(99_999_999_999, 2));
+        assert_eq!(paid.last_paid_on, Some(today_bogota()));
+        assert_eq!(movement_count(&pool, user_id).await, 1);
+        assert_eq!(
+            balance_of(&pool, account_id).await,
+            Decimal::new(500_000_000_001, 2)
+        );
         cleanup_user(&pool, user_id).await;
     }
 

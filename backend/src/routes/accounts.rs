@@ -87,7 +87,7 @@ pub struct CreateAccountRequest {
 #[serde(deny_unknown_fields)]
 pub struct PatchAccountRequest {
     /// Manual balance as a decimal string (e.g. `"980000.00"`,
-    /// `"-750.50"`): signed, `scale <= 2`, `|x| < 10^6`, else 422.
+    /// `"-750.50"`): signed, `scale <= 2`, `|x| < 10^9`, else 422.
     /// User-asserted data — no trigger or aggregate rewrites it.
     pub balance: Option<String>,
     pub notes: Option<String>,
@@ -335,7 +335,7 @@ pub fn compute_card_metrics(
 }
 
 /// Validate PATCH body: metadata lengths plus the optional manual
-/// `balance` (signed, `scale <= 2`, `|x| < 10^6`, else 422 via
+/// `balance` (signed, `scale <= 2`, `|x| < 10^9`, else 422 via
 /// [`parse_balance_amount`]).
 pub fn validate_account_patch(body: &PatchAccountRequest) -> Result<(), AppError> {
     if let Some(raw) = body.balance.as_deref() {
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn patch_balance_validation_rejects_bad_values_as_422() {
-        for raw in ["1000000.00", "10.005", "abc", ""] {
+        for raw in ["1000000000.00", "10.005", "abc", ""] {
             let body = PatchAccountRequest {
                 balance: Some(raw.to_string()),
                 notes: None,
@@ -699,6 +699,14 @@ mod tests {
             is_archived: None,
         };
         validate_account_patch(&body).expect("valid balance passes");
+        let body = PatchAccountRequest {
+            balance: Some("2500000.00".to_string()),
+            notes: None,
+            color: None,
+            icon: None,
+            is_archived: None,
+        };
+        validate_account_patch(&body).expect("1e9-scale balance passes");
     }
 
     #[test]
@@ -1323,7 +1331,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("seed account");
-            for raw in ["1000000.00", "10.005", "abc"] {
+            for raw in ["1000000000.00", "10.005", "abc"] {
                 let body: Json<PatchAccountRequest> = Json(
                     serde_json::from_value(json!({"balance": raw}))
                         .expect("deserializable balance body"),

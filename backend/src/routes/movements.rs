@@ -40,18 +40,14 @@ use crate::{
     auth::helper::require_user_id,
     error::AppError,
     finance::{
-        money::parse_money_amount,
+        money::{parse_money_amount, MAX_MONEY_AMOUNT},
         validation::{ensure_owned_account, ensure_owned_category, validate_occurred_on},
     },
     state::AppState,
 };
 
-/// Absolute cap for a single movement: `|amount| < 10^9` so a
-/// `NUMERIC(18,2)` overflow can never surface as a 500. The bound is
-/// deliberately COP-scale (a 3.500.000 monthly salary must fit in one row).
-const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000_000;
-/// Descriptions are free text passthrough capped at 2000 bytes (same bound
-/// as every other finance free-text field).
+/// Descriptions are free text passthrough capped at 2000 characters (the
+/// 422 message says "caracteres", so the bound counts chars, not bytes).
 const MAX_DESCRIPTION_LEN: usize = 2000;
 
 const LOCK_ACCOUNT_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
@@ -189,15 +185,16 @@ pub fn validate_direction(raw: &str) -> Result<String, AppError> {
 }
 
 /// Validate a movement amount: positive money (`> 0`, `scale <= 2`) below
-/// `10^6`, else Spanish 422. Parsing itself delegates to the shared
-/// [`parse_money_amount`]; only the surface message is movement-scoped.
+/// the shared [`MAX_MONEY_AMOUNT`] cap (`10^9`, COP-scale), else Spanish
+/// 422. Parsing itself delegates to the shared [`parse_money_amount`];
+/// only the surface message is movement-scoped.
 pub fn validate_movement_amount(raw: &str) -> Result<Decimal, AppError> {
     let amount = parse_money_amount(raw).map_err(|_| {
         AppError::Validation(
             "el monto debe ser un numero positivo con maximo 2 decimales".into(),
         )
     })?;
-    if amount >= Decimal::from(MAX_MOVEMENT_AMOUNT) {
+    if amount >= Decimal::from(MAX_MONEY_AMOUNT) {
         return Err(AppError::Validation(
             "el monto debe ser menor a 1000000000".into(),
         ));
@@ -205,10 +202,10 @@ pub fn validate_movement_amount(raw: &str) -> Result<Decimal, AppError> {
     Ok(amount)
 }
 
-/// Validate a free-text description (passthrough, max 2000 bytes), else
-/// Spanish 422.
+/// Validate a free-text description (passthrough, max 2000 characters),
+/// else Spanish 422.
 pub fn validate_description(raw: &str) -> Result<String, AppError> {
-    if raw.len() > MAX_DESCRIPTION_LEN {
+    if raw.chars().count() > MAX_DESCRIPTION_LEN {
         return Err(AppError::Validation(
             "la descripcion debe tener maximo 2000 caracteres".into(),
         ));
@@ -555,11 +552,30 @@ mod tests {
             validate_movement_amount("3500000.00").unwrap(),
             Decimal::new(350_000_000, 2)
         );
+        assert_eq!(
+            validate_movement_amount("999999999.99").unwrap(),
+            Decimal::new(99_999_999_999, 2)
+        );
+        assert_eq!(
+            validate_movement_amount(" 25000 ").unwrap(),
+            Decimal::new(25_000, 0)
+        );
     }
 
     #[test]
     fn movement_amount_rejects_bad_values_as_422() {
-        for raw in ["0.00", "0", "-10.00", "10.005", "abc", "", "12,50"] {
+        for raw in [
+            "0.00",
+            "0",
+            "-10.00",
+            "10.005",
+            "0.001",
+            "abc",
+            "",
+            "12,50",
+            "٢٥٠٠٠",
+            "２５０００",
+        ] {
             assert_422(validate_movement_amount(raw).unwrap_err());
         }
     }
@@ -576,7 +592,32 @@ mod tests {
         assert_eq!(validate_description("mercado").unwrap(), "mercado");
         assert_422(validate_description(&"x".repeat(2001)).unwrap_err());
         validate_description(&"x".repeat(2000))
-            .expect("2000 bytes is the documented bound");
+            .expect("2000 chars is the documented bound");
+        // The 422 says "maximo 2000 caracteres": count chars, not bytes.
+        validate_description(&"á".repeat(2000)).expect("2000 accented chars fit by char count");
+        assert_422(validate_description(&"á".repeat(2001)).unwrap_err());
+    }
+
+    #[test]
+    fn movement_date_boundary_uses_canonical_validator() {
+        assert_eq!(
+            validate_occurred_on("2028-02-29").unwrap(),
+            NaiveDate::from_ymd_opt(2028, 2, 29).unwrap()
+        );
+        assert!(validate_occurred_on("2026-02-29").is_err(), "non-leap Feb 29");
+        assert_eq!(
+            validate_occurred_on("0001-01-01").unwrap(),
+            NaiveDate::from_ymd_opt(1, 1, 1).unwrap()
+        );
+        assert_eq!(
+            validate_occurred_on(" 2026-10-03 ").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 10, 3).unwrap(),
+            "padded date is trimmed"
+        );
+        assert!(
+            validate_occurred_on("2026-10-03T00:00:00Z").is_err(),
+            "RFC3339 must be 422 for occurred_on"
+        );
     }
 
     #[test]
