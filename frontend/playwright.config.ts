@@ -22,6 +22,11 @@ export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: false,
+  // The live smoke drives one shared user whose dashboard layout is persisted
+  // server-side, so two spec files running concurrently can race on the same
+  // layout (a widget hidden by one spec while another re-enables it). Serial
+  // execution keeps the smoke deterministic; CI only lists the specs.
+  workers: 1,
   retries: 0,
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://localhost:3000",

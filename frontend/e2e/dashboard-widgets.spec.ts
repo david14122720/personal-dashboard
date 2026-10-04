@@ -16,10 +16,15 @@ test("home 4 widgets exactos, links y telemetria intacta", async ({ page }) => {
 test("toggle persiste tras reload y vacios ES", async ({ page }) => {
   await loginViaApi(page);
   await page.goto("/dashboard/");
-  const sw = page.getByRole("switch", { name: /upcoming-payments/ });
-  await expect(sw.first()).toBeVisible();
-  await sw.first().click();
+  // Both the widget header and the «Personalizar» panel render an
+  // «upcoming-payments» switch, so the hide click is scoped to the widget
+  // region instead of relying on DOM order.
+  const widget = page.getByRole("region", { name: "Próximos pagos" });
+  const sw = widget.getByRole("switch", { name: /upcoming-payments/ });
+  await expect(sw).toBeVisible();
+  await sw.click();
   await page.reload();
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await page.getByRole("switch", { name: /upcoming-payments/ }).first().click();
+  // The widget region is unmounted while hidden: re-enable it from «Personalizar».
+  await page.getByRole("region", { name: "Personalizar" }).getByRole("switch", { name: /upcoming-payments/ }).click();
 });

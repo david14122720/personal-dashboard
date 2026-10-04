@@ -9,7 +9,8 @@ test("login with valid credentials redirects to the dashboard", async ({ page })
 
   await page.goto("/login/");
   await page.getByLabel("Correo electrónico").fill(email as string);
-  await page.getByLabel("Contraseña").fill(password as string);
+  // `exact: true` skips the «Mostrar contraseña» toggle, whose aria-label also contains the word.
+  await page.getByLabel("Contraseña", { exact: true }).fill(password as string);
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
 
   await expect(page).toHaveURL(/\/dashboard\/?$/);
