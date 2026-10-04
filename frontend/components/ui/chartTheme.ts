@@ -29,3 +29,19 @@ export function chartTick(): { fill: string; fontSize: number } {
 
 /** Multi-series palette for habit evolution/compare (max 4, token-driven, no hex). */
 export const EVOLUTION_SERIES_TOKENS = ["--color-flow", "--color-signal", "--color-alert", "--color-violet"] as const;
+
+/** Category pie palette (token-driven, no hex). Deterministic order so the
+ * legend is stable; cycles when a period has more categories than tokens. */
+export const CATEGORY_PIE_TOKENS = [
+  "--color-signal",
+  "--color-flow",
+  "--color-warn",
+  "--color-violet",
+  "--color-alert",
+  "--color-signal-soft",
+] as const;
+
+/** Token for pie slice `index`, cycling through `CATEGORY_PIE_TOKENS`. */
+export function categoryPieToken(index: number): `--color-${string}` {
+  return CATEGORY_PIE_TOKENS[index % CATEGORY_PIE_TOKENS.length];
+}

@@ -5,7 +5,7 @@ test.skip(!liveSmoke, "Set E2E_SMOKE_LIVE=1 with a live backend to run smoke spe
 test("home 4 widgets exactos, links y telemetria intacta", async ({ page }) => {
   await loginViaApi(page);
   await page.goto("/dashboard/");
-  await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   // S-F + this change: exactly the 4 survivors — no pending-debts, no month-split cards, no active-subs.
   for (const n of ["Próximos pagos", "Tareas pendientes", "Próximos eventos", "Progreso de metas"]) await expect(page.getByText(n, { exact: true }).first()).toBeVisible();
   await expect(page.getByText("Suscripciones activas", { exact: true })).toHaveCount(0);
@@ -20,6 +20,6 @@ test("toggle persiste tras reload y vacios ES", async ({ page }) => {
   await expect(sw.first()).toBeVisible();
   await sw.first().click();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   await page.getByRole("switch", { name: /upcoming-payments/ }).first().click();
 });

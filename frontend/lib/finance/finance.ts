@@ -305,9 +305,24 @@ export interface CategoryMovementTotals {
   income: number;
 }
 
+/** Regla de una sola moneda, definida una vez para los cuatro agregados:
+ * participa solo el movimiento cuya cuenta está en el mapa y cuya moneda
+ * coincide con la del usuario. Una cuenta ausente del mapa (p. ej. archivada:
+ * `/accounts` la oculta pero `/movements` todavía devuelve sus filas) se
+ * excluye; nunca se asume la moneda del usuario ni se convierte. */
+function isUserCurrencyMovement(
+  movement: MovementWire,
+  currencyByAccountId: Map<string, string>,
+  userCurrency: string,
+): boolean {
+  return currencyByAccountId.get(movement.account_id) === userCurrency;
+}
+
 /** Per-category expense/income over movements, never netted. Rows without a
- * category are excluded (no "sin categoría" bucket); rows on accounts whose
- * currency differs from the user currency are excluded, never converted. */
+ * category are excluded (no "sin categoría" bucket); only rows whose account is
+ * in the map and shares the user currency are counted (see
+ * `isUserCurrencyMovement`): foreign-currency accounts and accounts missing
+ * from the map are excluded, never converted or assumed. */
 export function toCategoryMovementTotals(
   movements: MovementWire[] | null | undefined,
   currencyByAccountId: Map<string, string>,
@@ -318,7 +333,7 @@ export function toCategoryMovementTotals(
   let income = 0;
   for (const m of movements ?? []) {
     if ((m.category_id ?? null) !== categoryId) continue;
-    if ((currencyByAccountId.get(m.account_id) ?? userCurrency) !== userCurrency) continue;
+    if (!isUserCurrencyMovement(m, currencyByAccountId, userCurrency)) continue;
     const amount = toNumber(m.amount);
     if (m.direction === "expense") expense += amount;
     else income += amount;
@@ -494,9 +509,10 @@ export function trendBuckets(
 }
 
 /** One category's movements split into the N period buckets. Applies the
- * single-currency rule of `toCategoryMovementTotals` (never converts), keeps
- * expense and income separate (never nets) and always returns every bucket,
- * empty ones as 0/0 so the trend has no gaps. */
+ * single-currency rule of `toCategoryMovementTotals` (accounts missing from
+ * the map are excluded, never converted), keeps expense and income separate
+ * (never nets) and always returns every bucket, empty ones as 0/0 so the
+ * trend has no gaps. */
 export function toCategoryTrend(
   movements: MovementWire[] | undefined,
   opts: {
@@ -514,7 +530,7 @@ export function toCategoryTrend(
   );
   for (const m of movements ?? []) {
     if ((m.category_id ?? null) !== opts.categoryId) continue;
-    if ((opts.currencyByAccountId.get(m.account_id) ?? opts.userCurrency) !== opts.userCurrency) continue;
+    if (!isUserCurrencyMovement(m, opts.currencyByAccountId, opts.userCurrency)) continue;
     const window = windows.find((w) => w.from <= m.occurred_on && m.occurred_on <= w.to);
     if (!window) continue;
     const total = totals.get(window.key)!;
@@ -526,4 +542,113 @@ export function toCategoryTrend(
     const total = totals.get(w.key)!;
     return { bucket: w.key, label: w.label, expense: total.expense, income: total.income };
   });
+}
+
+/** Category-agnostic totals trend: every same-currency movement split into
+ * the N period buckets, expense and income kept separate (never netted).
+ * Movements whose account is missing from the map are excluded (never assumed
+ * to be the user currency). Unlike `toCategoryTrend` there is no category
+ * filter, so rows with a null `category_id` participate and no per-category
+ * grouping is produced. */
+export function toTotalTrend(
+  movements: MovementWire[] | undefined,
+  opts: {
+    period: TrendPeriod;
+    currencyByAccountId: Map<string, string>;
+    userCurrency: string;
+    now?: Date;
+    buckets?: number;
+  },
+): TrendBucket[] {
+  const windows = trendBuckets(opts.period, opts.now, opts.buckets);
+  const totals = new Map<string, { expense: number; income: number }>(
+    windows.map((w) => [w.key, { expense: 0, income: 0 }]),
+  );
+  for (const m of movements ?? []) {
+    if (!isUserCurrencyMovement(m, opts.currencyByAccountId, opts.userCurrency)) continue;
+    const window = windows.find((w) => w.from <= m.occurred_on && m.occurred_on <= w.to);
+    if (!window) continue;
+    const total = totals.get(window.key)!;
+    const amount = toNumber(m.amount);
+    if (m.direction === "expense") total.expense += amount;
+    else total.income += amount;
+  }
+  return windows.map((w) => {
+    const total = totals.get(w.key)!;
+    return { bucket: w.key, label: w.label, expense: total.expense, income: total.income };
+  });
+}
+
+// -- W3: pastel de gasto por categoría del periodo actual (puro, sin fetch) --
+
+export interface ExpenseCategorySlice {
+  categoryId: string;
+  name: string;
+  value: number;
+}
+
+/** Rango del periodo actual por opción del pastel: día = hoy; semana = la
+ * semana ISO en curso, lunes a domingo, la misma ventana que el bucket actual
+ * del trend (decisión del owner: una sola «Semana» en la página); mes/año = la
+ * unidad natural actual completa. Se arma con los helpers de fecha local del
+ * archivo para que las fechas `occurred_on` nunca se corran por UTC. */
+export function currentPeriodRange(
+  period: TrendPeriod,
+  now: Date = new Date(),
+): { from: string; to: string } {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  switch (period) {
+    case "day":
+      return { from: toISODateLocal(today), to: toISODateLocal(today) };
+    case "week": {
+      const from = addLocalDays(today, -((today.getDay() + 6) % 7));
+      return { from: toISODateLocal(from), to: toISODateLocal(addLocalDays(from, 6)) };
+    }
+    case "month": {
+      const year = today.getFullYear();
+      const month = today.getMonth();
+      return {
+        from: `${year}-${pad2(month + 1)}-01`,
+        to: toISODateLocal(new Date(year, month + 1, 0)),
+      };
+    }
+    case "year": {
+      const year = today.getFullYear();
+      return { from: `${year}-01-01`, to: `${year}-12-31` };
+    }
+  }
+}
+
+/** Gastos de `range` agrupados por categoría persistida, de mayor a menor.
+ * Solo participan `direction === "expense"` con `category_id` no nulo que
+ * exista en la lista `categories` respaldada por la API (los ids solo locales
+ * quedan fuera); se excluyen ingresos y filas sin categoría. Aplica la regla
+ * de una sola moneda de `toCategoryMovementTotals` (cuenta ausente del mapa →
+ * excluida, nunca se asume su moneda ni se convierte), el rango es inclusivo
+ * en ambos bordes y los totales en cero se descartan. */
+export function toExpenseByCategory(
+  movements: MovementWire[] | null | undefined,
+  opts: {
+    range: { from: string; to: string };
+    categories: CategoryWire[] | null | undefined;
+    currencyByAccountId: Map<string, string>;
+    userCurrency: string;
+  },
+): ExpenseCategorySlice[] {
+  const nameById = new Map((opts.categories ?? []).map((c) => [c.id, c.name]));
+  const totals = new Map<string, number>();
+  for (const m of movements ?? []) {
+    if (m.direction !== "expense") continue;
+    const categoryId = m.category_id ?? null;
+    if (categoryId === null || !nameById.has(categoryId)) continue;
+    if (!isUserCurrencyMovement(m, opts.currencyByAccountId, opts.userCurrency)) {
+      continue;
+    }
+    if (m.occurred_on < opts.range.from || m.occurred_on > opts.range.to) continue;
+    totals.set(categoryId, (totals.get(categoryId) ?? 0) + toNumber(m.amount));
+  }
+  return [...totals.entries()]
+    .filter(([, value]) => value !== 0)
+    .map(([categoryId, value]) => ({ categoryId, name: nameById.get(categoryId)!, value }))
+    .sort((a, b) => b.value - a.value);
 }

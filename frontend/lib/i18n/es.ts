@@ -1,7 +1,7 @@
 // Spanish dictionary (single locale). Code and comments stay English.
 export const es = {
   nav: {
-    overview: "Resumen",
+    overview: "Dashboard",
     finance: "Finanzas",
     productivity: "Productividad",
     habits: "Hábitos",
@@ -44,8 +44,8 @@ export const es = {
     awaitingCheckin: "Pendiente de registro",
     nothingPending: "Nada pendiente",
     allCheckedIn: "Todos los hábitos están registrados por hoy.",
-    overview: "Resumen",
-    overviewTitle: "Resumen General",
+    overview: "Dashboard",
+    overviewTitle: "Dashboard",
     logActivity: "+ Registrar actividad",
     overviewSubtitle: "Telemetría en vivo de tus cuentas, suscripciones y hábitos.",
     loadingDashboard: "Cargando panel",
@@ -81,6 +81,17 @@ export const es = {
     showMore: "Ver en sección",
     noFlowData: "Sin datos de flujo aún",
     noFlowHint: "Agrega movimientos para ver ingresos frente a gastos.",
+    // W2 dashboard chart disclosures; W3 adds the expense-pie family.
+    totalTrendTitle: "Gastos vs. ingresos",
+    totalTrendHint: "Totales por periodo en tu moneda, sin agrupar por categoría.",
+    totalTrendChartLabel: "Gastos e ingresos por periodo",
+    totalTrendEmpty: "Sin movimientos en {currency} en este periodo",
+    totalTrendPeriodLabel: "Periodo de la tendencia",
+    expensePieTitle: "Gastos por categoría",
+    expensePieHint: "Solo gastos del periodo actual en tu moneda, agrupados por categoría.",
+    expensePieChartLabel: "Gastos por categoría en el periodo actual",
+    expensePieEmpty: "Sin gastos en {currency} en este periodo",
+    expensePiePeriodLabel: "Periodo del pastel",
   },
   notifications: {
     bell: "Avisos",

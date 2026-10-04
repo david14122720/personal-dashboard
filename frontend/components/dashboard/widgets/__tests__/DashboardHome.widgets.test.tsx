@@ -135,7 +135,7 @@ describe("DashboardHome 4 widgets S-H", () => {
       { id: "active-subs", type: "list", order: 22, size: "md" },
     ];
     render(<DashboardHome />);
-    await screen.findByRole("heading", { name: /Resumen General/ });
+    await screen.findByRole("heading", { name: "Dashboard" });
     expect(screen.queryByText("Deudas pendientes")).not.toBeInTheDocument();
     expect(screen.queryByText("Ahorro del mes")).not.toBeInTheDocument();
     expect(screen.queryByText("Suscripciones activas")).not.toBeInTheDocument();
@@ -161,7 +161,7 @@ describe("DashboardHome 4 widgets S-H", () => {
       { id: "goal-progress", type: "chart", order: 30, size: "md" },
     ];
     render(<DashboardHome />);
-    await screen.findByRole("heading", { name: /Resumen General/ });
+    await screen.findByRole("heading", { name: "Dashboard" });
     expect(screen.queryByRole("heading", { name: "Próximos pagos" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Tareas pendientes" })).toBeInTheDocument();
   });

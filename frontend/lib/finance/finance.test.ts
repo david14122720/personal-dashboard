@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  currentPeriodRange,
   normalizeManualAmount,
   toAccountCards,
+  toCategoryMovementTotals,
   toCategoryTrend,
+  toExpenseByCategory,
   toMonthlyPrice,
   toPeriodRange,
   toSubscriptionRows,
+  toTotalTrend,
   todayInBogota,
   TREND_BUCKETS,
   TREND_PERIODS,
   trendBuckets,
 } from "./finance";
-import type { MovementWire } from "@/lib/api/finance";
+import type { CategoryWire, MovementWire } from "@/lib/api/finance";
 
 describe("finance transforms", () => {
   it("returns empty rows for nullish input", () => {
@@ -325,5 +329,303 @@ describe("toCategoryTrend", () => {
 
     const weeks = toCategoryTrend([], { ...TREND_BASE, period: "week", now, buckets: 2 });
     expect(weeks.map((b) => b.bucket)).toEqual(["2026-W39", "2026-W40"]);
+  });
+});
+
+// -- W2: tendencia total sin categoría (reusa trendBuckets, nunca netea) --
+describe("toTotalTrend", () => {
+  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
+  const totalsBase = { currencyByAccountId: TREND_ACCOUNTS, userCurrency: "COP" } as const;
+
+  it("devuelve siempre N buckets por periodo, de más viejo a más nuevo", () => {
+    const counts: Array<["day" | "week" | "month" | "year", number]> = [
+      ["day", 14],
+      ["week", 8],
+      ["month", 12],
+      ["year", 5],
+    ];
+    for (const [period, count] of counts) {
+      const buckets = toTotalTrend([], { ...totalsBase, period, now });
+      expect(buckets).toHaveLength(count);
+      expect(buckets.map((b) => b.bucket)).toEqual(
+        trendBuckets(period, now).map((w) => w.key),
+      );
+    }
+    expect(toTotalTrend([], { ...totalsBase, period: "day", now })[13].bucket).toBe("2026-10-03");
+    expect(toTotalTrend([], { ...totalsBase, period: "month", now })[0].bucket).toBe("2025-11");
+    expect(toTotalTrend([], { ...totalsBase, period: "year", now })[4].bucket).toBe("2026");
+  });
+
+  it("suma gasto e ingreso por separado en el mismo bucket (nunca netea)", () => {
+    const buckets = toTotalTrend(
+      [
+        trendMovement({ id: "e1", direction: "expense", amount: "100.00" }),
+        trendMovement({ id: "i1", direction: "income", amount: "20.00" }),
+      ],
+      { ...totalsBase, period: "day", now },
+    );
+    expect(buckets[13]).toMatchObject({ bucket: "2026-10-03", expense: 100, income: 20 });
+    expect(Object.keys(buckets[13]).sort()).toEqual(["bucket", "expense", "income", "label"]);
+  });
+
+  it("incluye movimientos sin categoría (category_id null)", () => {
+    const buckets = toTotalTrend(
+      [trendMovement({ id: "z", category_id: null, amount: "666.00" })],
+      { ...totalsBase, period: "day", now },
+    );
+    expect(buckets[13].expense).toBe(666);
+  });
+
+  // FIX de corrección monetaria: antes una cuenta ausente del mapa caía al
+  // fallback de moneda del usuario; ahora se excluye igual que una cuenta en
+  // otra moneda (las archivadas salen de /accounts pero siguen en /movements).
+  it("excluye movimientos de cuentas en otra moneda y de cuentas ausentes del mapa", () => {
+    const buckets = toTotalTrend(
+      [
+        trendMovement({ id: "usd", account_id: "usd1", amount: "999.00" }),
+        trendMovement({ id: "missing", account_id: "a9", amount: "111.00" }),
+      ],
+      { ...totalsBase, period: "day", now },
+    );
+    expect(buckets.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+  });
+
+  it("excluye movimientos fuera de rango y deja los buckets vacíos en 0/0", () => {
+    const buckets = toTotalTrend(
+      [trendMovement({ occurred_on: "2026-09-19", amount: "777.00" })],
+      { ...totalsBase, period: "day", now },
+    );
+    expect(buckets).toHaveLength(14);
+    expect(buckets.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+  });
+
+  it("tolera payload indefinido y respeta el override de buckets", () => {
+    const empty = toTotalTrend(undefined, { ...totalsBase, period: "year", now });
+    expect(empty).toHaveLength(5);
+    expect(empty.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+
+    const overridden = toTotalTrend([], { ...totalsBase, period: "day", now, buckets: 3 });
+    expect(overridden.map((b) => b.bucket)).toEqual(["2026-10-01", "2026-10-02", "2026-10-03"]);
+  });
+});
+
+// -- W3: pastel de gasto por categoría del periodo actual (puros, sin fetch) --
+describe("currentPeriodRange", () => {
+  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
+
+  it("día = solo hoy", () => {
+    expect(currentPeriodRange("day", now)).toEqual({ from: "2026-10-03", to: "2026-10-03" });
+  });
+
+  // Decisión del owner (JD-B-001): «Semana» significa una sola cosa en la
+  // página; el pastel usa la misma semana ISO lunes–domingo que el trend.
+  it("semana = la semana ISO en curso, lunes a domingo, igual que el bucket actual del trend", () => {
+    expect(currentPeriodRange("week", now)).toEqual({ from: "2026-09-28", to: "2026-10-04" });
+    const currentWeek = trendBuckets("week", now)[TREND_BUCKETS.week - 1];
+    expect(currentPeriodRange("week", now)).toEqual({
+      from: currentWeek.from,
+      to: currentWeek.to,
+    });
+  });
+
+  it("mes = mes natural actual completo", () => {
+    expect(currentPeriodRange("month", now)).toEqual({ from: "2026-10-01", to: "2026-10-31" });
+  });
+
+  it("año = año natural actual completo", () => {
+    expect(currentPeriodRange("year", now)).toEqual({ from: "2026-01-01", to: "2026-12-31" });
+  });
+
+  it("no desplaza el día por UTC (semana que cruza de mes y febrero bisiesto)", () => {
+    const firstOfMarch = new Date(2026, 2, 2, 0, 30, 0); // lunes 2 de marzo de 2026
+    expect(currentPeriodRange("week", firstOfMarch)).toEqual({
+      from: "2026-03-02",
+      to: "2026-03-08",
+    });
+    expect(currentPeriodRange("month", new Date(2024, 1, 15, 23, 59, 0))).toEqual({
+      from: "2024-02-01",
+      to: "2024-02-29",
+    });
+    expect(currentPeriodRange("week", new Date(2026, 0, 2, 12, 0, 0))).toEqual({
+      from: "2025-12-29",
+      to: "2026-01-04",
+    });
+  });
+});
+
+function financeCategory(id: string, name: string): CategoryWire {
+  return {
+    id,
+    kind: "finance",
+    name,
+    color: null,
+    icon: null,
+    is_archived: false,
+    created_at: "2026-10-01T00:00:00Z",
+  };
+}
+
+describe("toExpenseByCategory", () => {
+  const RANGE = { from: "2026-10-01", to: "2026-10-31" };
+  const CATEGORIES = [
+    financeCategory("c1", "Comida"),
+    financeCategory("c2", "Transporte"),
+    financeCategory("c3", "Ocio"),
+  ];
+  const base = {
+    range: RANGE,
+    categories: CATEGORIES,
+    currencyByAccountId: TREND_ACCOUNTS,
+    userCurrency: "COP",
+  } as const;
+
+  it("agrupa solo gastos por id persistido y ordena de mayor a menor", () => {
+    const slices = toExpenseByCategory(
+      [
+        trendMovement({ id: "m1", category_id: "c2", amount: "50.00" }),
+        trendMovement({ id: "m2", category_id: "c1", amount: "300.00" }),
+        trendMovement({ id: "m3", category_id: "c1", amount: "200.00" }),
+      ],
+      base,
+    );
+    expect(slices).toEqual([
+      { categoryId: "c1", name: "Comida", value: 500 },
+      { categoryId: "c2", name: "Transporte", value: 50 },
+    ]);
+  });
+
+  it("excluye ingresos aunque compartan categoría", () => {
+    const slices = toExpenseByCategory(
+      [
+        trendMovement({ id: "e1", direction: "expense", amount: "100.00" }),
+        trendMovement({ id: "i1", direction: "income", amount: "900.00" }),
+      ],
+      base,
+    );
+    expect(slices).toEqual([{ categoryId: "c1", name: "Comida", value: 100 }]);
+  });
+
+  it("excluye category_id null sin crear un bucket «sin categoría»", () => {
+    const slices = toExpenseByCategory(
+      [
+        trendMovement({ id: "n1", category_id: null, amount: "777.00" }),
+        trendMovement({ id: "m1", category_id: "c1", amount: "10.00" }),
+      ],
+      base,
+    );
+    expect(slices).toEqual([{ categoryId: "c1", name: "Comida", value: 10 }]);
+  });
+
+  it("excluye ids ausentes de la lista persistida (solo locales o desconocidos)", () => {
+    const slices = toExpenseByCategory(
+      [
+        trendMovement({ id: "l1", category_id: "local-only", amount: "999.00" }),
+        trendMovement({ id: "m1", category_id: "c1", amount: "20.00" }),
+      ],
+      base,
+    );
+    expect(slices).toEqual([{ categoryId: "c1", name: "Comida", value: 20 }]);
+    expect(toExpenseByCategory([trendMovement({ category_id: "local-only" })], base)).toEqual([]);
+  });
+
+  it("incluye los bordes from/to exactos y excluye el día anterior y el posterior", () => {
+    const slices = toExpenseByCategory(
+      [
+        trendMovement({ id: "before", occurred_on: "2026-09-30", amount: "1.00" }),
+        trendMovement({ id: "from", occurred_on: "2026-10-01", amount: "2.00" }),
+        trendMovement({ id: "to", occurred_on: "2026-10-31", amount: "3.00" }),
+        trendMovement({ id: "after", occurred_on: "2026-11-01", amount: "4.00" }),
+      ],
+      base,
+    );
+    expect(slices).toEqual([{ categoryId: "c1", name: "Comida", value: 5 }]);
+  });
+
+  // FIX de corrección monetaria: la cuenta ausente del mapa ya no cae al
+  // fallback de moneda del usuario; se excluye y nunca se convierte.
+  it("excluye cuentas en otra moneda y cuentas ausentes del mapa", () => {
+    const slices = toExpenseByCategory(
+      [
+        trendMovement({ id: "usd", account_id: "usd1", amount: "999.00" }),
+        trendMovement({ id: "missing", account_id: "a9", amount: "111.00" }),
+      ],
+      base,
+    );
+    expect(slices).toEqual([]);
+  });
+
+  it("descarta los totales en cero (incluso si netean a cero)", () => {
+    const slices = toExpenseByCategory(
+      [
+        trendMovement({ id: "zero", category_id: "c2", amount: "0.00" }),
+        trendMovement({ id: "pos", amount: "100.00" }),
+        trendMovement({ id: "neg", amount: "-100.00" }),
+        trendMovement({ id: "real", category_id: "c3", amount: "250.00" }),
+      ],
+      base,
+    );
+    expect(slices).toEqual([{ categoryId: "c3", name: "Ocio", value: 250 }]);
+  });
+
+  it("tolera movimientos o categorías nulos o indefinidos", () => {
+    expect(toExpenseByCategory(undefined, base)).toEqual([]);
+    expect(toExpenseByCategory([trendMovement()], { ...base, categories: null })).toEqual([]);
+    expect(toExpenseByCategory([trendMovement()], { ...base, categories: undefined })).toEqual([]);
+  });
+});
+
+// -- FIX de corrección monetaria: cuenta ausente del mapa se excluye --
+// Una cuenta archivada desaparece de `GET /accounts` pero sus movimientos
+// siguen en `GET /movements`, así que el mapa queda sin su moneda: sus montos
+// ya no pueden asumirse en la moneda del usuario (antes se sumaban a los
+// totales y a las tendencias). La cobertura de `toCategoryMovementTotals`
+// vive aquí porque `lib/finance/movements.test.ts` queda fuera del alcance de
+// este fix.
+describe("regla de una sola moneda: cuenta ausente del mapa excluida", () => {
+  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
+  const rows = [
+    trendMovement({ id: "cop-gasto", account_id: "a1", amount: "10.00" }),
+    trendMovement({ id: "cop-ingreso", account_id: "a1", direction: "income", amount: "20.00" }),
+    trendMovement({ id: "usd-gasto", account_id: "usd1", amount: "1000.00" }),
+    trendMovement({ id: "ausente-gasto", account_id: "a9", amount: "10000.00" }),
+    trendMovement({
+      id: "ausente-ingreso",
+      account_id: "a9",
+      direction: "income",
+      amount: "20000.00",
+    }),
+  ];
+
+  it("toCategoryMovementTotals cuenta solo la cuenta conocida en la moneda del usuario", () => {
+    expect(toCategoryMovementTotals(rows, TREND_ACCOUNTS, "COP", "c1")).toEqual({
+      expense: 10,
+      income: 20,
+    });
+  });
+
+  it("toCategoryTrend cuenta solo la cuenta conocida en la moneda del usuario", () => {
+    const buckets = toCategoryTrend(rows, { ...TREND_BASE, period: "day", now });
+    expect(buckets[13]).toMatchObject({ expense: 10, income: 20 });
+  });
+
+  it("toTotalTrend cuenta solo la cuenta conocida en la moneda del usuario", () => {
+    const buckets = toTotalTrend(rows, {
+      currencyByAccountId: TREND_ACCOUNTS,
+      userCurrency: "COP",
+      period: "day",
+      now,
+    });
+    expect(buckets[13]).toMatchObject({ expense: 10, income: 20 });
+  });
+
+  it("toExpenseByCategory cuenta solo la cuenta conocida en la moneda del usuario", () => {
+    expect(
+      toExpenseByCategory(rows, {
+        range: { from: "2026-10-03", to: "2026-10-03" },
+        categories: [financeCategory("c1", "Comida")],
+        currencyByAccountId: TREND_ACCOUNTS,
+        userCurrency: "COP",
+      }),
+    ).toEqual([{ categoryId: "c1", name: "Comida", value: 10 }]);
   });
 });

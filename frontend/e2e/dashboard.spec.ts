@@ -7,7 +7,7 @@ test("dashboard home renders telemetry strip and charts container", async ({ pag
   await loginViaApi(page);
 
   await page.goto("/dashboard/");
-  await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   // This change removed the patrimonio KPI: saldo total is the strip's only money figure.
   await expect(page.getByText("Saldo total").first()).toBeVisible();
   await expect(page.getByText("Patrimonio neto")).toHaveCount(0);

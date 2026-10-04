@@ -13,7 +13,7 @@ test("login with valid credentials redirects to the dashboard", async ({ page })
   await page.getByRole("button", { name: "Iniciar sesión" }).click();
 
   await expect(page).toHaveURL(/\/dashboard\/?$/);
-  await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 
   const token = await page.evaluate(() => localStorage.getItem("dashboard-token"));
   expect(token, "bearer token persisted in localStorage").toBeTruthy();

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import DashboardHome from "./DashboardHome";
 
@@ -81,7 +81,7 @@ describe("DashboardHome ES copy", () => {
     expect(screen.getByText("No se pudo cargar esta sección")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Reintentar" }).length).toBeGreaterThanOrEqual(1);
     // El resto (widgets, secciones) sigue vivo.
-    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.getByText("Telemetría en vivo de tus cuentas, suscripciones y hábitos.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Próximos pagos" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Hoy" })).toBeInTheDocument();
@@ -140,7 +140,7 @@ describe("DashboardHome ES copy", () => {
 
   it("renders Spanish widget shells and overview copy without removed charts", () => {
     render(<DashboardHome />);
-    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.queryByText("v2.4 Telemetría")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "+ Registrar actividad" })).toHaveAttribute(
       "href",
@@ -157,7 +157,7 @@ describe("DashboardHome ES copy", () => {
     (globalThis as Record<string, unknown>).__DH__ = "loading";
     render(<DashboardHome />);
     expect(screen.getByRole("status", { name: "Cargando panel" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Próximos pagos" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Deudas pendientes" })).not.toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__DH__;
@@ -185,7 +185,7 @@ describe("DashboardHome ES copy", () => {
     // The active-subscriptions widget retired by the consolidation is ignored too.
     expect(screen.queryByText("Suscripciones activas")).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: /active-subs/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /Resumen General/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Últimos movimientos" })).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__LAYOUT__;
   });
@@ -216,5 +216,89 @@ describe("DashboardHome ES copy", () => {
     render(<DashboardHome />);
     expect(screen.getByText("racha de 3 días")).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__HABITS__;
+  });
+});
+
+describe("DashboardHome chart disclosures W4", () => {
+  it("renders exactly the two chart disclosures collapsed with hidden aria-controls targets", () => {
+    render(<DashboardHome />);
+
+    const trend = screen.getByRole("button", { name: "Gastos vs. ingresos" });
+    const pie = screen.getByRole("button", { name: "Gastos por categoría" });
+    expect(screen.getAllByRole("button", { name: "Gastos vs. ingresos" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Gastos por categoría" })).toHaveLength(1);
+    expect(trend).toHaveAttribute("aria-expanded", "false");
+    expect(pie).toHaveAttribute("aria-expanded", "false");
+    expect(trend).toHaveAttribute("aria-controls", "dashboard-total-trend-panel");
+    expect(pie).toHaveAttribute("aria-controls", "dashboard-expense-pie-panel");
+
+    const trendPanel = document.getElementById("dashboard-total-trend-panel");
+    const piePanel = document.getElementById("dashboard-expense-pie-panel");
+    expect(trendPanel).not.toBeNull();
+    expect(piePanel).not.toBeNull();
+    expect(trendPanel).toHaveAttribute("hidden");
+    expect(piePanel).toHaveAttribute("hidden");
+
+    // Pills and chart content stay unmounted until each disclosure opens.
+    expect(screen.queryByRole("group", { name: "Periodo" })).not.toBeInTheDocument();
+    expect(trendPanel).toBeEmptyDOMElement();
+    expect(piePanel).toBeEmptyDOMElement();
+  });
+
+  it("toggles each chart disclosure independently", () => {
+    render(<DashboardHome />);
+
+    const trend = screen.getByRole("button", { name: "Gastos vs. ingresos" });
+    const pie = screen.getByRole("button", { name: "Gastos por categoría" });
+
+    fireEvent.click(trend);
+    expect(trend).toHaveAttribute("aria-expanded", "true");
+    expect(pie).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById("dashboard-total-trend-panel")).not.toHaveAttribute("hidden");
+    expect(document.getElementById("dashboard-expense-pie-panel")).toHaveAttribute("hidden");
+
+    fireEvent.click(pie);
+    expect(trend).toHaveAttribute("aria-expanded", "true");
+    expect(pie).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(trend);
+    expect(trend).toHaveAttribute("aria-expanded", "false");
+    expect(pie).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps each period selection in its own radio group", () => {
+    render(<DashboardHome />);
+    fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
+
+    const trendRadios = document.querySelectorAll<HTMLInputElement>(
+      'input[name="dashboard-total-trend-period"]',
+    );
+    const pieRadios = document.querySelectorAll<HTMLInputElement>(
+      'input[name="dashboard-expense-pie-period"]',
+    );
+    expect(trendRadios).toHaveLength(4);
+    expect(pieRadios).toHaveLength(4);
+
+    const trendMonth = document.querySelector<HTMLInputElement>(
+      'input[name="dashboard-total-trend-period"][value="month"]',
+    )!;
+    const pieMonth = document.querySelector<HTMLInputElement>(
+      'input[name="dashboard-expense-pie-period"][value="month"]',
+    )!;
+    expect(trendMonth.checked).toBe(true);
+    expect(pieMonth.checked).toBe(true);
+
+    fireEvent.click(
+      document.querySelector<HTMLInputElement>(
+        'input[name="dashboard-expense-pie-period"][value="day"]',
+      )!,
+    );
+    const pieDay = document.querySelector<HTMLInputElement>(
+      'input[name="dashboard-expense-pie-period"][value="day"]',
+    )!;
+    expect(pieDay.checked).toBe(true);
+    expect(pieMonth.checked).toBe(false);
+    expect(trendMonth.checked).toBe(true);
   });
 });

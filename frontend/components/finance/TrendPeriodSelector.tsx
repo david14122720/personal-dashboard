@@ -20,19 +20,25 @@ const TREND_LABEL_KEYS: Record<TrendPeriod, EsKey> = {
 export default function TrendPeriodSelector({
   value,
   onChange,
+  name = "trend-period",
+  label,
 }: {
   value: TrendPeriod;
   onChange: (period: TrendPeriod) => void;
+  name?: string;
+  label?: string;
 }) {
   return (
     <fieldset>
-      <legend className="font-display text-sm font-medium">{t("finance.trendPeriodLabel")}</legend>
+      <legend className="font-display text-sm font-medium">
+        {label ?? t("finance.trendPeriodLabel")}
+      </legend>
       <div className="mt-2 flex flex-wrap gap-2">
         {TREND_PERIODS.map((period) => (
           <label key={period} className={pillClass}>
             <input
               type="radio"
-              name="trend-period"
+              name={name}
               value={period}
               checked={value === period}
               onChange={() => onChange(period)}

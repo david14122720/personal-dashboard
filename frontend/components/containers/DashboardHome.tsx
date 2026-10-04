@@ -8,6 +8,8 @@ import EmptyState from "@/components/ui/EmptyState";
 import TelemetryStrip, { type TelemetryItem } from "@/components/ui/TelemetryStrip";
 import WidgetToggle from "@/components/ui/WidgetToggle";
 import NotificationBell from "@/components/notifications/NotificationBell";
+import ExpensePieSection from "@/components/dashboard/ExpensePieSection";
+import TotalTrendSection from "@/components/dashboard/TotalTrendSection";
 import GoalProgress from "@/components/dashboard/widgets/GoalProgress";
 import MovementsSnapshot from "@/components/dashboard/widgets/MovementsSnapshot";
 import PendingTasks from "@/components/dashboard/widgets/PendingTasks";
@@ -33,11 +35,14 @@ import { toMonthlyCost } from "@/lib/dashboard/transforms";
 import { toAccountCards, toTotalBalance } from "@/lib/finance/finance";
 
 /**
- * Dashboard home container. Owns all SWR reads (fired in parallel) and
- * coercion at the boundary; `components/ui/*` stay pure. The telemetry
- * strip reads three live sources only (D4): account count, monthly
- * subscription cost and total balance — no net worth, no debts, no
- * savings, no flow, budget or category aggregate is queried.
+ * Dashboard home container. Home-level SWR reads fire in parallel and
+ * coercion happens at the boundary; `components/ui/*` stay pure. The
+ * telemetry strip reads three live sources only (D4): account count,
+ * monthly subscription cost and total balance. The two movement chart
+ * sections below the strip own their own lazily mounted reads (the
+ * existing `finance/movements` source plus accounts/categories/prefs)
+ * and only mount when opened — no removed aggregate endpoint (net worth,
+ * debts, savings, flow, budget or category aggregate) is queried.
  */
 
 function SectionSkeleton() {
@@ -181,6 +186,15 @@ export default function DashboardHome() {
         ) : (
           <TelemetryStrip items={strip} />
         )}
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <div className="col-span-12 lg:col-span-7">
+          <TotalTrendSection />
+        </div>
+        <div className="col-span-12 lg:col-span-5">
+          <ExpensePieSection />
+        </div>
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">

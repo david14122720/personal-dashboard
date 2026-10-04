@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 import { chartToken, formatMonth, t } from "./index";
 
 describe("i18n foundation", () => {
+  it("resolves the Dashboard identity copy from the three existing keys", () => {
+    expect(t("nav.overview")).toBe("Dashboard");
+    expect(t("dashboard.overview")).toBe("Dashboard");
+    expect(t("dashboard.overviewTitle")).toBe("Dashboard");
+  });
+
   it("resolves core Spanish copy", () => {
-    expect(t("nav.overview")).toBe("Resumen");
     expect(t("nav.finance")).toBe("Finanzas");
     expect(t("login.submit")).toBe("Iniciar sesión");
     expect(t("common.loading")).toBe("Cargando…");
@@ -38,7 +43,7 @@ describe("p8 dashboard + notifications copy (PR1 RED)", () => {
     expect(t("dashboard.goalProgress")).toBeTruthy();
   });
 
-  it("resolves the S-H Resumen strip and section copy", () => {
+  it("resolves the S-H overview strip and section copy", () => {
     expect(t("dashboard.totalBalance")).toBe("Saldo total");
     expect(t("dashboard.latestMovementsTitle")).toBe("Últimos movimientos");
     expect(t("dashboard.latestMovementsHint")).toBeTruthy();
@@ -70,6 +75,25 @@ describe("p8 dashboard + notifications copy (PR1 RED)", () => {
     expect(t("notifications.bellLabel", { n: 4 })).toContain("4");
     expect(t("notifications.dueOn", { date: "12 sept" })).toContain("12 sept");
     expect(t("notifications.amountDue", { amount: "$ 500", date: "12 sept" })).toBe("$ 500 · vence 12 sept");
+  });
+});
+
+describe("dashboard chart copy names the currency in scope", () => {
+  it("interpolates the user currency in the totals empty note", () => {
+    expect(t("dashboard.totalTrendEmpty", { currency: "COP" })).toBe(
+      "Sin movimientos en COP en este periodo",
+    );
+  });
+
+  it("interpolates the user currency in the pie empty note", () => {
+    expect(t("dashboard.expensePieEmpty", { currency: "COP" })).toBe(
+      "Sin gastos en COP en este periodo",
+    );
+  });
+
+  it("states the currency scope in both chart hints", () => {
+    expect(t("dashboard.totalTrendHint")).toMatch(/tu moneda/);
+    expect(t("dashboard.expensePieHint")).toMatch(/tu moneda/);
   });
 });
 
