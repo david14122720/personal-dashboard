@@ -11,6 +11,7 @@
 import { toNumber } from "@/lib/api/money";
 import type {
   CategoryWire,
+  MovementDirection,
   MovementWire,
   SubscriptionWire,
 } from "@/lib/api/finance";
@@ -19,45 +20,20 @@ import type { AccountWire } from "@/lib/api/dashboard";
 export interface AccountCardView {
   id: string;
   name: string;
-  type: string;
   currency: string;
   balance: number;
-  isCard: boolean;
-  used: number | null;
-  available: number | null;
-  /** Usage percent as reported by the API, or null for non-card accounts. */
-  usagePct: number | null;
-  alertLevel: string | null;
-  statementBalance: number | null;
 }
 
-export interface AccountWireLike extends AccountWire {
-  credit_limit?: string | number | null;
-  used_balance?: string | number | null;
-  available_balance?: string | number | null;
-  usage_pct?: string | number | null;
-  statement_balance?: string | number | null;
-}
-
-/** Coerce account payloads (with card usage metrics) to card view models. */
-export function toAccountCards(rows: AccountWireLike[] | null | undefined): AccountCardView[] {
+/** Coerce account payloads to the type-free view model (W1: no card branch,
+ * no card metric). The name stays for review focus; renaming is a non-goal. */
+export function toAccountCards(rows: AccountWire[] | null | undefined): AccountCardView[] {
   if (!rows) return [];
-  return rows.map((row) => {
-    const isCard = row.type === "credit_card";
-    return {
-      id: row.id,
-      name: row.name,
-      type: row.type,
-      currency: row.currency,
-      balance: toNumber(row.balance),
-      isCard,
-      used: row.used_balance == null ? null : toNumber(row.used_balance),
-      available: row.available_balance == null ? null : toNumber(row.available_balance),
-      usagePct: row.usage_pct == null ? null : toNumber(row.usage_pct),
-      alertLevel: row.alert_level ?? null,
-      statementBalance: row.statement_balance == null ? null : toNumber(row.statement_balance),
-    };
-  });
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    currency: row.currency,
+    balance: toNumber(row.balance),
+  }));
 }
 
 export interface CompactMoneyRow {
@@ -231,28 +207,61 @@ export function toPeriodRange(sel: PeriodSel, now: Date = new Date()): { from: s
   }
 }
 
+/** Shift a `YYYY-MM-DD` by whole UTC days; invalid input passes through. */
+function shiftDay(date: string, days: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return date;
+  const shifted = new Date(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + days),
+  );
+  return shifted.toISOString().slice(0, 10);
+}
+
 /**
  * Rango de fechas `YYYY-MM-DD` → rango RFC 3339 para `GET /events`, cuyo backend
  * exige un datetime RFC 3339 (una fecha desnuda es 422) y filtra por solape con
  * `starts_at < to` / `ends_at > from`.
+ *
+ * `marginDays` widens both edges by whole days before converting. Local-day
+ * grids bucket client-side in the browser timezone, so a query pinned to UTC
+ * midnight can drop an event that belongs to a visible local day near the
+ * edges; calendar callers pass 1. Day-precision callers keep the default 0.
  */
-export function toEventRange(range: { from: string; to: string }): { from: string; to: string } {
-  return { from: `${range.from}T00:00:00.000Z`, to: `${range.to}T23:59:59.999Z` };
+export function toEventRange(
+  range: { from: string; to: string },
+  marginDays = 0,
+): { from: string; to: string } {
+  const from = marginDays > 0 ? shiftDay(range.from, -marginDays) : range.from;
+  const to = marginDays > 0 ? shiftDay(range.to, marginDays) : range.to;
+  return { from: `${from}T00:00:00.000Z`, to: `${to}T23:59:59.999Z` };
 }
 
 // -- Movements ledger (S-C): rows, aggregates, Bogota dates, paid derivation --
 
 /** One movement ready to render: numbers only, names resolved. `displayDate`
  * is the Spanish rendering of `occurredOn` (see `formatMovementDate`); money
- * itself stays a number and components format it with `formatMoney`. */
+ * itself stays a number and components format it with `formatMoney`.
+ * A transfer keeps `direction: "transfer"` (never re-labelled as income),
+ * resolves its destination into `transferAccountName` from the same account
+ * map as the origin, and is create/delete only (`editable: false`, D2.4). */
 export interface MovementRowView {
   id: string;
-  direction: "expense" | "income";
+  direction: MovementDirection;
   amount: number;
   occurredOn: string;
   displayDate: string;
   description: string | null;
   accountName: string;
+  /** Transfer destination name; `null` for expense/income rows and for a
+   * transfer whose destination is absent from the current account map (see
+   * `transferAccountUnknown`). */
+  transferAccountName: string | null;
+  /** `true` only for a transfer whose destination account is missing from
+   * the map (archived/removed): renderers show an explicit marker instead of
+   * a raw identifier. `false` otherwise. */
+  transferAccountUnknown: boolean;
+  /** `false` for transfers: the renderer offers no edit affordance (D2.4). */
+  editable: boolean;
   categoryName: string | null;
 }
 
@@ -278,7 +287,12 @@ export function formatMovementDate(occurredOn: string, locale = "es-CO"): string
 
 /** Movement wires → render rows. Unknown account/category ids fall back to
  * the raw id (never blank); a null category stays null so aggregates can
- * exclude it. Rows keep API order — callers slice (never re-sort). */
+ * exclude it. A transfer resolves `transfer_account_id` through the same
+ * account map, keeps `direction: "transfer"` — never income — and is marked
+ * `editable: false`. An unknown destination (archived/removed account) is
+ * flagged through `transferAccountUnknown` with a null name, so the route
+ * copy can show a marker instead of the raw id. Rows keep API order —
+ * callers slice (never re-sort). */
 export function toMovementRows(
   movements: MovementWire[] | null | undefined,
   accounts: NamedOption[],
@@ -288,16 +302,25 @@ export function toMovementRows(
   if (!movements) return [];
   const accountById = new Map(accounts.map((a) => [a.id, a.name]));
   const categoryById = new Map(categories.map((c) => [c.id, c.name]));
-  return movements.map((m) => ({
-    id: m.id,
-    direction: m.direction,
-    amount: toNumber(m.amount),
-    occurredOn: m.occurred_on,
-    displayDate: formatMovementDate(m.occurred_on, locale),
-    description: m.description,
-    accountName: accountById.get(m.account_id) ?? m.account_id,
-    categoryName: m.category_id == null ? null : (categoryById.get(m.category_id) ?? m.category_id),
-  }));
+  return movements.map((m) => {
+    const isTransfer = m.direction === "transfer";
+    const destinationId = isTransfer ? (m.transfer_account_id ?? null) : null;
+    const destinationName =
+      destinationId == null ? null : (accountById.get(destinationId) ?? null);
+    return {
+      id: m.id,
+      direction: m.direction,
+      amount: toNumber(m.amount),
+      occurredOn: m.occurred_on,
+      displayDate: formatMovementDate(m.occurred_on, locale),
+      description: m.description,
+      accountName: accountById.get(m.account_id) ?? m.account_id,
+      transferAccountName: destinationName,
+      transferAccountUnknown: destinationId != null && destinationName == null,
+      editable: m.direction === "expense" || m.direction === "income",
+      categoryName: m.category_id == null ? null : (categoryById.get(m.category_id) ?? m.category_id),
+    };
+  });
 }
 
 export interface CategoryMovementTotals {
@@ -309,7 +332,9 @@ export interface CategoryMovementTotals {
  * participa solo el movimiento cuya cuenta está en el mapa y cuya moneda
  * coincide con la del usuario. Una cuenta ausente del mapa (p. ej. archivada:
  * `/accounts` la oculta pero `/movements` todavía devuelve sus filas) se
- * excluye; nunca se asume la moneda del usuario ni se convierte. */
+ * excluye; nunca se asume la moneda del usuario ni se convierte. Las
+ * transferencias obedecen la misma regla (sus dos patas comparten moneda por
+ * construcción, D2.1): el guard no cambia. */
 function isUserCurrencyMovement(
   movement: MovementWire,
   currencyByAccountId: Map<string, string>,
@@ -332,11 +357,14 @@ export function toCategoryMovementTotals(
   let expense = 0;
   let income = 0;
   for (const m of movements ?? []) {
+    // D2.6 #1: only expense/income rows have a series; a transfer is neither.
+    if (m.direction === "transfer") continue;
     if ((m.category_id ?? null) !== categoryId) continue;
     if (!isUserCurrencyMovement(m, currencyByAccountId, userCurrency)) continue;
     const amount = toNumber(m.amount);
     if (m.direction === "expense") expense += amount;
-    else income += amount;
+    else if (m.direction === "income") income += amount;
+    // No default arm: an unknown direction never becomes income.
   }
   return { expense, income };
 }
@@ -529,6 +557,8 @@ export function toCategoryTrend(
     windows.map((w) => [w.key, { expense: 0, income: 0 }]),
   );
   for (const m of movements ?? []) {
+    // D2.6 #2: a transfer never lands in the `ingreso` series (nor expense).
+    if (m.direction === "transfer") continue;
     if ((m.category_id ?? null) !== opts.categoryId) continue;
     if (!isUserCurrencyMovement(m, opts.currencyByAccountId, opts.userCurrency)) continue;
     const window = windows.find((w) => w.from <= m.occurred_on && m.occurred_on <= w.to);
@@ -536,7 +566,8 @@ export function toCategoryTrend(
     const total = totals.get(window.key)!;
     const amount = toNumber(m.amount);
     if (m.direction === "expense") total.expense += amount;
-    else total.income += amount;
+    else if (m.direction === "income") total.income += amount;
+    // No default arm: an unknown direction never becomes income.
   }
   return windows.map((w) => {
     const total = totals.get(w.key)!;
@@ -565,13 +596,16 @@ export function toTotalTrend(
     windows.map((w) => [w.key, { expense: 0, income: 0 }]),
   );
   for (const m of movements ?? []) {
+    // D2.6 #3: a transfer-only period stays at 0/0, never inflates income.
+    if (m.direction === "transfer") continue;
     if (!isUserCurrencyMovement(m, opts.currencyByAccountId, opts.userCurrency)) continue;
     const window = windows.find((w) => w.from <= m.occurred_on && m.occurred_on <= w.to);
     if (!window) continue;
     const total = totals.get(window.key)!;
     const amount = toNumber(m.amount);
     if (m.direction === "expense") total.expense += amount;
-    else total.income += amount;
+    else if (m.direction === "income") total.income += amount;
+    // No default arm: an unknown direction never becomes income.
   }
   return windows.map((w) => {
     const total = totals.get(w.key)!;
@@ -638,6 +672,9 @@ export function toExpenseByCategory(
   const nameById = new Map((opts.categories ?? []).map((c) => [c.id, c.name]));
   const totals = new Map<string, number>();
   for (const m of movements ?? []) {
+    // D2.6 #4: a transfer is never a slice; the expense gate below is kept
+    // intentionally, so the exclusion is explicit rather than incidental.
+    if (m.direction === "transfer") continue;
     if (m.direction !== "expense") continue;
     const categoryId = m.category_id ?? null;
     if (categoryId === null || !nameById.has(categoryId)) continue;

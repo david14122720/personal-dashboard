@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import ProductivityScreens from "@/components/containers/ProductivityScreens";
+import { calendarDateLabel, todayYmdLocal } from "@/lib/productivity/productivity";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
@@ -331,5 +332,79 @@ describe("productivity collapsed creation forms", () => {
     expect(nuevo).toHaveAttribute("aria-controls", "productivity-form-events");
     fireEvent.click(nuevo);
     expect(nuevo).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("productivity calendar mount (W4)", () => {
+  it("renders the calendar block collapsed and first above the four sections", async () => {
+    const { container } = renderScreens();
+    await screen.findByRole("region", { name: "Metas" });
+    const trigger = screen.getByRole("button", { name: "Calendario" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("grid")).not.toBeInTheDocument();
+    const heading = screen.getByRole("heading", { name: "Calendario" });
+    const sectionGrid = container.querySelector(".grid.grid-cols-12");
+    expect(sectionGrid?.firstElementChild?.contains(heading)).toBe(true);
+    expect(screen.getAllByRole("region").map((region) => region.getAttribute("aria-label"))).toEqual([
+      "Metas",
+      "Tareas",
+      "Eventos",
+      "Notas",
+    ]);
+  });
+
+  it("opens the calendar and reveals a day's tasks and events", async () => {
+    const due = `${todayYmdLocal().slice(0, 7)}-10`;
+    server.use(
+      http.get("http://test.local/api/tasks", () =>
+        HttpResponse.json([{ ...tasks[0], id: "t-cal", title: "Tarea del calendario", due_date: due }]),
+      ),
+      http.get("http://test.local/api/events", () =>
+        HttpResponse.json([
+          {
+            id: "e-cal",
+            title: "Evento del calendario",
+            description: null,
+            kind: "event",
+            starts_at: new Date(`${due}T10:00:00`).toISOString(),
+            ends_at: new Date(`${due}T11:00:00`).toISOString(),
+            all_day: false,
+            location: null,
+          },
+        ]),
+      ),
+    );
+    renderScreens();
+    await screen.findByRole("region", { name: "Tareas" });
+    fireEvent.click(screen.getByRole("button", { name: "Calendario" }));
+    const grid = await screen.findByRole("grid");
+    const label = calendarDateLabel(due);
+    const cell = within(grid)
+      .getAllByRole("gridcell")
+      .find((node) => node.getAttribute("aria-label")?.includes(label));
+    expect(cell).toBeDefined();
+    await waitFor(() => {
+      expect(cell?.querySelector('[data-marker="task"]')).not.toBeNull();
+      expect(cell?.querySelector('[data-marker="event"]')).not.toBeNull();
+    });
+    fireEvent.click(cell as HTMLElement);
+    const detail = await screen.findByRole("region", { name: /Detalle de/ });
+    expect(within(detail).getByText("Tarea del calendario")).toBeInTheDocument();
+    expect(within(detail).getByText("Evento del calendario")).toBeInTheDocument();
+  });
+
+  it("keeps a full-width calendar placeholder in the loading skeleton", async () => {
+    server.use(
+      http.get("http://test.local/api/goals", async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return HttpResponse.json(goals);
+      }),
+    );
+    renderScreens();
+    const status = screen.getByRole("status", { name: "Cargando secciones de productividad" });
+    const placeholders = status.querySelectorAll(".animate-pulse");
+    expect(placeholders).toHaveLength(5);
+    expect(placeholders[0].className).toContain("col-span-12");
+    await screen.findByRole("region", { name: "Metas" });
   });
 });

@@ -97,6 +97,46 @@ describe("dashboard chart copy names the currency in scope", () => {
   });
 });
 
+describe("productivity calendar copy (W4)", () => {
+  it("resolves the calendar block copy", () => {
+    expect(t("productivity.calendarTitle")).toBe("Calendario");
+    expect(t("productivity.calendarToday")).toBe("Hoy");
+    expect(t("productivity.calendarPrev")).toBe("Mes anterior");
+    expect(t("productivity.calendarNext")).toBe("Mes siguiente");
+    expect(t("productivity.calendarWeekdays").split(",")).toEqual([
+      "Lun",
+      "Mar",
+      "Mié",
+      "Jue",
+      "Vie",
+      "Sáb",
+      "Dom",
+    ]);
+  });
+
+  it("interpolates the day label and the marker counts", () => {
+    expect(
+      t("productivity.calendarDayLabel", { date: "15 de octubre", summary: "2 tareas, 1 evento" }),
+    ).toBe("15 de octubre: 2 tareas, 1 evento");
+    expect(t("productivity.calendarTasksMany", { n: 2 })).toBe("2 tareas");
+    expect(t("productivity.calendarTasksOne")).toBe("1 tarea");
+    expect(t("productivity.calendarEventsMany", { n: 3 })).toBe("3 eventos");
+    expect(t("productivity.calendarEventsOne")).toBe("1 evento");
+    expect(t("productivity.calendarDayEmptyLabel", { date: "15 de octubre" })).toBe(
+      "15 de octubre: sin tareas ni eventos",
+    );
+  });
+
+  it("resolves the day detail and empty/error copy", () => {
+    expect(t("productivity.calendarDayDetail", { date: "15 de octubre" })).toBe(
+      "Detalle de 15 de octubre",
+    );
+    expect(t("productivity.calendarEmptyDay")).toBeTruthy();
+    expect(t("productivity.calendarEmptyMonth")).toBeTruthy();
+    expect(t("productivity.calendarLoadFailed")).toBeTruthy();
+  });
+});
+
 describe("chartToken", () => {
   it("reads CSS custom properties via getComputedStyle", () => {
     document.documentElement.style.setProperty(
@@ -142,5 +182,77 @@ describe("S3b snapshot + balance-edit copy", () => {
     expect(t("finance.balanceSaved")).toBe("Saldo actualizado.");
     expect(t("finance.subtitle", { currency: "COP" })).not.toMatch(/mayor|presupuesto/i);
     expect(t("dashboard.overviewSubtitle")).not.toMatch(/presupuesto/i);
+  });
+});
+
+// -- W2/W5: copia tipada de transferencias y filas de movimiento --
+describe("transfer copy (W2/W5)", () => {
+  // `finance.transferSaved` is deliberately re-introduced by design D6 with a
+  // new value; it is the modal confirmation, not the deleted page/ledger family.
+  it("resolves the transfer modal family with the exact design copy", () => {
+    // Owner literal wording: both the entry button and the modal title say
+    // «Mover dinero» (the owner's request wins over the design draft).
+    expect(t("finance.addTransfer")).toBe("Mover dinero");
+    expect(t("finance.transferModalTitle")).toBe("Mover dinero");
+    expect(t("finance.transferFrom")).toBe("Cuenta origen");
+    expect(t("finance.transferTo")).toBe("Cuenta destino");
+    expect(t("finance.transferSaved")).toBe("Transferencia registrada.");
+    expect(t("finance.transferSameAccountError")).toBe("Elige dos cuentas distintas.");
+    expect(t("finance.transferCurrencyError")).toBe("Ambas cuentas deben usar la misma moneda.");
+  });
+
+  it("resolves the row labels and the direction filter option", () => {
+    expect(t("finance.paymentMethod")).toBe("Método de pago");
+    expect(t("finance.movementAccountLabel")).toBe("Cuenta");
+    expect(t("finance.movementDirectionTransfer")).toBe("Transferencia");
+    expect(t("finance.movementTransferRoute", { from: "Ahorros", to: "Nequi" })).toBe(
+      "Transferencia: Ahorros → Nequi",
+    );
+  });
+
+  it("preserves the subscription payment method Transferencia", () => {
+    expect(t("finance.paymentTransfer")).toBe("Transferencia");
+  });
+
+  it("does not resurrect the deleted transfer page/ledger family", () => {
+    const forbidden = [
+      "finance.newTransfer",
+      "finance.saveTransfer",
+      "finance.transfersTitle",
+      "finance.transfersSubtitle",
+      "finance.transfersRegion",
+      "finance.showingTransfers",
+      "finance.noTransfers",
+      "finance.noTransfersHint",
+      "finance.loadingTransfers",
+      "finance.transfersLoadFailed",
+      "finance.transfersLoadFailedHint",
+      "finance.transferDirection",
+    ] as const;
+    for (const key of forbidden) {
+      // @ts-expect-error la familia retirada no existe en el diccionario
+      expect(() => t(key)).toThrow(/Unknown i18n key/);
+    }
+  });
+});
+
+// -- W3/A5: copia tipada de la gestión de sesiones --
+describe("session management copy (W3)", () => {
+  it("resolves the sessions settings family", () => {
+    expect(t("nav.sessions")).toBe("Sesiones");
+    expect(t("settings.sessionsTitle")).toBe("Sesiones activas");
+    expect(t("settings.sessionsCurrent")).toBe("Actual");
+    expect(t("settings.sessionsCreated")).toBe("Inicio");
+    expect(t("settings.sessionsExpires")).toBe("Expira");
+    expect(t("settings.sessionsIp")).toBe("IP");
+    expect(t("settings.sessionsRevokeOthers")).toBe("Cerrar otras sesiones");
+    expect(t("settings.sessionsRevoking")).toBe("Cerrando…");
+    expect(t("settings.sessionsRevokedOthers")).toBe("Sesiones cerradas.");
+    expect(t("settings.sessionsEmpty")).toBe("Sin sesiones registradas");
+    expect(t("settings.sessionsLoadFailed")).toBe("No se pudieron cargar las sesiones");
+    expect(t("settings.sessionsRevokeFailed")).toBe(
+      "No se pudieron cerrar las sesiones. Inténtalo de nuevo.",
+    );
+    expect(t("settings.sessionsRevokeConfirm")).toContain("Cerrar");
   });
 });

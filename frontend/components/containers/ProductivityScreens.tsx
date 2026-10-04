@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
+import ProductivityCalendar from "@/components/productivity/ProductivityCalendar";
 import { t } from "@/lib/i18n";
 import {
   EventsList,
@@ -64,6 +65,7 @@ import { toISODate } from "@/lib/dashboard/transforms";
 
 function SectionsSkeleton() {
   const spans = [
+    "col-span-12",
     "col-span-12 xl:col-span-6",
     "col-span-12 md:col-span-6 xl:col-span-6",
     "col-span-12 md:col-span-6 xl:col-span-6",
@@ -130,12 +132,14 @@ export default function ProductivityScreens() {
     notes: null,
   });
   const prevOpenRef = useRef<ProductivitySectionId | null>(null);
+  /** One-sided «próximos» bound for the Eventos section; the calendar owns its
+   * own two-bound read for the visible grid range. Pinned once per mount. */
   const [eventsFrom] = useState(() => new Date().toISOString());
   const debouncedQuery = useDebouncedValue(query.trim());
 
   const goals = useGoals();
   const tasks = useTasks();
-  const events = useEvents(eventsFrom);
+  const events = useEvents(eventsFrom, null);
   const notes = useNotesSearch(debouncedQuery);
 
   const queries = [goals, tasks, events, notes];
@@ -314,6 +318,7 @@ export default function ProductivityScreens() {
           </div>
         ) : (
           <>
+            <ProductivityCalendar />
             <SectionShell
               title={t("productivity.goals")}
               hint={t("productivity.goalsHint")}

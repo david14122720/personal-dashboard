@@ -85,18 +85,11 @@ function renderWithSWR(ui: React.ReactElement) {
   );
 }
 
-const card: AccountCardView = {
+const account: AccountCardView = {
   id: "a-src",
   name: "Ahorros",
-  type: "cash",
   currency: "COP",
   balance: 1500000,
-  isCard: false,
-  used: null,
-  available: null,
-  usagePct: null,
-  alertLevel: null,
-  statementBalance: null,
 };
 
 describe("S1 api helpers (saldos manuales, sin UUIDs visibles)", () => {
@@ -188,14 +181,14 @@ describe("inline balance edit (S3b, diseño §6.2)", () => {
   });
 
   it("shows the current value and opens the edit with a per-account label", () => {
-    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    renderWithSWR(<AccountBalanceEdit account={account} locale="es-CO" />);
     expect(screen.getByText("Ahorros")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
     expect(screen.getByLabelText("Editar saldo de Ahorros")).toHaveValue("1500000");
   });
 
   it("blocks invalid input in Spanish without a request", async () => {
-    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    renderWithSWR(<AccountBalanceEdit account={account} locale="es-CO" />);
     fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
     const box = screen.getByLabelText("Editar saldo de Ahorros");
     fireEvent.change(box, { target: { value: "10.005" } });
@@ -205,7 +198,7 @@ describe("inline balance edit (S3b, diseño §6.2)", () => {
   });
 
   it("cancel sends nothing and restores the view", () => {
-    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    renderWithSWR(<AccountBalanceEdit account={account} locale="es-CO" />);
     fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
     const region = screen.getByLabelText("Editar saldo de Ahorros").closest("div")!;
     fireEvent.change(screen.getByLabelText("Editar saldo de Ahorros"), {
@@ -218,7 +211,7 @@ describe("inline balance edit (S3b, diseño §6.2)", () => {
 
   it("saves a valid balance as a string and collapses", async () => {
     setToken("tok");
-    renderWithSWR(<AccountBalanceEdit account={card} locale="es-CO" />);
+    renderWithSWR(<AccountBalanceEdit account={account} locale="es-CO" />);
     fireEvent.click(screen.getByRole("button", { name: "Editar saldo de Ahorros" }));
     fireEvent.change(screen.getByLabelText("Editar saldo de Ahorros"), {
       target: { value: "980000" },

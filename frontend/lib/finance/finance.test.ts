@@ -23,40 +23,27 @@ describe("finance transforms", () => {
     expect(toSubscriptionRows(undefined)).toEqual([]);
   });
 
-  it("coerces account card usage metrics and keeps statement balance", () => {
-    const cards = toAccountCards([
-      {
-        id: "a1",
-        name: "Visa",
-        type: "credit_card",
-        currency: "COP",
-        balance: "-500.00",
-        alert_level: "warn",
-        used_balance: "500.00",
-        available_balance: "1500.00",
-        usage_pct: "25.00",
-        statement_balance: "320.50",
-      },
+  it("coerces the type-free account wire to the view model", () => {
+    const rows = toAccountCards([
+      { id: "a1", name: "Principal", currency: "COP", balance: "1500000.00" },
+      { id: "a2", name: "Bolsillo", currency: "USD", balance: 20 },
     ]);
-    expect(cards[0].isCard).toBe(true);
-    expect(cards[0].used).toBe(500);
-    expect(cards[0].usagePct).toBe(25);
-    expect(cards[0].statementBalance).toBe(320.5);
-  });
-
-  it("marks plain accounts as non-card with null usage", () => {
-    const cards = toAccountCards([
-      {
-        id: "a2",
-        name: "Wallet",
-        type: "cash",
-        currency: "COP",
-        balance: "200.00",
-      },
+    expect(rows).toEqual([
+      { id: "a1", name: "Principal", currency: "COP", balance: 1500000 },
+      { id: "a2", name: "Bolsillo", currency: "USD", balance: 20 },
     ]);
-    expect(cards[0].isCard).toBe(false);
-    expect(cards[0].used).toBeNull();
-    expect(cards[0].alertLevel).toBeNull();
+    // W1: no type and no card metric survives on the view model.
+    for (const removed of [
+      "type",
+      "isCard",
+      "used",
+      "available",
+      "usagePct",
+      "alertLevel",
+      "statementBalance",
+    ]) {
+      expect(rows[0]).not.toHaveProperty(removed);
+    }
   });
 
   it("keeps active subscriptions with monthly price and next billing date only", () => {
@@ -627,5 +614,83 @@ describe("regla de una sola moneda: cuenta ausente del mapa excluida", () => {
         userCurrency: "COP",
       }),
     ).toEqual([{ categoryId: "c1", name: "Comida", value: 10 }]);
+  });
+});
+
+// -- W2 D2.6: una transferencia nunca entra a un agregado de dinero --
+describe("transferencias excluidas de los agregados", () => {
+  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
+  const pieBase = {
+    range: { from: "2026-10-03", to: "2026-10-03" },
+    categories: [financeCategory("c1", "Comida")],
+    currencyByAccountId: TREND_ACCOUNTS,
+    userCurrency: "COP",
+  };
+  const copTransfer = trendMovement({
+    id: "t1",
+    direction: "transfer",
+    category_id: "c1",
+    account_id: "a1",
+    transfer_account_id: "a2",
+    amount: "500.00",
+  });
+
+  // D2.6 #2: sin la exclusión, la transferencia cae en la serie `ingreso`.
+  it("toCategoryTrend no crea un punto de ingreso con una transferencia", () => {
+    const buckets = toCategoryTrend(
+      [copTransfer, trendMovement({ id: "i1", direction: "income", amount: "50.00" })],
+      { ...TREND_BASE, period: "day", now },
+    );
+    expect(buckets[13]).toMatchObject({ expense: 0, income: 50 });
+  });
+
+  // D2.6 #3: un periodo solo con transferencias queda vacío (0/0), nunca inflado.
+  it("toTotalTrend deja los buckets en 0/0 si el periodo solo tiene transferencias", () => {
+    const buckets = toTotalTrend([copTransfer], {
+      currencyByAccountId: TREND_ACCOUNTS,
+      userCurrency: "COP",
+      period: "day",
+      now,
+    });
+    expect(buckets.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+  });
+
+  // D2.6 #4: el pastel excluye por gasto, pero la transferencia se salta
+  // explícitamente aunque lleve una categoría persistida.
+  it("toExpenseByCategory no agrega una rebanada por una transferencia", () => {
+    const slices = toExpenseByCategory(
+      [copTransfer, trendMovement({ id: "e1", category_id: "c1", amount: "100.00" })],
+      pieBase,
+    );
+    expect(slices).toEqual([{ categoryId: "c1", name: "Comida", value: 100 }]);
+  });
+
+  it("excluye una transferencia entre cuentas que no están en la moneda del usuario (punto 8)", () => {
+    const usdTransfer = trendMovement({
+      id: "t-usd",
+      direction: "transfer",
+      category_id: "c1",
+      account_id: "usd1",
+      transfer_account_id: "a1",
+      amount: "999.00",
+    });
+    expect(toCategoryMovementTotals([usdTransfer], TREND_ACCOUNTS, "COP", "c1")).toEqual({
+      expense: 0,
+      income: 0,
+    });
+    expect(
+      toCategoryTrend([usdTransfer], { ...TREND_BASE, period: "day", now }).every(
+        (b) => b.expense === 0 && b.income === 0,
+      ),
+    ).toBe(true);
+    expect(
+      toTotalTrend([usdTransfer], {
+        currencyByAccountId: TREND_ACCOUNTS,
+        userCurrency: "COP",
+        period: "day",
+        now,
+      }).every((b) => b.expense === 0 && b.income === 0),
+    ).toBe(true);
+    expect(toExpenseByCategory([usdTransfer], pieBase)).toEqual([]);
   });
 });

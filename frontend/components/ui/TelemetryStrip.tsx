@@ -3,9 +3,9 @@ import { ledDotClass } from "@/lib/dashboard/transforms";
 
 /**
  * Full-width telemetry strip: labelled KPIs with optional status LEDs.
- * Every LED maps its backend enum 1:1 — account `alert_level`
- * (ok|warn|high) — to the documented visual state. (Slice S2 removed the
- * budget status LED; no budget item may be passed.)
+ * Every LED maps its status value 1:1 (ok|warn|high|over) to the documented
+ * visual state. (Slice S2 removed the budget status LED; no budget item may
+ * be passed.)
  */
 
 export interface TelemetryItem {

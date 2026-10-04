@@ -5,6 +5,7 @@ import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
 import {
   createMovement,
+  createTransfer,
   deleteMovement,
   patchMovement,
   type MovementWire,
@@ -30,6 +31,42 @@ export type MovementModalMode =
   | { kind: "create"; direction: "expense" | "income" }
   | { kind: "edit"; movement: MovementWire };
 
+/** Keyboard-focusable elements inside an open dialog, in DOM order. */
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+/**
+ * Keep Tab/Shift+Tab cycling inside `container` so the dialogs' explicit
+ * `aria-modal="true"` claim matches behavior. Wraps from the last focusable
+ * node to the first (and back); a no-op when the container has none.
+ */
+function trapTabKey(event: KeyboardEvent, container: HTMLElement | null): void {
+  if (!container) return;
+  const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  const inside = active !== null && container.contains(active);
+  if (event.shiftKey) {
+    if (!inside || active === first) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+  if (!inside || active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 export function MovementModal({
   mode,
   accounts,
@@ -46,9 +83,13 @@ export function MovementModal({
   const { mutate } = useSWRConfig();
   const initial = mode.kind === "edit" ? mode.movement : null;
 
-  const [direction, setDirection] = useState<"expense" | "income">(
-    initial?.direction ?? (mode.kind === "create" ? mode.direction : "expense"),
-  );
+  // Transfers are create/delete only (D2.4), so the edit modal never receives
+  // one; the third direction is narrowed explicitly instead of leaking into
+  // the two-direction form (the type gate requires it).
+  const [direction, setDirection] = useState<"expense" | "income">(() => {
+    if (mode.kind === "create") return mode.direction;
+    return mode.movement.direction === "income" ? "income" : "expense";
+  });
   const [amount, setAmount] = useState(
     initial ? String(initial.amount) : "",
   );
@@ -64,6 +105,7 @@ export function MovementModal({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const amountRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closedRef = useRef(false);
 
   function close(): void {
@@ -73,13 +115,18 @@ export function MovementModal({
     openerRef?.current?.focus();
   }
 
-  // Focus the amount field on open; Esc closes without sending a request.
+  // Focus the amount field on open; Esc closes without sending a request and
+  // Tab/Shift+Tab stay inside the dialog.
   useEffect(() => {
     amountRef.current?.focus();
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
         event.preventDefault();
         close();
+        return;
+      }
+      if (event.key === "Tab") {
+        trapTabKey(event, dialogRef.current);
       }
     }
     document.addEventListener("keydown", onKeyDown);
@@ -174,6 +221,7 @@ export function MovementModal({
       data-testid="movement-modal-overlay"
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="movement-modal-title"
@@ -322,6 +370,258 @@ export function MovementModal({
                 </div>
               </div>
             ) : null}
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Owned account as a transfer selector option: name for display, currency
+ * for the client-side same-currency check (the backend still re-validates). */
+export interface TransferAccountOption {
+  id: string;
+  name: string;
+  currency: string;
+}
+
+/**
+ * «Mover dinero» modal: one transfer between two own accounts. The origin is
+ * preselected by the account row that opens it and the destination selector
+ * never offers the chosen origin. Changing the origin to the account already
+ * chosen as destination clears that now-invalid selection live (the
+ * same-account save check stays as the backstop). The same-account and
+ * cross-currency checks block the request in Spanish before it is sent;
+ * success shows the CSS-only confirmation and revalidates
+ * `finance/movements` (the new row) plus `dashboard/accounts` (both balances
+ * were rewritten).
+ */
+export function TransferModal({
+  accounts,
+  initialFromAccountId = "",
+  openerRef,
+  onClose,
+}: {
+  accounts: TransferAccountOption[];
+  initialFromAccountId?: string;
+  openerRef?: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+}) {
+  const { mutate } = useSWRConfig();
+  const [fromAccountId, setFromAccountId] = useState(initialFromAccountId);
+  const [toAccountId, setToAccountId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [occurredOn, setOccurredOn] = useState(todayInBogota());
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const amountRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closedRef = useRef(false);
+
+  function close(): void {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    onClose();
+    openerRef?.current?.focus();
+  }
+
+  // Focus the amount field on open; Esc closes without sending a request and
+  // Tab/Shift+Tab stay inside the dialog.
+  useEffect(() => {
+    amountRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key === "Tab") {
+        trapTabKey(event, dialogRef.current);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function revalidate(): Promise<void> {
+    await mutate("finance/movements");
+    await mutate("dashboard/accounts");
+  }
+
+  function validate(): string | null {
+    const wire = normalizeManualAmount(amount);
+    if (wire === null) return t("finance.amountPositiveError");
+    if (!fromAccountId || !toAccountId || !occurredOn.trim()) {
+      return t("finance.requiredFieldError");
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(occurredOn.trim())) {
+      return t("finance.requiredFieldError");
+    }
+    if (fromAccountId === toAccountId) return t("finance.transferSameAccountError");
+    const from = accounts.find((a) => a.id === fromAccountId);
+    const to = accounts.find((a) => a.id === toAccountId);
+    if (from && to && from.currency !== to.currency) {
+      return t("finance.transferCurrencyError");
+    }
+    return null;
+  }
+
+  async function save(): Promise<void> {
+    const failure = validate();
+    if (failure) {
+      setError(failure);
+      return;
+    }
+    const wire = normalizeManualAmount(amount) as string;
+    setSaving(true);
+    setError(null);
+    try {
+      await createTransfer({
+        from_account_id: fromAccountId,
+        to_account_id: toAccountId,
+        amount: wire,
+        occurred_on: occurredOn.trim(),
+        ...(description.trim() ? { description: description.trim() } : {}),
+      });
+      setSaved(true);
+      await revalidate();
+    } catch (err) {
+      setError(serverMessage(err, t("finance.saveFailed")));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const fieldClass =
+    "mt-1 min-h-[44px] w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+  const labelClass = "block text-xs text-instrument/60";
+  const primaryBtn =
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-signal px-4 py-2 text-sm font-bold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
+  const ghostBtn =
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      data-testid="transfer-modal-overlay"
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="transfer-modal-title"
+        className="w-full max-w-md rounded-xl border border-hull bg-deck p-5"
+      >
+        <h2 id="transfer-modal-title" className="font-display text-lg font-semibold">
+          {t("finance.transferModalTitle")}
+        </h2>
+        {saved ? (
+          <div role="status" className="mt-4 rounded-lg border border-signal/40 bg-signal/10 p-4">
+            <p className="text-sm font-medium text-signal">{t("finance.transferSaved")}</p>
+            <button type="button" onClick={close} className={`mt-3 ${ghostBtn}`}>
+              {t("finance.close")}
+            </button>
+          </div>
+        ) : (
+          <form
+            className="mt-4 flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save();
+            }}
+          >
+            <label className={labelClass}>
+              {t("finance.transferFrom")}
+              <select
+                aria-label={t("finance.transferFrom")}
+                value={fromAccountId}
+                onChange={(e) => {
+                  const nextFrom = e.target.value;
+                  setFromAccountId(nextFrom);
+                  // The destination must react live: a selection that equals the
+                  // new origin is invalid and would otherwise survive in state.
+                  if (toAccountId === nextFrom) setToAccountId("");
+                }}
+                className={fieldClass}
+              >
+                <option value="">{t("finance.selectAccount")}</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={labelClass}>
+              {t("finance.transferTo")}
+              <select
+                aria-label={t("finance.transferTo")}
+                value={toAccountId}
+                onChange={(e) => setToAccountId(e.target.value)}
+                className={fieldClass}
+              >
+                <option value="">{t("finance.selectAccount")}</option>
+                {accounts
+                  .filter((a) => a.id !== fromAccountId)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className={labelClass}>
+              {t("finance.amountCop")}
+              <input
+                ref={amountRef}
+                type="text"
+                inputMode="decimal"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder={t("finance.amountPlaceholder")}
+                aria-label={t("finance.amountCop")}
+                aria-invalid={error ? true : undefined}
+                className={`${fieldClass} font-mono tabular-nums`}
+              />
+            </label>
+            <label className={labelClass}>
+              {t("finance.dateLabel")}
+              <input
+                type="date"
+                value={occurredOn}
+                onChange={(e) => setOccurredOn(e.target.value)}
+                aria-label={t("finance.dateLabel")}
+                className={fieldClass}
+              />
+            </label>
+            <label className={labelClass}>
+              {t("finance.movementDescriptionLabel")}
+              <input
+                type="text"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder={t("finance.movementDescriptionPlaceholder")}
+                aria-label={t("finance.movementDescriptionLabel")}
+                className={fieldClass}
+              />
+            </label>
+            {error ? (
+              <p role="alert" className="text-xs text-alert">
+                {error}
+              </p>
+            ) : null}
+            <div className="mt-1 flex flex-wrap gap-2">
+              <button type="submit" disabled={saving} className={primaryBtn}>
+                {saving ? t("finance.saving") : t("finance.save")}
+              </button>
+              <button type="button" onClick={close} className={ghostBtn}>
+                {t("finance.cancel")}
+              </button>
+            </div>
           </form>
         )}
       </div>

@@ -4,7 +4,8 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import { useRef, useState } from "react";
-import { MovementModal } from "@/components/finance/MovementForms";
+import { MovementModal, TransferModal } from "@/components/finance/MovementForms";
+import { useAccounts } from "@/lib/api/dashboard";
 import { useMovements } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
@@ -13,7 +14,9 @@ const accounts = [{ id: "a1", name: "Cuenta principal" }];
 const categories = [{ id: "c1", name: "Mercado" }];
 
 const posted: unknown[] = [];
+const transfers: unknown[] = [];
 let movementsGets = 0;
+let accountGets = 0;
 
 const server = setupServer(
   http.get("http://test.local/api/movements", () => {
@@ -24,19 +27,65 @@ const server = setupServer(
     posted.push(await request.json());
     return HttpResponse.json({ id: "m1" }, { status: 201 });
   }),
+  http.post("http://test.local/api/movements/transfer", async ({ request }) => {
+    transfers.push(await request.json());
+    return HttpResponse.json({ id: "t1", direction: "transfer" }, { status: 201 });
+  }),
+  http.get("http://test.local/api/accounts", () => {
+    accountGets += 1;
+    return HttpResponse.json([]);
+  }),
 );
 
 beforeAll(() => server.listen());
 afterEach(() => {
   server.resetHandlers();
   posted.length = 0;
+  transfers.length = 0;
   movementsGets = 0;
+  accountGets = 0;
 });
 afterAll(() => server.close());
 
 function MovementsProbe() {
   const { data } = useMovements();
   return <p data-testid="probe">{`movements:${data?.length ?? "?"}`}</p>;
+}
+
+function AccountsProbe() {
+  const { data } = useAccounts();
+  return <p data-testid="accounts-probe">{`accounts:${data?.length ?? "?"}`}</p>;
+}
+
+const transferAccounts = [
+  { id: "a1", name: "Ahorros", currency: "COP" },
+  { id: "a2", name: "Nequi", currency: "COP" },
+  { id: "a3", name: "Dólares", currency: "USD" },
+];
+
+function TransferHarness({
+  initialFromAccountId = "",
+  onClose = () => undefined,
+}: {
+  initialFromAccountId?: string;
+  onClose?: () => void;
+}) {
+  const opener = useRef<HTMLButtonElement>(null);
+  return (
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <TransferModal
+        accounts={transferAccounts}
+        initialFromAccountId={initialFromAccountId}
+        openerRef={opener}
+        onClose={onClose}
+      />
+      <button ref={opener} type="button">
+        opener
+      </button>
+      <MovementsProbe />
+      <AccountsProbe />
+    </SWRConfig>
+  );
 }
 
 function Harness({
@@ -168,6 +217,49 @@ describe("MovementModal", () => {
     expect(screen.queryByText("Not found")).not.toBeInTheDocument();
   });
 
+  it("contains Tab and Shift+Tab inside the movement dialog", async () => {
+    function TrapHarness() {
+      const opener = useRef<HTMLButtonElement>(null);
+      const [open, setOpen] = useState(true);
+      return (
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          {open ? (
+            <MovementModal
+              mode={{ kind: "create", direction: "expense" }}
+              accounts={accounts}
+              categories={categories}
+              openerRef={opener}
+              onClose={() => setOpen(false)}
+            />
+          ) : null}
+          <button ref={opener} type="button" onClick={() => setOpen(true)}>
+            opener
+          </button>
+        </SWRConfig>
+      );
+    }
+    render(<TrapHarness />);
+    const dialog = screen.getByRole("dialog");
+    const first = within(dialog).getByLabelText("Tipo de movimiento");
+    const last = within(dialog).getByRole("button", { name: "Cancelar" });
+
+    // Initial focus lands inside the dialog (amount field).
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(within(dialog).getByLabelText("Monto (COP)"));
+
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "opener" }));
+  });
+
   it("closes on Esc with no request and restores focus to the opener", async () => {
     function EscHarness() {
       const opener = useRef<HTMLButtonElement>(null);
@@ -238,5 +330,155 @@ describe("MovementModal", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Movimiento eliminado.");
     expect(deleted).toBe(1);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps the edit modal two-directional even for a stored transfer row", () => {
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <MovementModal
+          mode={{
+            kind: "edit",
+            movement: {
+              id: "t1",
+              direction: "transfer",
+              amount: "25000.00",
+              occurred_on: "2026-10-03",
+              description: null,
+              account_id: "a1",
+              transfer_account_id: "a2",
+              category_id: null,
+              subscription_id: null,
+              created_at: "2026-10-03T10:00:00Z",
+              updated_at: "2026-10-03T10:00:00Z",
+            },
+          }}
+          accounts={accounts}
+          categories={categories}
+          onClose={() => undefined}
+        />
+      </SWRConfig>,
+    );
+    const select = screen.getByLabelText("Tipo de movimiento");
+    expect(within(select).getAllByRole("option")).toHaveLength(2);
+    expect(within(select).queryByRole("option", { name: "Transferencia" })).not.toBeInTheDocument();
+  });
+});
+
+describe("TransferModal", () => {
+  it("preselects the origin and does not offer it as destination", () => {
+    render(<TransferHarness initialFromAccountId="a1" />);
+    expect(screen.getByRole("heading", { name: "Mover dinero" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Cuenta origen")).toHaveValue("a1");
+    const destination = screen.getByLabelText("Cuenta destino");
+    expect(within(destination).queryByRole("option", { name: "Ahorros" })).not.toBeInTheDocument();
+    expect(within(destination).getByRole("option", { name: "Nequi" })).toBeInTheDocument();
+  });
+
+  it("clears the destination when the origin switches to the selected account", () => {
+    render(<TransferHarness initialFromAccountId="a2" />);
+    const destination = screen.getByLabelText("Cuenta destino");
+    fireEvent.change(destination, { target: { value: "a1" } });
+    expect(destination).toHaveValue("a1");
+
+    const origin = screen.getByLabelText("Cuenta origen");
+    fireEvent.change(origin, { target: { value: "a1" } });
+    // Changing the origin back restores the option; the stale selection must not.
+    fireEvent.change(origin, { target: { value: "a2" } });
+    expect(screen.getByLabelText("Cuenta destino")).toHaveValue("");
+  });
+
+  it("clears a destination that becomes the origin and blocks the save without a request", async () => {
+    render(<TransferHarness />);
+    fireEvent.change(screen.getByLabelText("Cuenta destino"), { target: { value: "a1" } });
+    fireEvent.change(screen.getByLabelText("Cuenta origen"), { target: { value: "a1" } });
+    // The stale selection is gone by the time the form renders it again.
+    expect(screen.getByLabelText("Cuenta destino")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Completa los campos marcados.");
+    expect(transfers).toHaveLength(0);
+  });
+
+  it("blocks a cross-currency selection with Spanish copy and sends nothing", async () => {
+    render(<TransferHarness initialFromAccountId="a1" />);
+    fireEvent.change(screen.getByLabelText("Cuenta destino"), { target: { value: "a3" } });
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Ambas cuentas deben usar la misma moneda.",
+    );
+    expect(transfers).toHaveLength(0);
+  });
+
+  it("blocks a missing destination with Spanish copy and sends nothing", async () => {
+    render(<TransferHarness initialFromAccountId="a1" />);
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Completa los campos marcados.");
+    expect(transfers).toHaveLength(0);
+  });
+
+  it("posts the transfer contract and revalidates finance/movements and dashboard/accounts", async () => {
+    render(<TransferHarness initialFromAccountId="a1" />);
+    fireEvent.change(screen.getByLabelText("Cuenta destino"), { target: { value: "a2" } });
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Transferencia registrada.");
+    expect(transfers).toHaveLength(1);
+    const body = transfers[0] as Record<string, unknown>;
+    expect(body.from_account_id).toBe("a1");
+    expect(body.to_account_id).toBe("a2");
+    expect(body.amount).toBe("25000");
+    expect(typeof body.amount).toBe("string");
+    expect(body.occurred_on).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    await waitFor(() => expect(movementsGets).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(accountGets).toBeGreaterThanOrEqual(2));
+  });
+
+  it("contains Tab and Shift+Tab inside the transfer dialog", () => {
+    render(<TransferHarness initialFromAccountId="a1" />);
+    const dialog = screen.getByRole("dialog");
+    const first = within(dialog).getByLabelText("Cuenta origen");
+    const last = within(dialog).getByRole("button", { name: "Cancelar" });
+
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
+  it("closes on Esc with no request and restores focus to the opener", async () => {
+    function EscHarness() {
+      const opener = useRef<HTMLButtonElement>(null);
+      const [open, setOpen] = useState(true);
+      return (
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          {open ? (
+            <TransferModal
+              accounts={transferAccounts}
+              openerRef={opener}
+              onClose={() => setOpen(false)}
+            />
+          ) : null}
+          <button ref={opener} type="button" onClick={() => setOpen(true)}>
+            opener
+          </button>
+        </SWRConfig>
+      );
+    }
+    render(<EscHarness />);
+    const opener = screen.getByRole("button", { name: "opener" });
+    opener.focus();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(opener);
+    expect(transfers).toHaveLength(0);
   });
 });

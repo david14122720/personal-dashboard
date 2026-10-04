@@ -5,8 +5,9 @@
  * Habits carry streak + today status from `GET /habits/today`; quick log
  * actions POST today's log and fall back to PATCH when the log already
  * exists (409). Goals expose trigger-owned `progress` (0-100, never written
- * from the client). Tasks list unfiltered and group client-side. Events use
- * the `from` range bound for the upcoming list. Notes ride the FTS endpoint
+ * from the client). Tasks list unfiltered and group client-side. Events take
+ * optional `from`/`to` RFC 3339 bounds (upcoming list one-sided, calendar
+ * both). Notes ride the FTS endpoint
  * `GET /notes/search?q=` (blank `q` returns every owned note pinned-first).
  */
 
@@ -114,16 +115,29 @@ export function useTasks() {
   return useSWR<TaskWire[]>(TASKS_KEY, () => apiGet<TaskWire[]>("/tasks"), config);
 }
 
-export function eventsKey(from: string | null): string | null {
-  return from ? `productivity/events?from=${encodeURIComponent(from)}` : "productivity/events";
+/** `?from=…&to=…` for `GET /events`, encoded; empty when both bounds are null. */
+function eventsQuery(from: string | null, to: string | null): string {
+  const params = new URLSearchParams();
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
 }
-export function useEvents(from: string | null) {
-  const key = eventsKey(from);
-  return useSWR<EventWire[]>(
-    key,
-    () => apiGet<EventWire[]>(from ? `/events?from=${encodeURIComponent(from)}` : "/events"),
-    config,
-  );
+
+/** Two-bound SWR key for the events read (`productivity/events?from&to`). */
+export function eventsKey(from: string | null, to: string | null): string | null {
+  return `productivity/events${eventsQuery(from, to)}`;
+}
+
+/**
+ * Events read. Both bounds are optional and always RFC 3339 (the backend
+ * rejects bare `YYYY-MM-DD`); callers convert local day ranges with
+ * `toEventRange`. The productivity Eventos section stays one-sided
+ * (``useEvents(eventsFrom, null)``) while the calendar sends both grid bounds.
+ */
+export function useEvents(from: string | null, to: string | null) {
+  const key = eventsKey(from, to);
+  return useSWR<EventWire[]>(key, () => apiGet<EventWire[]>(`/events${eventsQuery(from, to)}`), config);
 }
 
 export function notesSearchKey(query: string): string {

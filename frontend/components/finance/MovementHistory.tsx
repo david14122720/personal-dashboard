@@ -8,6 +8,7 @@ import { formatMoney } from "@/lib/api/money";
 import {
   deleteMovement,
   useMovements,
+  type MovementDirection,
   type MovementWire,
 } from "@/lib/api/finance";
 import {
@@ -23,8 +24,10 @@ import {
  * the filtered list is exhausted; changing any filter resets the window to
  * the first `INITIAL_VISIBLE` filtered rows. The account filter is owned by
  * `FinanceScreens` and driven by the select below; category and direction
- * live here. Loading/error/empty render independently in Spanish so the rest
- * of Finance keeps rendering; retry revalidates only `finance/movements`.
+ * live here. A transfer matches the account filter from either side (origin
+ * or destination), because both balances changed. Loading/error/empty render
+ * independently in Spanish so the rest of Finance keeps rendering; retry
+ * revalidates only `finance/movements`.
  */
 
 const INITIAL_VISIBLE = 5;
@@ -50,7 +53,7 @@ export function MovementHistory({
   const { mutate } = useSWRConfig();
   const movements = useMovements();
   const [categoryId, setCategoryId] = useState("");
-  const [direction, setDirection] = useState<"" | "expense" | "income">("");
+  const [direction, setDirection] = useState<"" | MovementDirection>("");
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -63,7 +66,9 @@ export function MovementHistory({
   const wires = movements.data ?? [];
   const filtered = wires.filter(
     (m) =>
-      (!activeAccountId || m.account_id === activeAccountId) &&
+      (!activeAccountId ||
+        m.account_id === activeAccountId ||
+        (m.direction === "transfer" && m.transfer_account_id === activeAccountId)) &&
       (!categoryId || (m.category_id ?? "") === categoryId) &&
       (!direction || m.direction === direction),
   );
@@ -165,12 +170,13 @@ export function MovementHistory({
           <select
             aria-label={t("finance.movementFilterDirection")}
             value={direction}
-            onChange={(e) => setDirection(e.target.value as "" | "expense" | "income")}
+            onChange={(e) => setDirection(e.target.value as "" | MovementDirection)}
             className={selectClass}
           >
             <option value="">{t("finance.movementFilterAll")}</option>
             <option value="expense">{t("finance.movementDirectionExpense")}</option>
             <option value="income">{t("finance.movementDirectionIncome")}</option>
+            <option value="transfer">{t("finance.movementDirectionTransfer")}</option>
           </select>
         </label>
       </div>
@@ -205,22 +211,55 @@ export function MovementHistory({
             {rows.map((row) => {
               const wire = visible.find((w) => w.id === row.id) as MovementWire;
               const confirming = confirmingDeleteId === row.id;
+              const directionLabel =
+                row.direction === "expense"
+                  ? t("finance.movementDirectionExpense")
+                  : row.direction === "income"
+                    ? t("finance.movementDirectionIncome")
+                    : t("finance.movementDirectionTransfer");
+              // W5 exact copy: expense reuses `finance.paymentMethod`, income
+              // gets `movementAccountLabel`, and a transfer never falls back to
+              // a bare account name or to «Ingreso». A destination missing
+              // from the account map shows an explicit marker, never its id.
+              const accountMeta =
+                row.direction === "transfer"
+                  ? t("finance.movementTransferRoute", {
+                      from: row.accountName,
+                      to: row.transferAccountUnknown
+                        ? t("finance.movementTransferUnknownDestination")
+                        : (row.transferAccountName ?? "—"),
+                    })
+                  : `${
+                      row.direction === "income"
+                        ? t("finance.movementAccountLabel")
+                        : t("finance.paymentMethod")
+                    }: ${row.accountName}`;
               return (
                 <li
                   key={row.id}
+                  data-direction={row.direction}
                   style={{ contentVisibility: "auto", containIntrinsicSize: "0 72px" }}
-                  className="rounded-lg border border-hull px-3 py-2"
+                  className={`rounded-lg border px-3 py-2 ${
+                    row.direction === "transfer" ? "border-signal/50 bg-signal/5" : "border-hull"
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">
-                        {row.direction === "expense"
-                          ? t("finance.movementDirectionExpense")
-                          : t("finance.movementDirectionIncome")}{" "}
-                        · {row.categoryName ?? "—"}
+                      <p className="flex items-center gap-2 truncate text-sm font-medium">
+                        <span className="truncate">
+                          {directionLabel} · {row.categoryName ?? "—"}
+                        </span>
+                        {row.direction === "transfer" ? (
+                          <span
+                            data-testid="movement-transfer-badge"
+                            className="shrink-0 rounded-full border border-signal/40 bg-signal/10 px-2 py-0.5 text-[10px] font-medium text-signal"
+                          >
+                            {t("finance.movementDirectionTransfer")}
+                          </span>
+                        ) : null}
                       </p>
                       <p className="truncate text-xs text-instrument/60">
-                        {row.displayDate} · {row.accountName}
+                        {row.displayDate} · {accountMeta}
                         {row.description ? ` · ${row.description}` : ""}
                       </p>
                     </div>
@@ -229,14 +268,16 @@ export function MovementHistory({
                     </p>
                   </div>
                   <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onEdit(wire)}
-                      aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
-                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
-                    >
-                      {t("finance.editMovement")}
-                    </button>
+                    {row.editable ? (
+                      <button
+                        type="button"
+                        onClick={() => onEdit(wire)}
+                        aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
+                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                      >
+                        {t("finance.editMovement")}
+                      </button>
+                    ) : null}
                     {!confirming ? (
                       <button
                         type="button"

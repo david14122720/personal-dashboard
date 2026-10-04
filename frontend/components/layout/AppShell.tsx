@@ -114,6 +114,16 @@ function DeckGlyph({ className }: IconProps) {
   );
 }
 
+function DeviceIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <rect x="2.5" y="4" width="11" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M6.5 16h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="14" y="8.5" width="3.5" height="6.5" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
 type NavItem = {
   href: string;
   labelKey: EsKey;
@@ -131,6 +141,7 @@ const PRIMARY_NAV: NavItem[] = [
 const SETTINGS_NAV: NavItem[] = [
   { href: "/dashboard/ajustes/", labelKey: "nav.general", Icon: GridIcon },
   { href: "/dashboard/ajustes/tokens/", labelKey: "nav.tokens", Icon: KeyIcon },
+  { href: "/dashboard/ajustes/sesiones/", labelKey: "nav.sessions", Icon: DeviceIcon },
 ];
 
 // Mobile bottom tabs stay flat and keep the original five destinations.

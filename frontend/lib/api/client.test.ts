@@ -3,11 +3,13 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import {
   ApiError,
+  LOGOUT_TIMEOUT_MS,
   TOKEN_KEY,
   apiGet,
   apiPatch,
   clearToken,
   login,
+  logout,
   resetAuthRedirectForTests,
   serverMessage,
   setLoginNavigator,
@@ -22,6 +24,8 @@ const seenPatchAuth: (string | null)[] = [];
 const seenPatchBodies: unknown[] = [];
 const seenPatchContentTypes: (string | null)[] = [];
 let loginCalls = 0;
+let logoutCalls = 0;
+const seenLogoutAuth: (string | null)[] = [];
 
 const server = setupServer(
   http.get("http://test.local/api/secure", ({ request }) => {
@@ -57,6 +61,11 @@ const server = setupServer(
   http.patch("http://test.local/api/invalid-patch", () => {
     return HttpResponse.json({ code: "VALIDATION", message: "bad layout" }, { status: 422 });
   }),
+  http.post("http://test.local/api/logout", ({ request }) => {
+    logoutCalls += 1;
+    seenLogoutAuth.push(request.headers.get("Authorization"));
+    return HttpResponse.json({ ok: true });
+  }),
 );
 
 beforeAll(() => server.listen());
@@ -68,6 +77,8 @@ afterEach(() => {
   seenPatchBodies.length = 0;
   seenPatchContentTypes.length = 0;
   loginCalls = 0;
+  logoutCalls = 0;
+  seenLogoutAuth.length = 0;
   resetAuthRedirectForTests();
   vi.restoreAllMocks();
 });
@@ -162,6 +173,56 @@ describe("apiPatch (PR1 RED)", () => {
       status: 422,
       code: "VALIDATION",
     });
+  });
+});
+
+describe("logout revocation", () => {
+  it("awaits server revocation before navigating and clears the token", async () => {
+    setToken("tok-123");
+    const assign = mockRedirect();
+    const result = await logout();
+    expect(result).toEqual({ revoked: true });
+    expect(logoutCalls).toBe(1);
+    expect(seenLogoutAuth).toEqual(["Bearer tok-123"]);
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+    expect(assign).toHaveBeenCalledWith("/login/");
+  });
+
+  it("still clears the token and navigates when revocation fails", async () => {
+    setToken("tok-123");
+    server.use(http.post("http://test.local/api/logout", () => HttpResponse.error()));
+    const assign = mockRedirect();
+    const result = await logout();
+    expect(result).toEqual({ revoked: false });
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+    expect(assign).toHaveBeenCalledWith("/login/");
+  });
+
+  it("bounds the revoke wait and still clears the local session", async () => {
+    vi.useFakeTimers();
+    setToken("tok-123");
+    const assign = mockRedirect();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort);
+      });
+    });
+    try {
+      const pending = logout();
+      await vi.advanceTimersByTimeAsync(LOGOUT_TIMEOUT_MS + 1);
+      await expect(pending).resolves.toEqual({ revoked: false });
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "http://test.local/api/logout",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+      expect(assign).toHaveBeenCalledWith("/login/");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

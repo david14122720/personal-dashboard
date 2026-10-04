@@ -13,9 +13,11 @@ const btnClass =
   "rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50";
 
 /**
- * Bank accounts manager (Configuración → P5). Creates `bank` accounts by
- * name/alias and deletes them; the Finanzas `Cuentas` section reads the same
- * backend list, so new accounts show up there automatically.
+ * Accounts manager (Configuración → P5). Creates accounts by name/alias and
+ * deletes them; the Finanzas `Cuentas` section reads the same backend list,
+ * so new accounts show up there automatically. W1: accounts carry no type, so
+ * every non-archived account is listed (the endpoint filters archived rows)
+ * and creation posts the name only.
  */
 export default function BankAccountsSection() {
   const { mutate } = useSWRConfig();
@@ -25,7 +27,7 @@ export default function BankAccountsSection() {
   const [pending, setPending] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const banks = (accounts.data ?? []).filter((row) => row.type === "bank");
+  const list = accounts.data ?? [];
 
   async function revalidate(): Promise<void> {
     setError(null);
@@ -108,14 +110,14 @@ export default function BankAccountsSection() {
               {t("common.retry")}
             </button>
           </div>
-        ) : banks.length === 0 ? (
+        ) : list.length === 0 ? (
           <div>
             <p className="text-sm font-medium">{t("settings.noAccounts")}</p>
             <p className="mt-1 text-sm text-instrument/60">{t("settings.noAccountsHint")}</p>
           </div>
         ) : (
           <ul className="flex flex-col gap-2">
-            {banks.map((row) => (
+            {list.map((row) => (
               <li
                 key={row.id}
                 className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"

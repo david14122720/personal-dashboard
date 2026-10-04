@@ -72,28 +72,45 @@ export default function MovementsSnapshot() {
   return (
     <div>
       <ul className="flex flex-col gap-2">
-        {rows.map((row) => (
-          <li
-            key={row.id}
-            className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2 text-sm"
-          >
-            <span className="min-w-0">
-              <span className="block truncate">
-                {row.direction === "expense"
-                  ? t("finance.movementDirectionExpense")
-                  : t("finance.movementDirectionIncome")}
-                {row.description ? ` · ${row.description}` : ""}
+        {rows.map((row) => {
+          const directionLabel =
+            row.direction === "expense"
+              ? t("finance.movementDirectionExpense")
+              : row.direction === "income"
+                ? t("finance.movementDirectionIncome")
+                : t("finance.movementDirectionTransfer");
+          return (
+            <li
+              key={row.id}
+              className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ${
+                row.direction === "transfer" ? "border-signal/50 bg-signal/5" : "border-hull"
+              }`}
+            >
+              <span className="min-w-0">
+                <span className="block truncate">
+                  {directionLabel}
+                  {row.description ? ` · ${row.description}` : ""}
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-instrument/60">
+                  {row.displayDate}
+                  {row.direction === "transfer"
+                    ? ` · ${t("finance.movementTransferRoute", {
+                        from: row.accountName,
+                        to: row.transferAccountName ?? "—",
+                      })}`
+                    : `${row.categoryName ? ` · ${row.categoryName}` : ""} · ${
+                        row.direction === "income"
+                          ? t("finance.movementAccountLabel")
+                          : t("finance.paymentMethod")
+                      }: ${row.accountName}`}
+                </span>
               </span>
-              <span className="mt-0.5 block truncate text-xs text-instrument/60">
-                {row.displayDate}
-                {row.categoryName ? ` · ${row.categoryName}` : ""} · {row.accountName}
+              <span className="shrink-0 font-mono text-xs tabular-nums">
+                {formatMoney(row.amount)}
               </span>
-            </span>
-            <span className="shrink-0 font-mono text-xs tabular-nums">
-              {formatMoney(row.amount)}
-            </span>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ul>
       <Link
         href="/dashboard/finance/"

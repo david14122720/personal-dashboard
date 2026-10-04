@@ -16,12 +16,13 @@ let subs: unknown[] = [{ id: "s1", name: "Música", price: "9.99", is_active: tr
 let tasks: unknown[] = [{ id: "t1", title: "Tarea", status: "pending", due_date: "__T1__" }];
 let events: unknown[] = [{ id: "e1", title: "Cobro", kind: "payment_due", starts_at: "__E2__" }, { id: "e10", title: "Agenda", kind: "event", starts_at: "__E10__" }];
 let goals: unknown[] = [{ id: "g1", name: "Correr", progress: 60, status: "active" }];
-const movements: unknown[] = [];
+let movements: unknown[] = [];
 const categories: unknown[] = [];
 const fixDates = () => { subs = [{ id: "s1", name: "Música", price: "9.99", is_active: true, next_billing_on: day(5) }, { id: "sx", name: "Off", price: "5", is_active: false, next_billing_on: day(1) }]; tasks = [{ id: "t1", title: "Tarea", status: "pending", due_date: day(1) }]; events = [{ id: "e1", title: "Cobro", kind: "payment_due", starts_at: day(2) }, { id: "e10", title: "Agenda", kind: "event", starts_at: day(10) }]; };
+let accounts: unknown[] = [];
 vi.mock("@/lib/api/dashboard", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/api/dashboard")>();
-  return { ...mod, useNetWorth: () => { netWorthCalls += 1; return q({ per_currency: [] }); }, useHabitsToday: () => q([]), useAccounts: () => q([]),
+  return { ...mod, useNetWorth: () => { netWorthCalls += 1; return q({ per_currency: [] }); }, useHabitsToday: () => q([]), useAccounts: () => q(accounts),
       useSubscriptions: () => q(subs), useTasks: () => q(tasks), useEvents: () => q(events), useGoals: () => q(goals),
     usePreferences: () => q({ preferences: { currency_code: "COP", locale: "es-CO", dashboard_layout: layoutWidgets ? { widgets: layoutWidgets } : null } }),
     useUpdateLayout: () => async (next: { widgets: unknown[] }) => { seenPatch.push({ dashboard_layout: next }); layoutWidgets = next.widgets as typeof layoutWidgets; } };
@@ -35,7 +36,7 @@ vi.mock("@/lib/api/finance", async (importOriginal) => {
     useCategories: () => q(categories),
   };
 });
-beforeEach(() => { seenPatch.length = 0; layoutWidgets = null; netWorthCalls = 0; fixDates(); goals = [{ id: "g1", name: "Correr", progress: 60, status: "active" }]; localStorage.clear(); });
+beforeEach(() => { seenPatch.length = 0; layoutWidgets = null; netWorthCalls = 0; accounts = []; movements.length = 0; fixDates(); goals = [{ id: "g1", name: "Correr", progress: 60, status: "active" }]; localStorage.clear(); });
 describe("DashboardHome strip + toggles S-H", () => {
   it("strip drops patrimonio: only cuentas, suscripciones and saldo total (W2 RED)", async () => {
     render(<DashboardHome />);
@@ -173,5 +174,49 @@ describe("DashboardHome 4 widgets S-H", () => {
     // "Lejos" lives only in Próximas suscripciones now that the active-subscriptions widget is gone.
     expect(screen.getAllByText("Lejos").length).toBe(1);
     expect(screen.getByText("Sin metas aún")).toBeInTheDocument();
+  });
+});
+
+describe("S3 snapshot three-direction rows (W2.7/W5.1)", () => {
+  it("shows a transfer as Transferencia with its route and never as Ingreso", async () => {
+    accounts = [
+      { id: "a1", name: "Cuenta principal", currency: "COP", balance: "1000.00" },
+      { id: "a2", name: "Bolsillo", currency: "COP", balance: "500.00" },
+    ];
+    movements = [
+      {
+        id: "e1",
+        direction: "expense",
+        amount: "100.00",
+        occurred_on: "2026-10-02",
+        description: null,
+        account_id: "a1",
+        transfer_account_id: null,
+        category_id: null,
+        subscription_id: null,
+        created_at: "2026-10-02T10:00:00Z",
+        updated_at: "2026-10-02T10:00:00Z",
+      },
+      {
+        id: "t1",
+        direction: "transfer",
+        amount: "250.00",
+        occurred_on: "2026-10-03",
+        description: null,
+        account_id: "a1",
+        transfer_account_id: "a2",
+        category_id: null,
+        subscription_id: null,
+        created_at: "2026-10-03T10:00:00Z",
+        updated_at: "2026-10-03T10:00:00Z",
+      },
+    ];
+    render(<DashboardHome />);
+    const section = await screen.findByRole("region", { name: "Últimos movimientos" });
+    expect(
+      within(section).getByText(/Transferencia: Cuenta principal → Bolsillo/),
+    ).toBeInTheDocument();
+    expect(within(section).getByText(/Método de pago: Cuenta principal/)).toBeInTheDocument();
+    expect(within(section).queryByText(/Ingreso/)).not.toBeInTheDocument();
   });
 });

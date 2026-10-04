@@ -104,21 +104,32 @@ export function paySubscription(id: string, accountId: string): Promise<Subscrip
 
 // -- Movements ledger (S-C): expense/income records with atomic balance effect --
 
+/** Direction of a ledger row: an expense or income movement, or a transfer
+ * between two own accounts (`account_id` is the origin and
+ * `transfer_account_id` the destination). */
+export type MovementDirection = "expense" | "income" | "transfer";
+
 /** Movement row as served by `GET /movements`: amount is a decimal string
  * (e.g. `"25000.00"`), `occurred_on` is `YYYY-MM-DD`. */
 export interface MovementWire {
   id: string;
-  direction: "expense" | "income";
+  direction: MovementDirection;
   amount: string | number;
   occurred_on: string;
   description: string | null;
   account_id: string;
+  /** Transfer destination (the origin is `account_id`); `null` for
+   * expense/income. Optional so payloads without the transfer extension
+   * still type-check; the backend always serializes it. */
+  transfer_account_id?: string | null;
   category_id: string | null;
   subscription_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
+/** `POST /movements` stays a two-direction contract: transfers are created
+ * only through `createTransfer` (D2.1). */
 export interface CreateMovementInput {
   direction: "expense" | "income";
   amount: string;
@@ -128,6 +139,8 @@ export interface CreateMovementInput {
   description?: string;
 }
 
+/** Patches are expense/income only: a stored transfer is rejected by the
+ * backend and never sends `transfer_account_id` (D2.4). */
 export interface PatchMovementInput {
   direction?: "expense" | "income";
   amount?: string;
@@ -150,6 +163,25 @@ export function useMovements() {
 /** Create a movement (amount travels as a decimal string, never a number). */
 export function createMovement(input: CreateMovementInput): Promise<MovementWire> {
   return apiPost<MovementWire>("/movements", input);
+}
+
+/** Exact request contract of `POST /movements/transfer` (deny_unknown_fields:
+ * `direction`, `category_id`, `subscription_id` and `transfer_account_id` are
+ * rejected as unknown). */
+export interface CreateTransferInput {
+  from_account_id: string;
+  to_account_id: string;
+  amount: string;
+  occurred_on: string;
+  description?: string;
+}
+
+/** Create a transfer: one ledger row with the origin in `account_id` and the
+ * destination in `transfer_account_id`; the backend debits the origin and
+ * credits the destination atomically. Transfers cannot be edited (delete and
+ * recreate), so there is no `patchTransfer`. */
+export function createTransfer(input: CreateTransferInput): Promise<MovementWire> {
+  return apiPost<MovementWire>("/movements/transfer", input);
 }
 
 /** Edit a movement; omitted fields keep their stored value. */
@@ -178,10 +210,10 @@ export function useCategories() {
   );
 }
 
-/** Create a bank account by name/alias (`POST /accounts {name, type:"bank"}`).
- * The new account appears automatically in Finanzas (same `dashboard/accounts` read). */
+/** Create an account by name/alias (`POST /accounts {name}`). The new account
+ * appears automatically in Finanzas (same `dashboard/accounts` read). */
 export function createBankAccount(name: string) {
-  return apiPost("/accounts", { name, type: "bank" });
+  return apiPost("/accounts", { name });
 }
 
 export interface AssetWire { id: string; name: string; category: string; account_id: string | null; currency: string; acquired_on: string | null; notes: string | null }

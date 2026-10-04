@@ -10,8 +10,8 @@
 import { toNumber } from "@/lib/api/money";
 
 /**
- * Backend LED enum, 1:1 with the API:
- * - account `alert_level` ∈ { ok, warn, high }
+ * Telemetry LED status values accepted by the shared mapper:
+ * { ok, warn, over, high }. Unknown or absent values render neutral.
  */
 export type LedStatus = "ok" | "warn" | "over" | "high";
 

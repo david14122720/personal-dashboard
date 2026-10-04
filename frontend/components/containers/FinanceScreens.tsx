@@ -30,7 +30,11 @@ import {
 } from "@/lib/finance/finance";
 import { formatMoney } from "@/lib/api/money";
 import { SubscriptionRow } from "@/components/finance/SubscriptionForms";
-import { MovementModal, type MovementModalMode } from "@/components/finance/MovementForms";
+import {
+  MovementModal,
+  TransferModal,
+  type MovementModalMode,
+} from "@/components/finance/MovementForms";
 import { MovementHistory } from "@/components/finance/MovementHistory";
 import { CategoryChartSection } from "@/components/finance/CategoryCharts";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
@@ -71,15 +75,19 @@ export function isValidBalanceInput(raw: string): boolean {
 /**
  * Inline balance edit for one account row (design §6.2): the current value
  * stays visible, `Cancelar` sends nothing, success revalidates the
- * `finance/` SWR scope. Control is ≥44px with a focus ring and a
- * per-account `aria-label`.
+ * `finance/` SWR scope and the `dashboard/accounts` balance cache (the row
+ * reads the latter, so skipping it would leave the old amount on screen).
+ * Control is ≥44px with a focus ring and a per-account `aria-label`.
  */
 export function AccountBalanceEdit({
   account,
   locale,
+  onMoveMoney,
 }: {
   account: AccountCardView;
   locale: string;
+  /** Opens the transfer modal with this account preselected as origin. */
+  onMoveMoney?: (account: AccountCardView, opener: HTMLButtonElement) => void;
 }) {
   const { mutate } = useSWRConfig();
   const [editing, setEditing] = useState(false);
@@ -110,6 +118,7 @@ export function AccountBalanceEdit({
       await patchAccount(account.id, { balance: draft.trim() });
       setEditing(false);
       await mutate((key) => typeof key === "string" && key.startsWith("finance/"));
+      await mutate("dashboard/accounts");
     } catch {
       setError(t("finance.saveFailed"));
     } finally {
@@ -121,25 +130,29 @@ export function AccountBalanceEdit({
     return (
       <div className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2">
         <div className="min-w-0">
-          <p className="flex items-baseline gap-2 text-sm">
-            <span className="min-w-0 truncate">{account.name}</span>
-            <span
-              aria-label={t("finance.accountTypeLabel")}
-              className="shrink-0 text-xs text-instrument/60"
-            >
-              {account.type}
-            </span>
-          </p>
+          <p className="min-w-0 truncate text-sm">{account.name}</p>
           <p className="font-mono text-sm tabular-nums">{currentLabel}</p>
         </div>
-        <button
-          type="button"
-          onClick={open}
-          aria-label={t("finance.balanceEditLabel", { name: account.name })}
-          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
-        >
-          {t("finance.balanceEdit")}
-        </button>
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={open}
+            aria-label={t("finance.balanceEditLabel", { name: account.name })}
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+          >
+            {t("finance.balanceEdit")}
+          </button>
+          {onMoveMoney ? (
+            <button
+              type="button"
+              onClick={(event) => onMoveMoney(account, event.currentTarget)}
+              aria-label={`${t("finance.addTransfer")}: ${account.name}`}
+              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+            >
+              {t("finance.addTransfer")}
+            </button>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -205,6 +218,7 @@ export default function FinanceScreens() {
   // subscription-pay wiring belongs to S-D and chart props to S-E.
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [movementModal, setMovementModal] = useState<MovementModalMode | null>(null);
+  const [transferModal, setTransferModal] = useState<{ fromAccountId: string } | null>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const expenseBtnRef = useRef<HTMLButtonElement>(null);
   const incomeBtnRef = useRef<HTMLButtonElement>(null);
@@ -215,6 +229,11 @@ export default function FinanceScreens() {
         ? incomeBtnRef.current
         : expenseBtnRef.current;
     setMovementModal(mode);
+  }
+
+  function openTransferModal(account: AccountCardView, opener: HTMLButtonElement): void {
+    openerRef.current = opener;
+    setTransferModal({ fromAccountId: account.id });
   }
 
   const queries = [accounts, subscriptions, prefs];
@@ -234,6 +253,17 @@ export default function FinanceScreens() {
   const movementAccountOptions = useMemo(
     () =>
       toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name }))),
+    [accounts.data],
+  );
+  // Transfers also need each account's currency for the client-side
+  // same-currency check (the backend re-validates it regardless).
+  const transferAccountOptions = useMemo(
+    () =>
+      (accounts.data ?? []).map((row) => ({
+        id: row.id,
+        name: row.name,
+        currency: row.currency,
+      })),
     [accounts.data],
   );
 
@@ -292,7 +322,12 @@ export default function FinanceScreens() {
                   <EmptyState title={t("finance.noAccounts")} hint={t("finance.noAccountsHint")} />
                 ) : null}
                 {cards.map((card) => (
-                  <AccountBalanceEdit key={card.id} account={card} locale={locale} />
+                  <AccountBalanceEdit
+                    key={card.id}
+                    account={card}
+                    locale={locale}
+                    onMoveMoney={openTransferModal}
+                  />
                 ))}
               </div>
             </SectionShell>
@@ -352,6 +387,15 @@ export default function FinanceScreens() {
                 categories={movementCategoryOptions}
                 openerRef={openerRef}
                 onClose={() => setMovementModal(null)}
+              />
+            ) : null}
+            {transferModal ? (
+              <TransferModal
+                key={transferModal.fromAccountId}
+                accounts={transferAccountOptions}
+                initialFromAccountId={transferModal.fromAccountId}
+                openerRef={openerRef}
+                onClose={() => setTransferModal(null)}
               />
             ) : null}
           </>

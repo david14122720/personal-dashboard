@@ -34,18 +34,11 @@ const categories = [
   { id: "c2", name: "Sueldo" },
 ];
 
-function card(overrides: Partial<AccountCardView> & { id: string }): AccountCardView {
+function account(overrides: Partial<AccountCardView> & { id: string }): AccountCardView {
   return {
     name: overrides.id,
-    type: "bank",
     currency: "COP",
     balance: 0,
-    isCard: false,
-    used: null,
-    available: null,
-    usagePct: null,
-    alertLevel: null,
-    statementBalance: null,
     ...overrides,
   };
 }
@@ -86,6 +79,79 @@ describe("toMovementRows", () => {
     );
     expect(rows[0].categoryName).toBeNull();
     expect(rows[0].accountName).toBe("ghost");
+  });
+});
+
+// -- W2 D2.6 #5: la fila de transferencia resuelve origen y destino --
+describe("toMovementRows: transferencias", () => {
+  it("resuelve origen y destino y nunca devuelve un ingreso", () => {
+    const rows = toMovementRows(
+      [
+        movement({
+          id: "t1",
+          direction: "transfer",
+          amount: "25000.00",
+          account_id: "a1",
+          category_id: null,
+          transfer_account_id: "a2",
+        }),
+      ],
+      accounts,
+      categories,
+    );
+    expect(rows[0]).toMatchObject({
+      direction: "transfer",
+      amount: 25000,
+      accountName: "Cuenta principal",
+      transferAccountName: "Bolsillo USD",
+      transferAccountUnknown: false,
+      categoryName: null,
+    });
+    expect(rows[0].direction).not.toBe("income");
+  });
+
+  it("marca un destino ausente del mapa sin exponer su id crudo", () => {
+    const rows = toMovementRows(
+      [
+        movement({
+          id: "t2",
+          direction: "transfer",
+          category_id: null,
+          account_id: "a1",
+          transfer_account_id: "cuenta-archivada",
+        }),
+      ],
+      accounts,
+      categories,
+    );
+    expect(rows[0].accountName).toBe("Cuenta principal");
+    expect(rows[0].transferAccountName).toBeNull();
+    expect(rows[0].transferAccountUnknown).toBe(true);
+  });
+
+  it("deja transferAccountName en null para gastos e ingresos", () => {
+    const rows = toMovementRows(
+      [
+        movement({ id: "e1", transfer_account_id: null }),
+        movement({ id: "i1", direction: "income", category_id: "c2", transfer_account_id: null }),
+      ],
+      accounts,
+      categories,
+    );
+    expect(rows.map((r) => r.transferAccountName)).toEqual([null, null]);
+  });
+
+  it("marca la transferencia como no editable (solo crear/eliminar)", () => {
+    const rows = toMovementRows(
+      [
+        movement({ id: "t3", direction: "transfer", category_id: null, transfer_account_id: "a2" }),
+        movement({ id: "e2" }),
+        movement({ id: "i2", direction: "income", category_id: "c2" }),
+      ],
+      accounts,
+      categories,
+    );
+    expect(rows.map((r) => r.editable)).toEqual([false, true, true]);
   });
 });
 
@@ -136,15 +202,35 @@ describe("toCategoryMovementTotals", () => {
       income: 0,
     });
   });
+
+  // D2.6 #1: una transferencia no suma a ninguna serie aunque lleve la
+  // categoría de la fila (el backend la prohíbe, el transform debe excluirla).
+  it("excluye transferencias aunque compartan la categoría consultada", () => {
+    const withTransfer: MovementWire[] = [
+      ...wires,
+      movement({
+        id: "m6",
+        direction: "transfer",
+        amount: "500.00",
+        category_id: "c1",
+        account_id: "a1",
+        transfer_account_id: "a2",
+      }),
+    ];
+    expect(toCategoryMovementTotals(withTransfer, byAccount, "COP", "c1")).toEqual({
+      expense: 100,
+      income: 50,
+    });
+  });
 });
 
 describe("toTotalBalance", () => {
   it("sums same-currency balances only", () => {
     const total = toTotalBalance(
       [
-        card({ id: "a1", currency: "COP", balance: 100000 }),
-        card({ id: "a2", currency: "COP", balance: -500 }),
-        card({ id: "a3", currency: "USD", balance: 99999 }),
+        account({ id: "a1", currency: "COP", balance: 100000 }),
+        account({ id: "a2", currency: "COP", balance: -500 }),
+        account({ id: "a3", currency: "USD", balance: 99999 }),
       ],
       "COP",
     );

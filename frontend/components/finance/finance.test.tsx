@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -16,23 +16,14 @@ const server = setupServer(
       {
         id: "a1",
         name: "Visa",
-        type: "credit_card",
         currency: "COP",
         balance: "-500.00",
-        credit_limit: "2000.00",
-        used_balance: "500.00",
-        available_balance: "1500.00",
-        usage_pct: "25.00",
-        alert_level: "warn",
-        statement_balance: "320.50",
       },
       {
         id: "a2",
         name: "Wallet",
-        type: "cash",
         currency: "COP",
         balance: "200.00",
-        alert_level: null,
       },
     ]);
   }),
@@ -126,15 +117,15 @@ function renderScreens() {
 }
 
 describe("finance screens", () => {
-  it("renders each account exactly once with its raw type in the editable row", async () => {
+  it("renders each account exactly once with no type chip or type label", async () => {
     renderScreens();
     const accounts = await screen.findByRole("region", { name: "Cuentas" });
     expect(within(accounts).getAllByText("Visa")).toHaveLength(1);
     expect(within(accounts).getAllByText("Wallet")).toHaveLength(1);
-    // The card type moves to the surviving row, raw and untranslated.
-    expect(within(accounts).getAllByText("credit_card")).toHaveLength(1);
-    expect(within(accounts).getAllByText("cash")).toHaveLength(1);
-    expect(within(accounts).getAllByLabelText("Tipo")).toHaveLength(2);
+    // W1: the type surface is gone from the row — no raw value, no label.
+    expect(within(accounts).queryByLabelText("Tipo")).not.toBeInTheDocument();
+    expect(within(accounts).queryByText("credit_card")).not.toBeInTheDocument();
+    expect(within(accounts).queryByText("cash")).not.toBeInTheDocument();
     expect(within(accounts).getAllByRole("button", { name: /^Editar saldo de/ })).toHaveLength(2);
     expect(await screen.findByText("Saldos de tus cuentas bancarias.")).toBeInTheDocument();
   });
@@ -227,6 +218,48 @@ describe("finance screens", () => {
     expect(screen.getByRole("button", { name: "Editar saldo de Wallet" })).toBeInTheDocument();
   });
 
+  it("revalidates dashboard/accounts after an inline balance edit", async () => {
+    let accountGets = 0;
+    server.use(
+      http.get("http://test.local/api/accounts", () => {
+        accountGets += 1;
+        return HttpResponse.json([
+          { id: "a1", name: "Visa", currency: "COP", balance: "-500.00" },
+          { id: "a2", name: "Wallet", currency: "COP", balance: "200.00" },
+        ]);
+      }),
+      http.patch("http://test.local/api/accounts/:id", () =>
+        HttpResponse.json({ id: "a1", balance: "123.00" }),
+      ),
+    );
+    renderScreens();
+    const edit = await screen.findByRole("button", { name: "Editar saldo de Visa" });
+    const getsAfterLoad = accountGets;
+
+    fireEvent.click(edit);
+    fireEvent.change(screen.getByLabelText("Editar saldo de Visa"), {
+      target: { value: "123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+
+    // The balance lives under `dashboard/accounts`; only revalidating
+    // `finance/` would leave the row showing the stale amount.
+    await waitFor(() => expect(accountGets).toBeGreaterThan(getsAfterLoad));
+  });
+
+  it("offers Mover dinero on every account row and preselects the origin", async () => {
+    renderScreens();
+    const accounts = await screen.findByRole("region", { name: "Cuentas" });
+    expect(within(accounts).getAllByRole("button", { name: /^Mover dinero: / })).toHaveLength(2);
+    fireEvent.click(within(accounts).getByRole("button", { name: "Mover dinero: Visa" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Mover dinero" })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Cuenta origen")).toHaveValue("a1");
+    const destination = within(dialog).getByLabelText("Cuenta destino");
+    expect(within(destination).queryByRole("option", { name: "Visa" })).not.toBeInTheDocument();
+    expect(within(destination).getByRole("option", { name: "Wallet" })).toBeInTheDocument();
+  });
+
   it("renders no flow chart, no ledger and no capture block", async () => {
     renderScreens();
     await screen.findByRole("region", { name: "Cuentas" });
@@ -281,12 +314,17 @@ import { SubscriptionRow } from "@/components/finance/SubscriptionForms";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
 describe("finance S5 mutators", () => {
+  let accountsPostBody: unknown = null;
+
   it("subs/assets/bank-accounts usan endpoints PR-1 con montos string", async () => {
     server.use(
       http.post("http://test.local/api/subscriptions", () => HttpResponse.json({ id: "s9" })),
       http.patch("http://test.local/api/subscriptions/s1", () => HttpResponse.json({ id: "s1" })),
       http.delete("http://test.local/api/subscriptions/s1", () => new HttpResponse(null, { status: 204 })),
-      http.post("http://test.local/api/accounts", () => HttpResponse.json({ id: "a9" })),
+      http.post("http://test.local/api/accounts", async ({ request }) => {
+        accountsPostBody = await request.json();
+        return HttpResponse.json({ id: "a9" });
+      }),
       http.patch("http://test.local/api/assets/a1", () => HttpResponse.json({ id: "a1" })),
       http.post("http://test.local/api/assets/a1/valuations", () => HttpResponse.json({ id: "v1" })),
     );
@@ -294,6 +332,8 @@ describe("finance S5 mutators", () => {
     await setSubscriptionActive("s1", false);
     await deleteSubscription("s1");
     await createBankAccount("Cuenta nueva");
+    // W1: the create payload is the name only — no type, no card field.
+    expect(accountsPostBody).toEqual({ name: "Cuenta nueva" });
     await patchAsset("a1", { name: "Apartamento" });
     await createValuation("a1", { value: "1200.00", recorded_on: "2026-09-09" });
   });

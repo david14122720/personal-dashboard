@@ -22,8 +22,8 @@ process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 const server = setupServer(
   http.get("http://test.local/api/accounts", () => {
     return HttpResponse.json([
-      { id: "a1", name: "Principal", type: "bank", currency: "COP", balance: "100.00" },
-      { id: "a2", name: "Visa", type: "credit_card", currency: "COP", balance: "-10.00" },
+      { id: "a1", name: "Principal", currency: "COP", balance: "100.00" },
+      { id: "a2", name: "Visa", currency: "COP", balance: "-10.00" },
     ]);
   }),
   http.post("http://test.local/api/accounts", () => HttpResponse.json({ id: "a9" })),
@@ -46,12 +46,14 @@ function renderPage() {
 }
 
 describe("ajustes page", () => {
-  it("lists bank accounts and creates one by alias", async () => {
+  it("lists every non-archived account and creates one by alias", async () => {
     window.confirm = vi.fn(() => true);
     renderPage();
-    const section = await screen.findByRole("region", { name: "Cuentas bancarias" });
+    // W1: the type filter is gone, so the section manages every account.
+    const section = await screen.findByRole("region", { name: "Cuentas" });
     expect(within(section).getByText("Principal")).toBeInTheDocument();
-    expect(within(section).queryByText("Visa")).not.toBeInTheDocument();
+    expect(within(section).getByText("Visa")).toBeInTheDocument();
+    expect(within(section).queryByLabelText("Tipo")).not.toBeInTheDocument();
     fireEvent.change(within(section).getByLabelText("Nombre o alias"), {
       target: { value: "Ahorros" },
     });
@@ -82,8 +84,14 @@ describe("ajustes page", () => {
         <AjustesPage />
       </SWRConfig>,
     );
-    const section = await screen.findByRole("region", { name: "Cuentas bancarias" });
+    const section = await screen.findByRole("region", { name: "Cuentas" });
     expect(await within(section).findByRole("alert")).toHaveTextContent("No se pudo cargar esta sección");
     expect(within(section).getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
+  });
+
+  it("links to the session management page", () => {
+    renderPage();
+    const link = screen.getByRole("link", { name: /Sesiones activas/ });
+    expect(link).toHaveAttribute("href", "/dashboard/ajustes/sesiones/");
   });
 });

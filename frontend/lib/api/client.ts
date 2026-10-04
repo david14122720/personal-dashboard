@@ -122,20 +122,46 @@ export async function login(email: string, password: string): Promise<LoginRespo
   return data;
 }
 
-export function logout(): void {
+/** How long `logout` waits for the server to revoke the bearer token before
+ * navigating anyway: a slow or unreachable backend must not trap the user. */
+export const LOGOUT_TIMEOUT_MS = 3000;
+
+/** Logout outcome. `revoked: false` means the local credential was cleared
+ * without the server confirming revocation (network failure or timeout). */
+export interface LogoutResult {
+  revoked: boolean;
+}
+
+/**
+ * End the session. The local credential is cleared immediately, but the
+ * server-side revoke request is awaited (bounded by `LOGOUT_TIMEOUT_MS`)
+ * before navigating, so a cancelled navigation cannot leave the bearer token
+ * usable until it expires. The caller receives the revocation outcome instead
+ * of a silent failure; a failed revoke can still be remediated from the
+ * sessions page.
+ */
+export async function logout(): Promise<LogoutResult> {
   const token = getToken();
   clearToken();
+  let revoked = true;
   if (token) {
-    void fetch(`${apiBaseUrl()}/logout`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    }).catch(() => {
-      // Best-effort server revocation; local session is already cleared.
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${apiBaseUrl()}/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      revoked = res.ok;
+    } catch {
+      revoked = false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  if (typeof window !== "undefined") {
-    window.location.assign(loginPath());
-  }
+  navigateToLogin(loginPath());
+  return { revoked };
 }
 
 export async function toApiError(res: Response): Promise<ApiError> {

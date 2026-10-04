@@ -14,7 +14,8 @@ export type { NotificationItem } from "@/lib/dashboard/transforms";
 export interface NetWorthEntryWire {
   currency: string;
   assets: string | number;
-  debts: string | number;
+  /** Equal to `assets`: patrimonio is assets-only (W1 removed the card
+   * liability leg and the always-zero `debts` key). */
   net_worth: string | number;
 }
 
@@ -31,13 +32,13 @@ export interface HabitTodayWire {
   today_status: string;
 }
 
+/** Account as served by `GET /accounts`: no type and no credit-card field
+ * (W1 of 2026-10-04-accounts-transfers-login-calendar, migration 0016). */
 export interface AccountWire {
   id: string;
   name: string;
-  type: string;
   currency: string;
   balance: string | number;
-  alert_level?: string | null;
 }
 
 export type DashboardWidgetType = "metric" | "chart" | "list" | "ledger" | "heatmap";

@@ -212,3 +212,118 @@ export function countEventsByTimeView<T extends EventTimeViewInput>(
   }
   return counts;
 }
+
+/* -- W4: monthly calendar (42-cell Monday-first grid, tasks + events per day) -- */
+
+const MONTH_KEY_RE = /^(\d{4})-(\d{2})$/;
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const DAY_MS = 86_400_000;
+
+/** One cell of the month grid: local `YYYY-MM-DD`, month membership and today. */
+export interface CalendarDayCell {
+  date: string;
+  inMonth: boolean;
+  isToday: boolean;
+}
+
+function yearMonth(monthKey: string): { year: number; month: number } | null {
+  const match = MONTH_KEY_RE.exec(monthKey);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  return { year, month };
+}
+
+/** Local-day unix bounds `[start, end)` for a `YYYY-MM-DD`, or null when invalid. */
+function localDayBounds(date: string): { start: number; end: number } | null {
+  const match = DATE_RE.exec(date);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const start = new Date(year, month - 1, day).getTime();
+  if (Number.isNaN(start)) return null;
+  return { start, end: new Date(year, month - 1, day + 1).getTime() };
+}
+
+function ymdFromMs(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * 42 cells (6 weeks, Monday-first) covering `monthKey` (YYYY-MM): the same
+ * `(getUTCDay()+6)%7` offset and UTC-midnight arithmetic as
+ * `logsToCalendarCells`, so leading/trailing days of adjacent months are
+ * included. Invalid month keys return no cells.
+ */
+export function monthGridCells(monthKey: string, today: string = todayYmdLocal()): CalendarDayCell[] {
+  const parts = yearMonth(monthKey);
+  if (!parts) return [];
+  const first = Date.UTC(parts.year, parts.month - 1, 1);
+  const leading = (new Date(first).getUTCDay() + 6) % 7; // Monday-first offset
+  const cells: CalendarDayCell[] = [];
+  for (let i = 0; i < 42; i += 1) {
+    const date = ymdFromMs(first + (i - leading) * DAY_MS);
+    cells.push({ date, inMonth: date.slice(0, 7) === monthKey, isToday: date === today });
+  }
+  return cells;
+}
+
+/** First and last date of the 42-cell grid, so reads cover the visible days. */
+export function monthGridRange(monthKey: string): { from: string; to: string } {
+  const cells = monthGridCells(monthKey);
+  if (cells.length === 0) return { from: "", to: "" };
+  return { from: cells[0].date, to: cells[cells.length - 1].date };
+}
+
+/** Shift a `YYYY-MM` key by `delta` months (calendar-safe across years). */
+export function shiftMonth(monthKey: string, delta: number): string {
+  const parts = yearMonth(monthKey);
+  if (!parts) return monthKey;
+  const shifted = new Date(Date.UTC(parts.year, parts.month - 1 + delta, 1));
+  const month = `${shifted.getUTCMonth() + 1}`.padStart(2, "0");
+  return `${shifted.getUTCFullYear()}-${month}`;
+}
+
+/**
+ * True when an event occupies any instant of the local `date`. Missing or
+ * inverted ends collapse to a point at `starts_at`; invalid starts never
+ * match.
+ */
+export function eventOverlapsDate(
+  event: { starts_at: string; ends_at: string | null },
+  date: string,
+): boolean {
+  const bounds = localDayBounds(date);
+  if (!bounds) return false;
+  const start = Date.parse(event.starts_at);
+  if (Number.isNaN(start)) return false;
+  const parsedEnd = event.ends_at ? Date.parse(event.ends_at) : NaN;
+  if (Number.isNaN(parsedEnd) || parsedEnd <= start) {
+    return start >= bounds.start && start < bounds.end;
+  }
+  return start < bounds.end && parsedEnd > bounds.start;
+}
+
+/** Tasks due that day plus events overlapping it, preserving input order. */
+export function dayEntries<
+  TaskLike extends { due_date: string | null },
+  EventLike extends { starts_at: string; ends_at: string | null },
+>(
+  tasks: TaskLike[] | null | undefined,
+  events: EventLike[] | null | undefined,
+  date: string,
+): { tasks: TaskLike[]; events: EventLike[] } {
+  return {
+    tasks: (tasks ?? []).filter((task) => (task.due_date ?? "") === date),
+    events: (events ?? []).filter((event) => eventOverlapsDate(event, date)),
+  };
+}
+
+/** Long local date (`15 de octubre`) for calendar labels; invalid input passes through. */
+export function calendarDateLabel(date: string, locale: string = "es-CO"): string {
+  const bounds = localDayBounds(date);
+  if (!bounds) return date;
+  return new Intl.DateTimeFormat(locale, { day: "numeric", month: "long" }).format(new Date(bounds.start));
+}

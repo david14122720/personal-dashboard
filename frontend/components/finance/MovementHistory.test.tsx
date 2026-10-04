@@ -247,6 +247,41 @@ describe("MovementHistory", () => {
     expect(onSelectAccount).toHaveBeenCalledWith(null);
   });
 
+  it("keeps a transfer visible when filtering by its destination account", async () => {
+    movements = [
+      wire("t1", {
+        direction: "transfer",
+        category_id: null,
+        account_id: "a1",
+        transfer_account_id: "a2",
+      }),
+    ];
+    renderHistory({ activeAccountId: "a2" });
+    expect(
+      await screen.findByText(/Transferencia: Cuenta principal → Bolsillo/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a transfer visible by its origin and drops it for an unrelated account", async () => {
+    movements = [
+      wire("t1", {
+        direction: "transfer",
+        category_id: null,
+        account_id: "a1",
+        transfer_account_id: "a2",
+      }),
+    ];
+    const origin = renderHistory({ activeAccountId: "a1" });
+    expect(
+      await screen.findByText(/Transferencia: Cuenta principal → Bolsillo/),
+    ).toBeInTheDocument();
+    origin.unmount();
+
+    renderHistory({ activeAccountId: "a9" });
+    expect(await screen.findByText("Sin movimientos aún")).toBeInTheDocument();
+    expect(screen.queryByText(/Transferencia:/)).not.toBeInTheDocument();
+  });
+
   it("renders an independent Spanish empty state", async () => {
     movements = [];
     renderHistory();
@@ -283,5 +318,95 @@ describe("MovementHistory", () => {
     const row = (await screen.findByText(/desc-m1/)).closest("li") as HTMLElement;
     fireEvent.click(within(row).getByRole("button", { name: /Editar movimiento/ }));
     expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: "m1" }));
+  });
+
+  it("renders the transfer route copy with its own tone and badge", async () => {
+    movements = [
+      wire("t1", {
+        direction: "transfer",
+        category_id: null,
+        transfer_account_id: "a2",
+        description: null,
+      }),
+    ];
+    renderHistory();
+    const meta = await screen.findByText(/Transferencia: Cuenta principal → Bolsillo/);
+    const row = meta.closest("li") as HTMLElement;
+    expect(row).toHaveAttribute("data-direction", "transfer");
+    expect(row.className).toContain("border-signal");
+    expect(within(row).getByTestId("movement-transfer-badge")).toHaveTextContent("Transferencia");
+    expect(within(row).queryByText(/Ingreso/)).not.toBeInTheDocument();
+  });
+
+  it("labels an unknown transfer destination instead of showing its id", async () => {
+    movements = [
+      wire("t1", {
+        direction: "transfer",
+        category_id: null,
+        account_id: "a1",
+        transfer_account_id: "cuenta-archivada",
+      }),
+    ];
+    renderHistory();
+    expect(
+      await screen.findByText(/Transferencia: Cuenta principal → Cuenta no disponible/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/cuenta-archivada/)).not.toBeInTheDocument();
+  });
+
+  it("offers delete but no edit on a transfer row", async () => {
+    movements = [
+      wire("t1", { direction: "transfer", category_id: null, transfer_account_id: "a2" }),
+    ];
+    renderHistory();
+    const row = (await screen.findByText(/Transferencia: Cuenta principal → Bolsillo/)).closest(
+      "li",
+    ) as HTMLElement;
+    expect(within(row).queryByRole("button", { name: /Editar movimiento/ })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /Eliminar/ })).toBeInTheDocument();
+  });
+
+  it("deletes a transfer after confirmation", async () => {
+    let deleted = 0;
+    server.use(
+      http.delete("http://test.local/api/movements/:id", () => {
+        deleted += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    movements = [
+      wire("t1", { direction: "transfer", category_id: null, transfer_account_id: "a2" }),
+    ];
+    renderHistory();
+    const row = (await screen.findByText(/Transferencia: Cuenta principal → Bolsillo/)).closest(
+      "li",
+    ) as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /Eliminar/ }));
+    fireEvent.click(within(row).getByRole("button", { name: "Eliminar" }));
+    await waitFor(() => expect(deleted).toBe(1));
+  });
+
+  it("widens the direction filter with the transfer option", async () => {
+    movements = [
+      wire("e1", { direction: "expense" }),
+      wire("t1", { direction: "transfer", category_id: null, transfer_account_id: "a2" }),
+    ];
+    renderHistory();
+    await screen.findByText(/desc-e1/);
+    const filter = screen.getByLabelText("Tipo") as HTMLSelectElement;
+    expect(within(filter).getByRole("option", { name: "Transferencia" })).toBeInTheDocument();
+    fireEvent.change(filter, { target: { value: "transfer" } });
+    await waitFor(() => expect(screen.queryByText(/desc-e1/)).not.toBeInTheDocument());
+    expect(screen.getByText(/Transferencia: Cuenta principal → Bolsillo/)).toBeInTheDocument();
+  });
+
+  it("labels the expense meta with the payment method and the income meta with its account", async () => {
+    movements = [
+      wire("e1", { direction: "expense", account_id: "a1" }),
+      wire("i1", { direction: "income", category_id: "c2", account_id: "a2" }),
+    ];
+    renderHistory();
+    expect(await screen.findByText(/Método de pago: Cuenta principal/)).toBeInTheDocument();
+    expect(screen.getByText(/Cuenta: Bolsillo/)).toBeInTheDocument();
   });
 });
