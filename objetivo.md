@@ -62,9 +62,10 @@ Por ejemplo:
 * Cuenta de ahorros.
 * Efectivo.
 * Billetera digital.
-* Tarjeta de crédito.
 * Inversiones.
 * Otras cuentas.
+
+Nota de reversión (2026-10-04): decisión explícita del dueño: se retiran `accounts.type` y toda la semántica de tarjeta de crédito (`credit_limit`, `statement_day`, `payment_due_day` y las métricas de uso y alerta, migración 0016). La lista de tipos de cuenta ya no incluye «Tarjeta de crédito» y el patrimonio pasa a ser solo activos. Es una pérdida aceptada, no un defecto: producción tenía 5 cuentas y 0 tarjetas cuando se tomó la decisión.
 
 Cada cuenta debe mostrar su saldo actual. Decisión: el saldo inicial se carga manual y luego se mueve con los movimientos, pero el saldo es editable libre y el usuario puede corregirlo directo cuando quiera.
 
@@ -127,6 +128,8 @@ Por ejemplo:
 Movimientos entre cuentas propias se registran editando los dos saldos a mano (regla de saldo manual por cuenta). No existe operación "transferencia": no hay endpoint, ni UI, ni historial de transferencias.
 
 Nota de reversión (2026-09-23): el libro mayor y las transferencias no se usaban; el costo de mantenimiento superaba el valor; el saldo manual cubre el caso de uso. Sin respaldo de los movimientos históricos (pérdida aceptada explícitamente).
+
+Nota de reversión (2026-10-04): se revierte la reversión de 2026-09-23. «Mover dinero» es de nuevo una operación real: una sola fila de `movements` con `direction='transfer'` (origen en `account_id`, destino en `transfer_account_id`) y efecto atómico en ambos saldos, creada mediante `POST /api/movements/transfer`. Solo se crea y se elimina (nunca se edita), rechaza transferencias entre monedas distintas y queda excluida de los agregados y gráficos de ingreso/gasto. No vuelven el módulo `/transfers`, una ruta dedicada, un trigger ni una UI propia de transferencias.
 
 ---
 
