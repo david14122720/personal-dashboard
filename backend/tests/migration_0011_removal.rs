@@ -353,7 +353,7 @@ async fn post_0011_balances_untouched_by_migration() {
     .await
     .expect("seed user");
     let account_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Balance Probe','cash',1234.56) RETURNING id",
+        "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Balance Probe',1234.56) RETURNING id",
     )
     .bind(user_id)
     .fetch_one(&pool)

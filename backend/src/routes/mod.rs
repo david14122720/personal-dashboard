@@ -11,6 +11,7 @@ pub mod me;
 pub mod movements;
 pub mod notes;
 pub mod ready;
+pub mod sessions;
 pub mod subscriptions;
 pub mod tasks;
 pub mod tokens;

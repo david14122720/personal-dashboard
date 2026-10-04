@@ -7,11 +7,19 @@
 //! one HTTP request, one transaction, never a trigger and never a
 //! client-orchestrated double write.
 //!
+//! Transfers (2026-10-04-accounts-transfers-login-calendar D2) are ONE
+//! ledger row with `direction = 'transfer'`: `account_id` is the origin,
+//! `transfer_account_id` the destination and `category_id` is NULL. They
+//! are created through `POST /api/movements/transfer`, debit the origin and
+//! credit the destination in the same transaction, and are create/delete
+//! only (`PATCH` on a transfer is 422).
+//!
 //! Lock discipline (design §Architecture Decisions): the account row is
 //! locked FIRST (`SELECT ... FOR UPDATE`) so concurrent same-account
 //! writers serialize instead of deadlocking on a lock upgrade. A PATCH
-//! touching two accounts locks both in ascending UUID order. Inside the
-//! PATCH transaction, AFTER the account locks and BEFORE any balance
+//! touching two accounts, a transfer create and a transfer delete lock
+//! every touched account in ascending UUID order. Inside the PATCH
+//! transaction, AFTER the account locks and BEFORE any balance
 //! write, the movement row is re-read `FOR UPDATE`: the reversal and the
 //! apply terms come from that locked row, never from the pre-transaction
 //! snapshot, so a serialized second writer can never undo a delta that
@@ -21,10 +29,12 @@
 //! Status matrix (design §Architecture Decisions): 401 without a token;
 //! 404 for a foreign or missing movement id (never 403); 422 for a
 //! referenced foreign/missing `account_id` / `category_id`, unknown or
-//! missing fields, malformed amount/date/direction; 409 surfaces only via
-//! `DELETE /api/accounts/{id}`. Category kind never gates a write (D3).
+//! missing fields, malformed amount/date/direction, a cross-currency or
+//! self-referencing transfer and a PATCH against a transfer; 409 surfaces
+//! only via `DELETE /api/accounts/{id}`. Category kind never gates a write
+//! (D3).
 //!
-//! Registered in `routes/mod.rs` (wiring in `main.rs`, S-A slice).
+//! Registered in `main.rs` (S-A slice; the transfer route joined in W2).
 
 use axum::{
     extract::{Path, State},
@@ -51,27 +61,39 @@ use crate::{
 const MAX_DESCRIPTION_LEN: usize = 2000;
 
 const LOCK_ACCOUNT_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
-const INSERT_MOVEMENT_SQL: &str = "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on, description, subscription_id) VALUES ($1,$2,$3,$4::movement_direction,$5,$6,$7,$8) RETURNING id, account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at";
+/// Transfer-scoped account lock: unlike [`LOCK_ACCOUNT_SQL`] it also returns
+/// the currency, so the handler can enforce the same-currency rule on the
+/// locked rows (design D2.2).
+const LOCK_TRANSFER_ACCOUNTS_SQL: &str =
+    "SELECT id, currency FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
+const INSERT_MOVEMENT_SQL: &str = "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on, description, subscription_id) VALUES ($1,$2,$3,$4::movement_direction,$5,$6,$7,$8) RETURNING id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at";
+/// Transfer insert: the enum literal and the destination are written here —
+/// `category_id`/`subscription_id` are omitted so the CHECKs keep them NULL.
+const INSERT_TRANSFER_SQL: &str = "INSERT INTO movements (user_id, account_id, transfer_account_id, direction, amount, occurred_on, description, subscription_id) VALUES ($1,$2,$3,'transfer',$4,$5,$6,NULL) RETURNING id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at";
 const APPLY_BALANCE_SQL: &str = "UPDATE accounts SET balance = balance + $2, updated_at = now() WHERE id=$1 AND user_id=$3";
-const UPDATE_MOVEMENT_SQL: &str = "UPDATE movements SET account_id=$3, category_id=$4, direction=$5::movement_direction, amount=$6, occurred_on=$7, description=$8, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at";
-const DELETE_MOVEMENT_SQL: &str =
-    "DELETE FROM movements WHERE id=$1 AND user_id=$2 RETURNING account_id, direction::text, amount";
-const LIST_MOVEMENTS_SQL: &str = "SELECT id, account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE user_id=$1 ORDER BY occurred_on DESC, created_at DESC, id DESC";
-const GET_MOVEMENT_SQL: &str = "SELECT id, account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE id=$1 AND user_id=$2";
+const UPDATE_MOVEMENT_SQL: &str = "UPDATE movements SET account_id=$3, category_id=$4, direction=$5::movement_direction, amount=$6, occurred_on=$7, description=$8, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at";
+/// Returns BOTH account legs so a transfer delete can undo origin and
+/// destination; `transfer_account_id` is NULL for expense/income.
+const DELETE_MOVEMENT_SQL: &str = "DELETE FROM movements WHERE id=$1 AND user_id=$2 RETURNING account_id, transfer_account_id, direction::text, amount";
+const LIST_MOVEMENTS_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE user_id=$1 ORDER BY occurred_on DESC, created_at DESC, id DESC";
+const GET_MOVEMENT_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE id=$1 AND user_id=$2";
 /// Authoritative PATCH re-read: inside the transaction, under the account
-/// lock, the stored money terms (account, direction, amount) are taken from
-/// THIS row and never from the pre-transaction snapshot.
-const LOCK_MOVEMENT_SQL: &str = "SELECT id, account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE id=$1 AND user_id=$2 FOR UPDATE";
-/// A PATCH whose movement changed account between the snapshot and the
-/// account lock restarts from a refreshed snapshot (the lock set is the only
-/// thing recalculated); bounded so a pathological race ends in a clean,
-/// fully rolled-back 500 instead of an unbounded loop.
-const PATCH_LOCK_RETRY_ATTEMPTS: usize = 5;
+/// lock, the stored money terms (account, destination, direction, amount)
+/// are taken from THIS row and never from the pre-transaction snapshot.
+const LOCK_MOVEMENT_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE id=$1 AND user_id=$2 FOR UPDATE";
+/// A movement whose account changed between the snapshot and the account
+/// lock (PATCH or DELETE) restarts from a refreshed snapshot (the lock set is
+/// the only thing recalculated); bounded so a pathological race ends in a
+/// clean, fully rolled-back 500 instead of an unbounded loop.
+const MOVEMENT_LOCK_RETRY_ATTEMPTS: usize = 5;
 
-/// Movement row: 10 columns (sqlx 0.8 `FromRow` tuple cap is 16).
+/// Movement row: 11 columns (sqlx 0.8 `FromRow` tuple cap is 16).
+/// `transfer_account_id` sits after `account_id`, matching the shared
+/// projection of every movement statement (design D2.5).
 type MovementRow = (
     Uuid,
     Uuid,
+    Option<Uuid>,
     Option<Uuid>,
     String,
     Decimal,
@@ -102,6 +124,22 @@ pub struct CreateMovementRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CreateTransferRequest {
+    /// Origin account, stored as `movements.account_id`.
+    pub from_account_id: Uuid,
+    /// Destination account, stored as `movements.transfer_account_id`.
+    pub to_account_id: Uuid,
+    /// Wire-format money string (e.g. `"25000.00"`); a JSON number never
+    /// reaches the parser (`deny_unknown_fields` + `String` reject it at
+    /// the boundary with 422).
+    pub amount: String,
+    /// Calendar date `YYYY-MM-DD`.
+    pub occurred_on: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PatchMovementRequest {
     /// Any subset MAY be sent; omitted fields keep their stored value.
     /// `subscription_id` is NOT a field: sending it is 422 and the audit
@@ -125,6 +163,8 @@ pub struct MovementResponse {
     pub occurred_on: NaiveDate,
     pub description: Option<String>,
     pub account_id: Uuid,
+    /// Destination account for a transfer; `null` for expense/income.
+    pub transfer_account_id: Option<Uuid>,
     pub category_id: Option<Uuid>,
     pub subscription_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
@@ -136,6 +176,7 @@ impl From<MovementRow> for MovementResponse {
         row: (
             Uuid,
             Uuid,
+            Option<Uuid>,
             Option<Uuid>,
             String,
             Decimal,
@@ -149,6 +190,7 @@ impl From<MovementRow> for MovementResponse {
         let (
             id,
             account_id,
+            transfer_account_id,
             category_id,
             direction,
             amount,
@@ -165,6 +207,7 @@ impl From<MovementRow> for MovementResponse {
             occurred_on,
             description,
             account_id,
+            transfer_account_id,
             category_id,
             subscription_id,
             created_at,
@@ -228,14 +271,29 @@ fn map_movement_db_err(e: sqlx::Error) -> AppError {
     AppError::Internal
 }
 
-/// Signed balance delta: `expense` subtracts, `income` adds. The stored
-/// amount is always positive; the direction carries the sign.
-fn signed_delta(direction: &str, amount: Decimal) -> Decimal {
-    if direction == "expense" {
-        -amount
-    } else {
-        amount
+/// Signed balance delta: `expense` subtracts, `income` adds and a `transfer`
+/// debits its origin (`account_id`). The stored amount is always positive;
+/// the direction carries the sign. Fails closed: a direction outside
+/// `expense`/`income`/`transfer` is an error, never an implicit addition
+/// (the transfer destination leg is written explicitly by the handler).
+fn signed_delta(direction: &str, amount: Decimal) -> Result<Decimal, AppError> {
+    match direction {
+        "expense" | "transfer" => Ok(-amount),
+        "income" => Ok(amount),
+        _ => Err(AppError::Internal),
     }
+}
+
+/// Transfers are create/delete only (design D2.4): a PATCH against a stored
+/// `transfer` row is 422 BEFORE any balance math, checked on the
+/// pre-transaction snapshot and again on the locked row.
+fn reject_transfer_patch(stored_direction: &str) -> Result<(), AppError> {
+    if stored_direction == "transfer" {
+        return Err(AppError::Validation(
+            "las transferencias no se pueden editar; elimina y vuelve a crearla".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub async fn create_movement_handler(
@@ -284,7 +342,101 @@ pub async fn create_movement_handler(
         .map_err(map_movement_db_err)?;
     sqlx::query(APPLY_BALANCE_SQL)
         .bind(body.account_id)
-        .bind(signed_delta(&direction, amount))
+        .bind(signed_delta(&direction, amount)?)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_movement_db_err)?;
+    tx.commit().await.map_err(|_| AppError::Internal)?;
+    Ok((StatusCode::CREATED, Json(MovementResponse::from(row))))
+}
+
+/// Create a transfer: ONE ledger row between two owned, same-currency
+/// accounts with both balance legs in one transaction (design D2).
+///
+/// Validation precedence follows D2.1: amount, date, description, both
+/// accounts owned, distinct accounts, same currency. The two account rows
+/// are locked in ascending UUID order, so opposite transfers (A→B vs B→A)
+/// serialize identically and can never deadlock.
+pub async fn create_transfer_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateTransferRequest>,
+) -> Result<(StatusCode, Json<MovementResponse>), AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let amount = validate_movement_amount(&body.amount)?;
+    let occurred_on = validate_occurred_on(&body.occurred_on)?;
+    let description = body
+        .description
+        .as_deref()
+        .map(validate_description)
+        .transpose()?;
+    // Fail fast before opening a write transaction; the locked rows below
+    // re-verify ownership and carry the currency.
+    ensure_owned_account(&state.pool, body.from_account_id, user_id).await?;
+    ensure_owned_account(&state.pool, body.to_account_id, user_id).await?;
+    if body.from_account_id == body.to_account_id {
+        return Err(AppError::Validation(
+            "las cuentas de la transferencia deben ser distintas".into(),
+        ));
+    }
+    let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
+    // Ascending-UUID lock order, exactly like PATCH: opposite transfers
+    // (A→B vs B→A) serialise identically and can never deadlock.
+    let mut ids = [body.from_account_id, body.to_account_id];
+    ids.sort();
+    let mut from_currency: Option<String> = None;
+    let mut to_currency: Option<String> = None;
+    for account_id in ids {
+        let locked: Option<(Uuid, String)> = sqlx::query_as(LOCK_TRANSFER_ACCOUNTS_SQL)
+            .bind(account_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        let Some((locked_id, currency)) = locked else {
+            return Err(AppError::Validation(
+                "la cuenta debe pertenecer al usuario".into(),
+            ));
+        };
+        if locked_id == body.from_account_id {
+            from_currency = Some(currency);
+        } else {
+            to_currency = Some(currency);
+        }
+    }
+    let (Some(from_currency), Some(to_currency)) = (from_currency, to_currency) else {
+        return Err(AppError::Validation(
+            "la cuenta debe pertenecer al usuario".into(),
+        ));
+    };
+    if from_currency != to_currency {
+        return Err(AppError::Validation(
+            "las cuentas deben tener la misma moneda".into(),
+        ));
+    }
+    let row = sqlx::query_as::<_, MovementRow>(INSERT_TRANSFER_SQL)
+        .bind(user_id)
+        .bind(body.from_account_id)
+        .bind(body.to_account_id)
+        .bind(amount)
+        .bind(occurred_on)
+        .bind(description.as_deref())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_movement_db_err)?;
+    // Origin debit, then destination credit: two explicit legs in the same
+    // transaction (the destination leg never runs through `signed_delta`).
+    sqlx::query(APPLY_BALANCE_SQL)
+        .bind(body.from_account_id)
+        .bind(-amount)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_movement_db_err)?;
+    sqlx::query(APPLY_BALANCE_SQL)
+        .bind(body.to_account_id)
+        .bind(amount)
         .bind(user_id)
         .execute(&mut *tx)
         .await
@@ -343,6 +495,9 @@ pub async fn patch_movement_handler(
         .await
         .map_err(|_| AppError::Internal)?
         .ok_or(AppError::NotFound)?;
+    // Transfers are create/delete only: reject before any balance math, on
+    // the snapshot and again on the locked row below (D2.4).
+    reject_transfer_patch(&snapshot.4)?;
     // Validate the body once, preserving the 422 precedence (direction,
     // amount, occurred_on, description) and the fast 404 above.
     let new_direction = body
@@ -373,7 +528,7 @@ pub async fn patch_movement_handler(
     // on the NEW account, which this attempt never locked. The transaction
     // rolls back untouched and restarts from a refreshed snapshot (bounded:
     // only the lock set is recalculated).
-    for _ in 0..PATCH_LOCK_RETRY_ATTEMPTS {
+    for _ in 0..MOVEMENT_LOCK_RETRY_ATTEMPTS {
         let snapshot_account = snapshot.1;
         let account_id = body.account_id.unwrap_or(snapshot_account);
         let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
@@ -411,6 +566,7 @@ pub async fn patch_movement_handler(
             return Err(AppError::NotFound);
         };
         let locked_response = MovementResponse::from(locked_row);
+        reject_transfer_patch(&locked_response.direction)?;
         if locked_response.account_id != snapshot_account {
             // Moved under us: restart with a refreshed snapshot so the
             // reversal hits the account that actually stores the delta.
@@ -447,14 +603,17 @@ pub async fn patch_movement_handler(
         // when nothing money-relevant changed (design delta-reversal matrix).
         sqlx::query(APPLY_BALANCE_SQL)
             .bind(locked_response.account_id)
-            .bind(-signed_delta(&locked_response.direction, locked_response.amount))
+            .bind(-signed_delta(
+                &locked_response.direction,
+                locked_response.amount,
+            )?)
             .bind(user_id)
             .execute(&mut *tx)
             .await
             .map_err(map_movement_db_err)?;
         sqlx::query(APPLY_BALANCE_SQL)
             .bind(account_id)
-            .bind(signed_delta(&direction, amount))
+            .bind(signed_delta(&direction, amount)?)
             .bind(user_id)
             .execute(&mut *tx)
             .await
@@ -485,28 +644,112 @@ pub async fn delete_movement_handler(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
-    let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
-    let deleted: Option<(Uuid, String, Decimal)> =
-        sqlx::query_as(DELETE_MOVEMENT_SQL)
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| AppError::Internal)?;
-    let Some((account_id, direction, amount)) = deleted else {
-        // Nothing deleted: the transaction drops uncommitted (no-op
-        // rollback) and the foreign/missing id reads as 404.
-        return Err(AppError::NotFound);
-    };
-    sqlx::query(APPLY_BALANCE_SQL)
-        .bind(account_id)
-        .bind(-signed_delta(&direction, amount))
+    // Pre-transaction snapshot: the fast 404 and the initial account lock
+    // set. It is NEVER the source of the money terms — those come from the
+    // DELETE ... RETURNING below, taken after the account locks.
+    let mut snapshot = sqlx::query_as::<_, MovementRow>(GET_MOVEMENT_SQL)
+        .bind(id)
         .bind(user_id)
-        .execute(&mut *tx)
+        .fetch_optional(&state.pool)
         .await
-        .map_err(map_movement_db_err)?;
-    tx.commit().await.map_err(|_| AppError::Internal)?;
-    Ok(StatusCode::NO_CONTENT)
+        .map_err(|_| AppError::Internal)?
+        .ok_or(AppError::NotFound)?;
+    // A concurrent PATCH may re-point the movement between the snapshot and
+    // the account lock; this attempt would then hold the WRONG account and
+    // the DELETE below would reveal it. The transaction rolls back untouched
+    // and restarts from a refreshed snapshot (bounded: only the lock set is
+    // recalculated).
+    for _ in 0..MOVEMENT_LOCK_RETRY_ATTEMPTS {
+        let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
+        // Account -> movement lock order, exactly like PATCH (and the
+        // transfer create): lock every account the snapshot attributes to the
+        // row, in ascending UUID order, BEFORE touching the movement row, so
+        // a concurrent PATCH can never deadlock against a movement-first
+        // delete.
+        let mut to_lock = vec![snapshot.1];
+        if let Some(destination) = snapshot.2 {
+            to_lock.push(destination);
+        }
+        to_lock.sort();
+        for account in &to_lock {
+            let locked: Option<Uuid> = sqlx::query_scalar(LOCK_ACCOUNT_SQL)
+                .bind(account)
+                .bind(user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| AppError::Internal)?;
+            if locked.is_none() {
+                return Err(AppError::Validation(
+                    "la cuenta debe pertenecer al usuario".into(),
+                ));
+            }
+        }
+        // The DELETE now takes the movement row lock itself and returns the
+        // authoritative terms for the reversal below.
+        let deleted: Option<(Uuid, Option<Uuid>, String, Decimal)> =
+            sqlx::query_as(DELETE_MOVEMENT_SQL)
+                .bind(id)
+                .bind(user_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| AppError::Internal)?;
+        let Some((account_id, transfer_account_id, direction, amount)) = deleted else {
+            // Deleted by another writer while we waited for the account lock:
+            // the transaction drops uncommitted (the DELETE is gone) and the
+            // foreign/missing id reads as 404.
+            return Err(AppError::NotFound);
+        };
+        // The row moved to an account this attempt never locked: roll back
+        // (undoing the DELETE above) and retry from a refreshed snapshot
+        // before any balance math.
+        let mut locked_set = vec![account_id];
+        if let Some(destination) = transfer_account_id {
+            locked_set.push(destination);
+        }
+        locked_set.sort();
+        if locked_set != to_lock {
+            tx.rollback().await.map_err(|_| AppError::Internal)?;
+            snapshot = sqlx::query_as::<_, MovementRow>(GET_MOVEMENT_SQL)
+                .bind(id)
+                .bind(user_id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|_| AppError::Internal)?
+                .ok_or(AppError::NotFound)?;
+            continue;
+        }
+        if direction == "transfer" {
+            let destination = transfer_account_id.ok_or(AppError::Internal)?;
+            // Undo the origin debit and the destination credit: both legs.
+            sqlx::query(APPLY_BALANCE_SQL)
+                .bind(account_id)
+                .bind(amount)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_movement_db_err)?;
+            sqlx::query(APPLY_BALANCE_SQL)
+                .bind(destination)
+                .bind(-amount)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_movement_db_err)?;
+        } else {
+            sqlx::query(APPLY_BALANCE_SQL)
+                .bind(account_id)
+                .bind(-signed_delta(&direction, amount)?)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_movement_db_err)?;
+        }
+        tx.commit().await.map_err(|_| AppError::Internal)?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    // Every attempt lost the account race: each transaction rolled back
+    // cleanly (nothing written), so a 500 is safe.
+    Err(AppError::Internal)
 }
 
 #[cfg(test)]
@@ -697,6 +940,7 @@ mod tests {
             occurred_on: NaiveDate::from_ymd_opt(2026, 9, 24).unwrap(),
             description: Some("mercado".into()),
             account_id: Uuid::new_v4(),
+            transfer_account_id: None,
             category_id: Some(Uuid::new_v4()),
             subscription_id: None,
             created_at: Utc::now(),
@@ -706,13 +950,132 @@ mod tests {
         assert_eq!(v["amount"], serde_json::Value::String("25000.00".into()));
         assert_eq!(v["occurred_on"], serde_json::Value::String("2026-09-24".into()));
         assert_eq!(v["direction"], serde_json::Value::String("expense".into()));
+        // Every movement serializes the destination slot; an expense has none.
+        assert_eq!(v["transfer_account_id"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn transfer_response_serializes_destination_and_null_category() {
+        let destination = Uuid::new_v4();
+        let resp = MovementResponse {
+            id: Uuid::new_v4(),
+            direction: "transfer".into(),
+            amount: Decimal::new(2_500_000, 2),
+            occurred_on: NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
+            description: None,
+            account_id: Uuid::new_v4(),
+            transfer_account_id: Some(destination),
+            category_id: None,
+            subscription_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["direction"], serde_json::Value::String("transfer".into()));
+        assert_eq!(
+            v["transfer_account_id"],
+            serde_json::Value::String(destination.to_string())
+        );
+        assert_eq!(v["category_id"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn signed_delta_fails_closed_and_transfer_debits_origin() {
+        let amount = Decimal::new(2_500_000, 2);
+        assert_eq!(signed_delta("expense", amount).unwrap(), -amount);
+        // A transfer debits its origin; the destination leg is written
+        // explicitly by the transfer handler, never through this helper.
+        assert_eq!(signed_delta("transfer", amount).unwrap(), -amount);
+        assert_eq!(signed_delta("income", amount).unwrap(), amount);
+        // Fail closed: an unknown direction must never add money.
+        for direction in ["", "Transfer", "gasto", "transfer_typo"] {
+            assert!(
+                matches!(signed_delta(direction, amount), Err(AppError::Internal)),
+                "unknown direction {direction:?} must be an internal error"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_rejects_stored_transfer_with_spanish_422() {
+        for direction in ["expense", "income"] {
+            reject_transfer_patch(direction).expect("non-transfers stay editable");
+        }
+        let err = reject_transfer_patch("transfer").unwrap_err();
+        match &err {
+            AppError::Validation(msg) => assert!(
+                msg.contains("transferencias"),
+                "422 message must name transfers, got: {msg}"
+            ),
+            other => panic!("transfer PATCH must be a validation error, got: {other:?}"),
+        }
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[test]
+    fn transfer_request_allowlist_rejects_unknown_fields_and_numeric_amounts() {
+        let from = Uuid::new_v4();
+        let to = Uuid::new_v4();
+        let ok: CreateTransferRequest = serde_json::from_value(json!({
+            "from_account_id": from,
+            "to_account_id": to,
+            "amount": "25000.00",
+            "occurred_on": "2026-10-04",
+            "description": "ahorro"
+        }))
+        .unwrap();
+        assert_eq!(ok.from_account_id, from);
+        assert_eq!(ok.to_account_id, to);
+        assert_eq!(ok.description.as_deref(), Some("ahorro"));
+        for bad in [
+            // Money travels as a decimal string, never a JSON number.
+            json!({"from_account_id": from, "to_account_id": to, "amount": 25000.0, "occurred_on": "2026-10-04"}),
+            // Every field outside the allowlist is unknown (422).
+            json!({"from_account_id": from, "to_account_id": to, "amount": "25000.00", "occurred_on": "2026-10-04", "direction": "transfer"}),
+            json!({"from_account_id": from, "to_account_id": to, "amount": "25000.00", "occurred_on": "2026-10-04", "category_id": Uuid::new_v4()}),
+            json!({"from_account_id": from, "to_account_id": to, "amount": "25000.00", "occurred_on": "2026-10-04", "subscription_id": Uuid::new_v4()}),
+            json!({"from_account_id": from, "to_account_id": to, "amount": "25000.00", "occurred_on": "2026-10-04", "transfer_account_id": to}),
+            // Missing required fields fail at the boundary too.
+            json!({"to_account_id": to, "amount": "25000.00", "occurred_on": "2026-10-04"}),
+            json!({"from_account_id": from, "amount": "25000.00", "occurred_on": "2026-10-04"}),
+        ] {
+            assert!(
+                serde_json::from_value::<CreateTransferRequest>(bad.clone()).is_err(),
+                "transfer body must reject {bad}"
+            );
+        }
+        // Only the transfer handler may write the destination column: the
+        // expense/income create and PATCH DTOs reject it as unknown.
+        let create_with_transfer = json!({
+            "direction": "expense", "amount": "25000.00",
+            "account_id": from, "category_id": to,
+            "occurred_on": "2026-10-04", "transfer_account_id": to
+        });
+        assert!(
+            serde_json::from_value::<CreateMovementRequest>(create_with_transfer).is_err(),
+            "POST /movements must reject transfer_account_id"
+        );
+        assert!(
+            serde_json::from_value::<PatchMovementRequest>(json!({"transfer_account_id": to}))
+                .is_err(),
+            "PATCH /movements/{{id}} must reject transfer_account_id"
+        );
     }
 
     #[test]
     fn movement_sql_scopes_every_query_by_user_id_and_locks_first() {
+        // Shared projection: all six movement statements select exactly the
+        // same 11 columns in the same order, so `MovementRow` decodes them
+        // all and the tuple stays far below the sqlx cap of 16 (D2.5).
+        const MOVEMENT_COLUMNS: &str = "id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at";
         for sql in [
             LOCK_ACCOUNT_SQL,
+            LOCK_TRANSFER_ACCOUNTS_SQL,
             INSERT_MOVEMENT_SQL,
+            INSERT_TRANSFER_SQL,
             APPLY_BALANCE_SQL,
             UPDATE_MOVEMENT_SQL,
             DELETE_MOVEMENT_SQL,
@@ -725,9 +1088,27 @@ mod tests {
                 "movement SQL must scope by user_id, got: {sql}"
             );
         }
+        for sql in [
+            INSERT_MOVEMENT_SQL,
+            INSERT_TRANSFER_SQL,
+            UPDATE_MOVEMENT_SQL,
+            LIST_MOVEMENTS_SQL,
+            GET_MOVEMENT_SQL,
+            LOCK_MOVEMENT_SQL,
+        ] {
+            assert!(
+                sql.contains(MOVEMENT_COLUMNS),
+                "statement must select the 11 movement columns in order, got: {sql}"
+            );
+        }
         assert!(
             LOCK_ACCOUNT_SQL.contains("FOR UPDATE"),
             "account probe must lock the row, got: {LOCK_ACCOUNT_SQL}"
+        );
+        assert!(
+            LOCK_TRANSFER_ACCOUNTS_SQL.contains("FOR UPDATE")
+                && LOCK_TRANSFER_ACCOUNTS_SQL.contains("currency"),
+            "the transfer lock must serialize on the account rows and carry the currency, got: {LOCK_TRANSFER_ACCOUNTS_SQL}"
         );
         assert!(
             LOCK_MOVEMENT_SQL.contains("FOR UPDATE"),
@@ -741,6 +1122,25 @@ mod tests {
         assert!(
             INSERT_MOVEMENT_SQL.contains("$4::movement_direction"),
             "insert must cast the direction enum, got: {INSERT_MOVEMENT_SQL}"
+        );
+        // The transfer insert writes the destination and the enum literal
+        // directly; `category_id` is omitted so the CHECK keeps it NULL.
+        assert!(
+            INSERT_TRANSFER_SQL.contains("transfer_account_id")
+                && INSERT_TRANSFER_SQL.contains("'transfer'")
+                && !INSERT_TRANSFER_SQL
+                    .split("VALUES")
+                    .next()
+                    .unwrap_or(INSERT_TRANSFER_SQL)
+                    .contains("category_id"),
+            "transfer insert must write the destination and no category, got: {INSERT_TRANSFER_SQL}"
+        );
+        // DELETE returns both legs so the reversal can undo origin+destination.
+        assert!(
+            DELETE_MOVEMENT_SQL.contains(
+                "RETURNING account_id, transfer_account_id, direction::text, amount"
+            ),
+            "delete must return both account legs, got: {DELETE_MOVEMENT_SQL}"
         );
         let insert_columns = INSERT_MOVEMENT_SQL
             .split("VALUES")
@@ -813,7 +1213,7 @@ mod tests {
 
     async fn seed_account(pool: &sqlx::PgPool, user_id: Uuid, name: &str, balance: &str) -> Uuid {
         sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,$2,'cash',$3::numeric) RETURNING id",
+            "INSERT INTO accounts (user_id, name, balance) VALUES ($1,$2,$3::numeric) RETURNING id",
         )
         .bind(user_id)
         .bind(name)
@@ -821,6 +1221,27 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("seed account")
+    }
+
+    /// Same as [`seed_account`], with an explicit currency so the
+    /// cross-currency rejection can be exercised (the column defaults to COP).
+    async fn seed_account_with_currency(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        name: &str,
+        balance: &str,
+        currency: &str,
+    ) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, currency, balance) VALUES ($1,$2,$3,$4::numeric) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(currency)
+        .bind(balance)
+        .fetch_one(pool)
+        .await
+        .expect("seed account with currency")
     }
 
     async fn seed_category(pool: &sqlx::PgPool, user_id: Uuid, kind: &str, name: &str) -> Uuid {
@@ -847,6 +1268,21 @@ mod tests {
             v[k] = val.clone();
         }
         Json(serde_json::from_value(v).expect("valid movement body"))
+    }
+
+    fn transfer_body(
+        from_account_id: Uuid,
+        to_account_id: Uuid,
+        amount: &str,
+        occurred_on: &str,
+    ) -> CreateTransferRequest {
+        CreateTransferRequest {
+            from_account_id,
+            to_account_id,
+            amount: amount.to_string(),
+            occurred_on: occurred_on.to_string(),
+            description: None,
+        }
     }
 
     async fn account_balance(pool: &sqlx::PgPool, account_id: Uuid) -> Decimal {
@@ -879,6 +1315,7 @@ mod tests {
         .expect("read stored movement deltas");
         rows.iter().fold(Decimal::ZERO, |acc, (direction, amount)| {
             acc + signed_delta(direction, *amount)
+                .expect("every stored movement has a known direction")
         })
     }
 
@@ -1528,13 +1965,339 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transfer_moves_both_balances_and_writes_one_row() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP transfer_moves_both_balances_and_writes_one_row: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let origin = seed_account(&pool, user_id, "Ahorros", "100000.00").await;
+        let destination = seed_account(&pool, user_id, "Nequi", "50000.00").await;
+        let (status, created) = create_transfer_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(transfer_body(origin, destination, "25000.00", "2026-10-04")),
+        )
+        .await
+        .expect("transfer is 201");
+        assert_eq!(status, StatusCode::CREATED);
+        let v = serde_json::to_value(&created.0).unwrap();
+        assert_eq!(v["direction"], serde_json::Value::String("transfer".into()));
+        assert_eq!(v["account_id"], serde_json::Value::String(origin.to_string()));
+        assert_eq!(
+            v["transfer_account_id"],
+            serde_json::Value::String(destination.to_string())
+        );
+        assert_eq!(v["category_id"], serde_json::Value::Null);
+        assert_eq!(v["amount"], serde_json::Value::String("25000.00".into()));
+        // Both legs applied in the same transaction.
+        assert_eq!(account_balance(&pool, origin).await, Decimal::new(7_500_000, 2));
+        assert_eq!(account_balance(&pool, destination).await, Decimal::new(7_500_000, 2));
+        // Exactly one ledger row: origin -> destination, no category.
+        let rows: Vec<(Uuid, Option<Uuid>, Option<Uuid>, String, Decimal)> = sqlx::query_as(
+            "SELECT account_id, transfer_account_id, category_id, direction::text, amount FROM movements WHERE user_id=$1",
+        )
+        .bind(user_id)
+        .fetch_all(&pool)
+        .await
+        .expect("read transfer row");
+        assert_eq!(rows.len(), 1, "a transfer is ONE ledger row");
+        assert_eq!(rows[0].0, origin);
+        assert_eq!(rows[0].1, Some(destination));
+        assert_eq!(rows[0].2, None);
+        assert_eq!(rows[0].3, "transfer");
+        assert_eq!(rows[0].4, Decimal::new(2_500_000, 2));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn delete_transfer_restores_both_balances_and_removes_row() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_transfer_restores_both_balances_and_removes_row: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let origin = seed_account(&pool, user_id, "Ahorros", "100000.00").await;
+        let destination = seed_account(&pool, user_id, "Nequi", "50000.00").await;
+        let (_, created) = create_transfer_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(transfer_body(origin, destination, "25000.00", "2026-10-04")),
+        )
+        .await
+        .expect("transfer is 201");
+        let status = delete_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.0.id),
+        )
+        .await
+        .expect("delete transfer is 204");
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // Both legs undone: origin credit back, destination debit back.
+        assert_eq!(account_balance(&pool, origin).await, Decimal::new(10_000_000, 2));
+        assert_eq!(account_balance(&pool, destination).await, Decimal::new(5_000_000, 2));
+        assert_eq!(movement_count(&pool, user_id).await, 0);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn patch_on_transfer_is_422_and_changes_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP patch_on_transfer_is_422_and_changes_nothing: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let origin = seed_account(&pool, user_id, "Ahorros", "100000.00").await;
+        let destination = seed_account(&pool, user_id, "Nequi", "50000.00").await;
+        let (_, created) = create_transfer_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(transfer_body(origin, destination, "25000.00", "2026-10-04")),
+        )
+        .await
+        .expect("transfer is 201");
+        let err = patch_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.0.id),
+            Json(serde_json::from_value(json!({"amount": "1000.00"})).unwrap()),
+        )
+        .await
+        .expect_err("patch on a transfer must be 422");
+        match &err {
+            AppError::Validation(msg) => {
+                assert!(msg.contains("transferencias"), "got: {msg}")
+            }
+            other => panic!("patch on a transfer must be Validation, got: {other:?}"),
+        }
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Both balances and the stored row are untouched.
+        assert_eq!(account_balance(&pool, origin).await, Decimal::new(7_500_000, 2));
+        assert_eq!(account_balance(&pool, destination).await, Decimal::new(7_500_000, 2));
+        let stored: (String, Decimal, Option<Uuid>) = sqlx::query_as(
+            "SELECT direction::text, amount, transfer_account_id FROM movements WHERE id=$1",
+        )
+        .bind(created.0.id)
+        .fetch_one(&pool)
+        .await
+        .expect("read stored transfer");
+        assert_eq!(
+            stored,
+            (
+                "transfer".to_string(),
+                Decimal::new(2_500_000, 2),
+                Some(destination)
+            )
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn transfer_validation_is_spanish_422_and_persists_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP transfer_validation_is_spanish_422_and_persists_nothing: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cop = seed_account(&pool, user_id, "Ahorros", "100000.00").await;
+        let cop2 = seed_account(&pool, user_id, "Nequi", "50000.00").await;
+        let usd =
+            seed_account_with_currency(&pool, user_id, "USD Card", "50000.00", "USD").await;
+        let (_, _, other_user) = db_state(&pool).await;
+        let foreign = seed_account(&pool, other_user, "Ajena", "100000.00").await;
+        let missing = Uuid::new_v4();
+        let cases: Vec<(CreateTransferRequest, &str, &str)> = vec![
+            (transfer_body(cop, cop, "25000.00", "2026-10-04"), "same account", "distintas"),
+            (transfer_body(cop, usd, "25000.00", "2026-10-04"), "cross currency", "misma moneda"),
+            (transfer_body(cop, foreign, "25000.00", "2026-10-04"), "foreign destination", "pertenecer"),
+            (transfer_body(foreign, cop, "25000.00", "2026-10-04"), "foreign origin", "pertenecer"),
+            (transfer_body(cop, missing, "25000.00", "2026-10-04"), "missing destination", "pertenecer"),
+            (transfer_body(cop, cop2, "0.00", "2026-10-04"), "non-positive amount", "monto"),
+            (transfer_body(cop, cop2, "10.005", "2026-10-04"), "three decimals", "monto"),
+            (transfer_body(cop, cop2, "25000.00", "2026-02-30"), "unparseable date", "fecha"),
+        ];
+        for (body, label, needle) in cases {
+            let err = create_transfer_handler(State(state.clone()), headers.clone(), Json(body))
+                .await
+                .expect_err("invalid transfer must fail");
+            match &err {
+                AppError::Validation(msg) => assert!(
+                    msg.contains(needle),
+                    "{label}: message must contain {needle:?}, got: {msg}"
+                ),
+                other => panic!("{label}: expected Validation, got: {other:?}"),
+            }
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "{label} must be 422"
+            );
+        }
+        // Nothing persisted and no balance moved (own or foreign).
+        assert_eq!(movement_count(&pool, user_id).await, 0);
+        assert_eq!(account_balance(&pool, cop).await, Decimal::new(10_000_000, 2));
+        assert_eq!(account_balance(&pool, cop2).await, Decimal::new(5_000_000, 2));
+        assert_eq!(account_balance(&pool, usd).await, Decimal::new(5_000_000, 2));
+        assert_eq!(account_balance(&pool, foreign).await, Decimal::new(10_000_000, 2));
+        cleanup_user(&pool, user_id).await;
+        cleanup_user(&pool, other_user).await;
+    }
+
+    #[tokio::test]
+    async fn opposite_transfers_do_not_deadlock() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP opposite_transfers_do_not_deadlock: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let origin = seed_account(&pool, user_id, "Ahorros", "100000.00").await;
+        let destination = seed_account(&pool, user_id, "Nequi", "50000.00").await;
+        let (first, second) = tokio::join!(
+            create_transfer_handler(
+                State(state.clone()),
+                headers.clone(),
+                Json(transfer_body(origin, destination, "25000.00", "2026-10-04")),
+            ),
+            create_transfer_handler(
+                State(state.clone()),
+                headers.clone(),
+                Json(transfer_body(destination, origin, "10000.00", "2026-10-04")),
+            )
+        );
+        let _ = first.expect("A→B must commit (ascending-UUID lock order)");
+        let _ = second.expect("B→A must commit (ascending-UUID lock order)");
+        // 100000 − 25000 + 10000 and 50000 + 25000 − 10000.
+        assert_eq!(account_balance(&pool, origin).await, Decimal::new(8_500_000, 2));
+        assert_eq!(account_balance(&pool, destination).await, Decimal::new(6_500_000, 2));
+        assert_eq!(movement_count(&pool, user_id).await, 2);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Review fix: DELETE used to lock the movement row and only then the
+    /// account, while PATCH locks the account first. The ABBA cycle let
+    /// Postgres abort one writer with 40P01 (surfaced as a 500). This gate
+    /// makes the interleaving deterministic: DELETE queues on the gated
+    /// movement row (old order) before PATCH, and PATCH holds the account
+    /// while waiting for that same row.
+    #[tokio::test]
+    async fn concurrent_patch_and_delete_never_deadlock_or_500() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP concurrent_patch_and_delete_never_deadlock_or_500: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let account_id = seed_account(&pool, user_id, "Cash", "1000000.00").await;
+        let category_id = seed_category(&pool, user_id, "finance", "Mercado").await;
+
+        for round in 0..8 {
+            let (_, created) = create_movement_handler(
+                State(state.clone()),
+                headers.clone(),
+                create_body(account_id, category_id, json!({})),
+            )
+            .await
+            .expect("seed movement");
+            let movement_id = created.0.id;
+
+            // Gate the movement row so both writers queue inside their own
+            // transaction instead of racing on scheduler timing.
+            let mut gate = pool.begin().await.expect("gate transaction");
+            let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *gate)
+                .await
+                .expect("gate backend pid");
+            let gate_locked: Option<Uuid> = sqlx::query_scalar(LOCK_MOVEMENT_SQL)
+                .bind(movement_id)
+                .bind(user_id)
+                .fetch_optional(&mut *gate)
+                .await
+                .expect("gate locks the movement");
+            assert!(gate_locked.is_some(), "gate must lock the seeded movement");
+
+            let delete = tokio::spawn({
+                let state = state.clone();
+                let headers = headers.clone();
+                async move {
+                    delete_movement_handler(State(state), headers, Path(movement_id)).await
+                }
+            });
+            assert!(
+                wait_until_blocked_by(&pool, gate_pid, 1).await,
+                "round {round}: DELETE must queue behind the gate"
+            );
+            let patch = tokio::spawn({
+                let state = state.clone();
+                let headers = headers.clone();
+                async move {
+                    patch_movement_handler(
+                        State(state),
+                        headers,
+                        Path(movement_id),
+                        Json(serde_json::from_value(json!({"amount": "30000.00"})).unwrap()),
+                    )
+                    .await
+                }
+            });
+            // With the old movement-first DELETE the wait chain is
+            // gate <- DELETE <- PATCH (PATCH holding the account and waiting
+            // for the movement row); with the account-first fix it is
+            // gate <- DELETE (account held) <- PATCH on that same account,
+            // so no cycle can form.
+            assert!(
+                wait_until_blocked_by(&pool, gate_pid, 2).await,
+                "round {round}: PATCH must queue behind DELETE's account lock"
+            );
+            gate.commit().await.expect("release gate");
+
+            let patch_result = tokio::time::timeout(std::time::Duration::from_secs(30), patch)
+                .await
+                .expect("PATCH must resolve before the timeout")
+                .expect("PATCH task must not panic");
+            match patch_result {
+                Ok(_) => {}
+                Err(err) => assert_eq!(
+                    err.into_response().status(),
+                    axum::http::StatusCode::NOT_FOUND,
+                    "round {round}: PATCH must never surface a deadlock/500"
+                ),
+            }
+            let delete_result = tokio::time::timeout(std::time::Duration::from_secs(30), delete)
+                .await
+                .expect("DELETE must resolve before the timeout")
+                .expect("DELETE task must not panic");
+            match delete_result {
+                Ok(status) => assert_eq!(status, StatusCode::NO_CONTENT),
+                Err(err) => assert_eq!(
+                    err.into_response().status(),
+                    axum::http::StatusCode::NOT_FOUND,
+                    "round {round}: DELETE must never surface a deadlock/500"
+                ),
+            }
+            assert_eq!(
+                movement_count(&pool, user_id).await,
+                0,
+                "round {round}: the movement must be gone"
+            );
+            assert_eq!(
+                account_balance(&pool, account_id).await,
+                Decimal::new(100_000_000, 2),
+                "round {round}: create+patch+delete must restore the seeded balance"
+            );
+        }
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
     async fn unauthenticated_movement_access_is_401() {
         let Some(pool) = test_pool() else {
             eprintln!("SKIP unauthenticated_movement_access_is_401: no DATABASE_URL");
             return;
         };
-        let (state, _, _) = db_state(&pool).await;
-        let (_, _, user_id) = db_state(&pool).await;
+        let (state, _, user_id) = db_state(&pool).await;
         let account_id = seed_account(&pool, user_id, "Cash", "100000.00").await;
         let category_id = seed_category(&pool, user_id, "finance", "Mercado").await;
         let empty = HeaderMap::new();

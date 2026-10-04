@@ -121,7 +121,9 @@ is set server-side).
 
 Auth: `login` (returns the token, does not cache it).
 
-Accounts: `list_accounts`, `get_account`, `create_account`, `update_account`
+Accounts: `list_accounts`, `get_account`, `create_account` (name plus
+optional currency/notes/color/icon; the strict schema rejects unknown
+keys — no account type and no card field), `update_account`
 (balance/notes/color/icon/is_archived; balance is user-owned manual data),
 `delete_account`.
 
@@ -152,6 +154,15 @@ Catalogs: `list_categories`,
 > (debts eradicated end to end — routes `/debts*` gone, tables dropped by
 > gated migration 0013; cached clients receive an unknown-tool error,
 > accepted for this single-user deployment). No movements tool exists.
+> Removed by change 2026-10-04-accounts-transfers-login-calendar (W1): the
+> account type and the whole credit-card field layer (`type`,
+> `credit_limit`, `statement_day`, `payment_due_day`). `create_account` now
+> accepts `name` plus the optional `currency`/`notes`/`color`/`icon` and its
+> strict Zod schema rejects unknown keys (a legacy `type` argument is a
+> validation error, never silently stripped); `list_accounts`/`get_account`
+> return the type-free backend response unchanged. Owner decision
+> 2026-10-04: production held 0 credit-card accounts, so the layer was
+> retired end to end (destructive migration 0016). No transfer tool exists.
 
 ## Typecheck
 

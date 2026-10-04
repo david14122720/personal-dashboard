@@ -2,7 +2,14 @@
 //!
 //! Every query carries `AND user_id = $N` (via [`require_user_id`]) so a
 //! foreign id resolves to 404 without leaking existence. Duplicate names per
-//! user surface as 409 via pgcode `23505`; unknown account types as 422.
+//! user surface as 409 via pgcode `23505`.
+//!
+//! Accounts carry no type and no credit-card field (W1 of
+//! `2026-10-04-accounts-transfers-login-calendar`, migration 0016 removes the
+//! whole layer): the create allowlist is `name` plus the optional `currency`,
+//! `notes`, `color` and `icon`, and any removed field is an unknown-field
+//! 422. The balance stays the single money source, written only by the
+//! movement transaction and the manual `PATCH /api/accounts/{id}`.
 //!
 //! Registered in `main.rs` (PR4 wiring).
 
@@ -19,44 +26,30 @@ use uuid::Uuid;
 use crate::{
     auth::helper::require_user_id,
     error::AppError,
-    finance::money::{parse_balance_amount, parse_money_amount},
+    finance::money::parse_balance_amount,
     state::AppState,
 };
 
-/// Account kinds accepted at the API boundary (mirrors `account_type` enum).
-pub const ACCOUNT_TYPES: &[&str] = &[
-    "bank",
-    "savings",
-    "cash",
-    "digital_wallet",
-    "credit_card",
-    "investment",
-    "other",
-];
+/// Account kinds were removed with the whole credit-card layer (W1,
+/// migration 0016): no type constant, validator or enum survives here.
 
 const MAX_NAME_LEN: usize = 200;
 const MAX_NOTES_LEN: usize = 2000;
 const MAX_COLOR_LEN: usize = 32;
 const MAX_ICON_LEN: usize = 64;
 
-const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, type, currency, credit_limit, statement_day, payment_due_day, notes, color, icon) VALUES ($1,$2,$3::account_type,$4,$5,$6,$7,$8,$9,$10) RETURNING id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at";
-const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
-const GET_ACCOUNT_SQL: &str = "SELECT id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
+const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, currency, notes, color, icon) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at";
+const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
+const GET_ACCOUNT_SQL: &str = "SELECT id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
 
-/// Account row: 11 legacy columns + 3 card columns = 14 (sqlx 0.8 FromRow
-/// tuple cap is 16). Derived card metrics (`used/available/usage/alert`)
-/// are computed in Rust from `balance` + `credit_limit` — still a single
-/// row fetch, so no N+1 — instead of SQL CASE, which would push the row
-/// past the 16-column cap.
+/// Account row: the 10 surviving account columns (sqlx 0.8 FromRow tuple cap
+/// is 16) — id, name, currency, balance, notes, color, icon, is_archived,
+/// created_at, updated_at. The removed type/card columns are never selected.
 type AccountRow = (
     Uuid,
     String,
     String,
-    String,
     Decimal,
-    Option<Decimal>,
-    Option<i16>,
-    Option<i16>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -69,15 +62,7 @@ type AccountRow = (
 #[serde(deny_unknown_fields)]
 pub struct CreateAccountRequest {
     pub name: String,
-    #[serde(rename = "type")]
-    pub account_type: String,
     pub currency: Option<String>,
-    /// Wire-format money string (e.g. `"5000.00"`); required iff
-    /// `type` is `credit_card`, forbidden otherwise.
-    pub credit_limit: Option<String>,
-    /// Billing-cycle days (1-31); required iff `type` is `credit_card`.
-    pub statement_day: Option<i16>,
-    pub payment_due_day: Option<i16>,
     pub notes: Option<String>,
     pub color: Option<String>,
     pub icon: Option<String>,
@@ -100,30 +85,10 @@ pub struct PatchAccountRequest {
 pub struct AccountResponse {
     pub id: Uuid,
     pub name: String,
-    #[serde(rename = "type")]
-    pub account_type: String,
     pub currency: String,
     /// Serialized as a string (e.g. `"50.00"`); `rust_decimal`'s serde impl
     /// renders decimals as strings, never floats.
     pub balance: Decimal,
-    /// Card limit (`None` for non-card accounts); serialized as a string.
-    pub credit_limit: Option<Decimal>,
-    /// Billing-cycle days (`None` for non-card accounts).
-    pub statement_day: Option<i16>,
-    pub payment_due_day: Option<i16>,
-    /// Derived card metrics (`None` for non-card accounts): `used` is the
-    /// absolute debt, `available` is `limit - used`, `usage_pct` is
-    /// `used / limit * 100`, and `alert_level` is `ok` (<70), `warn`
-    /// (70-90) or `high` (>=90). Computed from the same row (no extra query).
-    pub used_balance: Option<Decimal>,
-    pub available_balance: Option<Decimal>,
-    pub usage_pct: Option<Decimal>,
-    pub alert_level: Option<String>,
-    /// `statement_balance` is always `None`: the ledger that fed the
-    /// cycle-to-date figure was removed (migration 0011), so no statement
-    /// figure is computed or returned. Card debt is the manual `balance`
-    /// plus the derived metrics above; cycle days stay editable metadata.
-    pub statement_balance: Option<Decimal>,
     pub notes: Option<String>,
     pub color: Option<String>,
     pub icon: Option<String>,
@@ -137,11 +102,7 @@ impl
         Uuid,
         String,
         String,
-        String,
         Decimal,
-        Option<Decimal>,
-        Option<i16>,
-        Option<i16>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -155,11 +116,7 @@ impl
             Uuid,
             String,
             String,
-            String,
             Decimal,
-            Option<Decimal>,
-            Option<i16>,
-            Option<i16>,
             Option<String>,
             Option<String>,
             Option<String>,
@@ -168,45 +125,13 @@ impl
             DateTime<Utc>,
         ),
     ) -> Self {
-        let (
-            id,
-            name,
-            account_type,
-            currency,
-            balance,
-            credit_limit,
-            statement_day,
-            payment_due_day,
-            notes,
-            color,
-            icon,
-            is_archived,
-            created_at,
-            updated_at,
-        ) = row;
-        let (used_balance, available_balance, usage_pct, alert_level) =
-            match credit_limit {
-                Some(limit) => {
-                    let (used, available, usage, alert) = compute_card_metrics(balance, limit);
-                    (Some(used), Some(available), Some(usage), Some(alert))
-                }
-                None => (None, None, None, None),
-            };
+        let (id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at) =
+            row;
         Self {
             id,
             name,
-            account_type,
             currency,
             balance,
-            credit_limit,
-            statement_day,
-            payment_due_day,
-            used_balance,
-            available_balance,
-            usage_pct,
-            alert_level,
-            // Always `None` since S3a: the ledger is gone (migration 0011).
-            statement_balance: None,
             notes,
             color,
             icon,
@@ -228,19 +153,6 @@ pub fn validate_account_name(raw: &str) -> Result<String, AppError> {
     Ok(name.to_string())
 }
 
-/// Validate an account type against the `account_type` enum values.
-pub fn validate_account_type(raw: &str) -> Result<String, AppError> {
-    let normalized = raw.trim();
-    if ACCOUNT_TYPES.contains(&normalized) {
-        Ok(normalized.to_string())
-    } else {
-        Err(AppError::Validation(
-            "account type must be one of: bank, savings, cash, digital_wallet, credit_card, investment, other"
-                .into(),
-        ))
-    }
-}
-
 /// Normalize a currency code (default `COP`); must be 3 ASCII letters.
 pub fn validate_currency(raw: Option<&str>) -> Result<String, AppError> {
     let Some(raw) = raw else {
@@ -254,84 +166,6 @@ pub fn validate_currency(raw: Option<&str>) -> Result<String, AppError> {
             "currency must be a 3-letter code".into(),
         ))
     }
-}
-
-/// Validate credit-card fields against the account type (pre-DB guard ahead
-/// of the `chk_card_*` CHECKs, so failures are 422 with a message).
-///
-/// - `credit_card` requires a `credit_limit` wire string (`> 0`, scale <= 2
-///   via [`parse_money_amount`]) and both cycle days (1-31); returns the
-///   parsed limit for binding.
-/// - Any other type rejects all three fields (blank limit strings count as
-///   absent, mirroring optional-field frontend behavior).
-pub fn validate_card_fields(
-    account_type: &str,
-    credit_limit: Option<&str>,
-    statement_day: Option<i16>,
-    payment_due_day: Option<i16>,
-) -> Result<Option<Decimal>, AppError> {
-    let present_limit = credit_limit.filter(|s| !s.trim().is_empty());
-    if account_type == "credit_card" {
-        let Some(raw) = present_limit else {
-            return Err(AppError::Validation(
-                "credit_limit is required for credit_card accounts".into(),
-            ));
-        };
-        let limit = parse_money_amount(raw)?;
-        for (day, field) in [
-            (statement_day, "statement_day"),
-            (payment_due_day, "payment_due_day"),
-        ] {
-            match day {
-                Some(d) if (1..=31).contains(&d) => {}
-                _ => {
-                    return Err(AppError::Validation(format!(
-                        "{field} is required for credit_card accounts and must be 1-31"
-                    )));
-                }
-            }
-        }
-        Ok(Some(limit))
-    } else {
-        if present_limit.is_some() || statement_day.is_some() || payment_due_day.is_some() {
-            return Err(AppError::Validation(
-                "credit_limit, statement_day and payment_due_day require type credit_card"
-                    .into(),
-            ));
-        }
-        Ok(None)
-    }
-}
-
-/// Derive card health metrics from the cached `balance` (negative = debt)
-/// and the `credit_limit`. Returns
-/// `(used_balance, available_balance, usage_pct, alert_level)` where
-/// `alert_level` is `ok` (usage < 70), `warn` (70 <= usage < 90) or `high`
-/// (usage >= 90). `usage_pct` is rounded to 2 decimals for stable wire output.
-pub fn compute_card_metrics(
-    balance: Decimal,
-    limit: Decimal,
-) -> (Decimal, Decimal, Decimal, String) {
-    use rust_decimal::RoundingStrategy;
-    let used = (-balance).max(Decimal::ZERO);
-    let available = limit + balance;
-    let usage = if limit > Decimal::ZERO {
-        (used / limit * Decimal::new(100, 0)).round_dp_with_strategy(
-            2,
-            RoundingStrategy::MidpointAwayFromZero,
-        )
-    } else {
-        Decimal::ZERO
-    };
-    let alert = if usage >= Decimal::new(90, 0) {
-        "high"
-    } else if usage >= Decimal::new(70, 0) {
-        "warn"
-    } else {
-        "ok"
-    }
-    .to_string();
-    (used, available, usage, alert)
 }
 
 /// Validate PATCH body: metadata lengths plus the optional manual
@@ -401,14 +235,7 @@ pub async fn create_account_handler(
 ) -> Result<(StatusCode, Json<AccountResponse>), AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     let name = validate_account_name(&body.name)?;
-    let account_type = validate_account_type(&body.account_type)?;
     let currency = validate_currency(body.currency.as_deref())?;
-    let credit_limit = validate_card_fields(
-        &account_type,
-        body.credit_limit.as_deref(),
-        body.statement_day,
-        body.payment_due_day,
-    )?;
     validate_metadata_lengths(
         body.notes.as_deref(),
         body.color.as_deref(),
@@ -417,11 +244,7 @@ pub async fn create_account_handler(
     let row = sqlx::query_as::<_, AccountRow>(CREATE_ACCOUNT_SQL)
         .bind(user_id)
         .bind(&name)
-        .bind(&account_type)
         .bind(&currency)
-        .bind(credit_limit)
-        .bind(body.statement_day)
-        .bind(body.payment_due_day)
         .bind(body.notes.as_deref())
         .bind(body.color.as_deref())
         .bind(body.icon.as_deref())
@@ -459,8 +282,6 @@ pub async fn get_account_handler(
     let Some(row) = row else {
         return Err(AppError::NotFound);
     };
-    // S3a: `statement_balance` is always `None` — the ledger is gone
-    // (migration 0011), so no second query runs here.
     Ok(Json(AccountResponse::from(row)))
 }
 
@@ -512,7 +333,7 @@ pub async fn patch_account_handler(
     qb.push_bind(id);
     qb.push(" AND user_id = ");
     qb.push_bind(user_id);
-    qb.push(" RETURNING id, name, type::text, currency, balance, credit_limit, statement_day, payment_due_day, notes, color, icon, is_archived, created_at, updated_at");
+    qb.push(" RETURNING id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at");
     let row = qb
         .build_query_as::<AccountRow>()
         .fetch_optional(&state.pool)
@@ -527,16 +348,19 @@ pub async fn patch_account_handler(
 const DELETE_ACCOUNT_SQL: &str = "DELETE FROM accounts WHERE id=$1 AND user_id=$2";
 const ACCOUNT_OWNERSHIP_CHECK_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
 /// Live-reference probe for the delete guard: counts the caller's movements
-/// on the account. Never touches a removed table.
+/// that reference the account as the origin (`account_id`) or as a transfer
+/// destination (`transfer_account_id`). Both FKs are `ON DELETE RESTRICT`.
+/// Never touches a removed table.
 const ACCOUNT_MOVEMENT_COUNT_SQL: &str =
-    "SELECT count(*) FROM movements WHERE account_id=$1 AND user_id=$2";
+    "SELECT count(*) FROM movements WHERE (account_id=$1 OR transfer_account_id=$1) AND user_id=$2";
 
 fn map_account_delete_err(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db) = &e {
-        // Backstop for the `ON DELETE RESTRICT` reference from
-        // `movements.account_id` (or any future blocking reference): the
-        // application check below catches the normal case, the constraint
-        // catches the race — both map to the same Spanish 409, never a 500.
+        // Backstop for the `ON DELETE RESTRICT` references from
+        // `movements.account_id` and `movements.transfer_account_id` (or any
+        // future blocking reference): the application check below catches
+        // the normal case, the constraints catch the race — both map to the
+        // same Spanish 409, never a 500.
         if db.code().as_deref() == Some("23503") {
             return AppError::Conflict(
                 "la cuenta tiene movimientos y no se puede eliminar".into(),
@@ -548,12 +372,12 @@ fn map_account_delete_err(e: sqlx::Error) -> AppError {
 
 /// Delete an owned account (204) unless it has movements (409).
 ///
-/// The surviving `movements.account_id` reference is blocking
-/// (`ON DELETE RESTRICT`): deleting an owned account with at least one
-/// movement returns 409 Conflict with a Spanish message and leaves the
-/// account and its balance unchanged. Foreign/missing ids resolve to 404
-/// without leaking existence. (`assets.account_id` is `ON DELETE SET
-/// NULL`, so assets never block.)
+/// The surviving `movements.account_id` and `movements.transfer_account_id`
+/// references are blocking (`ON DELETE RESTRICT`): deleting an owned account
+/// that is the origin or the destination of at least one movement returns 409
+/// Conflict with a Spanish message and leaves the account and its balance
+/// unchanged. Foreign/missing ids resolve to 404 without leaking existence.
+/// (`assets.account_id` is `ON DELETE SET NULL`, so assets never block.)
 pub async fn delete_account_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -605,20 +429,43 @@ mod tests {
     }
 
     #[test]
-    fn accepts_all_documented_account_types() {
-        for t in ACCOUNT_TYPES {
-            assert_eq!(validate_account_type(t).unwrap(), t.to_string());
-        }
+    fn create_accepts_name_plus_optional_metadata_only() {
+        // W1: name is the only required field; currency/notes/color/icon are
+        // optional and the removed type/card fields never parse.
+        let ok: CreateAccountRequest =
+            serde_json::from_value(json!({"name": "Cuenta principal"})).unwrap();
+        assert_eq!(ok.name, "Cuenta principal");
+        assert!(ok.currency.is_none());
+        let full: CreateAccountRequest = serde_json::from_value(json!({
+            "name": "Cuenta principal",
+            "currency": "COP",
+            "notes": "n",
+            "color": "#fff",
+            "icon": "wallet"
+        }))
+        .unwrap();
+        assert_eq!(full.currency.as_deref(), Some("COP"));
+        assert_eq!(full.icon.as_deref(), Some("wallet"));
     }
 
     #[test]
-    fn rejects_unknown_account_type_as_422() {
-        for raw in ["spaceship", "BANK", "", "bank "] {
-            // NOTE: "bank " trims to "bank" and is accepted; keep only true rejects.
-            if raw.trim() == "bank" {
-                continue;
-            }
-            assert_422(validate_account_type(raw).unwrap_err());
+    fn create_rejects_removed_type_and_card_fields_as_422() {
+        // `deny_unknown_fields` is the boundary guard: axum maps the
+        // deserialization error to 422 and the handler never runs, so no
+        // account can be created with a removed field.
+        for payload in [
+            json!({"name": "Cuenta", "type": "bank"}),
+            json!({"name": "Visa", "type": "credit_card"}),
+            json!({"name": "Cuenta", "credit_limit": "5000.00"}),
+            json!({"name": "Cuenta", "statement_day": 15}),
+            json!({"name": "Cuenta", "payment_due_day": 25}),
+            json!({"name": "Cuenta", "used_balance": "10.00"}),
+            json!({"name": "Cuenta", "alert_level": "warn"}),
+        ] {
+            assert!(
+                serde_json::from_value::<CreateAccountRequest>(payload.clone()).is_err(),
+                "removed field must fail deserialization: {payload}"
+            );
         }
     }
 
@@ -652,7 +499,8 @@ mod tests {
     fn patch_accepts_balance_but_rejects_structural_edits_as_422() {
         // `balance` is an accepted PATCH field (S3a manual balance); the
         // structural fields stay rejected by `deny_unknown_fields` (422 at
-        // the JSON boundary; axum maps data errors to 422).
+        // the JSON boundary; axum maps data errors to 422). `type` and the
+        // card fields were never PATCHable and are unknown beyond W1.
         let ok: PatchAccountRequest =
             serde_json::from_value(json!({"balance": "-750.50"})).unwrap();
         assert_eq!(ok.balance.as_deref(), Some("-750.50"));
@@ -726,17 +574,8 @@ mod tests {
         let resp = AccountResponse {
             id: Uuid::new_v4(),
             name: "Main".into(),
-            account_type: "bank".into(),
             currency: "COP".into(),
             balance: Decimal::new(5000, 2),
-            credit_limit: None,
-            statement_day: None,
-            payment_due_day: None,
-            used_balance: None,
-            available_balance: None,
-            usage_pct: None,
-            alert_level: None,
-            statement_balance: None,
             notes: None,
             color: None,
             icon: None,
@@ -746,6 +585,24 @@ mod tests {
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["balance"], serde_json::Value::String("50.00".into()));
+        // The wire shape carries no type and no card key (W1).
+        for removed in [
+            "type",
+            "credit_limit",
+            "statement_day",
+            "payment_due_day",
+            "used_balance",
+            "available_balance",
+            "usage_pct",
+            "alert_level",
+            "statement_balance",
+        ] {
+            assert!(
+                v.get(removed).is_none(),
+                "AccountResponse must not carry `{removed}`, got: {v}"
+            );
+        }
+        assert_eq!(v.as_object().map(|o| o.len()), Some(10));
     }
 
     #[test]
@@ -798,6 +655,10 @@ mod tests {
         assert!(
             ACCOUNT_MOVEMENT_COUNT_SQL.contains("movements"),
             "delete guard must probe the live movements reference, got: {ACCOUNT_MOVEMENT_COUNT_SQL}"
+        );
+        assert!(
+            ACCOUNT_MOVEMENT_COUNT_SQL.contains("transfer_account_id"),
+            "delete guard must also block an account used only as a transfer destination, got: {ACCOUNT_MOVEMENT_COUNT_SQL}"
         );
     }
 
@@ -852,7 +713,7 @@ mod tests {
     }
 
     fn create_body(name: &str) -> serde_json::Value {
-        json!({"name": name, "type": "bank"})
+        json!({"name": name})
     }
 
     #[tokio::test]
@@ -886,7 +747,7 @@ mod tests {
         let (state_a, _, user_a) = db_state(&pool).await;
         let (state_b, headers_b, user_b) = db_state(&pool).await;
         let account_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Mine','cash') RETURNING id",
+            "INSERT INTO accounts (user_id, name) VALUES ($1,'Mine') RETURNING id",
         )
         .bind(user_a)
         .fetch_one(&pool)
@@ -904,238 +765,123 @@ mod tests {
         cleanup_user(&pool, user_b).await;
     }
 
-    // -- Slice 2 (p5-credit-cards): card validation, clamping, metrics --
+    // -- W1 (accounts-transfers-login-calendar): no type, no card layer --
 
     #[test]
-    fn card_requires_limit_and_both_days() {
-        assert_422(
-            validate_card_fields("credit_card", None, Some(15), Some(25)).unwrap_err(),
-        );
-        assert_422(
-            validate_card_fields("credit_card", Some("5000.00"), None, Some(25)).unwrap_err(),
-        );
-        assert_422(
-            validate_card_fields("credit_card", Some("5000.00"), Some(15), None).unwrap_err(),
-        );
-    }
-
-    #[test]
-    fn card_rejects_non_positive_or_bad_scale_limit_as_422() {
-        for raw in ["0.00", "0", "-10.00", "10.005", "abc", ""] {
-            assert_422(
-                validate_card_fields("credit_card", Some(raw), Some(15), Some(25)).unwrap_err(),
+    fn account_sql_never_selects_removed_columns() {
+        for sql in [CREATE_ACCOUNT_SQL, LIST_ACCOUNTS_SQL, GET_ACCOUNT_SQL] {
+            for removed in [
+                "type",
+                "credit_limit",
+                "statement_day",
+                "payment_due_day",
+                "used_balance",
+                "available_balance",
+                "alert_level",
+                "statement_balance",
+            ] {
+                assert!(
+                    !sql.contains(removed),
+                    "account SQL must not reference removed column `{removed}`, got: {sql}"
+                );
+            }
+            assert!(
+                !sql.contains("::account_type"),
+                "account SQL must not cast to the dropped account_type enum, got: {sql}"
             );
         }
-    }
-
-    #[test]
-    fn card_rejects_out_of_range_days_as_422() {
-        for day in [0, 32, -1, 100] {
-            assert_422(
-                validate_card_fields("credit_card", Some("5000.00"), Some(day), Some(25))
-                    .unwrap_err(),
-            );
-            assert_422(
-                validate_card_fields("credit_card", Some("5000.00"), Some(15), Some(day))
-                    .unwrap_err(),
-            );
-        }
-    }
-
-    #[test]
-    fn non_card_rejects_any_card_field_as_422() {
-        assert_422(
-            validate_card_fields("savings", Some("5000.00"), None, None).unwrap_err(),
-        );
-        assert_422(validate_card_fields("bank", None, Some(15), None).unwrap_err());
-        assert_422(validate_card_fields("cash", None, None, Some(25)).unwrap_err());
-    }
-
-    #[test]
-    fn valid_card_fields_parse_limit() {
-        let limit =
-            validate_card_fields("credit_card", Some("5000.00"), Some(15), Some(25)).unwrap();
-        assert_eq!(limit, Some(Decimal::new(500000, 2)));
-        assert_eq!(validate_card_fields("bank", None, None, None).unwrap(), None);
-    }
-
-    #[test]
-    fn card_metrics_compute_used_available_usage() {
-        let (used, available, usage, alert) =
-            compute_card_metrics(Decimal::new(-30000, 2), Decimal::new(100000, 2));
-        assert_eq!(used, Decimal::new(30000, 2));
-        assert_eq!(available, Decimal::new(70000, 2));
-        assert_eq!(usage, Decimal::new(30, 0));
-        assert_eq!(alert, "ok");
-    }
-
-    #[test]
-    fn card_metrics_alert_thresholds() {
-        let limit = Decimal::new(100000, 2);
-        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-69000, 2), limit);
-        assert_eq!(alert, "ok");
-        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-70000, 2), limit);
-        assert_eq!(alert, "warn");
-        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-89990, 2), limit);
-        assert_eq!(alert, "warn");
-        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-90000, 2), limit);
-        assert_eq!(alert, "high");
-        let (_, _, _, alert) = compute_card_metrics(Decimal::new(-91000, 2), limit);
-        assert_eq!(alert, "high");
-    }
-
-    #[test]
-    fn card_metrics_treat_positive_balance_as_zero_used() {
-        let (used, available, usage, alert) =
-            compute_card_metrics(Decimal::new(5000, 2), Decimal::new(100000, 2));
-        assert_eq!(used, Decimal::ZERO);
-        assert_eq!(available, Decimal::new(105000, 2));
-        assert_eq!(usage, Decimal::ZERO);
-        assert_eq!(alert, "ok");
-    }
-
-    #[test]
-    fn create_rejects_card_only_fields_as_422() {
-        // `statement_balance` is computed server-side; `used_balance` too.
-        for payload in [
-            json!({"name": "Visa", "type": "credit_card", "credit_limit": "5000.00", "statement_balance": "10.00"}),
-            json!({"name": "Visa", "type": "bank", "used_balance": "10.00"}),
+        // The 10 surviving columns travel on every read, in one stable order.
+        for kept in [
+            "id",
+            "name",
+            "currency",
+            "balance",
+            "notes",
+            "color",
+            "icon",
+            "is_archived",
+            "created_at",
+            "updated_at",
         ] {
             assert!(
-                serde_json::from_value::<CreateAccountRequest>(payload).is_err(),
-                "computed card metric must fail deserialization"
+                LIST_ACCOUNTS_SQL.contains(kept) && GET_ACCOUNT_SQL.contains(kept),
+                "account reads must keep `{kept}`, got: {LIST_ACCOUNTS_SQL} / {GET_ACCOUNT_SQL}"
             );
         }
-        let ok: CreateAccountRequest = serde_json::from_value(json!({
-            "name": "Visa", "type": "credit_card",
-            "credit_limit": "5000.00", "statement_day": 15, "payment_due_day": 25
-        }))
-        .unwrap();
-        assert_eq!(ok.credit_limit.as_deref(), Some("5000.00"));
-    }
-
-    fn card_body(name: &str, limit: Option<&str>) -> Json<CreateAccountRequest> {
-        let mut v = json!({"name": name, "type": "credit_card", "statement_day": 15, "payment_due_day": 25});
-        if let Some(limit) = limit {
-            v["credit_limit"] = json!(limit);
-        }
-        Json(serde_json::from_value(v).unwrap())
     }
 
     #[tokio::test]
-    async fn post_card_without_limit_is_422() {
+    async fn post_account_is_201_without_removed_fields() {
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP post_card_without_limit_is_422: no DATABASE_URL");
+            eprintln!("SKIP post_account_is_201_without_removed_fields: no DATABASE_URL");
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
-        let err = create_account_handler(State(state.clone()), headers, card_body("Visa", None))
+        let body = || {
+            Json(
+                serde_json::from_value(json!({"name": "Cuenta principal", "currency": "cop"}))
+                    .expect("name-only create body"),
+            )
+        };
+        let (status, created) = create_account_handler(State(state.clone()), headers, body())
             .await
-            .expect_err("card without limit must be 422");
-        assert_eq!(
-            err.into_response().status(),
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY
-        );
-        cleanup_user(&pool, user_id).await;
-    }
-
-    #[tokio::test]
-    async fn post_non_card_with_limit_is_422() {
-        let Some(pool) = test_pool() else {
-            eprintln!("SKIP post_non_card_with_limit_is_422: no DATABASE_URL");
-            return;
-        };
-        let (state, headers, user_id) = db_state(&pool).await;
-        let body = Json(
-            serde_json::from_value(json!({
-                "name": "Savings", "type": "savings", "credit_limit": "5000.00"
-            }))
-            .unwrap(),
-        );
-        let err = create_account_handler(State(state.clone()), headers, body)
-            .await
-            .expect_err("non-card with limit must be 422");
-        assert_eq!(
-            err.into_response().status(),
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY
-        );
-        cleanup_user(&pool, user_id).await;
-    }
-
-    #[tokio::test]
-    async fn post_valid_card_is_201_with_persisted_fields() {
-        let Some(pool) = test_pool() else {
-            eprintln!("SKIP post_valid_card_is_201_with_persisted_fields: no DATABASE_URL");
-            return;
-        };
-        let (state, headers, user_id) = db_state(&pool).await;
-        let (status, created) =
-            create_account_handler(State(state.clone()), headers, card_body("Visa", Some("5000.00")))
-                .await
-                .expect("valid card create is 201");
+            .expect("name-only create is 201");
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(created.account_type, "credit_card");
-        assert_eq!(created.credit_limit, Some(Decimal::new(500000, 2)));
-        assert_eq!(created.statement_day, Some(15));
-        assert_eq!(created.payment_due_day, Some(25));
+        assert_eq!(created.name, "Cuenta principal");
+        assert_eq!(created.currency, "COP");
+        let v = serde_json::to_value(&created.0).unwrap();
+        for removed in [
+            "type",
+            "credit_limit",
+            "statement_day",
+            "payment_due_day",
+            "used_balance",
+            "available_balance",
+            "usage_pct",
+            "alert_level",
+            "statement_balance",
+        ] {
+            assert!(
+                v.get(removed).is_none(),
+                "response must not carry removed key `{removed}`, got: {v}"
+            );
+        }
+        // Money still travels as a string; a default-zero row decodes to a
+        // zero decimal (`rust_decimal` normalizes the numeric scale).
         assert_eq!(created.balance, Decimal::ZERO);
+        assert!(
+            v["balance"].is_string(),
+            "balance must travel as a string, got: {v}"
+        );
         cleanup_user(&pool, user_id).await;
     }
 
+    // -- S3a (ledger removal): the statement helpers are gone; the balance
+    // stays the single money source --
+
     #[tokio::test]
-    async fn get_card_reports_usage_pct_and_alert_level() {
+    async fn get_account_reports_surviving_fields_only() {
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP get_card_reports_usage_pct_and_alert_level: no DATABASE_URL");
+            eprintln!("SKIP get_account_reports_surviving_fields_only: no DATABASE_URL");
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
-        let (_, created) =
-            create_account_handler(State(state.clone()), headers.clone(), card_body("Visa", Some("1000.00")))
-                .await
-                .expect("valid card create is 201");
-        sqlx::query("UPDATE accounts SET balance = -910.00 WHERE id=$1")
-            .bind(created.id)
-            .execute(&pool)
+        let account_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Manual',-350.00) RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed account");
+        let got = get_account_handler(State(state.clone()), headers, Path(account_id))
             .await
-            .expect("seed card debt");
-        let got = get_account_handler(State(state.clone()), headers, Path(created.id))
-            .await
-            .expect("get own card is 200");
-        assert_eq!(got.used_balance, Some(Decimal::new(91000, 2)));
-        assert_eq!(got.available_balance, Some(Decimal::new(9000, 2)));
-        assert_eq!(got.usage_pct, Some(Decimal::new(91, 0)));
-        assert_eq!(got.alert_level.as_deref(), Some("high"));
-        cleanup_user(&pool, user_id).await;
-    }
-
-    // -- S3a (ledger removal): statement helpers are gone; the figure is
-    // always `None` and card metrics derive from the manual balance --
-
-    #[tokio::test]
-    async fn get_card_statement_balance_is_always_none() {
-        let Some(pool) = test_pool() else {
-            eprintln!("SKIP get_card_statement_balance_is_always_none: no DATABASE_URL");
-            return;
-        };
-        let (state, headers, user_id) = db_state(&pool).await;
-        let (_, card) =
-            create_account_handler(State(state.clone()), headers.clone(), card_body("Visa", Some("5000.00")))
-                .await
-                .expect("valid card create is 201");
-        // No second query runs: the balance is arranged directly on the
-        // surviving table and the statement figure stays `None`.
-        sqlx::query("UPDATE accounts SET balance = -350.00 WHERE id=$1")
-            .bind(card.id)
-            .execute(&pool)
-            .await
-            .expect("seed card balance");
-        let got = get_account_handler(State(state.clone()), headers, Path(card.id))
-            .await
-            .expect("get own card is 200");
+            .expect("get own account is 200");
         assert_eq!(got.balance, Decimal::new(-35000, 2));
-        assert_eq!(got.statement_balance, None);
-        // Derived metrics still come from the manual balance.
-        assert_eq!(got.used_balance, Some(Decimal::new(35000, 2)));
+        assert_eq!(got.name, "Manual");
+        let v = serde_json::to_value(&got.0).unwrap();
+        for removed in ["type", "credit_limit", "statement_day", "payment_due_day"] {
+            assert!(v.get(removed).is_none(), "removed key `{removed}` in {v}");
+        }
         cleanup_user(&pool, user_id).await;
     }
 
@@ -1147,7 +893,7 @@ mod tests {
             };
             let (state, headers, user_id) = db_state(&pool).await;
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Temp','cash') RETURNING id",
+                "INSERT INTO accounts (user_id, name) VALUES ($1,'Temp') RETURNING id",
             )
             .bind(user_id)
             .fetch_one(&pool)
@@ -1181,7 +927,7 @@ mod tests {
             // rows in surviving companions (category, subscription): none of
             // them blocks the delete — only movements do.
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Wallet','cash',25000) RETURNING id",
+                "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Wallet',25000) RETURNING id",
             )
             .bind(user_id)
             .fetch_one(&pool)
@@ -1223,7 +969,7 @@ mod tests {
             };
             let (state, headers, user_id) = db_state(&pool).await;
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Wallet','cash',75000) RETURNING id",
+                "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Wallet',75000) RETURNING id",
             )
             .bind(user_id)
             .fetch_one(&pool)
@@ -1281,6 +1027,80 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn delete_transfer_destination_is_409() {
+            let Some(pool) = test_pool() else {
+                eprintln!("SKIP delete_transfer_destination_is_409: no DATABASE_URL");
+                return;
+            };
+            let (state, headers, user_id) = db_state(&pool).await;
+            let origin: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Origen',75000) RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed origin account");
+            let destination: Uuid = sqlx::query_scalar(
+                "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Destino',50000) RETURNING id",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("seed destination account");
+            // Hermetic fixture: ONE transfer ledger row (origin -> destination).
+            sqlx::query(
+                "INSERT INTO movements (user_id, account_id, transfer_account_id, direction, amount, occurred_on) VALUES ($1,$2,$3,'transfer',25000,'2026-10-04')",
+            )
+            .bind(user_id)
+            .bind(origin)
+            .bind(destination)
+            .execute(&pool)
+            .await
+            .expect("seed transfer");
+            // The destination is blocked exactly like an origin account: both
+            // answer the same Spanish 409.
+            for blocked in [origin, destination] {
+                let err =
+                    delete_account_handler(State(state.clone()), headers.clone(), Path(blocked))
+                        .await
+                        .expect_err("a transfer leg must block the delete");
+                let resp = err.into_response();
+                assert_eq!(resp.status(), axum::http::StatusCode::CONFLICT);
+                let bytes = axum::body::to_bytes(resp.into_body(), 8192)
+                    .await
+                    .expect("conflict body is readable");
+                let v: serde_json::Value =
+                    serde_json::from_slice(&bytes).expect("conflict body is JSON");
+                let message = v["error"]["message"].as_str().unwrap_or_default();
+                assert!(
+                    message.contains("movimientos"),
+                    "409 must carry the Spanish block message, got: {message}"
+                );
+            }
+            // Both accounts survive with their balances unchanged.
+            for (account_id, expected) in [
+                (origin, rust_decimal::Decimal::new(7_500_000, 2)),
+                (destination, rust_decimal::Decimal::new(5_000_000, 2)),
+            ] {
+                let balance: rust_decimal::Decimal =
+                    sqlx::query_scalar("SELECT balance FROM accounts WHERE id=$1")
+                        .bind(account_id)
+                        .fetch_one(&pool)
+                        .await
+                        .expect("account survives the blocked delete");
+                assert_eq!(balance, expected);
+            }
+            // `movements.account_id`/`transfer_account_id` are ON DELETE
+            // RESTRICT: movements go before the user cascade on cleanup.
+            sqlx::query("DELETE FROM movements WHERE user_id=$1")
+                .bind(user_id)
+                .execute(&pool)
+                .await
+                .expect("cleanup movements");
+            cleanup_user(&pool, user_id).await;
+        }
+
+        #[tokio::test]
         async fn patch_balance_round_trip() {
             let Some(pool) = test_pool() else {
                 eprintln!("SKIP patch_balance_round_trip: no DATABASE_URL");
@@ -1288,7 +1108,7 @@ mod tests {
             };
             let (state, headers, user_id) = db_state(&pool).await;
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Cash','cash',-500) RETURNING id",
+                "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Cash',-500) RETURNING id",
             )
             .bind(user_id)
             .fetch_one(&pool)
@@ -1325,7 +1145,7 @@ mod tests {
             };
             let (state, headers, user_id) = db_state(&pool).await;
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,'Cash','cash',100) RETURNING id",
+                "INSERT INTO accounts (user_id, name, balance) VALUES ($1,'Cash',100) RETURNING id",
             )
             .bind(user_id)
             .fetch_one(&pool)
@@ -1365,7 +1185,7 @@ mod tests {
             let (state_a, _, user_a) = db_state(&pool).await;
             let (state_b, headers_b, user_b) = db_state(&pool).await;
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Mine','cash') RETURNING id",
+                "INSERT INTO accounts (user_id, name) VALUES ($1,'Mine') RETURNING id",
             )
             .bind(user_a)
             .fetch_one(&pool)
@@ -1412,7 +1232,7 @@ mod tests {
             let (state_a, _, user_a) = db_state(&pool).await;
             let (state_b, headers_b, user_b) = db_state(&pool).await;
             let account_id: Uuid = sqlx::query_scalar(
-                "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Mine','cash') RETURNING id",
+                "INSERT INTO accounts (user_id, name) VALUES ($1,'Mine') RETURNING id",
             )
             .bind(user_a)
             .fetch_one(&pool)

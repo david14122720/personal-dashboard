@@ -20,6 +20,18 @@ pub struct Preferences {
     pub dashboard_layout: serde_json::Value,
 }
 
+/// Session lookup for `GET /api/me`: the session must be live AND its owner
+/// active. Deactivating a user stops its existing sessions, not just new
+/// logins (security audit A4) — the same predicate the auth middleware and
+/// the session helper enforce.
+const ME_LOOKUP_SQL: &str = r#"SELECT u.id, u.email, u.display_name,
+          p.currency_code, p.locale, p.timezone, p.dashboard_layout
+   FROM sessions s
+   JOIN users u ON u.id = s.user_id
+   LEFT JOIN user_preferences p ON p.user_id = u.id
+   WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
+     AND u.is_active"#;
+
 pub async fn me_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -27,14 +39,8 @@ pub async fn me_handler(
     let token = middleware::extract_bearer(&headers).ok_or(AppError::Auth)?;
     let hash = middleware::bearer_hash(&token);
 
-    // Join sessions -> users -> user_preferences, only active session
     let row = sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>, Option<String>, Option<serde_json::Value>)>(
-        r#"SELECT u.id, u.email, u.display_name,
-                  p.currency_code, p.locale, p.timezone, p.dashboard_layout
-           FROM sessions s
-           JOIN users u ON u.id = s.user_id
-           LEFT JOIN user_preferences p ON p.user_id = u.id
-           WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()"#,
+        ME_LOOKUP_SQL,
     )
     .bind(&hash)
     .fetch_optional(&state.pool)
@@ -315,6 +321,45 @@ mod preferences_tests {
             .execute(pool)
             .await
             .expect("cleanup user");
+    }
+
+    // -- A4: the /me lookup must require an active owner --
+
+    #[test]
+    fn me_lookup_requires_an_active_user() {
+        assert!(
+            ME_LOOKUP_SQL.contains("u.is_active"),
+            "the /me session lookup must require an active user, got: {ME_LOOKUP_SQL}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivated_session_is_401_on_me() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP deactivated_session_is_401_on_me: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+
+        // Control: a live session of an active user resolves.
+        let me = me_handler(State(state.clone()), headers.clone())
+            .await
+            .expect("active user must get 200")
+            .0;
+        assert_eq!(me.id, user_id);
+
+        sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("deactivate user");
+
+        let err = me_handler(State(state), headers)
+            .await
+            .expect_err("deactivated user must be 401");
+        assert_401(err);
+
+        cleanup_user(&pool, user_id).await;
     }
 
     fn patch_body(value: serde_json::Value) -> axum::Json<PatchPreferencesRequest> {

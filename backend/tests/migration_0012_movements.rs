@@ -255,7 +255,8 @@ async fn post_0012_no_trigger_writes_balance() {
     );
 }
 
-/// (3) The `movement_direction` enum holds exactly `expense` + `income`.
+/// (3) The `movement_direction` enum holds exactly `expense` + `income` + `transfer`
+/// (0014 adds `transfer`).
 #[tokio::test]
 async fn post_0012_direction_enum_values() {
     let Some(pool) = test_pool() else {
@@ -271,7 +272,11 @@ async fn post_0012_direction_enum_values() {
     .expect("list movement_direction values");
     assert_eq!(
         values,
-        vec!["expense".to_string(), "income".to_string()],
-        "movement_direction must hold exactly expense + income, got: {values:?}"
+        vec![
+            "expense".to_string(),
+            "income".to_string(),
+            "transfer".to_string()
+        ],
+        "movement_direction must hold exactly expense + income + transfer, got: {values:?}"
     );
 }

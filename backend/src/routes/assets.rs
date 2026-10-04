@@ -28,12 +28,11 @@
 //! ownership contract).
 //!
 //! Net worth is an on-demand aggregate (no trigger, no materialization):
-//! per currency, `sum(non-archived assets current_value)` minus
-//! credit-card debt (`SUM(GREATEST(-balance, 0))` over the caller's
-//! non-archived `credit_card` accounts, so an overpaid card contributes 0,
-//! never credit). Card balances stay negative-as-debt: they reduce net worth
-//! through the liabilities leg. The `debts` wire field is card-only since
-//! S-G (the `debts` table is dropped by gated migration 0013).
+//! per currency, the sum of every non-archived asset `current_value`. It is
+//! assets-only since W1 of `2026-10-04-accounts-transfers-login-calendar`:
+//! the credit-card liability leg (`SUM(GREATEST(-balance, 0))` over
+//! non-archived `credit_card` accounts) is gone with the card layer and the
+//! always-zero `debts` wire field is removed, never zeroed in place.
 //!
 //! Registered in `routes/mod.rs` (wiring in `main.rs` lands in Phase 6).
 
@@ -95,7 +94,9 @@ const CREATE_VALUATION_SQL: &str = "INSERT INTO asset_valuations (user_id, asset
 // Test-only probe: verifies trigger-synced current_value without going through HTTP.
 #[cfg(test)]
 const ASSET_VALUE_SQL: &str = "SELECT current_value FROM assets WHERE id=$1 AND user_id=$2";
-const NET_WORTH_SQL: &str = "SELECT COALESCE(a.currency, d.currency) AS currency, COALESCE(a.total, 0) AS assets, COALESCE(d.total, 0) AS debts FROM (SELECT currency, SUM(current_value) AS total FROM assets WHERE user_id=$1 AND NOT is_archived GROUP BY currency) a FULL OUTER JOIN (SELECT currency, SUM(GREATEST(-balance, 0)) AS total FROM accounts WHERE user_id=$1 AND type='credit_card' AND NOT is_archived GROUP BY currency) d ON a.currency = d.currency ORDER BY currency ASC";
+/// W1: assets-only patrimonio. No join to `accounts`, no `type=` predicate,
+/// no liability term and no `debts` key anywhere in the net-worth path.
+const NET_WORTH_SQL: &str = "SELECT currency, SUM(current_value) AS assets FROM assets WHERE user_id=$1 AND NOT is_archived GROUP BY currency ORDER BY currency ASC";
 
 type AssetRow = (
     Uuid,
@@ -617,10 +618,8 @@ pub struct NetWorthEntry {
     pub currency: String,
     /// Sum of `current_value` over non-archived assets, as a string.
     pub assets: Decimal,
-    /// Sum of credit-card liabilities (`GREATEST(-balance, 0)` over
-    /// non-archived `credit_card` accounts), as a string.
-    pub debts: Decimal,
-    /// `assets - debts`, as a string.
+    /// Equal to `assets`: patrimonio is assets-only (W1 removed the
+    /// card-liability leg and the always-zero `debts` field).
     pub net_worth: Decimal,
 }
 
@@ -634,7 +633,7 @@ pub async fn get_net_worth_handler(
     headers: HeaderMap,
 ) -> Result<Json<NetWorthResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
-    let rows = sqlx::query_as::<_, (String, Decimal, Decimal)>(NET_WORTH_SQL)
+    let rows = sqlx::query_as::<_, (String, Decimal)>(NET_WORTH_SQL)
         .bind(user_id)
         .fetch_all(&state.pool)
         .await
@@ -642,11 +641,10 @@ pub async fn get_net_worth_handler(
     Ok(Json(NetWorthResponse {
         per_currency: rows
             .into_iter()
-            .map(|(currency, assets, debts)| NetWorthEntry {
+            .map(|(currency, assets)| NetWorthEntry {
                 currency,
                 assets,
-                debts,
-                net_worth: assets - debts,
+                net_worth: assets,
             })
             .collect(),
     }))
@@ -842,26 +840,28 @@ mod tests {
             per_currency: vec![NetWorthEntry {
                 currency: "COP".into(),
                 assets: Decimal::new(1000000, 2),
-                debts: Decimal::new(300000, 2),
-                net_worth: Decimal::new(700000, 2),
+                net_worth: Decimal::new(1000000, 2),
             }],
         };
         let v = serde_json::to_value(&worth).unwrap();
         assert_eq!(
             v["per_currency"][0]["net_worth"],
-            serde_json::Value::String("7000.00".into())
+            serde_json::Value::String("10000.00".into())
+        );
+        assert!(
+            v["per_currency"][0].get("debts").is_none(),
+            "the always-zero debts key must be gone from the wire, got: {v}"
         );
     }
 
     #[test]
-    fn net_worth_entry_subtracts_debts_from_assets() {
+    fn net_worth_entry_equals_assets() {
         let entry = NetWorthEntry {
             currency: "COP".into(),
             assets: Decimal::new(1000000, 2),
-            debts: Decimal::new(300000, 2),
-            net_worth: Decimal::new(1000000, 2) - Decimal::new(300000, 2),
+            net_worth: Decimal::new(1000000, 2),
         };
-        assert_eq!(entry.net_worth, Decimal::new(700000, 2));
+        assert_eq!(entry.net_worth, entry.assets);
     }
 
     #[test]
@@ -904,9 +904,19 @@ mod tests {
             !NET_WORTH_SQL.contains("FROM debts"),
             "net worth must not read the removed debts table, got: {NET_WORTH_SQL}"
         );
+        // W1: patrimonio is assets-only — no account join, no card predicate,
+        // no liability term and no debts key.
         assert!(
-            NET_WORTH_SQL.contains("GREATEST(-balance, 0)"),
-            "net worth debts leg must be card-only with overpaid cards at 0, got: {NET_WORTH_SQL}"
+            !NET_WORTH_SQL.contains("accounts"),
+            "net worth must not join accounts, got: {NET_WORTH_SQL}"
+        );
+        assert!(
+            !NET_WORTH_SQL.contains("balance"),
+            "net worth must not compute liabilities from a balance, got: {NET_WORTH_SQL}"
+        );
+        assert!(
+            !NET_WORTH_SQL.contains("debts") && !NET_WORTH_SQL.contains("GREATEST"),
+            "net worth must carry no debts term, got: {NET_WORTH_SQL}"
         );
     }
 
@@ -1243,7 +1253,7 @@ mod tests {
         let (state_a, _, user_a) = db_state(&pool).await;
         let (state_b, headers_b, user_b) = db_state(&pool).await;
         let foreign_account: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+            "INSERT INTO accounts (user_id, name) VALUES ($1,'Wallet') RETURNING id",
         )
         .bind(user_a)
         .fetch_one(&pool)
@@ -1270,15 +1280,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn net_worth_counts_card_debt_only_from_surviving_tables() {
-        // S-G: the `debts` table is gone (gated migration 0013), so the
-        // liabilities leg is arranged through surviving tables only — a
-        // credit-card account whose balance is set directly (hermetic seeds,
-        // no removed-table insert).
+    async fn net_worth_is_assets_only_and_drops_the_debts_key() {
+        // W1: the card-liability leg is gone, so patrimonio is the sum of
+        // non-archived assets and the wire has no `debts` key at all.
         let Some(pool) = test_pool() else {
-            eprintln!(
-                "SKIP net_worth_counts_card_debt_only_from_surviving_tables: no DATABASE_URL"
-            );
+            eprintln!("SKIP net_worth_is_assets_only_and_drops_the_debts_key: no DATABASE_URL");
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
@@ -1292,27 +1298,20 @@ mod tests {
         .await
         .expect("valuation is 201");
         assert_eq!(status, StatusCode::CREATED);
-        let card_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type, credit_limit, statement_day, payment_due_day) VALUES ($1,'Card','credit_card',5000,15,25) RETURNING id",
-        )
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("seed card");
-        sqlx::query("UPDATE accounts SET balance = -3000.00 WHERE id=$1")
-            .bind(card_id)
-            .execute(&pool)
-            .await
-            .expect("seed card debt");
         let worth = get_net_worth_handler(State(state.clone()), headers.clone())
             .await
             .expect("net worth is 200");
         assert_eq!(worth.per_currency.len(), 1);
         assert_eq!(worth.per_currency[0].currency, "COP");
         assert_eq!(worth.per_currency[0].assets, Decimal::new(1000000, 2));
-        assert_eq!(worth.per_currency[0].debts, Decimal::new(300000, 2));
-        assert_eq!(worth.per_currency[0].net_worth, Decimal::new(700000, 2));
-        // Archived assets leave the aggregate; the card liability survives.
+        assert_eq!(worth.per_currency[0].net_worth, Decimal::new(1000000, 2));
+        let v = serde_json::to_value(&worth.0).unwrap();
+        assert!(
+            v["per_currency"][0].get("debts").is_none(),
+            "no per-currency entry may carry `debts`, got: {v}"
+        );
+        // Archiving the only asset empties the aggregate: nothing keeps a
+        // zero-debt row alive any more.
         let status = delete_asset_handler(State(state.clone()), headers.clone(), Path(asset_id))
             .await
             .expect("archive is 204");
@@ -1320,51 +1319,11 @@ mod tests {
         let worth = get_net_worth_handler(State(state.clone()), headers.clone())
             .await
             .expect("net worth after archive is 200");
-        assert_eq!(worth.per_currency.len(), 1);
-        assert_eq!(worth.per_currency[0].assets, Decimal::ZERO);
-        assert_eq!(worth.per_currency[0].net_worth, Decimal::new(-300000, 2));
-        cleanup_user(&pool, user_id).await;
-    }
-
-    // -- Slice 4 (p5-credit-cards): card debt as a net-worth liability --
-
-    #[tokio::test]
-    async fn net_worth_treats_card_debt_as_liability() {
-        let Some(pool) = test_pool() else {
-            eprintln!("SKIP net_worth_treats_card_debt_as_liability: no DATABASE_URL");
-            return;
-        };
-        let (state, headers, user_id) = db_state(&pool).await;
-        let asset_id = seed_asset(&pool, user_id).await;
-        let (status, _) = create_valuation_handler(
-            State(state.clone()),
-            headers.clone(),
-            Path(asset_id),
-            valuation_body("10000.00", "2026-09-01"),
-        )
-        .await
-        .expect("valuation is 201");
-        assert_eq!(status, StatusCode::CREATED);
-        let card_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type, credit_limit, statement_day, payment_due_day) VALUES ($1,'Visa','credit_card',5000,15,25) RETURNING id",
-        )
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("seed card");
-        sqlx::query("UPDATE accounts SET balance = -1000.00 WHERE id=$1")
-            .bind(card_id)
-            .execute(&pool)
-            .await
-            .expect("seed card debt");
-        // A more-negative card must REDUCE net worth (debt), never raise it.
-        let worth = get_net_worth_handler(State(state.clone()), headers.clone())
-            .await
-            .expect("net worth is 200");
-        assert_eq!(worth.per_currency.len(), 1);
-        assert_eq!(worth.per_currency[0].assets, Decimal::new(1000000, 2));
-        assert_eq!(worth.per_currency[0].debts, Decimal::new(100000, 2));
-        assert_eq!(worth.per_currency[0].net_worth, Decimal::new(900000, 2));
+        assert!(
+            worth.per_currency.is_empty(),
+            "assets-only patrimonio has no row without assets, got: {:?}",
+            worth.per_currency
+        );
         cleanup_user(&pool, user_id).await;
     }
 }
@@ -1511,7 +1470,7 @@ mod patch_asset_tests {
         assert_eq!(patched.name, "Apartamento");
         // Cuenta ajena → 422.
         let foreign_account: Uuid = sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type) VALUES ($1,'Wallet','cash') RETURNING id",
+            "INSERT INTO accounts (user_id, name) VALUES ($1,'Wallet') RETURNING id",
         )
         .bind(user_b)
         .fetch_one(&pool)

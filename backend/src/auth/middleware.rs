@@ -20,10 +20,11 @@ pub fn bearer_hash(token: &str) -> String {
     hash_token(token)
 }
 
-/// Active session lookup: unrevoked and unexpired.
-const SESSION_LOOKUP_SQL: &str = "SELECT s.user_id FROM sessions s WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()";
-/// Active API-token lookup: unrevoked and (no expiry or still valid).
-const API_TOKEN_LOOKUP_SQL: &str = "SELECT user_id FROM api_tokens WHERE token_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())";
+/// Active session lookup: unrevoked, unexpired and owned by an active user
+/// (A4: deactivation stops existing sessions on their next request).
+const SESSION_LOOKUP_SQL: &str = "SELECT s.user_id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.is_active";
+/// Active API-token lookup: unrevoked, unexpired and owned by an active user.
+const API_TOKEN_LOOKUP_SQL: &str = "SELECT t.user_id FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now()) AND u.is_active";
 /// Touch an API token on successful use (never leaks whether the token
 /// existed: a miss simply yields 401 without writing anything).
 const API_TOKEN_TOUCH_SQL: &str =
@@ -117,5 +118,21 @@ mod tests {
         let h = bearer_hash("abc");
         assert_eq!(h, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert_eq!(h.len(), 64);
+    }
+
+    #[test]
+    fn token_lookups_require_an_active_user() {
+        // A4: deactivation revokes nothing and rewrites nothing; both lookups
+        // simply stop resolving. The active-user predicate must live in SQL.
+        for sql in [SESSION_LOOKUP_SQL, API_TOKEN_LOOKUP_SQL] {
+            assert!(
+                sql.contains("JOIN users"),
+                "lookup must join users, got: {sql}"
+            );
+            assert!(
+                sql.contains("u.is_active"),
+                "lookup must require an active user, got: {sql}"
+            );
+        }
     }
 }

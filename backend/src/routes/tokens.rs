@@ -12,7 +12,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     Json,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -158,7 +158,7 @@ pub async fn create_token_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<CreateTokenRequest>,
-) -> Result<(StatusCode, Json<CreateTokenResponse>), AppError> {
+) -> Result<(StatusCode, HeaderMap, Json<CreateTokenResponse>), AppError> {
     // Session-only (JD-A-001/JD-B-001): API tokens must never mint new credentials.
     let user_id = require_session_user_id(&headers, &state.pool).await?;
     let name = validate_token_name(&body.name)?;
@@ -178,8 +178,14 @@ pub async fn create_token_handler(
     .fetch_one(&state.pool)
     .await
     .map_err(map_token_db_err)?;
+    // A7: the raw `pd_` secret is returned exactly once in this response, so
+    // it must never be cached. Set here, on this handler only: a global
+    // header layer would blanket-stamp every read route and static asset.
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok((
         StatusCode::CREATED,
+        response_headers,
         Json(CreateTokenResponse {
             id: row.0,
             name: row.1,
@@ -461,6 +467,37 @@ mod tokens_tests {
     // -- DB-backed tests (skip honestly without DATABASE_URL) --
 
     #[tokio::test]
+    async fn create_response_sets_cache_control_no_store() {
+        use axum::http::header::CACHE_CONTROL;
+        use axum::response::IntoResponse;
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP create_response_sets_cache_control_no_store: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_user_with_session(&pool).await;
+        let res = create_token_handler(
+            State(state),
+            headers,
+            Json(CreateTokenRequest {
+                name: "no-store".into(),
+                expires_in_days: None,
+            }),
+        )
+        .await
+        .expect("create is 201")
+        .into_response();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        assert_eq!(
+            res.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+            "the create response carries the raw API token and must not be cached"
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
     async fn tokens_create_list_revoke_roundtrip() {
         let Some(pool) = test_pool() else {
             eprintln!("SKIP tokens_create_list_revoke_roundtrip: no DATABASE_URL");
@@ -468,7 +505,7 @@ mod tokens_tests {
         };
         let (state, headers, user_id) = db_user_with_session(&pool).await;
         // Create: 201 with the raw secret returned once.
-        let (status, created) = create_token_handler(
+        let (status, _headers, created) = create_token_handler(
             State(state.clone()),
             headers.clone(),
             Json(CreateTokenRequest {
@@ -532,7 +569,7 @@ mod tokens_tests {
         };
         let (state_a, headers_a, user_a) = db_user_with_session(&pool).await;
         let (state_b, headers_b, user_b) = db_user_with_session(&pool).await;
-        let (_, created) = create_token_handler(
+        let (_, _headers, created) = create_token_handler(
             State(state_a.clone()),
             headers_a.clone(),
             Json(CreateTokenRequest {
@@ -553,7 +590,7 @@ mod tokens_tests {
             .expect_err("user B revoking user A's token must be 404");
         assert_404(err);
         // Same name in a different account does NOT collide.
-        let (status, _created_b) = create_token_handler(
+        let (status, _headers, _created_b) = create_token_handler(
             State(state_b.clone()),
             headers_b.clone(),
             Json(CreateTokenRequest {
@@ -575,7 +612,7 @@ mod tokens_tests {
             return;
         };
         let (state, headers, user_id) = db_user_with_session(&pool).await;
-        let (_, created) = create_token_handler(
+        let (_, _headers, created) = create_token_handler(
             State(state.clone()),
             headers.clone(),
             Json(CreateTokenRequest {
@@ -644,7 +681,7 @@ mod tokens_tests {
             return;
         };
         let (state, headers, user_id) = db_user_with_session(&pool).await;
-        let (_, created) = create_token_handler(
+        let (_, _headers, created) = create_token_handler(
             State(state.clone()),
             headers.clone(),
             Json(CreateTokenRequest {
@@ -718,7 +755,7 @@ mod tokens_tests {
             return;
         };
         let (state, headers, user_id) = db_user_with_session(&pool).await;
-        let (_, created) = create_token_handler(
+        let (_, _headers, created) = create_token_handler(
             State(state.clone()),
             headers.clone(),
             Json(CreateTokenRequest {

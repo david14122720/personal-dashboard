@@ -92,6 +92,13 @@ fn api_routes() -> Router<AppState> {
             post(routes::movements::create_movement_handler)
                 .get(routes::movements::list_movements_handler),
         )
+        // W2 (accounts-transfers-login-calendar): a transfer is ONE ledger
+        // row between two owned accounts. The static `transfer` segment
+        // takes priority over `{id}` in matchit, so both routes coexist.
+        .route(
+            "/movements/transfer",
+            post(routes::movements::create_transfer_handler),
+        )
         .route(
             "/movements/{id}",
             get(routes::movements::get_movement_handler)
@@ -208,7 +215,14 @@ fn api_routes() -> Router<AppState> {
             post(routes::tokens::create_token_handler)
                 .get(routes::tokens::list_tokens_handler),
         )
-        .route("/tokens/{id}", delete(routes::tokens::delete_token_handler));
+        .route("/tokens/{id}", delete(routes::tokens::delete_token_handler))
+        // A5 (login hardening): session listing and revoke-all. Mounted next
+        // to `/tokens`; both handlers are session-only (API tokens get 401).
+        .route(
+            "/sessions",
+            get(routes::sessions::list_sessions_handler)
+                .delete(routes::sessions::delete_sessions_handler),
+        );
     // Test-only routes proving the `/api` timeout placement (DD4) and the
     // header layer's coverage of API error responses.
     #[cfg(test)]
@@ -574,6 +588,33 @@ mod api_nest_tests {
             StatusCode::UNAUTHORIZED,
             "POST /api/movements with a valid body must reach the handler (401), proving the route is wired"
         );
+        // W2 atomicity: the transfer write lands with the third movement
+        // direction. A 401 (not 422) on a VALID body proves
+        // `POST /api/movements/transfer` is mounted and its DTO accepts
+        // exactly the transfer fields.
+        let app = build_router(lazy_state(), None);
+        let transfer_body = serde_json::json!({
+            "from_account_id": id,
+            "to_account_id": uuid::Uuid::new_v4(),
+            "amount": "25000.00",
+            "occurred_on": "2026-10-04"
+        });
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/movements/transfer")
+                    .header("content-type", "application/json")
+                    .body(Body::from(transfer_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "POST /api/movements/transfer with a valid body must reach the handler (401), proving the route is wired"
+        );
         // S-B atomicity: the pay action lands in the same chain as the
         // ledger it writes to. Axum deserializes `Json` before the handler
         // runs `require_user_id`, so a 401 (not 422) on a VALID body proves
@@ -661,6 +702,100 @@ mod api_nest_tests {
                 .expect("PATCH accounts must accept balance");
         assert_eq!(body.balance.as_deref(), Some("-750.50"));
         let _ = app;
+    }
+
+    #[tokio::test]
+    async fn sessions_routes_are_wired_for_get_and_delete() {
+        // A5: GET/DELETE /api/sessions must reach the handler (401) instead
+        // of the JSON 404 fallback.
+        for method in ["GET", "DELETE"] {
+            let app = build_router(lazy_state(), None);
+            let res = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/sessions")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} /api/sessions must reach the handler (401), proving the route is wired"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn login_limiter_gates_login_only() {
+        // A2: the failure buckets gate POST /api/login and nothing else. With
+        // the local-fallback key fully blocked, login is 429 while an
+        // authenticated-route miss stays the ordinary 401 (never 429).
+        use crate::routes::login::LOCAL_PEER_FALLBACK;
+        use std::sync::Arc;
+        let limiter = Arc::new(auth::rate_limit::LoginRateLimiter::with_trusted_proxies(
+            Vec::new(),
+        ));
+        for i in 0..10 {
+            limiter.record_failure(LOCAL_PEER_FALLBACK, &format!("blocker-{i}@example.com"));
+        }
+        let state = AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+                .expect("lazy pool construction must succeed"),
+            session_ttl_hours: 24,
+            rate_limiter: limiter,
+        };
+
+        let app = build_router(state.clone(), None);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"email":"user@example.com","password":"whatever"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "a blocked IP must get the generic 429 from /api/login"
+        );
+        assert!(res.headers().get("retry-after").is_some());
+
+        let app = build_router(state, None);
+        let res = app
+            .oneshot(Request::builder().uri("/api/me").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "an authenticated route must never consult the login limiter"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_routes_are_not_blanket_stamped_with_no_store() {
+        // A7: `Cache-Control: no-store` belongs to POST /api/login and
+        // POST /api/tokens only; a read route (and its 401) must not carry it.
+        for uri in ["/api/movements", "/api/me", "/api/sessions"] {
+            let app = build_router(lazy_state(), None);
+            let res = app
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert!(
+                res.headers().get("cache-control").is_none(),
+                "{uri} must not be blanket-stamped with cache-control"
+            );
+        }
     }
 
     #[tokio::test]

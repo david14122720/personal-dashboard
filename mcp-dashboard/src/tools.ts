@@ -78,13 +78,9 @@ const ListAccountsSchema = z.object({});
 
 const GetAccountSchema = z.object({ id: uuid });
 
-const CreateAccountSchema = z.object({
+const CreateAccountSchema = z.strictObject({
   name: z.string().min(1).max(200),
-  type: z.enum(["bank", "savings", "cash", "digital_wallet", "credit_card", "investment", "other"]),
   currency: z.string().optional(),
-  credit_limit: z.string().optional(),
-  statement_day: z.number().int().min(1).max(31).optional(),
-  payment_due_day: z.number().int().min(1).max(31).optional(),
   notes: optionalText,
   color: optionalText,
   icon: optionalText,
@@ -310,21 +306,18 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "create_account",
-      description: "POST /api/accounts. Creates a bank/cash/card/investment account.",
+      description:
+        "POST /api/accounts. Creates an account with name plus optional currency/notes/color/icon. Unknown keys are rejected by the strict schema, including the removed card fields (type, credit_limit, statement_day, payment_due_day).",
       inputSchema: {
         type: "object",
         properties: {
           name: strProp("Account name"),
-          type: strProp("bank|savings|cash|digital_wallet|credit_card|investment|other"),
           currency: optStrProp("ISO currency, e.g. USD"),
-          credit_limit: optStrProp("Required iff type=credit_card, e.g. \"5000.00\""),
-          statement_day: intProp("Billing statement day 1-31 (credit_card only)"),
-          payment_due_day: intProp("Payment due day 1-31 (credit_card only)"),
           notes: optStrProp("Notes"),
           color: optStrProp("Color tag"),
           icon: optStrProp("Icon tag"),
         },
-        required: ["name", "type"],
+        required: ["name"],
       },
     },
     schema: CreateAccountSchema,

@@ -35,7 +35,9 @@ pub async fn require_session_user_id(
     let hash = middleware::bearer_hash(&token);
     let row: Option<(Uuid,)> = sqlx::query_as(
         "SELECT s.user_id FROM sessions s
-         WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()",
+         JOIN users u ON u.id = s.user_id
+         WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
+           AND u.is_active",
     )
     .bind(&hash)
     .fetch_optional(pool)
@@ -187,6 +189,117 @@ mod tests {
             .await
             .expect("cleanup user");
         assert_eq!(got, user_id);
+    }
+
+    // -- A4: users.is_active is enforced on session and API-token lookups --
+
+    async fn seed_deactivated_user_with_session(pool: &PgPool) -> (Uuid, String) {
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(format!("helper-deactivated-session-{}@example.com", Uuid::new_v4()))
+        .bind("not-a-real-hash")
+        .bind("helper test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '1 hour')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed valid session");
+        sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("deactivate user");
+        (user_id, raw)
+    }
+
+    #[tokio::test]
+    async fn deactivated_session_is_401() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP deactivated_session_is_401: no DATABASE_URL");
+            return;
+        };
+        let (user_id, raw) = seed_deactivated_user_with_session(&pool).await;
+        let err = require_user_id(&headers_with(&format!("Bearer {raw}")), &pool)
+            .await
+            .unwrap_err();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup user");
+        assert_unauthorized(err);
+    }
+
+    #[tokio::test]
+    async fn deactivated_session_is_401_for_require_session_user_id() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP deactivated_session_is_401_for_require_session_user_id: no DATABASE_URL"
+            );
+            return;
+        };
+        let (user_id, raw) = seed_deactivated_user_with_session(&pool).await;
+        let err = require_session_user_id(&headers_with(&format!("Bearer {raw}")), &pool)
+            .await
+            .unwrap_err();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup user");
+        assert_unauthorized(err);
+    }
+
+    #[tokio::test]
+    async fn deactivated_api_token_is_401() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP deactivated_api_token_is_401: no DATABASE_URL");
+            return;
+        };
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(format!("helper-deactivated-token-{}@example.com", Uuid::new_v4()))
+        .bind("not-a-real-hash")
+        .bind("helper test")
+        .fetch_one(&pool)
+        .await
+        .expect("seed user");
+        let raw = crate::auth::tokens::generate_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at, revoked_at) VALUES ($1, $2, $3, $4, NULL, NULL)",
+        )
+        .bind(user_id)
+        .bind("helper deactivated token")
+        .bind(&hash)
+        .bind("pd_test")
+        .execute(&pool)
+        .await
+        .expect("seed api token");
+        sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("deactivate user");
+        let err = require_user_id(&headers_with(&format!("Bearer {raw}")), &pool)
+            .await
+            .unwrap_err();
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup user");
+        assert_unauthorized(err);
     }
 
     #[tokio::test]

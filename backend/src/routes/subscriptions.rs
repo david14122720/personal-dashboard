@@ -1004,7 +1004,7 @@ mod tests {
 
     async fn seed_account(pool: &sqlx::PgPool, user_id: Uuid, balance: &str) -> Uuid {
         sqlx::query_scalar(
-            "INSERT INTO accounts (user_id, name, type, balance) VALUES ($1,$2,'cash',$3::numeric) RETURNING id",
+            "INSERT INTO accounts (user_id, name, balance) VALUES ($1,$2,$3::numeric) RETURNING id",
         )
         .bind(user_id)
         .bind(format!("acct-{}", Uuid::new_v4()))
