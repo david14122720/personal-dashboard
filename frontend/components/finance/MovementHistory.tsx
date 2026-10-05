@@ -101,8 +101,10 @@ export function MovementHistory({
     }
   }
 
+  // Canonical field string from the UI-polish contract (`design.md`); the row
+  // action buttons keep their asserted 44px ghost string on purpose.
   const selectClass =
-    "mt-1 min-h-[44px] w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+    "mt-1 min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
   const labelClass = "block text-xs text-instrument/60";
 
   if (movements.isLoading && !movements.data) {
@@ -252,13 +254,13 @@ export function MovementHistory({
                         {row.direction === "transfer" ? (
                           <span
                             data-testid="movement-transfer-badge"
-                            className="shrink-0 rounded-full border border-signal/40 bg-signal/10 px-2 py-0.5 text-[10px] font-medium text-signal"
+                            className="shrink-0 rounded-full border border-signal/40 bg-signal/10 px-2 py-0.5 text-[11px] font-medium text-signal"
                           >
                             {t("finance.movementDirectionTransfer")}
                           </span>
                         ) : null}
                       </p>
-                      <p className="truncate text-xs text-instrument/60">
+                      <p className="line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">
                         {row.displayDate} · {accountMeta}
                         {row.description ? ` · ${row.description}` : ""}
                       </p>

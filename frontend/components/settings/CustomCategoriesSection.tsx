@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import EmptyState from "@/components/ui/EmptyState";
 import { t } from "@/lib/i18n";
 import {
   createCustomCategory,
@@ -10,9 +11,11 @@ import {
 } from "@/lib/settings/customCategories";
 
 const inputClass =
-  "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument placeholder:text-instrument/40 focus:border-signal focus:outline-none";
-const btnClass =
-  "rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal disabled:opacity-50";
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+const primaryBtnClass =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft disabled:cursor-not-allowed disabled:opacity-50";
+const dangerBtnClass =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-alert hover:text-alert disabled:cursor-not-allowed disabled:opacity-50";
 
 /**
  * Custom categories manager (Configuración). Categories are name-only and
@@ -56,9 +59,9 @@ export default function CustomCategoriesSection() {
   return (
     <section
       aria-label={t("settings.categoriesTitle")}
-      className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
+      className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5"
     >
-      <h2 className="font-display text-lg font-semibold tracking-wide">{t("settings.categoriesTitle")}</h2>
+      <h2 className="font-display text-base font-medium tracking-wide">{t("settings.categoriesTitle")}</h2>
       <p className="mt-1 text-xs text-slate-400">{t("settings.categoriesHint")}</p>
       <form onSubmit={handleCreate} className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
         <label className="flex flex-col gap-1 text-xs text-instrument/60">
@@ -70,7 +73,7 @@ export default function CustomCategoriesSection() {
             onChange={(e) => setName(e.target.value)}
           />
         </label>
-        <button type="submit" className={btnClass}>
+        <button type="submit" className={primaryBtnClass}>
           {t("settings.createCategory")}
         </button>
       </form>
@@ -81,26 +84,25 @@ export default function CustomCategoriesSection() {
       ) : null}
       <div className="mt-4">
         {rows.length === 0 ? (
-          <div>
-            <p className="text-sm font-medium">{t("settings.noCategories")}</p>
-            <p className="mt-1 text-sm text-instrument/60">{t("settings.noCategoriesHint")}</p>
-          </div>
+          <EmptyState title={t("settings.noCategories")} hint={t("settings.noCategoriesHint")} />
         ) : (
           <ul className="flex flex-col gap-2">
             {rows.map((row) => (
               <li
                 key={row.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
+                className="flex flex-col gap-3 rounded-lg border border-hull px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
               >
                 <p className="truncate text-sm">{row.name}</p>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(row.id)}
-                  aria-label={`${t("settings.delete")}: ${row.name}`}
-                  className={btnClass}
-                >
-                  {t("settings.delete")}
-                </button>
+                <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(row.id)}
+                    aria-label={`${t("settings.delete")}: ${row.name}`}
+                    className={dangerBtnClass}
+                  >
+                    {t("settings.delete")}
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

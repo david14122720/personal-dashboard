@@ -3,6 +3,7 @@
 import { CartesianGrid, Legend, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
 import { t } from "@/lib/i18n";
 import { chartTick, chartTok, chartTooltipStyle } from "@/components/ui/chartTheme";
+import { useContainerWidth } from "@/components/ui/useContainerWidth";
 import EmptyState from "@/components/ui/EmptyState";
 import { formatMoney } from "@/lib/api/money";
 
@@ -40,6 +41,7 @@ export default function CategoryTrendChart({
   ariaLabel?: string;
   animate?: boolean;
 }) {
+  const { ref: chartRef, width } = useContainerWidth(560);
   if (!data || data.length === 0 || series.length === 0) {
     return <EmptyState title={t("finance.chartEmpty")} hint={t("finance.chartEmptyHint")} />;
   }
@@ -49,13 +51,14 @@ export default function CategoryTrendChart({
   });
   return (
     <div
+      ref={chartRef}
       className="w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal"
       tabIndex={0}
       role="img"
       aria-label={ariaLabel ?? t("finance.trendChartLabel")}
     >
       <LineChart
-        width={560}
+        width={width}
         height={260}
         data={data}
         margin={{ top: 8, right: 8, bottom: 0, left: 0 }}

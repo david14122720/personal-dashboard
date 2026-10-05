@@ -25,16 +25,16 @@ export default function AjustesPage() {
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
         <header>
           <h1 className="font-display text-2xl font-semibold tracking-wide">{t("settings.title")}</h1>
-          <p className="mt-1 text-sm text-instrument/70">{t("settings.subtitle")}</p>
+          <p className="mt-1 text-sm text-slate-400">{t("settings.subtitle")}</p>
         </header>
         <Link
           href="/dashboard/ajustes/sesiones/"
-          className="block rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 transition-colors hover:border-signal/50"
+          className="block rounded-xl border border-hull bg-panel/90 p-4 transition-colors hover:border-signal/50 sm:p-5"
         >
-          <h2 className="font-display text-lg font-semibold tracking-wide">
+          <h2 className="font-display text-base font-medium tracking-wide">
             {t("settings.sessionsTitle")}
           </h2>
-          <p className="mt-1 text-sm text-instrument/70">{t("settings.sessionsHint")}</p>
+          <p className="mt-1 text-sm text-slate-400">{t("settings.sessionsHint")}</p>
         </Link>
         <BankAccountsSection />
         <SubscriptionsSection />

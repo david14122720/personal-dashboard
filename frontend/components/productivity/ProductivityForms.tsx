@@ -30,12 +30,16 @@ import {
  * internally but the user only ever picks names.
  */
 
+// Canonical strings from the UI-polish contract (`design.md`, "Canonical visual
+// contract"): one role, one look for fields, primary and ghost buttons.
 const inputClass =
-  "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument placeholder:text-instrument/40 focus:border-signal focus:outline-none";
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 
-/** Submit/Cancelar buttons: 44px minimum hit area with visible focus. */
-const formButtonClass =
-  "rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+const primaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft disabled:cursor-not-allowed disabled:opacity-50";
+
+const ghostButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal";
 
 function revalidateProductivity(mutate: ReturnType<typeof useSWRConfig>["mutate"]): void {
   void mutate((key) => typeof key === "string" && key.startsWith("productivity/"));
@@ -206,7 +210,7 @@ export function TaskForm({
         <button
           type="submit"
           disabled={pending}
-          className={`${formButtonClass} disabled:opacity-50`}
+          className={primaryButtonClass}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
@@ -214,7 +218,7 @@ export function TaskForm({
           <button
             type="button"
             onClick={onDone}
-            className={formButtonClass}
+            className={ghostButtonClass}
           >
             {t("productivity.cancel")}
           </button>
@@ -335,7 +339,7 @@ export function GoalForm({
         <button
           type="submit"
           disabled={pending}
-          className={`${formButtonClass} disabled:opacity-50`}
+          className={primaryButtonClass}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
@@ -343,7 +347,7 @@ export function GoalForm({
           <button
             type="button"
             onClick={onDone}
-            className={formButtonClass}
+            className={ghostButtonClass}
           >
             {t("productivity.cancel")}
           </button>
@@ -480,7 +484,7 @@ export function EventForm({
         <button
           type="submit"
           disabled={pending}
-          className={`${formButtonClass} disabled:opacity-50`}
+          className={primaryButtonClass}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
@@ -488,7 +492,7 @@ export function EventForm({
           <button
             type="button"
             onClick={onDone}
-            className={formButtonClass}
+            className={ghostButtonClass}
           >
             {t("productivity.cancel")}
           </button>
@@ -571,7 +575,7 @@ export function NoteForm({
         <textarea
           aria-label={t("productivity.noteBody")}
           placeholder={t("productivity.noteBodyPlaceholder")}
-          className={inputClass}
+          className={`${inputClass} py-2`}
           rows={3}
           value={body}
           onChange={(event) => setBody(event.target.value)}
@@ -591,7 +595,7 @@ export function NoteForm({
         <button
           type="submit"
           disabled={pending}
-          className={`${formButtonClass} disabled:opacity-50`}
+          className={primaryButtonClass}
         >
           {pending ? t("productivity.saving") : editing ? t("productivity.update") : t("productivity.create")}
         </button>
@@ -599,7 +603,7 @@ export function NoteForm({
           <button
             type="button"
             onClick={onDone}
-            className={formButtonClass}
+            className={ghostButtonClass}
           >
             {t("productivity.cancel")}
           </button>

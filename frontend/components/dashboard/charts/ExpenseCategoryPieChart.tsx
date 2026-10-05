@@ -8,6 +8,7 @@ import {
   chartTok,
   chartTooltipStyle,
 } from "@/components/ui/chartTheme";
+import { useContainerWidth } from "@/components/ui/useContainerWidth";
 import EmptyState from "@/components/ui/EmptyState";
 import { formatMoney } from "@/lib/api/money";
 import type { ExpenseCategorySlice } from "@/lib/finance/finance";
@@ -33,17 +34,19 @@ export default function ExpenseCategoryPieChart({
   ariaLabel?: string;
   animate?: boolean;
 }) {
+  const { ref: chartRef, width } = useContainerWidth(360);
   if (!data || data.length === 0) {
     return <EmptyState title={t("dashboard.expensePieEmpty", { currency })} />;
   }
   return (
     <div
+      ref={chartRef}
       className="w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal"
       tabIndex={0}
       role="img"
       aria-label={ariaLabel ?? t("dashboard.expensePieChartLabel")}
     >
-      <PieChart width={360} height={260}>
+      <PieChart width={width} height={260}>
         <Pie
           data={data}
           dataKey="value"
@@ -64,7 +67,10 @@ export default function ExpenseCategoryPieChart({
           contentStyle={chartTooltipStyle()}
           formatter={(value) => formatMoney(Number(value), { locale, currency })}
         />
-        <Legend wrapperStyle={chartTick()} />
+        {/* 260px tall and a 90px radius need 180px, so a wrapping legend is
+            capped at three rows: it wraps (12px, never below 11px) and scrolls
+            instead of eating the plot area on a 300px phone. */}
+        <Legend wrapperStyle={{ ...chartTick(), maxHeight: 64, overflowY: "auto" }} />
       </PieChart>
     </div>
   );

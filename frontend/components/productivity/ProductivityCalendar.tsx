@@ -31,8 +31,11 @@ const DAY_PANEL_ID = "productivity-calendar-day-panel";
 const navButtonClass =
   "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
 
+// Cells flex to the column width: `min-w-0` lets seven columns plus six gaps
+// fit a 375px viewport, while `min-h-[44px]` keeps the thumb target (design.md
+// "Mobile geometry").
 const cellClass =
-  "flex min-h-[44px] min-w-[44px] flex-col items-center justify-center gap-0.5 rounded-md border px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+  "flex min-h-[44px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
 
 interface DayEntryRows {
   tasks: TaskWire[];
@@ -218,9 +221,7 @@ function ProductivityCalendarBody() {
         </div>
       ) : null}
       {!isLoading && !failed && !monthHasEntries ? (
-        <p role="status" className="text-xs text-instrument/60">
-          {t("productivity.calendarEmptyMonth")}
-        </p>
+        <EmptyState title={t("productivity.calendarEmptyMonth")} />
       ) : null}
 
       <div
@@ -228,7 +229,7 @@ function ProductivityCalendarBody() {
         aria-label={formatMonth(monthKey)}
         aria-colcount={7}
         aria-rowcount={weeks.length + 1}
-        className="grid grid-cols-7 gap-1"
+        className="grid grid-cols-7 gap-0.5 sm:gap-1"
       >
         <div role="row" className="contents">
           {weekdays.map((weekday) => (
@@ -266,19 +267,19 @@ function ProductivityCalendarBody() {
                     selected ? "border-signal bg-signal/10" : "border-hull/60 hover:border-hull"
                   } ${cell.isToday ? "ring-2 ring-signal" : ""}`}
                 >
-                  <span className="font-mono text-xs tabular-nums">{Number(cell.date.slice(8))}</span>
+                  <span className="font-mono text-xs tabular-nums sm:text-sm">{Number(cell.date.slice(8))}</span>
                   {taskCount > 0 || eventCount > 0 ? (
                     <span className="flex flex-wrap items-center justify-center gap-1 leading-none">
                       {taskCount > 0 ? (
                         <span data-marker="task" className="inline-flex items-center gap-0.5 text-flow">
                           <span aria-hidden="true" className="h-2 w-2 bg-flow" />
-                          <span className="font-mono text-[10px] tabular-nums">{taskCount}</span>
+                          <span className="font-mono text-[11px] tabular-nums">{taskCount}</span>
                         </span>
                       ) : null}
                       {eventCount > 0 ? (
                         <span data-marker="event" className="inline-flex items-center gap-0.5 text-signal">
                           <span aria-hidden="true" className="h-2 w-2 rounded-full bg-signal" />
-                          <span className="font-mono text-[10px] tabular-nums">{eventCount}</span>
+                          <span className="font-mono text-[11px] tabular-nums">{eventCount}</span>
                         </span>
                       ) : null}
                     </span>
@@ -302,7 +303,7 @@ function ProductivityCalendarBody() {
             : undefined
         }
         onKeyDown={handlePanelKeyDown}
-        className="rounded-lg border border-hull bg-deck/60 p-4 transition-opacity motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+        className="animate-fade-in rounded-lg border border-hull bg-deck/60 p-4 transition-opacity motion-reduce:animate-none motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
       >
         {selectedDate && selectedEntries ? (
           <DayDetail entries={selectedEntries} />

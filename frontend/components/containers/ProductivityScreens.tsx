@@ -63,6 +63,12 @@ import { toISODate } from "@/lib/dashboard/transforms";
  * `HabitGrid`); this screen owns goals/tasks/events/notes.
  */
 
+// Canonical strings from the UI-polish contract (`design.md`): one role, one
+// look for the page subtitle and the ghost/secondary button.
+const subtitleClass = "mt-1 text-sm text-slate-400";
+const ghostBtn =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal";
+
 function SectionsSkeleton() {
   const spans = [
     "col-span-12",
@@ -76,7 +82,7 @@ function SectionsSkeleton() {
       {spans.map((span, index) => (
         <div
           key={`${span}-${index}`}
-          className={`animate-pulse rounded-xl border border-hull bg-hull/40 p-5 ${span}`}
+          className={`animate-pulse rounded-xl border border-hull bg-hull/40 p-4 sm:p-5 ${span}`}
         >
           <div className="h-4 w-24 rounded bg-hull" />
           <div className="mt-3 h-8 w-32 rounded bg-hull" />
@@ -289,7 +295,7 @@ export default function ProductivityScreens() {
           {t("productivity.focusBadge")}
         </span>
       </h1>
-      <p className="mt-1 text-sm text-instrument/60">{t("productivity.subtitle")}</p>
+      <p className={subtitleClass}>{t("productivity.subtitle")}</p>
       {actionError ? (
         <p role="alert" className="mt-4 rounded-xl border border-alert/50 bg-alert/10 p-4 text-sm">
           {actionError}
@@ -303,14 +309,14 @@ export default function ProductivityScreens() {
         ) : failed.length > 0 ? (
           <div className="col-span-12">
             <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
-              <h2 className="font-display text-lg font-semibold">{t("productivity.loadFailed")}</h2>
-              <p className="mt-1 text-sm text-instrument/70">
+              <h2 className="font-display text-base font-medium tracking-wide">{t("productivity.loadFailed")}</h2>
+              <p className="mt-1 text-sm text-slate-400">
                 {t("productivity.loadFailedDetail", { failed: failed.length, total: queries.length })}
               </p>
               <button
                 type="button"
                 onClick={retry}
-                className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+                className={`mt-4 ${ghostBtn}`}
               >
                 {t("common.retry")}
               </button>

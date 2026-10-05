@@ -9,7 +9,7 @@ export default function WidgetToggle({ id, visible, onToggle }: { id: string; vi
       aria-checked={visible}
       aria-label={`${label}: ${id}`}
       onClick={() => onToggle(!visible)}
-      className="rounded-md border border-hull px-2 py-1 font-display text-xs text-instrument/70 transition-colors hover:border-signal hover:text-signal focus-visible:outline-2 focus-visible:outline-signal"
+      className="inline-flex min-h-9 items-center justify-center rounded-md border border-hull px-3 text-xs transition-colors hover:border-signal hover:text-signal"
     >
       {label}
     </button>

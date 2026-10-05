@@ -3,6 +3,7 @@
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
 import { t } from "@/lib/i18n";
 import { chartTick, chartTok, chartTooltipStyle, EVOLUTION_SERIES_TOKENS } from "@/components/ui/chartTheme";
+import { useContainerWidth } from "@/components/ui/useContainerWidth";
 import EmptyState from "@/components/ui/EmptyState";
 
 export interface EvolutionRow { bucket: string; [series: string]: string | number; }
@@ -21,18 +22,20 @@ export default function HabitEvolutionChart({
   series: string[];
   animate?: boolean;
 }) {
+  const { ref: chartRef, width } = useContainerWidth(560);
   if (!data || data.length === 0 || series.length === 0) {
     return <EmptyState title={t("productivity.evolution.empty")} hint={t("productivity.evolution.emptyHint")} />;
   }
   return (
     <div
+      ref={chartRef}
       className="w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal"
       tabIndex={0}
       role="img"
       aria-label={t("productivity.evolution.title")}
     >
       <LineChart
-        width={560}
+        width={width}
         height={260}
         data={data}
         accessibilityLayer

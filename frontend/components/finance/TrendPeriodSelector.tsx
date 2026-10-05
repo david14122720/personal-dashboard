@@ -4,9 +4,9 @@ import { t, type EsKey } from "@/lib/i18n";
 import { TREND_PERIODS, type TrendPeriod } from "@/lib/finance/finance";
 
 // Same pill treatment as `PeriodSelector` (border hull + has-checked signal),
-// with a 44px hit area for the 4 bucket periods. `PeriodSelector` stays intact.
+// with a ≥44px hit area for the 4 bucket periods in both selectors.
 const pillClass =
-  "inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center gap-2 rounded-full border border-hull px-3 py-1.5 text-xs text-instrument transition-colors focus-within:border-signal has-checked:border-signal has-checked:text-signal";
+  "inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center gap-2 rounded-full border border-hull px-3 py-1.5 text-xs text-instrument transition-colors hover:border-signal hover:text-signal focus-within:border-signal has-checked:border-signal has-checked:text-signal";
 
 const TREND_LABEL_KEYS: Record<TrendPeriod, EsKey> = {
   day: "finance.trendPeriodDay",

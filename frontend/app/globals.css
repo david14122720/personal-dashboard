@@ -15,6 +15,10 @@
   --color-container-highest: #313540;
   --color-container-lowest: #0a0e18;
   --color-container-low: #171b26;
+  /* Card/topbar/rail surface (was the raw hex #0f131d at ~16 call sites). */
+  --color-panel: #0f131d;
+  /* Elevated panel surface; alias of --color-elevated so call sites stop using hex. */
+  --color-panel-soft: #171b26;
   /* Text */
   --color-instrument: #f8fafc;
   --color-muted: #94a3b8;

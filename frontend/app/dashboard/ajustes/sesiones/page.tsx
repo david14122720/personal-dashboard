@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
+import EmptyState from "@/components/ui/EmptyState";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 import {
@@ -77,7 +78,7 @@ export default function SessionsPage() {
           <h1 className="font-display text-2xl font-semibold tracking-wide">
             {t("settings.sessionsTitle")}
           </h1>
-          <p className="mt-1 text-sm text-instrument/70">{t("settings.sessionsHint")}</p>
+          <p className="mt-1 text-sm text-slate-400">{t("settings.sessionsHint")}</p>
         </header>
 
         {revokeError ? (
@@ -97,17 +98,17 @@ export default function SessionsPage() {
 
         <section
           aria-label={t("settings.sessionsTitle")}
-          className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
+          className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5"
         >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="font-display text-lg font-semibold tracking-wide">
+            <h2 className="font-display text-base font-medium tracking-wide">
               {t("settings.sessionsTitle")}
             </h2>
             <button
               type="button"
               disabled={revoking || otherCount === 0}
               onClick={() => void onRevokeOthers()}
-              className="min-h-[44px] rounded-md border border-hull px-4 font-display text-sm text-instrument/70 transition-colors hover:border-alert hover:text-alert disabled:opacity-40"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-alert hover:text-alert disabled:cursor-not-allowed disabled:opacity-50"
             >
               {revoking ? t("settings.sessionsRevoking") : t("settings.sessionsRevokeOthers")}
             </button>
@@ -125,13 +126,15 @@ export default function SessionsPage() {
               <button
                 type="button"
                 onClick={() => void refresh()}
-                className="min-h-[44px] w-fit rounded-md border border-hull px-4 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+                className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
               >
                 {t("common.retry")}
               </button>
             </div>
           ) : sessions.length === 0 ? (
-            <p className="mt-3 text-sm text-instrument/60">{t("settings.sessionsEmpty")}</p>
+            <div className="mt-3">
+              <EmptyState title={t("settings.sessionsEmpty")} />
+            </div>
           ) : (
             <ul className="mt-3 flex flex-col gap-3">
               {sessions.map((session) => (
@@ -149,7 +152,7 @@ export default function SessionsPage() {
                       </span>
                     ) : null}
                   </div>
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-instrument/60 sm:flex sm:flex-wrap">
+                  <dl className="grid grid-cols-1 gap-1 text-xs text-instrument/60 sm:grid-cols-2">
                     <div className="flex gap-1">
                       <dt>{t("settings.sessionsCreated")}:</dt>
                       <dd>{formatDate(session.created_at)}</dd>

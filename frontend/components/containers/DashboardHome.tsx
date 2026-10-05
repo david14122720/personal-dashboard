@@ -50,21 +50,21 @@ function SectionSkeleton() {
     <div
       role="status"
       aria-label={t("dashboard.loadingDashboard")}
-      className="flex h-40 items-center justify-center rounded-xl border border-hull bg-hull/40"
+      className="animate-pulse rounded-xl border border-hull bg-hull/40 p-5"
     >
-      <p className="text-sm text-instrument/50">{t("dashboard.loadingDashboard")}…</p>
+      <div className="h-4 w-24 rounded bg-hull" />
     </div>
   );
 }
 
 function SectionError({ onRetry }: { onRetry: () => void }) {
   return (
-    <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
+    <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
       <p className="mt-1 text-sm text-instrument/70">{t("dashboard.sectionLoadFailed")}</p>
       <button
         type="button"
         onClick={onRetry}
-        className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+        className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
       >
         {t("common.retry")}
       </button>
@@ -92,11 +92,11 @@ function WidgetShell({
   return (
     <section
       aria-label={title}
-      className={`rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span ?? ""}`}
+      className={`rounded-xl border border-hull bg-panel/90 p-4 sm:p-5 ${span ?? ""}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-base font-semibold tracking-wide text-white">{title}</h2>
+          <h2 className="font-display text-base font-medium tracking-wide">{title}</h2>
           {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
         </div>
         {action}
@@ -165,12 +165,12 @@ export default function DashboardHome() {
           <h1 className="font-display text-2xl font-semibold tracking-wide">
             {t("dashboard.overviewTitle")}
           </h1>
-          <p className="mt-1 text-sm text-instrument/60">{t("dashboard.overviewSubtitle")}</p>
+          <p className="mt-1 text-sm text-slate-400">{t("dashboard.overviewSubtitle")}</p>
         </div>
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard/finance/"
-            className="glow-cyan inline-flex items-center rounded-lg bg-signal px-4 py-2 text-xs font-bold text-deck transition-colors hover:bg-signal-soft"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft"
           >
             {t("dashboard.logActivity")}
           </Link>
@@ -231,7 +231,7 @@ export default function DashboardHome() {
                     className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
                   >
                     <span className="truncate text-sm">{habit.name}</span>
-                    <span className="shrink-0 font-mono text-xs tabular-nums text-instrument/60">
+                    <span className="shrink-0 font-mono text-xs tabular-nums text-slate-400">
                       {t("dashboard.habitStreak", { n: habit.current_streak })}
                     </span>
                   </li>

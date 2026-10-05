@@ -20,7 +20,7 @@ export default function TelemetryStrip({ items }: { items: TelemetryItem[] }) {
   return (
     <section
       aria-label={t("dashboard.telemetryStrip")}
-      className="rounded-xl border border-slate-800/80 bg-[#0f131d]/60 p-4"
+      className="rounded-xl border border-hull bg-panel/60 p-4"
     >
       <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
         {items.map((item) => (

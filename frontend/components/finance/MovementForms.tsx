@@ -16,6 +16,7 @@ import {
   todayInBogota,
   type NamedOption,
 } from "@/lib/finance/finance";
+import { useBodyScrollLock } from "@/components/ui/useBodyScrollLock";
 
 /**
  * Add/edit modal for the movements ledger (`/dashboard/finance`).
@@ -107,6 +108,9 @@ export function MovementModal({
   const amountRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closedRef = useRef(false);
+
+  // The ledger behind the modal must not scroll while the modal is open.
+  useBodyScrollLock(true);
 
   function close(): void {
     if (closedRef.current) return;
@@ -208,16 +212,16 @@ export function MovementModal({
         : t("finance.movementModalIncomeTitle");
 
   const fieldClass =
-    "mt-1 min-h-[44px] w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+    "mt-1 min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
   const labelClass = "block text-xs text-instrument/60";
   const primaryBtn =
-    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-signal px-4 py-2 text-sm font-bold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
   const ghostBtn =
-    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-hull px-4 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4"
       data-testid="movement-modal-overlay"
     >
       <div
@@ -225,7 +229,7 @@ export function MovementModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="movement-modal-title"
-        className="w-full max-w-md rounded-xl border border-hull bg-deck p-5"
+        className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-xl border border-hull bg-panel p-4 sm:p-5"
       >
         <h2 id="movement-modal-title" className="font-display text-lg font-semibold">
           {title}
@@ -331,7 +335,7 @@ export function MovementModal({
                 {error}
               </p>
             ) : null}
-            <div className="mt-1 flex flex-wrap gap-2">
+            <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <button type="submit" disabled={saving} className={primaryBtn}>
                 {saving ? t("finance.saving") : t("finance.save")}
               </button>
@@ -351,7 +355,7 @@ export function MovementModal({
             {confirmingDelete && initial ? (
               <div className="rounded-lg border border-alert/50 bg-alert/10 p-3">
                 <p className="text-xs text-instrument/80">{t("finance.movementDeleteConfirm")}</p>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                   <button
                     type="button"
                     disabled={saving}
@@ -420,6 +424,9 @@ export function TransferModal({
   const amountRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closedRef = useRef(false);
+
+  // The ledger behind the modal must not scroll while the modal is open.
+  useBodyScrollLock(true);
 
   function close(): void {
     if (closedRef.current) return;
@@ -497,16 +504,16 @@ export function TransferModal({
   }
 
   const fieldClass =
-    "mt-1 min-h-[44px] w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+    "mt-1 min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
   const labelClass = "block text-xs text-instrument/60";
   const primaryBtn =
-    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-signal px-4 py-2 text-sm font-bold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
   const ghostBtn =
-    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-hull px-4 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4"
       data-testid="transfer-modal-overlay"
     >
       <div
@@ -514,7 +521,7 @@ export function TransferModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="transfer-modal-title"
-        className="w-full max-w-md rounded-xl border border-hull bg-deck p-5"
+        className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-xl border border-hull bg-panel p-4 sm:p-5"
       >
         <h2 id="transfer-modal-title" className="font-display text-lg font-semibold">
           {t("finance.transferModalTitle")}
@@ -614,7 +621,7 @@ export function TransferModal({
                 {error}
               </p>
             ) : null}
-            <div className="mt-1 flex flex-wrap gap-2">
+            <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <button type="submit" disabled={saving} className={primaryBtn}>
                 {saving ? t("finance.saving") : t("finance.save")}
               </button>

@@ -14,8 +14,9 @@ import TrendPeriodSelector from "@/components/finance/TrendPeriodSelector";
 import { SectionShell } from "@/components/finance/FinanceSections";
 import EmptyState from "@/components/ui/EmptyState";
 
+// Canonical field string from the UI-polish contract (`design.md`).
 const selectClass =
-  "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none";
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 
 /**
  * Per-category gasto/ingreso trend sourced from `GET /movements` (same
@@ -111,7 +112,7 @@ export function CategoryChartSection({
         <div>
           <Link
             href="/dashboard/finance/compare/"
-            className="inline-flex items-center rounded-lg border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
           >
             {t("finance.compareButton")}
           </Link>

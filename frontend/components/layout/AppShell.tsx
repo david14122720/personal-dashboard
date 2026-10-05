@@ -196,7 +196,7 @@ function NavLinks({ orientation }: { orientation: "rail" | "tabs" }) {
     return (
       <nav
         aria-label={t("nav.primary")}
-        className="flex flex-row justify-around border-t border-hull bg-deck px-2 py-2"
+        className="flex flex-wrap justify-center gap-y-0.5 border-t border-hull bg-panel px-2 pb-[env(safe-area-inset-bottom)] pt-1"
       >
         {NAV_ITEMS.map((item) => {
           const active = isActive(pathname ?? "", item.href);
@@ -206,10 +206,10 @@ function NavLinks({ orientation }: { orientation: "rail" | "tabs" }) {
               key={item.href}
               href={item.href}
               aria-current={active ? "page" : undefined}
-              className={`flex flex-col items-center gap-0.5 rounded-md px-3 py-1.5 font-display text-[11px] tracking-wide transition-colors ${
+              className={`basis-1/4 flex min-h-11 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md px-1 py-1 font-display text-[11px] leading-tight tracking-wide transition-colors ${
                 active
                   ? "bg-signal/10 font-semibold text-signal"
-                  : "text-instrument/70 hover:text-instrument"
+                  : "text-instrument/70 hover:bg-panel-soft hover:text-instrument"
               }`}
             >
               <Icon className="h-4 w-4 shrink-0" />
@@ -246,7 +246,7 @@ function TopBar() {
   // instance on that route so the bell is never duplicated (one bell per screen).
   const showBell = !isActive(pathname, "/dashboard/");
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-slate-800/80 bg-[#0f131d]/90 px-4 backdrop-blur-md md:px-6 xl:px-8">
+    <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-hull bg-panel/90 px-4 backdrop-blur-md md:px-6 xl:px-8">
       <nav
         aria-label={t("dashboard.breadcrumbNav")}
         className="flex min-w-0 items-center gap-2 text-xs"
@@ -271,12 +271,12 @@ function TopBar() {
             aria-disabled="true"
             placeholder={t("nav.searchPlaceholder")}
             title={t("nav.searchUnavailable")}
-            className="w-full cursor-not-allowed rounded-lg border border-slate-800 bg-[#171b26] py-1.5 pl-9 pr-3 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none"
+            className="w-full cursor-not-allowed rounded-lg border border-hull bg-panel-soft py-1.5 pl-9 pr-3 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none"
           />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-3">
-        <p className="hidden rounded-lg border border-slate-800 bg-[#171b26] px-3 py-1.5 text-xs font-medium text-slate-400 md:block">
+        <p className="hidden rounded-lg border border-hull bg-panel-soft px-3 py-1.5 text-xs font-medium text-slate-400 md:block">
           {today}
         </p>
         {showBell ? <NotificationBell /> : null}
@@ -295,7 +295,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {t("nav.skipToContent")}
       </a>
       <div className="flex min-h-screen">
-        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col justify-between border-r border-slate-800/80 bg-[#0f131d] md:flex">
+        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col justify-between border-r border-hull bg-panel md:flex">
           <div className="flex flex-col">
             <div className="flex h-16 items-center gap-3 border-b border-slate-800/60 px-6">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#006edc] to-[#38bdf8] ring-1 ring-white/20">
@@ -308,7 +308,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <NavLinks orientation="rail" />
           </div>
           {/* No user profile exists in the app: the footer only states the local session and signs out. */}
-          <div className="border-t border-slate-800/80 bg-[#0c101a] p-3">
+          <div className="border-t border-hull bg-abyss p-3">
             <p className="label-caps px-3 pb-2 pt-1 text-slate-500">{t("nav.localSession")}</p>
             <button
               type="button"
@@ -322,7 +322,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </aside>
         <div className="flex min-w-0 flex-1 flex-col bg-abyss">
           <TopBar />
-          <main id="main-content" className="flex-1 px-4 pb-24 pt-6 md:px-6 md:pb-10 xl:px-8">
+          <main id="main-content" className="flex-1 px-4 pb-32 pt-6 md:px-6 md:pb-10 xl:px-8">
             {children}
           </main>
           <div className="fixed inset-x-0 bottom-0 z-40 md:hidden">

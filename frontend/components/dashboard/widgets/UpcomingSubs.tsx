@@ -17,12 +17,26 @@ export default function UpcomingSubs() {
   const subs = useSubscriptions();
   const { mutate } = useSWRConfig();
 
-  if (subs.isLoading) return <div role="status">{t("common.loading")}</div>;
+  if (subs.isLoading) {
+    return (
+      <div
+        role="status"
+        aria-label={t("common.loading")}
+        className="animate-pulse rounded-xl border border-hull bg-hull/40 p-5"
+      >
+        <div className="h-4 w-24 rounded bg-hull" />
+      </div>
+    );
+  }
   if (subs.error) {
     return (
-      <div role="alert">
-        <p>{t("dashboard.sectionLoadFailed")}</p>
-        <button type="button" onClick={() => void mutate("finance/subscriptions")}>
+      <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
+        <p className="text-sm text-instrument/70">{t("dashboard.sectionLoadFailed")}</p>
+        <button
+          type="button"
+          onClick={() => void mutate("finance/subscriptions")}
+          className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
+        >
           {t("common.retry")}
         </button>
       </div>
@@ -45,14 +59,14 @@ export default function UpcomingSubs() {
 
   if (rows.length === 0) {
     return (
-      <div>
+      <div className="animate-fade-in motion-reduce:animate-none">
         <EmptyState
           title={t("dashboard.upcomingSubscriptionsEmpty")}
           hint={t("finance.noSubscriptionsHint")}
         />
         <Link
           href="/dashboard/finance/"
-          className="mt-2 inline-block text-xs text-signal underline-offset-2 hover:underline"
+          className="mt-2 inline-flex min-h-11 items-center text-xs text-signal underline-offset-2 hover:underline"
         >
           {t("dashboard.viewInFinance")}
         </Link>
@@ -61,7 +75,7 @@ export default function UpcomingSubs() {
   }
 
   return (
-    <div>
+    <div className="animate-fade-in motion-reduce:animate-none">
       <ul className="flex flex-col gap-2">
         {rows.map((sub) => {
           const paid = isPaidThisCycle(
@@ -74,11 +88,11 @@ export default function UpcomingSubs() {
           return (
             <li
               key={sub.id}
-              className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2 text-sm"
+              className="flex flex-col gap-3 rounded-lg border border-hull px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
             >
               <span className="min-w-0">
-                <span className="block truncate">{sub.name}</span>
-                <span className="mt-0.5 block truncate text-xs text-instrument/60">
+                <span className="line-clamp-2 sm:block sm:truncate">{sub.name}</span>
+                <span className="mt-0.5 block truncate text-xs text-slate-400">
                   {paid
                     ? t("finance.paidThisCycle")
                     : (sub.next_billing_on as string)}
@@ -93,7 +107,7 @@ export default function UpcomingSubs() {
       </ul>
       <Link
         href="/dashboard/finance/"
-        className="mt-2 inline-block text-xs text-signal underline-offset-2 hover:underline"
+        className="mt-2 inline-flex min-h-11 items-center text-xs text-signal underline-offset-2 hover:underline"
       >
         {t("dashboard.viewInFinance")}
       </Link>

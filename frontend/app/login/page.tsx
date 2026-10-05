@@ -112,12 +112,16 @@ export default function LoginPage() {
     }
   }
 
-  const inputClass =
-    "w-full rounded-xl border border-white/10 bg-slate-800/70 py-2.5 pl-10 pr-10 text-sm text-slate-100 placeholder:text-slate-500 transition-colors focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/25";
+  const fieldClass =
+    "min-h-11 w-full rounded-md border border-hull bg-deck text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+  // Canonical field string plus the icon padding the login fields need: `pr-12`
+  // clears the 44px eye toggle on the password field.
+  const inputClass = `${fieldClass} pl-10 pr-10`;
+  const passwordInputClass = `${fieldClass} pl-10 pr-12`;
 
   return (
     <main
-      className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0b0f19] px-4 py-12 text-slate-100"
+      className="relative flex min-h-screen items-center justify-center overflow-hidden bg-deck px-4 py-12 text-slate-100"
       style={{ colorScheme: "dark" }}
     >
       {/* Ambient background: two radial glows + subtle grid. Decorative only. */}
@@ -130,7 +134,7 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md">
         <section
           aria-labelledby="login-heading"
-          className="relative overflow-hidden rounded-2xl border border-white/10 bg-slate-900/80 p-7 shadow-2xl shadow-black/50 backdrop-blur-xl sm:p-9"
+          className="relative overflow-hidden rounded-2xl border border-white/10 bg-panel/80 p-6 shadow-2xl backdrop-blur-xl sm:p-9"
         >
           {/* Top glow line */}
           <div aria-hidden="true" className="absolute inset-x-8 top-0 h-[2px] bg-gradient-to-r from-transparent via-signal to-transparent" />
@@ -156,7 +160,7 @@ export default function LoginPage() {
               <span className="bg-gradient-to-r from-sky-400 to-[#006edc] bg-clip-text text-transparent">
                 Deck
               </span>
-              <span className="rounded-full border border-signal/20 bg-signal/10 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-signal">
+              <span className="rounded-full border border-signal/20 bg-signal/10 px-2 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-signal">
                 {t("login.version")}
               </span>
             </h1>
@@ -202,7 +206,7 @@ export default function LoginPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className={inputClass}
+                  className={passwordInputClass}
                   placeholder="••••••••"
                 />
                 <button
@@ -210,7 +214,7 @@ export default function LoginPage() {
                   onClick={() => setShowPassword((v) => !v)}
                   aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
                   aria-pressed={showPassword}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-500 transition-colors hover:text-slate-200 focus-visible:outline-2 focus-visible:outline-signal"
+                  className="absolute right-0.5 top-1/2 inline-flex h-11 w-11 shrink-0 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-panel-soft hover:text-signal"
                 >
                   {showPassword ? (
                     <EyeOffIcon className="h-[18px] w-[18px]" />
@@ -221,8 +225,8 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-sm">
-              <label htmlFor="login-remember" className="flex cursor-pointer items-center gap-2 text-slate-300">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 text-sm">
+              <label htmlFor="login-remember" className="flex min-h-11 cursor-pointer items-center gap-2 text-slate-300">
                 <input
                   id="login-remember"
                   type="checkbox"
@@ -235,7 +239,7 @@ export default function LoginPage() {
               <a
                 href="#"
                 onClick={(e) => e.preventDefault()}
-                className="font-medium text-sky-400 transition-colors hover:text-sky-300"
+                className="inline-flex min-h-11 items-center font-medium text-sky-400 transition-colors hover:text-sky-300"
               >
                 {t("login.forgot")}
               </a>
@@ -250,7 +254,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={pending}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#006edc] to-[#0088ff] px-3 py-2.5 font-display text-sm font-semibold tracking-wide text-white shadow-lg shadow-[#006edc]/25 transition-all hover:from-[#006edc] hover:to-[#38bdf8] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-signal active:scale-[0.99] disabled:opacity-60"
+              className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#006edc] to-[#0088ff] px-3 py-2.5 font-display text-sm font-semibold tracking-wide text-white shadow-lg shadow-[#006edc]/25 transition-all hover:from-[#006edc] hover:to-[#38bdf8] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-signal active:scale-[0.99] disabled:opacity-60"
             >
               {pending ? t("login.pending") : t("login.submit")}
               <ArrowIcon className="h-4 w-4" />

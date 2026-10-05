@@ -312,7 +312,7 @@ describe("ProductivityCalendar", () => {
     }
     for (const cell of screen.getAllByRole("gridcell")) {
       expect(cell.className).toContain("min-h-[44px]");
-      expect(cell.className).toContain("min-w-[44px]");
+      expect(cell.className).toContain("min-w-0");
     }
     const panel = document.querySelector("#productivity-calendar-day-panel");
     expect(panel?.className).toContain("motion-reduce:transition-none");

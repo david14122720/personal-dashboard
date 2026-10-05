@@ -46,6 +46,16 @@ import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetFor
  * every rendered block reads a surviving endpoint.
  */
 
+// Canonical strings from the UI-polish contract (`design.md`, "Canonical visual
+// contract"): one role, one look for fields, primary and ghost buttons. Every
+// control in this file uses them verbatim.
+const fieldClass =
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+const primaryBtn =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft disabled:cursor-not-allowed disabled:opacity-50";
+const ghostBtn =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal";
+
 function AggregatesSkeleton() {
   return (
     <div role="status" aria-label={t("finance.loadingSections")} aria-busy="true" className="grid grid-cols-12 gap-4">
@@ -128,17 +138,17 @@ export function AccountBalanceEdit({
 
   if (!editing) {
     return (
-      <div className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2">
+      <div className="flex flex-col gap-3 rounded-lg border border-hull px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <p className="min-w-0 truncate text-sm">{account.name}</p>
           <p className="font-mono text-sm tabular-nums">{currentLabel}</p>
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+        <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">
           <button
             type="button"
             onClick={open}
             aria-label={t("finance.balanceEditLabel", { name: account.name })}
-            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+            className={ghostBtn}
           >
             {t("finance.balanceEdit")}
           </button>
@@ -147,7 +157,7 @@ export function AccountBalanceEdit({
               type="button"
               onClick={(event) => onMoveMoney(account, event.currentTarget)}
               aria-label={`${t("finance.addTransfer")}: ${account.name}`}
-              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+              className={ghostBtn}
             >
               {t("finance.addTransfer")}
             </button>
@@ -177,27 +187,23 @@ export function AccountBalanceEdit({
         onChange={(e) => setDraft(e.target.value)}
         aria-label={t("finance.balanceEditLabel", { name: account.name })}
         aria-invalid={error ? true : undefined}
-        className="mt-1 min-h-[44px] w-full rounded-md border border-hull bg-deck px-3 py-2 font-mono text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+        className={`mt-1 ${fieldClass} font-mono tabular-nums`}
       />
       {error ? (
         <p role="alert" className="mt-1 text-xs text-alert">
           {error}
         </p>
       ) : null}
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:justify-end">
         <button
           type="button"
           onClick={() => void save()}
           disabled={saving}
-          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-signal px-4 py-2 text-xs font-bold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50"
+          className={primaryBtn}
         >
           {saving ? t("finance.saving") : t("finance.save")}
         </button>
-        <button
-          type="button"
-          onClick={cancel}
-          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
-        >
+        <button type="button" onClick={cancel} className={ghostBtn}>
           {t("finance.cancel")}
         </button>
       </div>
@@ -280,7 +286,7 @@ export default function FinanceScreens() {
           {currency}
         </span>
       </h1>
-      <p className="mt-1 text-sm text-instrument/60">
+      <p className="mt-1 text-sm text-slate-400">
         {t("finance.subtitle", { currency })}
       </p>
       <div className="mt-6 grid grid-cols-12 gap-6">
@@ -290,9 +296,9 @@ export default function FinanceScreens() {
           </div>
         ) : failed.length > 0 ? (
           <div className="col-span-12">
-            <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
-              <h2 className="font-display text-lg font-semibold">{t("finance.loadFailed")}</h2>
-              <p className="mt-1 text-sm text-instrument/70">
+            <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
+              <h2 className="font-display text-base font-medium tracking-wide">{t("finance.loadFailed")}</h2>
+              <p className="mt-1 text-sm text-slate-400">
                 {t("finance.loadFailedDetail", { failed: failed.length, total: queries.length })}
               </p>
               <button
@@ -304,7 +310,7 @@ export default function FinanceScreens() {
                       (key.startsWith("finance/") || key.startsWith("dashboard/")),
                   )
                 }
-                className="mt-4 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+                className={`mt-4 ${ghostBtn}`}
               >
                 {t("common.retry")}
               </button>
@@ -353,7 +359,7 @@ export default function FinanceScreens() {
                   ref={expenseBtnRef}
                   type="button"
                   onClick={() => openMovementModal({ kind: "create", direction: "expense" })}
-                  className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-signal px-4 py-2 text-sm font-bold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                  className={primaryBtn}
                 >
                   {t("finance.addExpense")}
                 </button>
@@ -361,7 +367,7 @@ export default function FinanceScreens() {
                   ref={incomeBtnRef}
                   type="button"
                   onClick={() => openMovementModal({ kind: "create", direction: "income" })}
-                  className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                  className={ghostBtn}
                 >
                   {t("finance.addIncome")}
                 </button>

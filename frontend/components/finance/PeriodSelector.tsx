@@ -4,7 +4,11 @@ import { t } from "@/lib/i18n";
 import { toPeriodRange, type PeriodSel } from "@/lib/finance/finance";
 
 const pillClass =
-  "inline-flex cursor-pointer items-center gap-2 rounded-full border border-hull px-3 py-1.5 text-xs text-instrument transition-colors focus-within:border-signal has-checked:border-signal has-checked:text-signal";
+  "inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center gap-2 rounded-full border border-hull px-3 py-1.5 text-xs text-instrument transition-colors hover:border-signal hover:text-signal focus-within:border-signal has-checked:border-signal has-checked:text-signal";
+
+// Canonical field string from the UI-polish contract (`design.md`).
+const fieldClass =
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 
 /**
  * Selector de período S6: 5 radio-pills + 2 date inputs solo en custom.
@@ -62,7 +66,7 @@ export default function PeriodSelector({
         ))}
       </div>
       {value.kind === "custom" ? (
-        <div className="mt-3 grid grid-cols-2 gap-3">
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="flex flex-col gap-1 text-xs text-instrument/60">
             {t("charts.periodFrom")}
             <input
@@ -70,7 +74,7 @@ export default function PeriodSelector({
               type="date"
               value={value.from ?? ""}
               onChange={(e) => onChange({ kind: "custom", from: e.target.value, to: value.to ?? "" })}
-              className="w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none"
+              className={fieldClass}
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-instrument/60">
@@ -80,7 +84,7 @@ export default function PeriodSelector({
               type="date"
               value={value.to ?? ""}
               onChange={(e) => onChange({ kind: "custom", from: value.from ?? "", to: e.target.value })}
-              className="w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none"
+              className={fieldClass}
             />
           </label>
         </div>

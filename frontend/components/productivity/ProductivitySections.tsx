@@ -22,6 +22,14 @@ import {
 const rowActionClass =
   "shrink-0 rounded-md border border-hull px-3 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal disabled:opacity-50 min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
 
+/** View tabs: ≥44px pills with a visible hover state (`design.md`, "Pill / tab"). */
+const viewTabClass =
+  "inline-flex min-h-11 items-center justify-center rounded-full border px-3 font-display text-xs transition-colors";
+
+// Canonical field string from the UI-polish contract (`design.md`).
+const fieldClass =
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+
 function DeleteButton({
   label,
   pending,
@@ -77,7 +85,7 @@ export function TaskViewTabs({
           type="button"
           aria-pressed={view === option.value}
           onClick={() => onView(option.value)}
-          className={`rounded-full border px-3 py-1 font-display text-xs transition-colors ${
+          className={`${viewTabClass} ${
             view === option.value
               ? "border-signal text-signal"
               : "border-hull hover:border-signal hover:text-signal"
@@ -113,7 +121,7 @@ export function EventViewTabs({
           type="button"
           aria-pressed={view === option.value}
           onClick={() => onView(option.value)}
-          className={`rounded-full border px-3 py-1 font-display text-xs transition-colors ${
+          className={`${viewTabClass} ${
             view === option.value
               ? "border-signal text-signal"
               : "border-hull hover:border-signal hover:text-signal"
@@ -172,9 +180,9 @@ export function SectionShell({
   span: string;
 }) {
   return (
-    <section aria-label={title} className={`rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span}`}>
+    <section aria-label={title} className={`rounded-xl border border-hull bg-panel/90 p-4 sm:p-5 ${span}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-display text-base font-semibold text-white">{title}</h2>
+        <h2 className="font-display text-base font-medium tracking-wide">{title}</h2>
         {action}
       </div>
       {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
@@ -259,7 +267,7 @@ export function GoalsList({
         return (
           <li key={goal.id} className="rounded-lg border border-hull px-4 py-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <p className="truncate text-sm font-medium">
+              <p className="line-clamp-2 text-sm font-medium sm:block sm:truncate">
                 {goal.name}
                 <span className="ml-2 text-xs font-normal text-instrument/50">{goalStatusText(goal.status)}</span>
               </p>
@@ -268,13 +276,13 @@ export function GoalsList({
               </p>
             </div>
             {goal.description ? (
-              <p className="mt-0.5 truncate text-xs text-instrument/60">{goal.description}</p>
+              <p className="mt-0.5 line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">{goal.description}</p>
             ) : null}
             <div className="mt-2">
               <ProgressBar pct={fraction} status={goalLed(goal.status)} label={t("productivity.goalProgressOf", { name: goal.name })} />
             </div>
             {goal.due_date ? (
-              <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">{t("productivity.dueOn", { date: goal.due_date })}</p>
+              <p className="mt-1 font-mono text-xs tabular-nums text-instrument/60">{t("productivity.dueOn", { date: goal.due_date })}</p>
             ) : null}
             {onEdit || onDelete ? (
               <div className="mt-2 flex flex-wrap gap-2">
@@ -337,13 +345,13 @@ export function TasksList({
                   className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
                 >
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm">{task.title}</p>
+                    <p className="line-clamp-2 text-sm sm:block sm:truncate">{task.title}</p>
                     <p className="truncate text-xs text-instrument/60">
                       {taskPriorityText(task.priority)}
                       {task.due_date ? ` · ${t("productivity.dueOn", { date: task.due_date })}` : ""}
                     </p>
                     {task.goal_id && goalNameById?.[task.goal_id] ? (
-                      <p className="truncate text-xs text-instrument/50">{goalNameById[task.goal_id]}</p>
+                      <p className="line-clamp-2 text-xs text-instrument/50 sm:block sm:truncate">{goalNameById[task.goal_id]}</p>
                     ) : null}
                     {onEdit || onDelete ? (
                       <div className="mt-1.5 flex flex-wrap gap-2">
@@ -405,8 +413,8 @@ export function EventsList({
           className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
         >
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm">{event.title}</p>
-            <p className="truncate text-xs text-instrument/60">
+            <p className="line-clamp-2 text-sm sm:block sm:truncate">{event.title}</p>
+            <p className="line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">
               {eventKindText(event.kind)}
               {event.location ? ` · ${event.location}` : ""}
             </p>
@@ -448,7 +456,7 @@ export function NotesSearchBox({ query, onQuery }: { query: string; onQuery: (va
         placeholder={t("productivity.searchNotes")}
         value={query}
         onChange={(event) => onQuery(event.target.value)}
-        className="w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm placeholder:text-instrument/40 focus:border-signal focus:outline-none"
+        className={fieldClass}
       />
     </label>
   );
@@ -476,16 +484,16 @@ export function NotesResults({
     <ul className="flex flex-col gap-2">
       {notes.map((note) => (
         <li key={note.id} className="rounded-lg border border-hull px-3 py-2">
-          <p className="truncate text-sm font-medium">
+          <p className="line-clamp-2 text-sm font-medium sm:block sm:truncate">
             {note.title}
             {note.is_pinned ? (
-              <span className="ml-2 rounded-full border border-signal/40 px-2 py-0.5 font-display text-[11px] text-signal">
+              <span className="ml-2 rounded-full border border-signal/40 px-2 py-0.5 font-display text-xs text-signal">
                 {t("productivity.pinnedBadge")}
               </span>
             ) : null}
           </p>
           {note.body ? (
-            <p className="mt-0.5 truncate text-xs text-instrument/60">{noteExcerpt(note.body)}</p>
+            <p className="mt-0.5 line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">{noteExcerpt(note.body)}</p>
           ) : null}
           {onEdit || onDelete || onTogglePin ? (
             <div className="mt-1.5 flex flex-wrap gap-2">

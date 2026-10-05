@@ -19,8 +19,8 @@ export function SectionShell({
   span: string;
 }) {
   return (
-    <section aria-label={title} className={`flex h-full flex-col rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 ${span}`}>
-      <h2 className="font-display text-base font-semibold text-white">{title}</h2>
+    <section aria-label={title} className={`flex h-full flex-col rounded-xl border border-hull bg-panel/90 p-4 sm:p-5 ${span}`}>
+      <h2 className="font-display text-base font-medium tracking-wide">{title}</h2>
       {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
       <div className="mt-4 flex-1">{children}</div>
     </section>
@@ -50,7 +50,9 @@ export function CompactMoneyList({
         >
           <div className="min-w-0">
             <p className="truncate text-sm">{row.title}</p>
-            {row.detail ? <p className="truncate text-xs text-instrument/60">{row.detail}</p> : null}
+            {row.detail ? (
+              <p className="line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">{row.detail}</p>
+            ) : null}
           </div>
           <p className="shrink-0 font-mono text-sm tabular-nums">
             {formatMoney(row.amount, { locale, currency: row.currency })}

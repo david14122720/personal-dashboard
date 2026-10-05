@@ -23,8 +23,8 @@ export default function DashboardDisclosure({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex h-full flex-col rounded-xl border border-hull bg-deck/60 p-5">
-      <h2 className="font-display text-base font-semibold text-instrument">
+    <section className="flex h-full flex-col rounded-xl border border-hull bg-panel/90 p-4 sm:p-5">
+      <h2 className="font-display text-base font-medium tracking-wide">
         <button
           type="button"
           aria-expanded={open}
@@ -47,8 +47,12 @@ export default function DashboardDisclosure({
           </svg>
         </button>
       </h2>
-      {hint ? <p className="mt-1 text-xs text-instrument/60">{hint}</p> : null}
-      <div id={panelId} hidden={!open} className="mt-4 flex-1">
+      {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
+      <div
+        id={panelId}
+        hidden={!open}
+        className="mt-4 flex-1 animate-fade-in motion-reduce:animate-none"
+      >
         {open ? children : null}
       </div>
     </section>

@@ -19,7 +19,7 @@ import {
 import { formatMoney, toNumber } from "@/lib/api/money";
 
 const inputClass =
-  "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument placeholder:text-instrument/40 focus:border-signal focus:outline-none";
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 const btnClass =
   "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
 
@@ -85,7 +85,7 @@ export function SubscriptionRow({ sub }: { sub: SubscriptionWire }) {
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-hull px-3 py-2">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{sub.name}</p>
           <p className="font-mono text-sm tabular-nums">
@@ -98,7 +98,7 @@ export function SubscriptionRow({ sub }: { sub: SubscriptionWire }) {
             <p className="mt-0.5 text-xs text-instrument/60">{t("finance.subscriptionFreeNoPay")}</p>
           ) : null}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
           {payable ? (
             <button
               ref={payButtonRef}
@@ -206,9 +206,9 @@ export function PaySubscriptionModal({
   }
 
   return (
-    <div role="dialog" aria-modal="true" aria-label={t("finance.subscriptionPayTitle")} className="mt-2 rounded-lg border border-hull bg-deck p-3">
+    <div role="dialog" aria-modal="true" aria-label={t("finance.subscriptionPayTitle")} className="mt-2 rounded-xl border border-hull bg-panel/90 p-4 sm:p-5">
       <h3 className="font-display text-sm font-semibold">{t("finance.subscriptionPayTitle")}</h3>
-      <p className="mt-1 font-mono text-sm tabular-nums">
+      <p className="mt-1 break-words font-mono text-sm tabular-nums">
         {sub.name} · {formatMoney(sub.price, { currency: sub.currency ?? "COP" })}
       </p>
       {error ? (<p role="alert" className="mt-2 text-xs text-alert">{error}</p>) : null}
@@ -225,7 +225,7 @@ export function PaySubscriptionModal({
           {options.map((o) => (<option key={o.id} value={o.id}>{o.name}</option>))}
         </select>
       </label>
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         <button
           type="button"
           disabled={pending}

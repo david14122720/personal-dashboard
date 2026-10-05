@@ -11,6 +11,7 @@ export interface FlowPoint {
   balance: number;
 }
 import { chartToken, formatMonth, t } from "@/lib/i18n";
+import { useContainerWidth } from "@/components/ui/useContainerWidth";
 import EmptyState from "@/components/ui/EmptyState";
 
 /**
@@ -18,6 +19,7 @@ import EmptyState from "@/components/ui/EmptyState";
  * (no error) when the aggregate response has no data points.
  */
 export default function FlowChart({ data, animate = true }: { data: FlowPoint[]; animate?: boolean }) {
+  const { ref: chartRef, width } = useContainerWidth(560);
   if (!data || data.length === 0) {
     return <EmptyState title={t("dashboard.noFlowData")} hint={t("dashboard.noFlowHint")} />;
   }
@@ -25,9 +27,9 @@ export default function FlowChart({ data, animate = true }: { data: FlowPoint[];
   const income = tok("--color-flow");
   const expense = tok("--color-signal");
   return (
-    <div className="w-full overflow-x-auto">
+    <div ref={chartRef} className="w-full overflow-x-auto">
       <AreaChart
-        width={560}
+        width={width}
         height={260}
         data={data}
         accessibilityLayer

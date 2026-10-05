@@ -3,11 +3,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
+import EmptyState from "@/components/ui/EmptyState";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 import { createToken, listTokens, revokeToken, type ApiToken, type CreatedToken } from "@/lib/api/tokens";
 
 const EXPIRY_OPTIONS = ["30", "90", "365"] as const;
+
+const fieldClass =
+  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+const primaryBtnClass =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft disabled:cursor-not-allowed disabled:opacity-50";
+const ghostBtnClass =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal disabled:cursor-not-allowed disabled:opacity-50";
+const dangerBtnClass =
+  "inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-alert hover:text-alert disabled:cursor-not-allowed disabled:opacity-50";
 
 function formatDate(value: string | null): string {
   if (!value) return t("tokens.never");
@@ -117,7 +127,7 @@ export default function TokensPage() {
               {t("tokens.activeBadge", { n: tokens.length })}
             </span>
           </h1>
-          <p className="mt-1 text-sm text-instrument/70">{t("tokens.subtitle")}</p>
+          <p className="mt-1 text-sm text-slate-400">{t("tokens.subtitle")}</p>
         </header>
 
         {actionError ? (
@@ -129,9 +139,9 @@ export default function TokensPage() {
         {created ? (
           <section
             aria-label={t("tokens.createdTitle")}
-            className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
+            className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5"
           >
-            <h2 className="font-display text-lg font-semibold tracking-wide">{t("tokens.createdTitle")}</h2>
+            <h2 className="font-display text-base font-medium tracking-wide">{t("tokens.createdTitle")}</h2>
             <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
               {t("tokens.createdOnce")}
             </p>
@@ -143,14 +153,14 @@ export default function TokensPage() {
                 <button
                   type="button"
                   onClick={() => void onCopy()}
-                  className="rounded-md bg-signal px-3 py-2 font-display text-sm font-semibold tracking-wide text-deck transition-opacity disabled:opacity-60"
+                  className={primaryBtnClass}
                 >
                   {copied ? t("tokens.copied") : t("tokens.copy")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setCreated(null)}
-                  className="rounded-md border border-hull px-3 py-2 font-display text-sm text-instrument/70 transition-colors hover:border-signal hover:text-signal"
+                  className={ghostBtnClass}
                 >
                   {t("tokens.dismiss")}
                 </button>
@@ -161,9 +171,9 @@ export default function TokensPage() {
 
         <section
           aria-label={t("tokens.createTitle")}
-          className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
+          className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5"
         >
-          <h2 className="font-display text-lg font-semibold tracking-wide">{t("tokens.createTitle")}</h2>
+          <h2 className="font-display text-base font-medium tracking-wide">{t("tokens.createTitle")}</h2>
           <form onSubmit={(e) => void onCreate(e)} className="mt-4 flex flex-col gap-4">
             <label className="flex flex-col gap-1 text-sm">
               {t("tokens.name")}
@@ -173,7 +183,7 @@ export default function TokensPage() {
                 maxLength={80}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={t("tokens.namePlaceholder")}
-                className="rounded-md border border-slate-800 bg-[#171b26] px-3 py-2 text-instrument placeholder:text-instrument/40"
+                className={fieldClass}
               />
             </label>
             <label className="flex flex-col gap-1 text-sm">
@@ -181,7 +191,7 @@ export default function TokensPage() {
               <select
                 value={expiry}
                 onChange={(e) => setExpiry(e.target.value)}
-                className="rounded-md border border-slate-800 bg-[#171b26] px-3 py-2 text-instrument"
+                className={fieldClass}
               >
                 <option value="never">{t("tokens.expiryNever")}</option>
                 {EXPIRY_OPTIONS.map((days) => (
@@ -194,7 +204,7 @@ export default function TokensPage() {
             <button
               type="submit"
               disabled={creating}
-              className="rounded-md bg-signal px-3 py-2 font-display text-sm font-semibold tracking-wide text-deck transition-opacity disabled:opacity-60"
+              className={primaryBtnClass}
             >
               {creating ? t("tokens.creating") : t("tokens.create")}
             </button>
@@ -203,9 +213,9 @@ export default function TokensPage() {
 
         <section
           aria-label={t("tokens.listTitle")}
-          className="rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5"
+          className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5"
         >
-          <h2 className="font-display text-lg font-semibold tracking-wide">{t("tokens.listTitle")}</h2>
+          <h2 className="font-display text-base font-medium tracking-wide">{t("tokens.listTitle")}</h2>
           {loading ? (
             <p role="status" className="mt-3 text-sm text-instrument/50">
               {t("tokens.loading")}
@@ -218,15 +228,14 @@ export default function TokensPage() {
               <button
                 type="button"
                 onClick={() => void refresh()}
-                className="w-fit rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+                className={`w-fit ${ghostBtnClass}`}
               >
                 {t("common.retry")}
               </button>
             </div>
           ) : tokens.length === 0 ? (
             <div className="mt-3">
-              <p className="text-sm font-medium">{t("tokens.empty")}</p>
-              <p className="mt-1 text-sm text-instrument/60">{t("tokens.emptyHint")}</p>
+              <EmptyState title={t("tokens.empty")} hint={t("tokens.emptyHint")} />
             </div>
           ) : (
             <ul className="mt-3 flex flex-col gap-3">
@@ -239,7 +248,7 @@ export default function TokensPage() {
                   >
                     <div className="min-w-0">
                       <p className="truncate font-medium">{token.name}</p>
-                      <dl className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-instrument/60 sm:flex sm:flex-wrap">
+                      <dl className="mt-1 grid grid-cols-1 gap-1 text-xs text-instrument/60 sm:grid-cols-2">
                         <div className="flex gap-1">
                           <dt>{t("tokens.prefix")}:</dt>
                           <dd className="font-mono">{token.prefix}</dd>
@@ -267,7 +276,7 @@ export default function TokensPage() {
                       disabled={deletingId === token.id || token.revoked_at !== null}
                       onClick={() => void onDelete(token)}
                       aria-label={`${t("tokens.delete")}: ${token.name}`}
-                      className="shrink-0 rounded-md border border-hull px-3 py-2 font-display text-sm text-instrument/70 transition-colors hover:border-alert hover:text-alert disabled:opacity-40"
+                      className={dangerBtnClass}
                     >
                       {deletingId === token.id ? t("tokens.deleting") : t("tokens.delete")}
                     </button>
