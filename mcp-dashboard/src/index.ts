@@ -29,7 +29,7 @@ import {
   isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestToken } from "./client.js";
-import { dispatchTool, toolDefinitions } from "./tools.js";
+import { dispatchTool, recordAudit, tokenPrefixForLog, toolDefinitions } from "./tools.js";
 
 const DEFAULT_PORT = 3101;
 const UUID_RE =
@@ -120,13 +120,34 @@ function buildServer(): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const args = request.params.arguments ?? {};
+    // T7 audit: one entry per tools/call. Only the masked token prefix and
+    // the outcome are logged — never the raw token, never args/bodies.
+    const requestId = randomUUID();
+    const tokenPrefix = tokenPrefixForLog(tokenStore.getStore());
+    const occurredAt = new Date().toISOString();
     try {
       const text = await dispatchTool(name, args, tokenStore.getStore());
+      recordAudit({
+        occurred_at: occurredAt,
+        tool: name,
+        success: true,
+        error_code: null,
+        token_prefix: tokenPrefix,
+        request_id: requestId,
+      });
       return {
         content: [{ type: "text" as const, text }],
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      recordAudit({
+        occurred_at: occurredAt,
+        tool: name,
+        success: false,
+        error_code: message.startsWith("unknown tool") ? "UNKNOWN_TOOL" : "TOOL_ERROR",
+        token_prefix: tokenPrefix,
+        request_id: requestId,
+      });
       return {
         content: [{ type: "text" as const, text: message }],
         isError: true,

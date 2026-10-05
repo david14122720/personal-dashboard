@@ -22,6 +22,7 @@ export interface McpToolDef {
     type: "object";
     properties: Record<string, object>;
     required?: string[];
+    minProperties?: number;
   };
 }
 
@@ -35,10 +36,14 @@ interface ToolEntry {
 
 const uuid = z.uuid();
 const optionalUuid = uuid.optional();
-const dateString = z.string().min(1);
 const optionalText = z.string().optional();
 
 function fmt(data: unknown): string {
+  // G5: backend DELETEs answer 204 → apiDelete resolves `undefined`.
+  // JSON.stringify(undefined) is `undefined` (not a string), which produced
+  // a malformed MCP text part that strict SDK clients reject (-32602) even
+  // though the delete succeeded. Normalize to an explicit success object.
+  if (data === undefined) return JSON.stringify({ ok: true }, null, 2);
   if (typeof data === "string") return data;
   return JSON.stringify(data, null, 2);
 }
@@ -59,6 +64,10 @@ function strProp(description: string): object {
 
 function optStrProp(description: string): object {
   return { type: "string", description };
+}
+
+function enumProp(description: string, values: string[]): object {
+  return { type: "string", description, enum: values };
 }
 
 function boolProp(description: string): object {
@@ -98,6 +107,62 @@ const UpdateAccountSchema = z.object({
 // (S3a) Transaction schemas deleted with the ledger: migration 0011 drops
 // the table and no tool entry references them.
 
+// --- Finanzas FULL (T2): movements ledger + transfers (backend S-A/W2) ---
+// Money travels as decimal STRINGS (e.g. "25000.00"), never JSON numbers:
+// the backend rejects numeric amounts at the boundary with 422.
+// Dates are calendar YYYY-MM-DD. All UUIDs must be owned by the caller.
+
+const MoneyString = z
+  .string()
+  .min(1)
+  .max(32)
+  .regex(/^\d+(\.\d{1,2})?$/, "amount must be a positive decimal string, e.g. \"25000.00\"");
+
+const CalendarDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD");
+
+const MovementBase = {
+  amount: MoneyString,
+  account_id: uuid,
+  occurred_on: CalendarDate,
+  description: z.string().max(2000).optional(),
+};
+
+const AddExpenseSchema = z.object({
+  ...MovementBase,
+  category_id: uuid,
+});
+
+const AddIncomeSchema = z.object({
+  ...MovementBase,
+  category_id: uuid,
+});
+
+const ListMovementsSchema = z.object({});
+
+const GetMovementSchema = z.object({ id: uuid });
+
+const UpdateMovementSchema = z.object({
+  id: uuid,
+  direction: z.enum(["expense", "income"]).optional(),
+  amount: MoneyString.optional(),
+  account_id: optionalUuid,
+  category_id: optionalUuid,
+  occurred_on: CalendarDate.optional(),
+  description: z.string().max(2000).optional(),
+});
+
+const TransferMoneySchema = z.object({
+  from_account_id: uuid,
+  to_account_id: uuid,
+  amount: MoneyString,
+  occurred_on: CalendarDate,
+  description: z.string().max(2000).optional(),
+});
+
+const GetSubscriptionSchema = z.object({ id: uuid });
+
 const ListTasksSchema = z.object({
   view: z.enum(["today", "upcoming", "overdue", "done"]).optional(),
 });
@@ -130,40 +195,6 @@ const UpdateTaskSchema = z.object({
 const ListHabitsSchema = z.object({});
 
 const GetHabitSchema = z.object({ id: uuid });
-
-const CreateHabitSchema = z.object({
-  name: z.string().min(1).max(200),
-  description: optionalText,
-  direction: z.enum(["build", "maintain", "reduce", "quit"]),
-  frequency: z.enum(["daily", "weekly", "monthly", "custom"]).optional(),
-  days_of_week: z.array(z.number().int().min(0).max(6)).optional(),
-  target_per_period: z.string().optional(),
-  start_date: z.string().optional(),
-  end_date: z.string().optional(),
-  category_id: optionalUuid,
-  color: optionalText,
-  icon: optionalText,
-});
-
-const UpdateHabitSchema = z.object({
-  id: uuid,
-  name: z.string().min(1).max(200).optional(),
-  description: optionalText,
-  target_per_period: z.string().optional(),
-  end_date: z.string().optional(),
-  category_id: optionalUuid,
-  color: optionalText,
-  icon: optionalText,
-  is_archived: z.boolean().optional(),
-});
-
-const CreateHabitLogSchema = z.object({
-  id: uuid,
-  log_date: dateString,
-  status: z.enum(["done", "missed", "skipped"]),
-  count_value: z.string().optional(),
-  notes: optionalText,
-});
 
 const HabitStreakSchema = z.object({ id: uuid });
 
@@ -263,17 +294,65 @@ const EmptySchema = z.object({});
 
 const DeleteByIdSchema = z.object({ id: uuid });
 
+// --- Config FULL (T3): tokens + preferences (backend routes::tokens, routes::me) ---
+// Security: the raw `pd_...` secret travels ONLY in the create_token response
+// (backend sets Cache-Control: no-store there). List/revoke shapes carry
+// metadata (id, name, prefix, scopes, timestamps) — never the raw secret or
+// its hash. Descriptions below warn agents to never log/commit the raw value.
+
+const CreateTokenSchema = z.object({
+  name: z.string().min(1).max(80),
+  expires_in_days: z.number().int().min(1).max(3650).optional(),
+});
+
+const ListTokensSchema = z.object({});
+
+const RevokeTokenSchema = z.object({ id: uuid });
+
+const GetPreferencesSchema = z.object({});
+
+const UpdatePreferencesSchema = z
+  .object({
+    currency_code: z.string().optional(),
+    locale: z.string().optional(),
+    timezone: z.string().optional(),
+    dashboard_layout: z.unknown().optional(),
+  })
+  .refine(
+    (v) =>
+      v.currency_code !== undefined ||
+      v.locale !== undefined ||
+      v.timezone !== undefined ||
+      v.dashboard_layout !== undefined,
+    {
+      message:
+        "at least one field (currency_code, locale, timezone, dashboard_layout) is required",
+    },
+  );
+
+// --- Dashboard read (T3): no backend aggregate endpoint exists (main.rs has
+// no /stats or /dashboard route; dashboard_layout lives in user_preferences
+// and the layout is frontend-only). Composition is client-side only.
+const DashboardSummarySchema = z.object({});
+
+// --- Audit log read (T7): in-memory ring buffer, read-only. Optional
+// limit 1-200 (default applied at read time); validation rejects 0,
+// negatives and >200 before any read.
+const ListAuditLogSchema = z.object({
+  limit: z.number().int().min(1).max(200).optional(),
+});
+
 const entries: ToolEntry[] = [
   {
     def: {
       name: "login",
       description:
-        "POST /api/login. Authenticates with email+password and returns the Bearer token. The token is NOT cached: send it back as `Authorization: Bearer <token>` on subsequent MCP requests.",
+        "POST /api/login. Authenticates with email+password and returns the Bearer token (plus expires_at). The token is NOT cached: send it back as `Authorization: Bearer <token>` on subsequent MCP requests. Example: {\"email\":\"you@example.com\",\"password\":\"secret\"}.",
       inputSchema: {
         type: "object",
         properties: {
-          email: strProp("User email"),
-          password: strProp("User password"),
+          email: strProp("User email address, e.g. you@example.com"),
+          password: strProp("User password (min 1 char, never log it)"),
         },
         required: ["email", "password"],
       },
@@ -359,11 +438,141 @@ const entries: ToolEntry[] = [
   },
   {
     def: {
-      name: "list_tasks",
-      description: "GET /api/tasks. Optional status view: today|upcoming|overdue|done.",
+      name: "add_expense",
+      description:
+        "POST /api/movements. Records an expense: debits the account balance atomically. Requires account_id (owned account UUID), category_id (owned category UUID), amount as a decimal string (e.g. \"25000.00\", never a JSON number), occurred_on as YYYY-MM-DD. Optional description (max 2000 chars).",
       inputSchema: {
         type: "object",
-        properties: { view: optStrProp("today|upcoming|overdue|done") },
+        properties: {
+          account_id: strProp("Owned account UUID to debit"),
+          category_id: strProp("Owned category UUID"),
+          amount: strProp("Positive amount as a decimal string, e.g. \"25000.00\""),
+          occurred_on: strProp("Calendar date YYYY-MM-DD"),
+          description: optStrProp("Free text, max 2000 chars"),
+        },
+        required: ["account_id", "category_id", "amount", "occurred_on"],
+      },
+    },
+    schema: AddExpenseSchema,
+    run: async (args, token) =>
+      fmt(await apiPost("/movements", { direction: "expense", ...args }, token)),
+  },
+  {
+    def: {
+      name: "add_income",
+      description:
+        "POST /api/movements. Records income: credits the account balance atomically. Requires account_id (owned account UUID), category_id (owned category UUID), amount as a decimal string (e.g. \"25000.00\", never a JSON number), occurred_on as YYYY-MM-DD. Optional description (max 2000 chars).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          account_id: strProp("Owned account UUID to credit"),
+          category_id: strProp("Owned category UUID"),
+          amount: strProp("Positive amount as a decimal string, e.g. \"25000.00\""),
+          occurred_on: strProp("Calendar date YYYY-MM-DD"),
+          description: optStrProp("Free text, max 2000 chars"),
+        },
+        required: ["account_id", "category_id", "amount", "occurred_on"],
+      },
+    },
+    schema: AddIncomeSchema,
+    run: async (args, token) =>
+      fmt(await apiPost("/movements", { direction: "income", ...args }, token)),
+  },
+  {
+    def: {
+      name: "list_movements",
+      description:
+        "GET /api/movements. Lists all movements (expenses, income and transfers) ordered by date descending. No filters server-side: fetch then filter client-side for charts or summaries.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    schema: ListMovementsSchema,
+    run: async (_args, token) => fmt(await apiGet("/movements", undefined, token)),
+  },
+  {
+    def: {
+      name: "get_movement",
+      description: "GET /api/movements/{id}. Fetches one movement by UUID.",
+      inputSchema: {
+        type: "object",
+        properties: { id: strProp("Movement UUID") },
+        required: ["id"],
+      },
+    },
+    schema: GetMovementSchema,
+    run: async (args, token) => fmt(await apiGet(`/movements/${args.id}`, undefined, token)),
+  },
+  {
+    def: {
+      name: "update_movement",
+      description:
+        "PATCH /api/movements/{id}. Edits an expense/income movement; omitted fields keep their stored value and balances are reversed/re-applied atomically. Any subset of direction (expense|income), amount (decimal string), account_id, category_id, occurred_on (YYYY-MM-DD), description. Transfers cannot be edited (backend is 422): delete and re-create instead.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: strProp("Movement UUID"),
+          direction: optStrProp("expense|income"),
+          amount: optStrProp("Amount as a decimal string, e.g. \"25000.00\""),
+          account_id: optStrProp("Owned account UUID"),
+          category_id: optStrProp("Owned category UUID"),
+          occurred_on: optStrProp("Calendar date YYYY-MM-DD"),
+          description: optStrProp("Free text, max 2000 chars"),
+        },
+        required: ["id"],
+      },
+    },
+    schema: UpdateMovementSchema,
+    run: async (args, token) =>
+      fmt(await apiPatch(`/movements/${args.id}`, withoutId(args), token)),
+  },
+  {
+    def: {
+      name: "delete_movement",
+      description:
+        "DELETE /api/movements/{id}. Deletes a movement and reverses its balance effect atomically. Also the way to remove a transfer (transfers are create/delete only).",
+      inputSchema: {
+        type: "object",
+        properties: { id: strProp("Movement UUID") },
+        required: ["id"],
+      },
+    },
+    schema: DeleteByIdSchema,
+    run: async (args, token) => fmt(await apiDelete(`/movements/${args.id}`, token)),
+  },
+  {
+    def: {
+      name: "transfer_money",
+      description:
+        "POST /api/movements/transfer. Moves money between two owned accounts in one atomic transaction: debits from_account_id, credits to_account_id. Both accounts must be owned, distinct, and share the same currency. Amount is a decimal string (e.g. \"25000.00\"), occurred_on is YYYY-MM-DD, description optional. No category: transfers carry no category_id.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          from_account_id: strProp("Origin account UUID (debited)"),
+          to_account_id: strProp("Destination account UUID (credited)"),
+          amount: strProp("Positive amount as a decimal string, e.g. \"25000.00\""),
+          occurred_on: strProp("Calendar date YYYY-MM-DD"),
+          description: optStrProp("Free text, max 2000 chars"),
+        },
+        required: ["from_account_id", "to_account_id", "amount", "occurred_on"],
+      },
+    },
+    schema: TransferMoneySchema,
+    run: async (args, token) => fmt(await apiPost("/movements/transfer", args, token)),
+  },
+  {
+    def: {
+      name: "list_tasks",
+      description:
+        "GET /api/tasks. Lists tasks, optionally filtered by status view (today|upcoming|overdue|done). Omitted view returns all tasks.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          view: enumProp("Status view filter: today|upcoming|overdue|done. Omit for all tasks.", [
+            "today",
+            "upcoming",
+            "overdue",
+            "done",
+          ]),
+        },
       },
     },
     schema: ListTasksSchema,
@@ -373,7 +582,7 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "get_task",
-      description: "GET /api/tasks/{id}.",
+      description: "GET /api/tasks/{id}. Fetches one task by its UUID.",
       inputSchema: {
         type: "object",
         properties: { id: strProp("Task UUID") },
@@ -386,15 +595,26 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "create_task",
-      description: "POST /api/tasks.",
+      description:
+        "POST /api/tasks. Creates a task. Only title is required; priority defaults server-side, status defaults to pending. Dates are YYYY-MM-DD. Linked IDs (goal_id, category_id) must be owned UUIDs. Example: {\"title\":\"Pay rent\",\"priority\":\"high\",\"due_date\":\"2026-10-10\"}.",
       inputSchema: {
         type: "object",
         properties: {
-          title: strProp("Task title"),
+          title: strProp("Task title (1-200 chars, required)"),
           description: optStrProp("Description"),
-          priority: optStrProp("low|medium|high|urgent"),
-          status: optStrProp("pending|in_progress|completed|cancelled"),
-          due_date: optStrProp("YYYY-MM-DD"),
+          priority: enumProp("Priority: low|medium|high|urgent", [
+            "low",
+            "medium",
+            "high",
+            "urgent",
+          ]),
+          status: enumProp("Status: pending|in_progress|completed|cancelled", [
+            "pending",
+            "in_progress",
+            "completed",
+            "cancelled",
+          ]),
+          due_date: optStrProp("Due date as YYYY-MM-DD"),
           goal_id: optStrProp("Owned goal UUID"),
           category_id: optStrProp("Owned task-kind category UUID"),
           sort_order: intProp("Ordering within the list"),
@@ -408,16 +628,27 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "update_task",
-      description: "PATCH /api/tasks/{id}.",
+      description:
+        "PATCH /api/tasks/{id}. Partial update: only supplied fields change (title, description, priority, status, due_date YYYY-MM-DD, goal_id/category_id UUIDs, sort_order). Requires the task UUID.",
       inputSchema: {
         type: "object",
         properties: {
           id: strProp("Task UUID"),
-          title: optStrProp("Title"),
+          title: optStrProp("Title (1-200 chars)"),
           description: optStrProp("Description"),
-          priority: optStrProp("low|medium|high|urgent"),
-          status: optStrProp("pending|in_progress|completed|cancelled"),
-          due_date: optStrProp("YYYY-MM-DD"),
+          priority: enumProp("Priority: low|medium|high|urgent", [
+            "low",
+            "medium",
+            "high",
+            "urgent",
+          ]),
+          status: enumProp("Status: pending|in_progress|completed|cancelled", [
+            "pending",
+            "in_progress",
+            "completed",
+            "cancelled",
+          ]),
+          due_date: optStrProp("Due date as YYYY-MM-DD"),
           goal_id: optStrProp("Owned goal UUID"),
           category_id: optStrProp("Category UUID"),
           sort_order: intProp("Sort order"),
@@ -431,7 +662,7 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "delete_task",
-      description: "DELETE /api/tasks/{id}.",
+      description: "DELETE /api/tasks/{id}. Deletes a task by its UUID.",
       inputSchema: {
         type: "object",
         properties: { id: strProp("Task UUID") },
@@ -465,95 +696,12 @@ const entries: ToolEntry[] = [
   },
   {
     def: {
-      name: "create_habit",
-      description: "POST /api/habits. direction=build|maintain|reduce|quit; custom frequency requires days_of_week.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: strProp("Habit name"),
-          description: optStrProp("Description"),
-          direction: strProp("build|maintain|reduce|quit"),
-          frequency: optStrProp("daily|weekly|monthly|custom"),
-          days_of_week: { type: "array", items: { type: "integer" }, description: "0=Sun..6=Sat (custom only)" } as object,
-          target_per_period: optStrProp("Decimal string, e.g. \"1.00\""),
-          start_date: optStrProp("YYYY-MM-DD"),
-          end_date: optStrProp("YYYY-MM-DD"),
-          category_id: optStrProp("Owned habit-kind category UUID"),
-          color: optStrProp("Color tag"),
-          icon: optStrProp("Icon tag"),
-        },
-        required: ["name", "direction"],
-      },
-    },
-    schema: CreateHabitSchema,
-    run: async (args, token) => fmt(await apiPost("/habits", args, token)),
-  },
-  {
-    def: {
-      name: "update_habit",
-      description: "PATCH /api/habits/{id}. Metadata-scoped: name/description/target/end/category/color/icon/archived.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          id: strProp("Habit UUID"),
-          name: optStrProp("Name"),
-          description: optStrProp("Description"),
-          target_per_period: optStrProp("Decimal string"),
-          end_date: optStrProp("YYYY-MM-DD"),
-          category_id: optStrProp("Category UUID"),
-          color: optStrProp("Color tag"),
-          icon: optStrProp("Icon tag"),
-          is_archived: boolProp("Archive flag"),
-        },
-        required: ["id"],
-      },
-    },
-    schema: UpdateHabitSchema,
-    run: async (args, token) => fmt(await apiPatch(`/habits/${args.id}`, withoutId(args), token)),
-  },
-  {
-    def: {
-      name: "delete_habit",
-      description: "DELETE /api/habits/{id}.",
-      inputSchema: {
-        type: "object",
-        properties: { id: strProp("Habit UUID") },
-        required: ["id"],
-      },
-    },
-    schema: DeleteByIdSchema,
-    run: async (args, token) => fmt(await apiDelete(`/habits/${args.id}`, token)),
-  },
-  {
-    def: {
       name: "habits_today",
       description: "GET /api/habits/today. Today's habit checklist.",
       inputSchema: { type: "object", properties: {} },
     },
     schema: EmptySchema,
     run: async (_args, token) => fmt(await apiGet("/habits/today", undefined, token)),
-  },
-  {
-    def: {
-      name: "create_habit_log",
-      description: "POST /api/habits/{id}/logs. status=done|missed|skipped.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          id: strProp("Habit UUID"),
-          log_date: strProp("YYYY-MM-DD"),
-          status: strProp("done|missed|skipped"),
-          count_value: optStrProp("Decimal string, e.g. \"1.00\""),
-          notes: optStrProp("Notes"),
-        },
-        required: ["id", "log_date", "status"],
-      },
-    },
-    schema: CreateHabitLogSchema,
-    run: async (args, token) => {
-      const { id, ...body } = args as { id: string } & Record<string, unknown>;
-      return fmt(await apiPost(`/habits/${id}/logs`, body, token));
-    },
   },
   {
     def: {
@@ -571,7 +719,7 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "list_goals",
-      description: "GET /api/goals.",
+      description: "GET /api/goals. Lists all goals.",
       inputSchema: { type: "object", properties: {} },
     },
     schema: ListGoalsSchema,
@@ -580,7 +728,7 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "get_goal",
-      description: "GET /api/goals/{id}.",
+      description: "GET /api/goals/{id}. Fetches one goal by its UUID.",
       inputSchema: {
         type: "object",
         properties: { id: strProp("Goal UUID") },
@@ -593,17 +741,23 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "create_goal",
-      description: "POST /api/goals. progress is trigger-owned (read-only).",
+      description:
+        "POST /api/goals. Creates a goal. Requires name (1-200 chars) and area (free-form label, 1-100 chars); progress is trigger-owned (read-only). Dates are YYYY-MM-DD. Example: {\"name\":\"Run 10k\",\"area\":\"health\"}.",
       inputSchema: {
         type: "object",
         properties: {
-          name: strProp("Goal name"),
-          area: strProp("Free-form area label"),
+          name: strProp("Goal name (1-200 chars, required)"),
+          area: strProp("Free-form area label (1-100 chars, required)"),
           description: optStrProp("Description"),
           category_id: optStrProp("Owned goal-kind category UUID"),
-          start_date: optStrProp("YYYY-MM-DD"),
-          due_date: optStrProp("YYYY-MM-DD"),
-          status: optStrProp("active|completed|paused|cancelled"),
+          start_date: optStrProp("Start date as YYYY-MM-DD"),
+          due_date: optStrProp("Due date as YYYY-MM-DD"),
+          status: enumProp("Status: active|completed|paused|cancelled", [
+            "active",
+            "completed",
+            "paused",
+            "cancelled",
+          ]),
           color: optStrProp("Color tag"),
         },
         required: ["name", "area"],
@@ -615,18 +769,24 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "update_goal",
-      description: "PATCH /api/goals/{id}.",
+      description:
+        "PATCH /api/goals/{id}. Partial update: only supplied fields change. Requires the goal UUID.",
       inputSchema: {
         type: "object",
         properties: {
           id: strProp("Goal UUID"),
-          name: optStrProp("Name"),
+          name: optStrProp("Name (1-200 chars)"),
           description: optStrProp("Description"),
-          area: optStrProp("Area label"),
+          area: optStrProp("Area label (1-100 chars)"),
           category_id: optStrProp("Category UUID"),
-          start_date: optStrProp("YYYY-MM-DD"),
-          due_date: optStrProp("YYYY-MM-DD"),
-          status: optStrProp("active|completed|paused|cancelled"),
+          start_date: optStrProp("Start date as YYYY-MM-DD"),
+          due_date: optStrProp("Due date as YYYY-MM-DD"),
+          status: enumProp("Status: active|completed|paused|cancelled", [
+            "active",
+            "completed",
+            "paused",
+            "cancelled",
+          ]),
           color: optStrProp("Color tag"),
         },
         required: ["id"],
@@ -638,7 +798,7 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "delete_goal",
-      description: "DELETE /api/goals/{id}.",
+      description: "DELETE /api/goals/{id}. Deletes a goal by its UUID.",
       inputSchema: {
         type: "object",
         properties: { id: strProp("Goal UUID") },
@@ -651,12 +811,13 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "list_events",
-      description: "GET /api/events. Optional from/to (RFC3339 or YYYY-MM-DD).",
+      description:
+        "GET /api/events. Lists events, optionally filtered by from/to date range (RFC3339 datetime or YYYY-MM-DD). Omitted filters return all events.",
       inputSchema: {
         type: "object",
         properties: {
-          from: optStrProp("Start filter"),
-          to: optStrProp("End filter"),
+          from: optStrProp("Start filter: RFC3339 datetime or YYYY-MM-DD"),
+          to: optStrProp("End filter: RFC3339 datetime or YYYY-MM-DD"),
         },
       },
     },
@@ -666,7 +827,7 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "get_event",
-      description: "GET /api/events/{id}.",
+      description: "GET /api/events/{id}. Fetches one event by its UUID.",
       inputSchema: {
         type: "object",
         properties: { id: strProp("Event UUID") },
@@ -679,15 +840,16 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "create_event",
-      description: "POST /api/events. starts_at is RFC3339 and required.",
+      description:
+        "POST /api/events. Creates a calendar event. Requires title (1-200 chars) and starts_at (RFC3339 datetime, e.g. 2026-10-10T09:00:00Z). Optional ends_at must be > starts_at; linked IDs must be owned UUIDs. Example: {\"title\":\"Dentist\",\"starts_at\":\"2026-10-10T09:00:00Z\"}.",
       inputSchema: {
         type: "object",
         properties: {
-          title: strProp("Title"),
-          starts_at: strProp("RFC3339 datetime"),
+          title: strProp("Title (1-200 chars, required)"),
+          starts_at: strProp("Start as RFC3339 datetime (required), e.g. 2026-10-10T09:00:00Z"),
           description: optStrProp("Description"),
-          kind: optStrProp("Event kind"),
-          ends_at: optStrProp("RFC3339 datetime, must be > starts_at"),
+          kind: optStrProp("Event kind label"),
+          ends_at: optStrProp("End as RFC3339 datetime, must be > starts_at"),
           all_day: boolProp("All-day flag"),
           location: optStrProp("Location"),
           habit_id: optStrProp("Habit UUID link"),
@@ -706,16 +868,17 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "update_event",
-      description: "PATCH /api/events/{id}.",
+      description:
+        "PATCH /api/events/{id}. Partial update: only supplied fields change (datetimes are RFC3339). Requires the event UUID.",
       inputSchema: {
         type: "object",
         properties: {
           id: strProp("Event UUID"),
-          title: optStrProp("Title"),
+          title: optStrProp("Title (1-200 chars)"),
           description: optStrProp("Description"),
           kind: optStrProp("Event kind"),
-          starts_at: optStrProp("RFC3339 datetime"),
-          ends_at: optStrProp("RFC3339 datetime"),
+          starts_at: optStrProp("Start as RFC3339 datetime"),
+          ends_at: optStrProp("End as RFC3339 datetime"),
           all_day: boolProp("All-day flag"),
           location: optStrProp("Location"),
           habit_id: optStrProp("Habit UUID"),
@@ -734,7 +897,7 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "delete_event",
-      description: "DELETE /api/events/{id}.",
+      description: "DELETE /api/events/{id}. Deletes an event by its UUID.",
       inputSchema: {
         type: "object",
         properties: { id: strProp("Event UUID") },
@@ -855,6 +1018,21 @@ const entries: ToolEntry[] = [
   },
   {
     def: {
+      name: "get_subscription",
+      description:
+        "GET /api/subscriptions/{id}. Fetches one subscription with its lifecycle (is_active, cancelled_at) and pay state (last_paid_on, next_billing_on).",
+      inputSchema: {
+        type: "object",
+        properties: { id: strProp("Subscription UUID") },
+        required: ["id"],
+      },
+    },
+    schema: GetSubscriptionSchema,
+    run: async (args, token) =>
+      fmt(await apiGet(`/subscriptions/${args.id}`, undefined, token)),
+  },
+  {
+    def: {
       name: "list_assets",
       description: "GET /api/assets.",
       inputSchema: { type: "object", properties: {} },
@@ -871,7 +1049,176 @@ const entries: ToolEntry[] = [
     schema: EmptySchema,
     run: async (_args, token) => fmt(await apiGet("/net-worth", undefined, token)),
   },
+  {
+    def: {
+      name: "list_tokens",
+      description:
+        "GET /api/tokens. Lists personal API tokens as metadata only (id, name, prefix, scopes, expires_at, last_used_at, revoked_at, created_at). NEVER returns the raw secret or its hash — the raw `pd_...` value appears only once in the create_token response. Accepts session or API-token auth.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    schema: ListTokensSchema,
+    run: async (_args, token) => fmt(await apiGet("/tokens", undefined, token)),
+  },
+  {
+    def: {
+      name: "create_token",
+      description:
+        "POST /api/tokens. Creates a personal API token. SESSION AUTH ONLY: call with a session Bearer token from login, never with an existing `pd_...` token (backend is 401 otherwise). Returns the raw `pd_...` secret EXACTLY ONCE (Cache-Control: no-store) — copy it now, it is never stored nor shown again. SENSITIVE: never log, commit, or share the raw value. Optional expires_in_days (1-3650); omitted means no expiry. Duplicate names per user are 409.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: strProp("Token name, 1-80 chars (trimmed)"),
+          expires_in_days: intProp("Lifetime in whole days, 1-3650; omitted means no expiry"),
+        },
+        required: ["name"],
+      },
+    },
+    schema: CreateTokenSchema,
+    run: async (args, token) => fmt(await apiPost("/tokens", args, token)),
+  },
+  {
+    def: {
+      name: "revoke_token",
+      description:
+        "DELETE /api/tokens/{id}. Revokes an API token immediately (soft revoke; idempotent — a repeated call returns 200 with the original revoked_at). A revoked token is rejected with 401 on next use. Accepts session or API-token auth. Returns the revoked token metadata (no secret).",
+      inputSchema: {
+        type: "object",
+        properties: { id: strProp("Token UUID") },
+        required: ["id"],
+      },
+    },
+    schema: RevokeTokenSchema,
+    run: async (args, token) => fmt(await apiDelete(`/tokens/${args.id}`, token)),
+  },
+  {
+    def: {
+      name: "get_preferences",
+      description:
+        "GET /api/me (preferences view). Returns the caller's stored preferences (currency_code, locale, timezone, dashboard_layout). No dedicated GET /api/me/preferences exists on the backend — this tool reads GET /api/me and returns its `preferences` object. Session auth.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    schema: GetPreferencesSchema,
+    run: async (_args, token) => {
+      const me = await apiGet<{ preferences?: unknown }>("/me", undefined, token);
+      return fmt(me.preferences ?? me);
+    },
+  },
+  {
+    def: {
+      name: "update_preferences",
+      description:
+        "PATCH /api/me/preferences. Partial update: only supplied fields change (currency_code must be a known ISO-4217 code, e.g. USD; locale must match ll or ll-CC, e.g. es-CO; timezone must be a known IANA name, e.g. America/Bogota; dashboard_layout must be {widgets:[{id,type,order,size}]} with type in metric|chart|list|ledger|heatmap and size in sm|md|lg). Every value is validated before any write — invalid input is 422 and writes nothing. At least one field is required.",
+      inputSchema: {
+        type: "object",
+        minProperties: 1,
+        properties: {
+          currency_code: optStrProp("Known ISO-4217 code, e.g. USD"),
+          locale: optStrProp("ll or ll-CC, e.g. es-CO"),
+          timezone: optStrProp("IANA time zone name, e.g. America/Bogota"),
+          dashboard_layout: {
+            type: "object",
+            description:
+              "{widgets:[{id,type,order,size}]} with type in metric|chart|list|ledger|heatmap and size in sm|md|lg, max 32 widgets",
+          },
+        },
+      },
+    },
+    schema: UpdatePreferencesSchema,
+    run: async (args, token) => fmt(await apiPatch("/me/preferences", args, token)),
+  },
+  {
+    def: {
+      name: "get_dashboard_summary",
+      description:
+        "Client-side read-only summary (no backend aggregate endpoint exists — main.rs has no /stats or /dashboard route and the layout is frontend-only). Composes GET /api/accounts + GET /api/movements + GET /api/tasks?view=today + GET /api/habits/today into one JSON snapshot. For charts or totals, fetch list_movements and aggregate locally.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    schema: DashboardSummarySchema,
+    run: async (_args, token) => {
+      const [accounts, movements, tasks, habits] = await Promise.all([
+        apiGet<unknown>("/accounts", undefined, token),
+        apiGet<unknown>("/movements", undefined, token),
+        apiGet<unknown>("/tasks", { view: "today" }, token),
+        apiGet<unknown>("/habits/today", undefined, token),
+      ]);
+      const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+      return fmt({
+        accounts: { count: asArray(accounts).length, items: accounts },
+        movements: { count: asArray(movements).length, items: movements },
+        tasks_today: { count: asArray(tasks).length, items: tasks },
+        habits_today: habits,
+        note: "Client-side composition; no backend aggregate endpoint. Aggregate list_movements locally for charts/totals.",
+      });
+    },
+  },
+  {
+    def: {
+      name: "list_audit_log",
+      description:
+        "Read-only view of the in-memory MCP audit log (T7). Returns recent tools/call entries newest-first: occurred_at, tool, success, error_code, token_prefix (masked display prefix only, never a secret), request_id. No arguments required; optional limit (1-200, default 50). The log is a ring buffer of the last 200 calls and resets on server restart — it is a demo, not durable storage (durable table design is pending owner decision, see backend/migrations/0017_mcp_audit_log.sql).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          limit: intProp("Max entries to return, 1-200 (default 50)"),
+        },
+      },
+    },
+    schema: ListAuditLogSchema,
+    run: async (args) => fmt(readAuditLog(args.limit)),
+  },
 ];
+
+// --- T7 audit log (in-memory ring buffer, mostrable sin migración) ---
+//
+// What is stored per tools/call: occurred_at, tool name, success flag,
+// error_code (UNKNOWN_TOOL | TOOL_ERROR | null), token_prefix (masked —
+// `pd_` display prefix of 8 chars, or the label "session"/"none"; NEVER
+// the raw token), request_id (random UUID per call).
+// What is NEVER stored: raw tokens, token hashes, tool arguments, request
+// bodies, Authorization headers. `tools/list` is not logged (call only).
+
+/** One auditable tools/call outcome. No secrets, no params, no bodies. */
+export interface AuditEntry {
+  occurred_at: string;
+  tool: string;
+  success: boolean;
+  error_code: string | null;
+  token_prefix: string;
+  request_id: string;
+}
+
+const MAX_AUDIT_ENTRIES = 200;
+
+const auditLog: AuditEntry[] = [];
+
+/**
+ * Mask a request token for the audit log. `pd_` API tokens contribute
+ * only their 8-char display prefix (useless without the 256-bit secret);
+ * opaque session tokens collapse to the label "session"; missing tokens
+ * log as "none". The raw value never reaches the log.
+ */
+export function tokenPrefixForLog(token?: RequestToken): string {
+  if (token === undefined) return "none";
+  const t = token.trim();
+  if (t.length === 0) return "none";
+  if (t.startsWith("pd_")) return t.slice(0, 8);
+  return "session";
+}
+
+/** Append an entry, evicting the oldest once the buffer is full. */
+export function recordAudit(entry: AuditEntry): void {
+  auditLog.push(entry);
+  if (auditLog.length > MAX_AUDIT_ENTRIES) {
+    auditLog.splice(0, auditLog.length - MAX_AUDIT_ENTRIES);
+  }
+}
+
+/** Recent entries newest-first, capped to the buffer size. */
+export function readAuditLog(limit?: number): AuditEntry[] {
+  const n =
+    limit === undefined ? 50 : Math.max(1, Math.min(Math.floor(limit), MAX_AUDIT_ENTRIES));
+  return auditLog.slice(-n).reverse();
+}
 
 export const toolDefinitions: McpToolDef[] = entries.map((e) => e.def);
 

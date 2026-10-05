@@ -4,7 +4,8 @@ MCP HTTP server for the personal-dashboard Axum backend, using the
 Streamable HTTP transport from `@modelcontextprotocol/sdk`. Exposes login plus
 CRUD for accounts, tasks, habits, notes, events and goals, plus
 list/read access to categories, subscriptions, assets and
-net-worth.
+net-worth, token management (`list/create/revoke`) with preferences
+read/update, and a client-side dashboard summary.
 
 > Removed by change 2026-09-23-simplify-finance-productivity (S2):
 > `list_budgets` is unregistered (`GET /api/budgets` no longer exists).
@@ -124,13 +125,24 @@ Auth: `login` (returns the token, does not cache it).
 Accounts: `list_accounts`, `get_account`, `create_account` (name plus
 optional currency/notes/color/icon; the strict schema rejects unknown
 keys — no account type and no card field), `update_account`
-(balance/notes/color/icon/is_archived; balance is user-owned manual data),
-`delete_account`.
+(balance/notes/color/icon/is_archived; balance is user-owned manual data,
+the "edit balance" path),
+`delete_account` (blocked with 409 while the account has movements).
+
+Movements (T2 Finanzas FULL): `add_expense` (POST /api/movements with
+direction=expense), `add_income` (direction=income), `list_movements`,
+`get_movement`, `update_movement` (expense/income only; transfers are
+create/delete only — delete and re-create instead), `delete_movement`,
+`transfer_money` (POST /api/movements/transfer: same-currency, distinct
+owned accounts, no category). Money is always a decimal string
+(e.g. `"25000.00"`), dates are `YYYY-MM-DD`. Charts/summaries: no backend
+aggregate endpoint exists — build them client-side from `list_movements`
+(see gap G2 in `odd/tasks/mcp-review-tokens.md`).
 
 Tasks: `list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`.
 
-Habits: `list_habits`, `get_habit`, `create_habit`, `update_habit`,
-`delete_habit`, `habits_today`, `create_habit_log`, `get_habit_streak`.
+Habits (read-only): `list_habits`, `get_habit`, `habits_today`,
+`get_habit_streak`.
 
 Goals: `list_goals`, `get_goal`, `create_goal`, `update_goal`, `delete_goal`.
 
@@ -140,8 +152,43 @@ Events: `list_events`, `get_event`, `create_event`, `update_event`,
 Notes: `list_notes`, `get_note`, `create_note`, `update_note`,
 `delete_note`, `search_notes`.
 
-Catalogs: `list_categories`,
-`list_subscriptions`, `list_assets`, `get_net_worth`.
+Catalogs: `list_categories` (read-only: the backend exposes only
+GET /api/categories, no create/delete — see gap G1 in
+`odd/tasks/mcp-review-tokens.md`),
+`list_subscriptions`, `get_subscription`, `list_assets`, `get_net_worth`.
+
+Config (tokens & preferences, T3): `list_tokens` (GET /api/tokens:
+metadata only — id, name, prefix, scopes, timestamps; never the raw
+secret or its hash), `create_token` (POST /api/tokens, session auth
+only: returns the raw `pd_...` secret exactly once with
+`Cache-Control: no-store` — copy it now, it is never stored nor shown
+again; never log, commit, or share it), `revoke_token`
+(DELETE /api/tokens/{id}: immediate soft revoke, idempotent),
+`get_preferences` (reads `GET /api/me` and returns its `preferences`
+object — no dedicated backend GET exists, see gap G3 in
+`odd/tasks/mcp-review-tokens.md`), `update_preferences`
+(PATCH /api/me/preferences: partial update, every value validated
+before any write, invalid input is 422 and writes nothing).
+
+Dashboard (read-only, T3): `get_dashboard_summary` — client-side
+composition of `GET /api/accounts` + `GET /api/movements` +
+`GET /api/tasks?view=today` + `GET /api/habits/today` into one JSON
+snapshot. No backend aggregate endpoint exists (no `/stats` or
+`/dashboard` route in `backend/src/main.rs`; the layout is
+frontend-only) — aggregate `list_movements` locally for charts/totals
+(see gap G4 in `odd/tasks/mcp-review-tokens.md`).
+
+Audit log (T7, optional demo): `list_audit_log` — read-only view of the
+in-memory ring buffer (last 200 `tools/call` outcomes, newest-first,
+optional `limit` 1–200 default 50). Every entry stores only
+`occurred_at`, `tool`, `success`, `error_code` (`UNKNOWN_TOOL` |
+`TOOL_ERROR` | null), `token_prefix` (masked: 8-char display prefix for
+`pd_...` tokens, `session` for opaque session tokens, `none` when
+absent), and `request_id` (UUID per call). NEVER stored: raw tokens,
+hashes, tool arguments, bodies, headers. The buffer resets on restart —
+durable Postgres design (additive `CREATE TABLE IF NOT EXISTS`, NOT
+applied to prod) lives in `backend/migrations/0017_mcp_audit_log.sql`;
+owner decision pending (see `odd/tasks/mcp-review-tokens.md` T7).
 
 > Removed by change 2026-09-23-simplify-finance-productivity (S2):
 > `list_budgets` (budgets eradicated end to end; see `objetivo.md`).
@@ -153,7 +200,7 @@ Catalogs: `list_categories`,
 > Removed by change finance-simplify-movements (S-G): `list_debts`
 > (debts eradicated end to end — routes `/debts*` gone, tables dropped by
 > gated migration 0013; cached clients receive an unknown-tool error,
-> accepted for this single-user deployment). No movements tool exists.
+> accepted for this single-user deployment).
 > Removed by change 2026-10-04-accounts-transfers-login-calendar (W1): the
 > account type and the whole credit-card field layer (`type`,
 > `credit_limit`, `statement_day`, `payment_due_day`). `create_account` now
@@ -162,7 +209,7 @@ Catalogs: `list_categories`,
 > validation error, never silently stripped); `list_accounts`/`get_account`
 > return the type-free backend response unchanged. Owner decision
 > 2026-10-04: production held 0 credit-card accounts, so the layer was
-> retired end to end (destructive migration 0016). No transfer tool exists.
+> retired end to end (destructive migration 0016).
 
 ## Typecheck
 
