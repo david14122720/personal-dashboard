@@ -163,6 +163,16 @@ pub async fn create_token_handler(
     let user_id = require_session_user_id(&headers, &state.pool).await?;
     let name = validate_token_name(&body.name)?;
     let lifetime_days = validate_expires_in_days(body.expires_in_days)?;
+    // T6/J-01: per-user mint budget (10 successful mints/hour, in-process
+    // like the login limiter). The slot is reserved atomically with the
+    // budget check, before the awaited insert, so concurrent creates from one
+    // session cannot all pass the check before any of them records. Checked
+    // after auth+validation so 401s/422s never consume quota; the 429 body
+    // stays generic (no token material).
+    let reservation = state
+        .rate_limiter
+        .reserve_token_mint(user_id)
+        .map_err(|retry| AppError::RateLimited(retry.as_secs().max(1)))?;
     let raw = mint_raw_token();
     let hash = token_crypto::hash_token(&raw);
     let prefix = token_prefix(&raw);
@@ -178,6 +188,10 @@ pub async fn create_token_handler(
     .fetch_one(&state.pool)
     .await
     .map_err(map_token_db_err)?;
+    // T6/J-01: the insert succeeded, so keep the reserved slot. If the insert
+    // fails (409/500), `?` above returns early and the reservation's `Drop`
+    // releases the slot: only a minted credential consumes budget.
+    reservation.commit();
     // A7: the raw `pd_` secret is returned exactly once in this response, so
     // it must never be cached. Set here, on this handler only: a global
     // header layer would blanket-stamp every read route and static asset.
@@ -309,6 +323,13 @@ mod tokens_tests {
     async fn db_user_with_session(pool: &sqlx::PgPool) -> (AppState, HeaderMap, Uuid) {
         use crate::auth::rate_limit::LoginRateLimiter;
         use std::sync::Arc;
+        db_user_with_session_and_limiter(pool, Arc::new(LoginRateLimiter::new())).await
+    }
+
+    async fn db_user_with_session_and_limiter(
+        pool: &sqlx::PgPool,
+        limiter: std::sync::Arc<crate::auth::rate_limit::LoginRateLimiter>,
+    ) -> (AppState, HeaderMap, Uuid) {
         let email = format!("apitoken-{}@example.com", Uuid::new_v4());
         let user_id: Uuid = sqlx::query_scalar(
             "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
@@ -332,7 +353,7 @@ mod tokens_tests {
         let state = AppState {
             pool: pool.clone(),
             session_ttl_hours: 24,
-            rate_limiter: Arc::new(LoginRateLimiter::new()),
+            rate_limiter: limiter,
         };
         (state, headers_for(&raw), user_id)
     }
@@ -783,6 +804,192 @@ mod tokens_tests {
             .await
             .expect("count tokens");
         assert_eq!(count, 1, "rejected create must write nothing");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn tokens_revoked_token_fails_closed_immediately_via_handlers() {
+        // T6: crear -> revocar -> usar debe dar 401 sin demora: no hay caché
+        // entre la revocación y la siguiente resolución.
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP tokens_revoked_token_fails_closed_immediately_via_handlers: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_user_with_session(&pool).await;
+        let (_, _headers, created) = create_token_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(CreateTokenRequest {
+                name: "doomed-now".into(),
+                expires_in_days: None,
+            }),
+        )
+        .await
+        .expect("create is 201");
+        // Sanity: the fresh secret authenticates before revocation.
+        let listed_before =
+            list_tokens_handler(State(state.clone()), headers_for(&created.token))
+                .await
+                .expect("pre-revoke use is 200")
+                .0;
+        assert_eq!(listed_before.len(), 1);
+        // Revoke, then every use of the raw secret must fail closed at once.
+        let _ = delete_token_handler(State(state.clone()), headers.clone(), Path(created.id))
+            .await
+            .expect("revoke is 200");
+        let err = list_tokens_handler(State(state.clone()), headers_for(&created.token))
+            .await
+            .expect_err("post-revoke use must be 401");
+        assert_401(err);
+        let err = middleware::resolve_token_user_id(&state.pool, &created.token)
+            .await
+            .expect_err("post-revoke resolve must be 401");
+        assert_401(err);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn tokens_create_is_rate_limited_per_user() {
+        // T6: minting past the per-user budget is a 429 with Retry-After and
+        // a generic body that leaks no token material.
+        use axum::http::header::RETRY_AFTER;
+        use std::sync::Arc;
+        use std::time::Duration;
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP tokens_create_is_rate_limited_per_user: no DATABASE_URL");
+            return;
+        };
+        // Tiny budget (2 mints/hour) so the 3rd create trips the limiter.
+        let limiter = Arc::new(
+            crate::auth::rate_limit::LoginRateLimiter::with_token_limits(
+                Duration::from_secs(3600),
+                2,
+                64,
+            ),
+        );
+        let (state, headers, user_id) =
+            db_user_with_session_and_limiter(&pool, limiter.clone()).await;
+        for name in ["first", "second"] {
+            let (status, _headers, _created) = create_token_handler(
+                State(state.clone()),
+                headers.clone(),
+                Json(CreateTokenRequest {
+                    name: name.into(),
+                    expires_in_days: None,
+                }),
+            )
+            .await
+            .expect("mint within budget is 201");
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        assert_eq!(limiter.count_token_mints(user_id), 2);
+        let err = create_token_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(CreateTokenRequest {
+                name: "over-budget".into(),
+                expires_in_days: None,
+            }),
+        )
+        .await
+        .expect_err("mint past the budget must be 429");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            resp.headers().get(RETRY_AFTER).is_some(),
+            "the 429 must carry Retry-After"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read 429 body");
+        let body = String::from_utf8(bytes.to_vec()).expect("429 body is UTF-8 JSON");
+        assert!(
+            body.contains("RATE_LIMITED"),
+            "the 429 body must carry the generic code, got: {body}"
+        );
+        assert!(
+            !body.contains(TOKEN_PREFIX),
+            "the 429 body must leak no token material, got: {body}"
+        );
+        // The rejected mint wrote nothing: still exactly 2 tokens.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_tokens WHERE user_id=$1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count tokens");
+        assert_eq!(count, 2, "rejected mint must write nothing");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tokens_create_concurrent_burst_never_exceeds_budget() {
+        // J-01 regression: the limiter used to check and record in separate
+        // lock acquisitions around the awaited insert, so N concurrent
+        // creates from one session could all mint (K >> cap). With the atomic
+        // reservation the burst must admit at most `cap` successful mints,
+        // and the DB must hold exactly one row per 201.
+        use std::sync::Arc;
+        use std::time::Duration;
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP tokens_create_concurrent_burst_never_exceeds_budget: no DATABASE_URL");
+            return;
+        };
+        let cap = 3usize;
+        let burst = 12usize;
+        let limiter = Arc::new(
+            crate::auth::rate_limit::LoginRateLimiter::with_token_limits(
+                Duration::from_secs(3600),
+                cap,
+                64,
+            ),
+        );
+        let (state, headers, user_id) =
+            db_user_with_session_and_limiter(&pool, limiter.clone()).await;
+        let mut tasks = tokio::task::JoinSet::new();
+        for i in 0..burst {
+            let state = state.clone();
+            let headers = headers.clone();
+            tasks.spawn(async move {
+                create_token_handler(
+                    State(state),
+                    headers,
+                    Json(CreateTokenRequest {
+                        name: format!("burst-{i}"),
+                        expires_in_days: None,
+                    }),
+                )
+                .await
+            });
+        }
+        let mut created = 0usize;
+        let mut limited = 0usize;
+        while let Some(joined) = tasks.join_next().await {
+            match joined.expect("burst task must not panic") {
+                Ok((StatusCode::CREATED, _, _)) => created += 1,
+                Err(AppError::RateLimited(_)) => limited += 1,
+                Ok((status, _, _)) => panic!("unexpected burst status: {status}"),
+                Err(err) => panic!("unexpected burst error: {err:?}"),
+            }
+        }
+        assert_eq!(
+            created + limited,
+            burst,
+            "every burst create must finish as 201 or 429"
+        );
+        assert!(
+            created <= cap,
+            "concurrent burst minted {created} tokens with cap {cap}"
+        );
+        assert!(created >= 1, "the burst must exercise at least one mint");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_tokens WHERE user_id=$1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count tokens");
+        assert_eq!(
+            count as usize, created,
+            "every successful create must have exactly one stored row"
+        );
         cleanup_user(&pool, user_id).await;
     }
 }

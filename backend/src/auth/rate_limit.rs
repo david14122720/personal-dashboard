@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::config::{trusted_proxies_from_env, TrustedProxy};
+use uuid::Uuid;
 
 /// Failure budget per client IP: 10 failures / `WINDOW`.
 const MAX_REQUESTS: usize = 10;
@@ -22,29 +23,48 @@ const WINDOW: Duration = Duration::from_secs(15 * 60);
 /// Hard ceiling for distinct keys retained by [`LoginRateLimiter`] (DD5),
 /// applied independently to the IP map and the account map.
 const MAX_KEYS: usize = 4096;
+/// Mint budget per authenticated user: 10 minted API tokens / hour (T6).
+///
+/// Token creation is rare and human-driven (a new device, a CI secret), so a
+/// tight budget never blocks legitimate use while bounding what a stolen
+/// session can farm into persistent credentials. Reads (`GET /tokens`) and
+/// revokes (`DELETE /tokens/{id}`) are deliberately unbudgeted: listing must
+/// stay available and a revoke after a compromise must never be throttled.
+const MAX_TOKEN_MINTS: usize = 10;
+/// Rolling window for the per-user token-mint budget.
+const TOKEN_MINT_WINDOW: Duration = Duration::from_secs(60 * 60);
 
-/// In-process fixed-window rate limiter for `POST /login`.
-/// Single-replica assumption documented in design decision 5.
+/// In-process fixed-window rate limiter for `POST /login`, extended in T6
+/// with a per-user mint budget for `POST /api/tokens` (single-replica
+/// assumption documented in design decision 5 applies to both budgets; the
+/// mint budget rides on this struct so `AppState` stays unchanged).
 ///
 /// Failure-only (A2): successful logins consume no quota and clear the
 /// account bucket; only the IP bucket bounds a client that rotates emails.
 /// Account keys are edge-trimmed and lowercased so `CITEXT` casing cannot
 /// split one account across two buckets.
+///
+/// Token mints are the opposite: every *successful* mint consumes quota
+/// (validation/DB failures mint nothing), so probing names never burns the
+/// budget but farming credentials does.
 pub struct LoginRateLimiter {
     inner: Mutex<LimiterState>,
     max_requests: usize,
     max_account_failures: usize,
     window: Duration,
     max_keys: usize,
+    max_token_mints: usize,
+    token_mint_window: Duration,
     trusted_proxies: Vec<TrustedProxy>,
 }
 
-/// The two bounded maps share one mutex: every request either inspects or
-/// updates both, so a single critical section keeps them consistent.
+/// The maps share one mutex: every request either inspects or
+/// updates them, so a single critical section keeps them consistent.
 #[derive(Default)]
 struct LimiterState {
     by_ip: HashMap<IpAddr, Vec<Instant>>,
     by_account: HashMap<String, Vec<Instant>>,
+    by_token_minter: HashMap<Uuid, Vec<Instant>>,
 }
 
 impl Default for LoginRateLimiter {
@@ -61,6 +81,8 @@ impl LoginRateLimiter {
             max_account_failures: MAX_ACCOUNT_FAILURES,
             window: WINDOW,
             max_keys: MAX_KEYS,
+            max_token_mints: MAX_TOKEN_MINTS,
+            token_mint_window: TOKEN_MINT_WINDOW,
             // SEC-004/DD3 amendment: the trusted set lives here instead of a
             // new `AppState` field. `Config::from_env` already validated the
             // same variable at startup (a malformed token aborts the
@@ -85,6 +107,8 @@ impl LoginRateLimiter {
             max_account_failures: MAX_ACCOUNT_FAILURES,
             window,
             max_keys: MAX_KEYS,
+            max_token_mints: MAX_TOKEN_MINTS,
+            token_mint_window: TOKEN_MINT_WINDOW,
             trusted_proxies: Vec::new(),
         }
     }
@@ -98,6 +122,28 @@ impl LoginRateLimiter {
             max_account_failures: MAX_ACCOUNT_FAILURES,
             window,
             max_keys,
+            max_token_mints: MAX_TOKEN_MINTS,
+            token_mint_window: TOKEN_MINT_WINDOW,
+            trusted_proxies: Vec::new(),
+        }
+    }
+
+    /// Test helper with a custom token-mint budget (T6 handler tests mint
+    /// against a tiny cap instead of the production 10/hour).
+    #[cfg(test)]
+    pub(crate) fn with_token_limits(
+        token_mint_window: Duration,
+        max_token_mints: usize,
+        max_keys: usize,
+    ) -> Self {
+        Self {
+            inner: Mutex::new(LimiterState::default()),
+            max_requests: MAX_REQUESTS,
+            max_account_failures: MAX_ACCOUNT_FAILURES,
+            window: WINDOW,
+            max_keys,
+            max_token_mints,
+            token_mint_window,
             trusted_proxies: Vec::new(),
         }
     }
@@ -112,6 +158,8 @@ impl LoginRateLimiter {
             max_account_failures: MAX_ACCOUNT_FAILURES,
             window: WINDOW,
             max_keys: MAX_KEYS,
+            max_token_mints: MAX_TOKEN_MINTS,
+            token_mint_window: TOKEN_MINT_WINDOW,
             trusted_proxies: trusted,
         }
     }
@@ -190,6 +238,68 @@ impl LoginRateLimiter {
         state.by_account.remove(&Self::normalize_account(account));
     }
 
+    /// Reserve one slot in the caller's mint budget for `POST /api/tokens`.
+    ///
+    /// The budget check and the reservation happen under a single lock
+    /// acquisition, so concurrent creates from one session cannot all observe
+    /// free budget before any of them records (check-then-record TOCTOU,
+    /// J-01). Returns `Err(retry_after)` once `max_token_mints` reservations
+    /// are recorded, or `Ok(reservation)` otherwise; the reservation counts
+    /// from this instant, before the insert.
+    ///
+    /// Call this after auth+validation (401/422 must never consume quota) and
+    /// before the insert. Call [`TokenMintReservation::commit`] once the
+    /// insert succeeds; dropping the reservation without committing releases
+    /// the slot, so validation failures, name collisions (409), and DB errors
+    /// never consume quota.
+    pub fn reserve_token_mint(&self, user_id: Uuid) -> Result<TokenMintReservation<'_>, Duration> {
+        // SEC-005: same poison-recovery discipline as the login paths.
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        prune(&mut state.by_token_minter, self.token_mint_window, now);
+        if let Some(retry) = blocked_for(
+            state.by_token_minter.get(&user_id),
+            self.max_token_mints,
+            self.token_mint_window,
+            now,
+        ) {
+            return Err(retry);
+        }
+        bound_keys(
+            &mut state.by_token_minter,
+            &user_id,
+            self.max_token_mints,
+            self.max_keys,
+        );
+        state.by_token_minter.entry(user_id).or_default().push(now);
+        Ok(TokenMintReservation {
+            limiter: self,
+            user_id,
+            reserved_at: now,
+            committed: false,
+        })
+    }
+
+    /// Release a reservation that never became a credential. Removes exactly
+    /// one entry at the reserved instant; timestamps are interchangeable for
+    /// the window count, so removing one matching entry keeps the multiset
+    /// exact even when another request reserved at the same instant.
+    fn release_token_mint(&self, user_id: Uuid, reserved_at: Instant) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        prune(&mut state.by_token_minter, self.token_mint_window, now);
+        let mut empty = false;
+        if let Some(entries) = state.by_token_minter.get_mut(&user_id) {
+            if let Some(pos) = entries.iter().position(|t| *t == reserved_at) {
+                entries.remove(pos);
+            }
+            empty = entries.is_empty();
+        }
+        if empty {
+            state.by_token_minter.remove(&user_id);
+        }
+    }
+
     #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) fn count_ip(&self, ip: IpAddr) -> usize {
@@ -209,6 +319,13 @@ impl LoginRateLimiter {
 
     #[allow(dead_code)]
     #[cfg(test)]
+    pub(crate) fn count_token_mints(&self, user_id: Uuid) -> usize {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.by_token_minter.get(&user_id).map_or(0, |v| v.len())
+    }
+
+    #[allow(dead_code)]
+    #[cfg(test)]
     fn key_count_ip(&self) -> usize {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).by_ip.len()
     }
@@ -221,6 +338,46 @@ impl LoginRateLimiter {
             .unwrap_or_else(|e| e.into_inner())
             .by_account
             .len()
+    }
+
+    #[allow(dead_code)]
+    #[cfg(test)]
+    fn key_count_token_minters(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .by_token_minter
+            .len()
+    }
+}
+
+/// A token-mint slot already counted against the per-user budget.
+///
+/// Returned by [`LoginRateLimiter::reserve_token_mint`]. Call
+/// [`commit`](Self::commit) once the credential is inserted; dropping the
+/// reservation without committing releases the slot, so a failed insert
+/// (409/500) never consumes quota. The `Drop` path also covers panics
+/// between reservation and insert.
+pub struct TokenMintReservation<'a> {
+    limiter: &'a LoginRateLimiter,
+    user_id: Uuid,
+    reserved_at: Instant,
+    committed: bool,
+}
+
+impl TokenMintReservation<'_> {
+    /// Keep the reserved slot: the credential was inserted successfully.
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for TokenMintReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.limiter
+                .release_token_mint(self.user_id, self.reserved_at);
+        }
     }
 }
 
@@ -524,6 +681,153 @@ mod tests {
         assert!(
             limiter.check_login(ip_n(200), "owner@example.com").is_none(),
             "a legitimate login must still pass after the flood"
+        );
+    }
+
+    // -- T6: per-user token-mint budget (POST /api/tokens) --
+
+    #[test]
+    fn token_mint_allows_up_to_cap_then_blocks_with_retry() {
+        let limiter = LoginRateLimiter::new();
+        let user = uuid::Uuid::new_v4();
+        for _ in 0..super::MAX_TOKEN_MINTS {
+            limiter
+                .reserve_token_mint(user)
+                .expect("a mint within budget must reserve")
+                .commit();
+        }
+        let retry = limiter
+            .reserve_token_mint(user)
+            .err()
+            .expect("the mint past the cap must block");
+        assert!(retry > Duration::from_secs(0));
+        assert!(retry <= super::TOKEN_MINT_WINDOW);
+    }
+
+    #[test]
+    fn token_mint_buckets_are_per_user() {
+        let limiter = LoginRateLimiter::new();
+        let full = uuid::Uuid::new_v4();
+        for _ in 0..super::MAX_TOKEN_MINTS {
+            limiter.reserve_token_mint(full).unwrap().commit();
+        }
+        assert!(
+            limiter.reserve_token_mint(full).is_err(),
+            "an exhausted user must block"
+        );
+        assert!(
+            limiter.reserve_token_mint(uuid::Uuid::new_v4()).is_ok(),
+            "another user must keep its own budget"
+        );
+    }
+
+    #[test]
+    fn token_mint_budget_drains_after_the_window() {
+        let limiter = LoginRateLimiter::with_token_limits(Duration::from_millis(50), 1, 4096);
+        let user = uuid::Uuid::new_v4();
+        limiter.reserve_token_mint(user).unwrap().commit();
+        assert!(limiter.reserve_token_mint(user).is_err());
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            limiter.reserve_token_mint(user).is_ok(),
+            "the mint budget must drain within the window"
+        );
+    }
+
+    #[test]
+    fn token_mint_keys_stay_bounded() {
+        // One mint per distinct user: nobody blocks, so eviction must retire
+        // the least recently active key instead of growing without bound.
+        let limiter = LoginRateLimiter::with_token_limits(Duration::from_secs(60), 10, 2);
+        for _ in 0..5 {
+            limiter
+                .reserve_token_mint(uuid::Uuid::new_v4())
+                .unwrap()
+                .commit();
+        }
+        assert!(
+            limiter.key_count_token_minters() <= 2,
+            "token-minter map retained {} keys with cap 2",
+            limiter.key_count_token_minters()
+        );
+    }
+
+    // -- J-01: reservation is atomic and rolls back only on failed mints --
+
+    #[test]
+    fn held_reservation_counts_against_the_budget_before_commit() {
+        let limiter = LoginRateLimiter::with_token_limits(Duration::from_secs(60), 1, 64);
+        let user = uuid::Uuid::new_v4();
+        let reservation = limiter
+            .reserve_token_mint(user)
+            .expect("the first slot must reserve");
+        assert!(
+            limiter.reserve_token_mint(user).is_err(),
+            "a held reservation must count before the insert/commit happens"
+        );
+        drop(reservation);
+        assert!(
+            limiter.reserve_token_mint(user).is_ok(),
+            "a reservation released without commit must free its slot"
+        );
+    }
+
+    #[test]
+    fn committed_reservation_keeps_consuming_budget() {
+        let limiter = LoginRateLimiter::with_token_limits(Duration::from_secs(60), 1, 64);
+        let user = uuid::Uuid::new_v4();
+        limiter.reserve_token_mint(user).unwrap().commit();
+        assert!(
+            limiter.reserve_token_mint(user).is_err(),
+            "a committed reservation must keep consuming budget"
+        );
+        assert_eq!(limiter.count_token_mints(user), 1);
+    }
+
+    #[test]
+    fn concurrent_reservations_never_exceed_the_cap() {
+        // J-01: N threads cross a barrier and race the mint budget. The old
+        // check-then-record pair (lock released between the two calls) let
+        // every thread observe free budget; the atomic reservation must
+        // admit exactly `cap` of them.
+        use std::{
+            sync::{
+                atomic::{AtomicUsize, Ordering},
+                Arc, Barrier,
+            },
+            thread,
+        };
+        let cap = 3usize;
+        let burst = 24usize;
+        let limiter = Arc::new(LoginRateLimiter::with_token_limits(
+            Duration::from_secs(60),
+            cap,
+            64,
+        ));
+        let user = uuid::Uuid::new_v4();
+        let barrier = Arc::new(Barrier::new(burst));
+        let successes = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::with_capacity(burst);
+        for _ in 0..burst {
+            let limiter = Arc::clone(&limiter);
+            let barrier = Arc::clone(&barrier);
+            let successes = Arc::clone(&successes);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                if let Ok(reservation) = limiter.reserve_token_mint(user) {
+                    // Model a completed mint: the slot stays consumed.
+                    reservation.commit();
+                    successes.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("burst thread must not panic");
+        }
+        assert_eq!(
+            successes.load(Ordering::SeqCst),
+            cap,
+            "the burst must admit exactly the cap, never the full burst"
         );
     }
 
