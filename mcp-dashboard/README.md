@@ -227,6 +227,35 @@ npm run typecheck
 | `PERSONAL_DASHBOARD_TOKEN` | (empty) | Optional fallback backend token |
 | `MCP_ALLOWED_HOSTS` | (empty) | Extra Host values allowed on /mcp (comma-separated; localhost always allowed) |
 
+## Production container
+
+The Dokploy image (root `Dockerfile`) runs this MCP server next to the Axum
+backend in the same container, supervised by `docker/entrypoint.sh`: the MCP
+listens on `MCP_PORT=3002` while the backend serves `:80`. If either process
+exits, the entrypoint stops the sibling and exits with the same (non-zero)
+status so a restart policy set to restart on failure brings both back — a
+crashed MCP never goes silent. Pass an explicit command to
+`docker run <image> <cmd>` to override the services, as with any entrypoint.
+
+Image env defaults (each overridable in the Dokploy env field):
+
+| Var | Default | Purpose |
+| --- | ------- | ------- |
+| `MCP_PORT` | `3002` | HTTP listen port inside the container |
+| `PERSONAL_DASHBOARD_API_URL` | `http://127.0.0.1:80/api` | Sibling backend in the same container |
+| `MCP_ALLOWED_HOSTS` | `192.168.50.120` | LAN host allowed through the host guard |
+| `PERSONAL_DASHBOARD_TOKEN` | (unset) | No baked token: auth stays per-request `Authorization: Bearer ...` |
+
+The `/mcp` host guard strips the `:port` suffix before matching, so
+`MCP_ALLOWED_HOSTS=192.168.50.120` accepts `Host: 192.168.50.120:3002` from
+the LAN while `localhost`/`127.0.0.1`/`::1` stay allowed for probes; any
+other `Host` gets `403`. `/healthz` is exempt from the guard so the image
+`HEALTHCHECK` can probe both `:80/health` and `:3002/healthz`.
+
+The owner publishes host port 3002 manually in the Dokploy UI (container
+`3002` → LAN `http://192.168.50.120:3002`); nothing in this repo touches the
+deploy.
+
 ## Notes
 
 - Money amounts travel as decimal strings (e.g. `"50.00"`), never JSON numbers.
