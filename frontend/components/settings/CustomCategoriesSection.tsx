@@ -13,6 +13,7 @@ import {
 import {
   CUSTOM_CATEGORIES_KEY,
   listCustomCategories,
+  type CustomCategory,
 } from "@/lib/settings/customCategories";
 
 const inputClass =
@@ -29,9 +30,12 @@ const dangerBtnClass =
  * `DELETE /categories/{id}`) read through the shared `finance/categories`
  * SWR key, so the movement selects list them with no modal change.
  *
- * One-time migration: rows left in the legacy `pd-custom-categories`
- * localStorage key are POSTed as `finance` (409 duplicates tolerated) and
- * the key is cleared only when every row migrated or already existed.
+ * One-time migration, resolved per row: rows left in the legacy
+ * `pd-custom-categories` localStorage key are POSTed as `finance`. A row
+ * that is created (201) or already exists (409) is dropped; a row the API
+ * permanently rejects (422/VALIDATION_ERROR) is dropped and reported; any
+ * other failure keeps the row in the key for a later mount to retry, so a
+ * resolved row is never POSTed twice.
  */
 export default function CustomCategoriesSection() {
   const { data, error: listError, isLoading } = useCategories();
@@ -48,23 +52,41 @@ export default function CustomCategoriesSection() {
     const legacy = listCustomCategories();
     if (legacy.length === 0) return;
     (async () => {
-      let allOk = true;
+      const pending: CustomCategory[] = [];
+      let skipped = 0;
       for (const row of legacy) {
         try {
           await createCategory(row.name);
         } catch (err) {
           // A 409 means the name already exists server-side: migrated.
-          if (!(err instanceof ApiError && err.status === 409)) {
-            allOk = false;
+          if (err instanceof ApiError && err.status === 409) continue;
+          // Permanently rejected: retrying can never succeed, so drop and count.
+          if (
+            err instanceof ApiError &&
+            (err.status === 422 || err.code === "VALIDATION_ERROR")
+          ) {
+            skipped += 1;
+            continue;
           }
+          // Transient failure (network, 5xx, 401): keep it for a later mount.
+          pending.push(row);
         }
       }
-      if (allOk) {
-        try {
+      try {
+        if (pending.length === 0) {
           localStorage.removeItem(CUSTOM_CATEGORIES_KEY);
-        } catch {
-          // Private browsing: the next mount retries the migration.
+        } else {
+          // Mirror the private v2 envelope owned by `customCategories.ts`.
+          localStorage.setItem(
+            CUSTOM_CATEGORIES_KEY,
+            JSON.stringify({ v: 2, categories: pending }),
+          );
         }
+      } catch {
+        // Private browsing: the next mount retries the migration.
+      }
+      if (skipped > 0) {
+        setError(t("settings.categoriesMigrationSkipped", { count: skipped }));
       }
       void mutate("finance/categories");
     })();

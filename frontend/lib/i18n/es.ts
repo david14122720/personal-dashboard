@@ -784,6 +784,8 @@ export const es = {
     noCategories: "Sin categorías aún",
     noCategoriesHint: "Creá tu primera categoría: aparecerá en los selectores de gastos e ingresos.",
     confirmDeleteCategory: "¿Eliminar esta categoría? Esta acción no se puede deshacer.",
+    categoriesMigrationSkipped:
+      "No se pudieron migrar {count} categoría(s) guardadas; se omitieron.",
     sessionsTitle: "Sesiones activas",
     sessionsHint: "Revisa los dispositivos con acceso a tu cuenta y cierra los que no reconozcas.",
     sessionsCurrent: "Actual",
