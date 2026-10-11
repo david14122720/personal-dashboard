@@ -136,7 +136,7 @@ pub struct CreateCategoryRequest {
 /// The Spanish message is shown to users as-is (VALIDATION_ERROR).
 pub fn validate_category_name(raw: &str) -> Result<String, AppError> {
     let name = raw.trim();
-    if name.is_empty() || name.len() > MAX_CATEGORY_NAME_LEN || name.contains('\0') {
+    if name.is_empty() || name.chars().count() > MAX_CATEGORY_NAME_LEN || name.contains('\0') {
         return Err(AppError::Validation(
             "el nombre de la categoría debe tener entre 1 y 80 caracteres".into(),
         ));
@@ -441,6 +441,13 @@ mod tests {
         for raw in ["", "   ", &"x".repeat(81), "Alimen\0tación"] {
             assert_422(validate_category_name(raw).unwrap_err());
         }
+    }
+
+    #[test]
+    fn category_name_cap_counts_characters_not_bytes() {
+        let accepted = "á".repeat(80);
+        assert_eq!(validate_category_name(&accepted).unwrap(), accepted);
+        assert_422(validate_category_name(&"á".repeat(81)).unwrap_err());
     }
 
     fn create_req(name: &str, kind: Option<&str>) -> Json<CreateCategoryRequest> {
