@@ -82,7 +82,12 @@ fn api_routes() -> Router<AppState> {
         )
         .route(
             "/categories",
-            get(routes::categories::list_categories_handler),
+            post(routes::categories::create_category_handler)
+                .get(routes::categories::list_categories_handler),
+        )
+        .route(
+            "/categories/{id}",
+            delete(routes::categories::delete_category_handler),
         )
         // S-A (finance-simplify-movements): movements ledger + atomic
         // balance effect. One request runs one transaction; the frontend

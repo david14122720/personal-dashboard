@@ -1,4 +1,5 @@
-//! Finance (and shared) categories listing (`GET /categories`).
+//! Finance (and shared) categories: list, create and delete (`GET|POST
+//! /categories`, `DELETE /categories/{id}`).
 //!
 //! The `categories` table already exists (`user_id, kind, name` with a
 //! `UNIQUE(user_id, kind, name)` guard and `category_kind` enum
@@ -16,8 +17,8 @@
 //! Registered in `routes/mod.rs` and `main.rs` (S1 wiring).
 
 use axum::{
-    extract::{Query, State},
-    http::HeaderMap,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -29,7 +30,13 @@ use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
 /// Category kinds accepted at the API boundary (mirrors `category_kind` enum).
 pub const CATEGORY_KINDS: &[&str] = &["finance", "habit", "goal", "task", "subscription"];
 
+/// Longest accepted category name after trimming (mirrors the accounts
+/// `validate_account_name` shape: trimmed, length-capped, no null bytes).
+const MAX_CATEGORY_NAME_LEN: usize = 80;
+
 const LIST_CATEGORIES_SQL: &str = "SELECT id, kind::text, name, color, icon, is_archived, created_at FROM categories WHERE user_id=$1 AND ($2::category_kind IS NULL OR kind=$2::category_kind) AND NOT is_archived ORDER BY name ASC";
+const CREATE_CATEGORY_SQL: &str = "INSERT INTO categories (user_id, kind, name) VALUES ($1,$2::category_kind,$3) RETURNING id, kind::text, name, color, icon, is_archived, created_at";
+const DELETE_CATEGORY_SQL: &str = "DELETE FROM categories WHERE id=$1 AND user_id=$2";
 
 type CategoryRow = (
     Uuid,
@@ -115,9 +122,92 @@ pub async fn list_categories_handler(
     Ok(Json(rows.into_iter().map(CategoryResponse::from).collect()))
 }
 
+/// Create body: `name` plus the optional `kind` (defaults to `finance`
+/// when omitted). Unknown fields are rejected (422), like the accounts
+/// create contract.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateCategoryRequest {
+    pub name: String,
+    pub kind: Option<String>,
+}
+
+/// Validate a category name: 1-80 chars after trimming, no null bytes.
+/// The Spanish message is shown to users as-is (VALIDATION_ERROR).
+pub fn validate_category_name(raw: &str) -> Result<String, AppError> {
+    let name = raw.trim();
+    if name.is_empty() || name.len() > MAX_CATEGORY_NAME_LEN || name.contains('\0') {
+        return Err(AppError::Validation(
+            "el nombre de la categoría debe tener entre 1 y 80 caracteres".into(),
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// Map category write errors: `23505` (UNIQUE user_id,kind,name) → 409 with
+/// a Spanish message, `23514` (check) → 422; everything else is internal
+/// (mirrors `map_account_db_err`).
+fn map_category_db_err(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db) = &e {
+        match db.code().as_deref() {
+            Some("23505") => {
+                return AppError::Conflict("ya existe una categoría con ese nombre".into());
+            }
+            Some("23514") => {
+                return AppError::Validation("datos de categoría inválidos".into());
+            }
+            _ => {}
+        }
+    }
+    AppError::Internal
+}
+
+/// Create an owned category (201). Every `category_id` FK in the schema
+/// (`movements`, `subscriptions`, habits/goals/tasks/calendar) is
+/// `ON DELETE SET NULL`, so a plain delete later is always safe.
+pub async fn create_category_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateCategoryRequest>,
+) -> Result<(StatusCode, Json<CategoryResponse>), AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let name = validate_category_name(&body.name)?;
+    let kind = validate_category_kind(body.kind.as_deref())?.unwrap_or_else(|| "finance".into());
+    let row = sqlx::query_as::<_, CategoryRow>(CREATE_CATEGORY_SQL)
+        .bind(user_id)
+        .bind(&kind)
+        .bind(&name)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(map_category_db_err)?;
+    Ok((StatusCode::CREATED, Json(CategoryResponse::from(row))))
+}
+
+/// Delete an owned category (204). Missing/foreign ids resolve to 404
+/// without leaking existence; referencing rows keep their audit
+/// (`category_id` SET NULL, never cascaded).
+pub async fn delete_category_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let res = sqlx::query(DELETE_CATEGORY_SQL)
+        .bind(id)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::Path;
     use axum::response::IntoResponse;
 
     fn assert_422(err: AppError) {
@@ -304,8 +394,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn foreign_categories_never_leak() {
-        let Some(pool) = test_pool() else {
+    async fn foreign_categories_never_leak() {        let Some(pool) = test_pool() else {
             eprintln!("SKIP foreign_categories_never_leak: no DATABASE_URL");
             return;
         };
@@ -335,5 +424,182 @@ mod tests {
         let _ = state_a;
         cleanup_user(&pool, user_a).await;
         cleanup_user(&pool, user_b).await;
+    }
+
+    // -- T1/T2 (categories-crud): create + delete. RED first: the handlers
+    // and `validate_category_name` do not exist yet. --
+
+    #[test]
+    fn category_name_trims_and_accepts() {
+        assert_eq!(validate_category_name("  Mercado  ").unwrap(), "Mercado");
+        assert_eq!(validate_category_name("a").unwrap(), "a");
+        assert_eq!(validate_category_name(&"x".repeat(80)).unwrap().len(), 80);
+    }
+
+    #[test]
+    fn category_name_rejects_blank_too_long_and_null_bytes() {
+        for raw in ["", "   ", &"x".repeat(81), "Alimen\0tación"] {
+            assert_422(validate_category_name(raw).unwrap_err());
+        }
+    }
+
+    fn create_req(name: &str, kind: Option<&str>) -> Json<CreateCategoryRequest> {
+        Json(CreateCategoryRequest {
+            name: name.to_string(),
+            kind: kind.map(str::to_string),
+        })
+    }
+
+    fn assert_409(err: AppError) {
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::CONFLICT);
+    }
+
+    fn assert_404(err: AppError) {
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_category_returns_201_and_defaults_to_finance() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP create_category_returns_201_and_defaults_to_finance: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (status, body) = create_category_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_req("  Mercado  ", None),
+        )
+        .await
+        .expect("create is 201");
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        assert_eq!(body.name, "Mercado");
+        assert_eq!(body.kind, "finance");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_category_name_is_409() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP duplicate_category_name_is_409: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (status, created) = create_category_handler(State(state.clone()), headers.clone(), create_req("Mercado", None))
+            .await
+            .expect("first create is 201");
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        assert_eq!(created.name, "Mercado");
+        let err = create_category_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_req("Mercado", Some("finance")),
+        )
+        .await
+        .expect_err("duplicate name must be 409");
+        assert_409(err);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn delete_category_returns_204_and_second_delete_is_404() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_category_returns_204_and_second_delete_is_404: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, body) = create_category_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_req("Mercado", None),
+        )
+        .await
+        .expect("create is 201");
+        let status = delete_category_handler(State(state.clone()), headers.clone(), Path(body.id))
+            .await
+            .expect("delete is 204");
+        assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+        let err = delete_category_handler(State(state.clone()), headers.clone(), Path(body.id))
+            .await
+            .expect_err("second delete must be 404");
+        assert_404(err);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn foreign_category_delete_is_404() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP foreign_category_delete_is_404: no DATABASE_URL");
+            return;
+        };
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let foreign_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO categories (user_id, kind, name) VALUES ($1,'finance','Privada') RETURNING id",
+        )
+        .bind(user_a)
+        .fetch_one(&pool)
+        .await
+        .expect("seed foreign category");
+        let err = delete_category_handler(State(state_b.clone()), headers_b, Path(foreign_id))
+            .await
+            .expect_err("foreign delete must be 404");
+        assert_404(err);
+        // The foreign row survives another owner's delete attempt.
+        let still_there: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM categories WHERE id=$1")
+                .bind(foreign_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count foreign category");
+        assert_eq!(still_there, 1);
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    #[tokio::test]
+    async fn delete_category_nulls_movement_category_id() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP delete_category_nulls_movement_category_id: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, body) = create_category_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_req("Mercado", None),
+        )
+        .await
+        .expect("create is 201");
+        let account_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name) VALUES ($1,'Principal') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed account");
+        let movement_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on) VALUES ($1,$2,$3,'expense','25000.00','2026-10-01') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(account_id)
+        .bind(body.id)
+        .fetch_one(&pool)
+        .await
+        .expect("seed movement");
+        delete_category_handler(State(state.clone()), headers.clone(), Path(body.id))
+            .await
+            .expect("delete is 204");
+        let category_id: Option<Uuid> =
+            sqlx::query_scalar("SELECT category_id FROM movements WHERE id=$1")
+                .bind(movement_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read movement");
+        assert_eq!(category_id, None, "delete must SET NULL, not erase the movement");
+        cleanup_user(&pool, user_id).await;
     }
 }

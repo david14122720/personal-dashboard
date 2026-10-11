@@ -210,6 +210,19 @@ export function useCategories() {
   );
 }
 
+/** Create a finance category (`POST /categories { name, kind: "finance" }`).
+ * Ajustes-created categories are always `finance`; the backend trims and
+ * validates the name (1-80 chars) and answers 409 on duplicates. */
+export function createCategory(name: string): Promise<CategoryWire> {
+  return apiPost<CategoryWire>("/categories", { name, kind: "finance" });
+}
+
+/** Delete an owned category (`DELETE /categories/{id}`). Referencing
+ * movements keep their audit (`category_id` SET NULL server-side). */
+export function deleteCategory(id: string): Promise<void> {
+  return apiDelete(`/categories/${id}`);
+}
+
 /** Create an account by name/alias (`POST /accounts {name}`). The new account
  * appears automatically in Finanzas (same `dashboard/accounts` read). */
 export function createBankAccount(name: string) {

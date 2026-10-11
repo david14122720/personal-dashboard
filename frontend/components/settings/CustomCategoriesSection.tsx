@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSWRConfig } from "swr";
 import EmptyState from "@/components/ui/EmptyState";
 import { t } from "@/lib/i18n";
+import { ApiError, serverMessage } from "@/lib/api/client";
 import {
-  createCustomCategory,
-  deleteCustomCategory,
+  createCategory,
+  deleteCategory,
+  useCategories,
+} from "@/lib/api/finance";
+import {
+  CUSTOM_CATEGORIES_KEY,
   listCustomCategories,
-  type CustomCategory,
 } from "@/lib/settings/customCategories";
 
 const inputClass =
@@ -18,43 +23,90 @@ const dangerBtnClass =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-alert hover:text-alert disabled:cursor-not-allowed disabled:opacity-50";
 
 /**
- * Custom categories manager (Configuración). Categories are name-only and
- * stay localStorage-only: their ids are unknown to the API, so movement
- * and subscription selects never list them.
+ * Custom categories manager (Configuración), backend-backed.
+ *
+ * Categories are name-only `finance` rows (`POST /categories`,
+ * `DELETE /categories/{id}`) read through the shared `finance/categories`
+ * SWR key, so the movement selects list them with no modal change.
+ *
+ * One-time migration: rows left in the legacy `pd-custom-categories`
+ * localStorage key are POSTed as `finance` (409 duplicates tolerated) and
+ * the key is cleared only when every row migrated or already existed.
  */
 export default function CustomCategoriesSection() {
-  const [rows, setRows] = useState<CustomCategory[]>([]);
+  const { data, error: listError, isLoading } = useCategories();
+  const { mutate } = useSWRConfig();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const migrated = useRef(false);
 
   useEffect(() => {
-    setRows(listCustomCategories());
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === "pd-custom-categories") {
-        setRows(listCustomCategories());
+    if (migrated.current) return;
+    migrated.current = true;
+    const legacy = listCustomCategories();
+    if (legacy.length === 0) return;
+    (async () => {
+      let allOk = true;
+      for (const row of legacy) {
+        try {
+          await createCategory(row.name);
+        } catch (err) {
+          // A 409 means the name already exists server-side: migrated.
+          if (!(err instanceof ApiError && err.status === 409)) {
+            allOk = false;
+          }
+        }
       }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+      if (allOk) {
+        try {
+          localStorage.removeItem(CUSTOM_CATEGORIES_KEY);
+        } catch {
+          // Private browsing: the next mount retries the migration.
+        }
+      }
+      void mutate("finance/categories");
+    })();
+  }, [mutate]);
 
-  function handleCreate(event: React.FormEvent): void {
+  async function handleCreate(event: React.FormEvent): Promise<void> {
     event.preventDefault();
     setError(null);
-    const created = createCustomCategory(name);
-    if (!created) {
+    if (!name.trim()) {
       setError(t("finance.requiredFieldError"));
       return;
     }
-    setName("");
-    setRows(listCustomCategories());
+    setCreating(true);
+    try {
+      await createCategory(name.trim());
+      setName("");
+      void mutate("finance/categories");
+    } catch (err) {
+      setError(serverMessage(err, t("finance.saveFailed")));
+    } finally {
+      setCreating(false);
+    }
   }
 
-  function handleDelete(id: string): void {
+  async function handleDelete(id: string): Promise<void> {
     if (!window.confirm(t("settings.confirmDeleteCategory"))) return;
-    deleteCustomCategory(id);
-    setRows(listCustomCategories());
+    setError(null);
+    setDeletingId(id);
+    try {
+      await deleteCategory(id);
+      void mutate("finance/categories");
+    } catch (err) {
+      setError(serverMessage(err, t("finance.deleteFailed")));
+    } finally {
+      setDeletingId((current) => (current === id ? null : current));
+    }
   }
+
+  const rows = data ?? [];
+  const listFailed = listError
+    ? serverMessage(listError, t("finance.loadFailed"))
+    : null;
 
   return (
     <section
@@ -63,7 +115,7 @@ export default function CustomCategoriesSection() {
     >
       <h2 className="font-display text-base font-medium tracking-wide">{t("settings.categoriesTitle")}</h2>
       <p className="mt-1 text-xs text-slate-400">{t("settings.categoriesHint")}</p>
-      <form onSubmit={handleCreate} className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+      <form onSubmit={(e) => void handleCreate(e)} className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
         <label className="flex flex-col gap-1 text-xs text-instrument/60">
           {t("settings.categoryName")}
           <input
@@ -73,8 +125,8 @@ export default function CustomCategoriesSection() {
             onChange={(e) => setName(e.target.value)}
           />
         </label>
-        <button type="submit" className={primaryBtnClass}>
-          {t("settings.createCategory")}
+        <button type="submit" disabled={creating} className={primaryBtnClass}>
+          {creating ? t("finance.saving") : t("settings.createCategory")}
         </button>
       </form>
       {error ? (
@@ -83,7 +135,13 @@ export default function CustomCategoriesSection() {
         </p>
       ) : null}
       <div className="mt-4">
-        {rows.length === 0 ? (
+        {listFailed ? (
+          <p role="alert" className="text-xs text-alert">
+            {listFailed}
+          </p>
+        ) : isLoading ? (
+          <p className="text-xs text-slate-400">{t("common.loading")}</p>
+        ) : rows.length === 0 ? (
           <EmptyState title={t("settings.noCategories")} hint={t("settings.noCategoriesHint")} />
         ) : (
           <ul className="flex flex-col gap-2">
@@ -96,7 +154,8 @@ export default function CustomCategoriesSection() {
                 <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">
                   <button
                     type="button"
-                    onClick={() => handleDelete(row.id)}
+                    onClick={() => void handleDelete(row.id)}
+                    disabled={deletingId === row.id}
                     aria-label={`${t("settings.delete")}: ${row.name}`}
                     className={dangerBtnClass}
                   >
