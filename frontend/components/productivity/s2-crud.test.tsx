@@ -16,9 +16,7 @@ import {
   type TaskWire,
 } from "@/lib/api/productivity";
 import {
-  countEventsByTimeView,
   countTasksByDateView,
-  filterEventsByTimeView,
   filterTasksByDateView,
   todayYmdLocal,
 } from "@/lib/productivity/productivity";
@@ -271,27 +269,6 @@ describe("S2 eventos: crear por tipo y vistas próximos/vencidos", () => {
     expect(seenPosts[0].url).toContain("/events");
     expect(seenPosts[0].body).toMatchObject({ title: "Dentista", kind: "appointment" });
     expect(seenPosts[0].body).toHaveProperty("starts_at");
-  });
-
-  it("separa próximos de vencidos por hora de fin", () => {
-    const now = Date.parse("2026-09-09T12:00:00Z");
-    const upcoming = { starts_at: "2026-09-10T10:00:00Z", ends_at: null };
-    const overdue = { starts_at: "2026-09-01T10:00:00Z", ends_at: null };
-    const finished = {
-      starts_at: "2026-09-09T10:00:00Z",
-      ends_at: "2026-09-09T11:00:00Z",
-    };
-    expect(filterEventsByTimeView([upcoming, overdue, finished], "upcoming", now)).toEqual([
-      upcoming,
-    ]);
-    expect(
-      filterEventsByTimeView([upcoming, overdue, finished], "overdue", now).length,
-    ).toBe(2);
-    expect(countEventsByTimeView([upcoming, overdue, finished], now)).toMatchObject({
-      all: 3,
-      upcoming: 1,
-      overdue: 2,
-    });
   });
 });
 

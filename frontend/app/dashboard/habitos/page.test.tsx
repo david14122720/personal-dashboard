@@ -29,7 +29,6 @@ import HabitosPage from "./page";
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
 const TODAY = "2026-09-15";
-const MONTH = "2026-09";
 const DAYS_IN_MONTH = 30;
 
 interface WireHabit {

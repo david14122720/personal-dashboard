@@ -17,13 +17,11 @@ import TodayHabits from "@/components/dashboard/widgets/TodayHabits";
 import UpcomingEvents from "@/components/dashboard/widgets/UpcomingEvents";
 import UpcomingPayments from "@/components/dashboard/widgets/UpcomingPayments";
 import UpcomingSubs from "@/components/dashboard/widgets/UpcomingSubs";
-import { deck } from "@/components/ui/deckStyles";
 import {
   buildNextLayout,
   isWidgetVisible,
   resolveDashboardLayout,
   useAccounts,
-  useHabitsToday,
   usePreferences,
   useUpdateLayout,
   type DashboardLayout,
@@ -70,7 +68,6 @@ export default function DashboardHome() {
   }, []);
 
   const accounts = useAccounts();
-  const habits = useHabitsToday();
   const prefs = usePreferences();
   // KPI-only finance reads (same SWR keys as the chart sections below).
   const financeSubs = useFinanceSubscriptions();

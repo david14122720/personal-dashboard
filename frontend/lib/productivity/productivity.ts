@@ -168,8 +168,6 @@ export function countTasksByDateView<T extends TaskDateViewInput>(
 /** Time-based event views: próximos (incl. hoy) / vencidos (+ todos). */
 export type EventTimeView = "all" | "upcoming" | "overdue";
 
-export const EVENT_TIME_VIEWS: EventTimeView[] = ["all", "upcoming", "overdue"];
-
 export interface EventTimeViewInput {
   starts_at: string;
   ends_at: string | null;
@@ -186,31 +184,6 @@ export function eventTimeView(event: EventTimeViewInput, nowMs: number): Exclude
   const ref = Number.isNaN(end) ? start : end;
   if (Number.isNaN(ref)) return "upcoming";
   return ref < nowMs ? "overdue" : "upcoming";
-}
-
-/** Filter events to one time view (`all` returns a copy of the input). */
-export function filterEventsByTimeView<T extends EventTimeViewInput>(
-  events: T[] | null | undefined,
-  view: EventTimeView,
-  nowMs: number,
-): T[] {
-  if (!events) return [];
-  if (view === "all") return [...events];
-  return events.filter((event) => eventTimeView(event, nowMs) === view);
-}
-
-/** Count events per time view (including `all` = total). */
-export function countEventsByTimeView<T extends EventTimeViewInput>(
-  events: T[] | null | undefined,
-  nowMs: number,
-): Record<EventTimeView, number> {
-  const counts: Record<EventTimeView, number> = { all: 0, upcoming: 0, overdue: 0 };
-  if (!events) return counts;
-  counts.all = events.length;
-  for (const event of events) {
-    counts[eventTimeView(event, nowMs)] += 1;
-  }
-  return counts;
 }
 
 /* -- W4: monthly calendar (42-cell Monday-first grid, tasks + events per day) -- */

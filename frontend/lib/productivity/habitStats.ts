@@ -23,7 +23,6 @@ const toMs = (date: string): number => Date.parse(`${date}T00:00:00Z`);
 const dow = (ms: number): number => new Date(ms).getUTCDay();
 const isDone = (s: string): boolean => s === "done";
 const isSkip = (s: string): boolean => s === "skipped";
-const isBreak = (s: string): boolean => s === "missed" || s === "not_done";
 
 /** done / denom as 0..100 with 1 decimal; zero denom maps to 0. */
 export function complianceRate(done: number, denom: number): number {
