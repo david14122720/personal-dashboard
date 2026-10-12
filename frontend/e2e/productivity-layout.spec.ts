@@ -10,6 +10,12 @@ import * as path from "node:path";
  * `loginViaApi` in `./helpers` without the network call) and stubs every
  * productivity read with a page.route API stub serving deterministic fixtures.
  *
+ * It does need a server serving the dashboard at `baseURL`: the stubs replace
+ * the live API, not the page. So the test probes `baseURL` first and skips —
+ * never fails — when nothing answers, which keeps the contract stated in
+ * `playwright.config.ts`: missing live infrastructure must never mean a
+ * failure.
+ *
  * For each viewport (390x844, 768x768, 1440x900) it measures:
  * - `document.documentElement.scrollWidth <= clientWidth` (no overflow)
  * - `getBoundingClientRect()` of every date/datetime-local/select/input
@@ -162,7 +168,13 @@ interface ViewportMetric {
   controls: ControlMetric[];
 }
 
-test("productivity layout evidence @390/768/1440", async ({ page }) => {
+test("productivity layout evidence @390/768/1440", async ({ page, request }) => {
+  const reachable = await request
+    .get("/", { timeout: 5_000 })
+    .then((response) => response.ok())
+    .catch(() => false);
+  test.skip(!reachable, "Start a dashboard server at baseURL to record layout evidence.");
+
   fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
 
   await page.route("**/api/**", async (route) => {
@@ -216,7 +228,7 @@ test("productivity layout evidence @390/768/1440", async ({ page }) => {
     const viewportInputs: InputMetric[] = [];
     for (const section of SECTION_NAMES) {
       const region = page.getByRole("region", { name: section });
-      const nuevo = region.getByRole("button", { name: /Nuevo/ });
+      const nuevo = region.getByRole("button", { name: /Nueva?/ });
       if ((await nuevo.count()) > 0) {
         await nuevo.first().click();
       }
@@ -282,7 +294,7 @@ test("productivity layout evidence @390/768/1440", async ({ page }) => {
         if (!el) continue;
         // Skip the search input row; measure real buttons only.
         const buttons = Array.from(el.querySelectorAll("button")).filter((b) =>
-          /Editar|Eliminar|Nuevo|Hecho|Reabrir|Fijada|fijada|Cancelar|Guardar|Crear/i.test(
+          /Editar|Eliminar|Nueva?|Hecho|Reabrir|Fijada|fijada|Cancelar|Guardar|Crear/i.test(
             b.textContent ?? "",
           ),
         );

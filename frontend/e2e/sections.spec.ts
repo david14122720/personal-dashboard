@@ -18,6 +18,10 @@ test("productivity page renders its heading", async ({ page }) => {
 });
 
 // -- S-F (live smoke only; skipped without E2E_SMOKE_LIVE=1): surviving shells --
+// Data precondition for the two tests below: they assert shells that render the
+// signed-in user's own rows, so the smoke user needs at least one subscription
+// («Cancelar/Reactivar», «Pagar») and at least one account («Editar saldo»). An
+// empty user renders the shells but none of those buttons.
 test("finance surviving shells: subs rows with Pay, movements, chart, assets", async ({ page }) => {
   await loginViaApi(page);
   await page.goto("/dashboard/finance/");

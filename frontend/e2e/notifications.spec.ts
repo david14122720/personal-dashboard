@@ -22,8 +22,10 @@ test("bell badge, 2 secciones y mute persiste", async ({ page }) => {
     await page.reload();
     expect(await page.evaluate(() => localStorage.getItem("p8-notif-muted"))).toContain("{");
   } else {
-    await expect(page.getByText("Sin vencidas 🎉", { exact: true })).toBeVisible();
-    await expect(page.getByText("Nada por vencer en 7 días", { exact: true })).toBeVisible();
+    // Scope to the dialog: the dashboard's «Próximos pagos» widget renders the
+    // same empty-state copy, so an unscoped locator matches two elements.
+    await expect(dialog.getByText("Sin vencidas 🎉", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Nada por vencer en 7 días", { exact: true })).toBeVisible();
   }
 });
 test("ocultar widget excluye categoria del badge", async ({ page }) => {
