@@ -35,6 +35,17 @@ test("ocultar widget excluye categoria del badge", async ({ page }) => {
   // Both the widget header and the «Personalizar» panel render an «upcoming-payments»
   // switch, so the hide click is scoped to the widget region itself.
   const widget = page.getByRole("region", { name: "Próximos pagos" });
+  // Precondition, never leftover state: the chosen layout is persisted per user
+  // server-side, so a previous run (or spec) may have left this widget hidden —
+  // and a hidden widget is UNMOUNTED, so its own switch does not exist. Bring it
+  // back from «Personalizar» before asserting anything about hiding it.
+  if (!(await widget.isVisible())) {
+    await page
+      .getByRole("region", { name: "Personalizar" })
+      .getByRole("switch", { name: /upcoming-payments/ })
+      .click();
+    await expect(widget).toBeVisible();
+  }
   await widget.getByRole("switch", { name: /upcoming-payments/ }).click();
   await expect(page.getByRole("button", { name: /avisos pendientes/ })).toBeVisible();
   // The widget region is unmounted while hidden: re-enable it from «Personalizar».
