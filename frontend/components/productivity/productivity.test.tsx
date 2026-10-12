@@ -516,11 +516,15 @@ describe("productivity content cards (T5b)", () => {
 });
 
 describe("productivity module header (T5a)", () => {
-  it("renders the title, the focus chip, the real subtitle and the action row", async () => {
+  it("renders the title, the real subtitle and the action row, with no decorative chip", async () => {
     renderScreens();
     await screen.findByRole("region", { name: "Metas" });
     expect(screen.getByRole("heading", { name: "Productividad" })).toBeInTheDocument();
-    expect(screen.getByText("Modo enfoque")).toBeInTheDocument();
+    // Both header chips were removed by owner order: neither `MODO ENFOQUE`
+    // (a surface label) nor the sync badge said anything the page does not.
+    expect(screen.queryByText("Modo enfoque")).not.toBeInTheDocument();
+    expect(screen.queryByText("En sincronía")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sincronizando")).not.toBeInTheDocument();
     expect(screen.getByText("Hábitos, metas, tareas, eventos y notas.")).toBeInTheDocument();
     const toggle = screen.getByRole("button", { name: "Ver calendario expandido" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -532,26 +536,7 @@ describe("productivity module header (T5a)", () => {
     expect(screen.getByRole("button", { name: "+ Nueva tarea" })).toBeInTheDocument();
   });
 
-  it("claims En sincronía only after every read resolved", async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    server.use(
-      http.get("http://test.local/api/goals", async () => {
-        await gate;
-        return HttpResponse.json(goals);
-      }),
-    );
-    renderScreens();
-    expect(screen.getByText("Sincronizando")).toBeInTheDocument();
-    expect(screen.queryByText("En sincronía")).not.toBeInTheDocument();
-    release();
-    expect(await screen.findByText("En sincronía")).toBeInTheDocument();
-    expect(screen.queryByText("Sincronizando")).not.toBeInTheDocument();
-  });
-
-  it("never claims En sincronía while a read is failing", async () => {
+  it("keeps the failure alert and hides the creation actions while a read is failing", async () => {
     server.use(http.get("http://test.local/api/goals", () => HttpResponse.error()));
     render(
       <SWRConfig
@@ -563,8 +548,6 @@ describe("productivity module header (T5a)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "No se pudieron cargar las secciones de productividad",
     );
-    expect(screen.queryByText("En sincronía")).not.toBeInTheDocument();
-    expect(screen.queryByText("Sincronizando")).not.toBeInTheDocument();
     // No dead creation action while the sections do not exist.
     expect(screen.queryByRole("button", { name: "+ Meta" })).not.toBeInTheDocument();
   });

@@ -570,13 +570,6 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className={deck.focusChip}>
-              <span aria-hidden="true" className={deck.focusChipDot} />
-              {t("habitsDashboard.livePill")}
-            </span>
-            <span aria-hidden="true" className="text-xs text-slate-500">
-              •
-            </span>
             <span className="text-xs font-medium text-slate-400">
               {t("habitsDashboard.cycleActive", { n: dayCount })}
             </span>

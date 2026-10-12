@@ -22,8 +22,6 @@ export const es = {
     sectionSystem: "Sistema",
     primary: "Navegación principal",
     skipToContent: "Saltar al contenido",
-    searchPlaceholder: "Buscar…",
-    searchUnavailable: "Búsqueda global aún no disponible",
     localSession: "Sesión local",
     // Mobile avatar link: it names its destination and, when `GET /me` answered,
     // the real identity it belongs to (JD item 7).
@@ -313,13 +311,6 @@ export const es = {
   productivity: {
     title: "Productividad",
     focusBadge: "Enfoque",
-    /** Header chip of the redesigned module header (a surface label, not a
-     * state: the prototype's `MODO ENFOQUE`, productividad-desktop-v2.html:22). */
-    focusChip: "Modo enfoque",
-    /** Sync chip. Only rendered once every page read resolved without error. */
-    syncBadge: "En sincronía",
-    /** Sync chip while the page reads are still in flight. */
-    syncPending: "Sincronizando",
     /** Header action row: the app's real creation entry points. */
     quickTask: "+ Nueva tarea",
     quickGoal: "+ Meta",
@@ -638,7 +629,6 @@ export const es = {
         },
   },
   habitsDashboard: {
-    livePill: "MÉTRICAS EN TIEMPO REAL",
     cycleActive: "Ciclo Activo {n} Días",
     title: "Rastreador de Hábitos",
     subtitle: "Monitorea la consistencia neuronal, rachas activas y el rendimiento mensual de tu rutina diaria.",

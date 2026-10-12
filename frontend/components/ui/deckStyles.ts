@@ -192,21 +192,9 @@ export const deck = {
   quickCardCopy: "mt-0.5 line-clamp-2 text-xs text-muted",
 
   /* -- Productividad (productividad-desktop-v2.html) -----------------------
-   * Module header chips, the collapsible calendar and the KPI row. Every
-   * number these recipes decorate is computed from the live reads (D10), so a
-   * chip only exists while the state it names is real. */
+   * The collapsible calendar and the KPI row. Every number these recipes
+   * decorate is computed from the live reads (D10). */
 
-  /** Module header chip: `MODO ENFOQUE` (a label for the surface, not a state). */
-  focusChip:
-    "inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 px-2.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.25)]",
-  /** Pulsing dot of `focusChip` (reduced-motion safe). */
-  focusChipDot: "h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-sky-400 motion-reduce:animate-none",
-  /** Sync chip. Rendered only once every page read resolved without error. */
-  syncChip:
-    "inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-emerald-400",
-  /** Sync chip while the page reads are still in flight (never claims sync). */
-  syncChipPending:
-    "inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-amber-300",
   /** Neutral header action (`Ver calendario expandido`, `+ Meta`, `+ Evento`...). */
   headerAction:
     "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-hair bg-card px-3 text-xs font-semibold text-instrument transition-colors hover:border-hair-strong hover:bg-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal",
@@ -565,10 +553,6 @@ export const {
   quickCardIcon,
   quickCardTitle,
   quickCardCopy,
-  focusChip,
-  focusChipDot,
-  syncChip,
-  syncChipPending,
   headerAction,
   headerActionSignal,
   kpiProgressTrack,

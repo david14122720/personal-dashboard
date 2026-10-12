@@ -227,7 +227,9 @@ describe("habitos dashboard page", () => {
     const { container } = renderPage();
 
     expect(await screen.findByRole("heading", { name: "Rastreador de Hábitos" })).toBeInTheDocument();
-    expect(container.textContent).toContain("MÉTRICAS EN TIEMPO REAL");
+    // The `MÉTRICAS EN TIEMPO REAL` pill was removed by owner order; the cycle
+    // counter it sat next to stays.
+    expect(container.textContent).not.toContain("MÉTRICAS EN TIEMPO REAL");
     expect(container.textContent).toContain("Ciclo Activo 30 Días");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByRole("button", { name: "Añadir Hábito" })).toBeInTheDocument();

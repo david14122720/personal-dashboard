@@ -254,13 +254,14 @@ describe("AppShell identity footer", () => {
 });
 
 describe("AppShell top bar", () => {
-  it("keeps the breadcrumb locale-correct and the search honestly unavailable", () => {
+  it("keeps the breadcrumb locale-correct and no field that cannot search", () => {
     state.path = "/dashboard/habitos/";
-    renderShell();
+    const { container } = renderShell();
     expect(screen.getByText("Panel")).toBeInTheDocument();
-    const search = screen.getByPlaceholderText("Buscar…");
-    expect(search).toHaveAttribute("readonly");
-    expect(search).toHaveAttribute("title", "Búsqueda global aún no disponible");
+    // The decorative global search was removed by owner order: a field that
+    // cannot search is not a field, so the top bar keeps no inert input.
+    expect(screen.queryByPlaceholderText("Buscar…")).toBeNull();
+    expect(container.querySelector("header input")).toBeNull();
     expect(screen.getByText(/de \d{4}/)).toBeInTheDocument();
   });
 

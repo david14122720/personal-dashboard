@@ -398,23 +398,6 @@ function CalendarWeekIcon({ className }: { className?: string }) {
   );
 }
 
-function SyncIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      viewBox="0 0 24 24"
-    >
-      <path d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-14.9-2M4 15a8 8 0 0014.9 2" />
-    </svg>
-  );
-}
-
 function TrendIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -778,21 +761,7 @@ export default function ProductivityScreens() {
     <div>
       <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="font-display text-2xl font-semibold tracking-wide">{t("productivity.title")}</h1>
-            <span className={deck.focusChip}>
-              <span aria-hidden="true" className={deck.focusChipDot} />
-              {t("productivity.focusChip")}
-            </span>
-            {isLoading ? (
-              <span className={deck.syncChipPending}>{t("productivity.syncPending")}</span>
-            ) : failed.length === 0 ? (
-              <span className={deck.syncChip}>
-                <SyncIcon className="h-3 w-3" />
-                {t("productivity.syncBadge")}
-              </span>
-            ) : null}
-          </div>
+          <h1 className="font-display text-2xl font-semibold tracking-wide">{t("productivity.title")}</h1>
           <p className={subtitleClass}>{t("productivity.subtitle")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

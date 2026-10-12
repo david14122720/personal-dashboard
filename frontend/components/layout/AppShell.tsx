@@ -107,15 +107,6 @@ function LogoutIcon({ className }: IconProps) {
   );
 }
 
-function SearchIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
-      <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M13.2 13.2L17 17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /** Brand cube: the design's package glyph, drawn in the repo icon style. */
 function CubeIcon({ className }: IconProps) {
   return (
@@ -491,20 +482,6 @@ function TopBar() {
           </>
         ) : null}
       </nav>
-      {/* Decorative search: global search is not implemented; the field stays inert on purpose. */}
-      <div className="hidden min-w-0 max-w-md flex-1 sm:block">
-        <div className="relative">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-          <input
-            type="text"
-            readOnly
-            aria-disabled="true"
-            placeholder={t("nav.searchPlaceholder")}
-            title={t("nav.searchUnavailable")}
-            className="w-full cursor-not-allowed rounded-lg border border-hair bg-panel py-1.5 pl-9 pr-3 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none"
-          />
-        </div>
-      </div>
       <div className="flex shrink-0 items-center gap-3">
         <p className="hidden items-center gap-2 rounded-lg border border-hair bg-panel px-3 py-1.5 font-mono text-xs text-slate-300 lg:flex">
           <CalendarIcon className="h-3.5 w-3.5 text-sky-400" />
