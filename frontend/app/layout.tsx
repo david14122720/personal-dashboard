@@ -24,10 +24,19 @@ const mono = IBM_Plex_Mono({
 // Stitch display face (Control Deck login + habits only). Loaded via
 // next/font so it is self-hosted; `--font-deck-display` in globals.css
 // carries the fallback stack when the font files are unavailable.
+// `preload: false` is deliberate: the class `font-deck-display` is applied
+// ONLY on `/login/` and the habits surfaces, but a font declared in the ROOT
+// layout with the default `preload: true` emits a `<link rel="preload">` on
+// every route, so the browser downloaded Plus Jakarta Sans on pages that never
+// render it. Measured on a cold `/dashboard/` load: that was 27.6 KB of the
+// 538.9 KB transferred (6 preloaded woff2 files, one of them unused). With
+// preload off the @font-face stays in the CSS and the file is fetched on demand
+// wherever the class is actually used, so login/habits keep the real face.
 const deckDisplay = Plus_Jakarta_Sans({
   subsets: ["latin"],
   variable: "--font-deck-display",
   display: "swap",
+  preload: false,
 });
 
 export const metadata: Metadata = {
