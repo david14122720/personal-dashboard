@@ -1,21 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
-import EmptyState from "@/components/ui/EmptyState";
-import TelemetryStrip, { type TelemetryItem } from "@/components/ui/TelemetryStrip";
 import WidgetToggle from "@/components/ui/WidgetToggle";
-import NotificationBell from "@/components/notifications/NotificationBell";
+import DashboardKpis from "@/components/dashboard/DashboardKpis";
+import DeckCard from "@/components/dashboard/DeckCard";
+import { SectionError, SectionSkeleton } from "@/components/dashboard/SectionStates";
 import ExpensePieSection from "@/components/dashboard/ExpensePieSection";
 import TotalTrendSection from "@/components/dashboard/TotalTrendSection";
 import GoalProgress from "@/components/dashboard/widgets/GoalProgress";
 import MovementsSnapshot from "@/components/dashboard/widgets/MovementsSnapshot";
 import PendingTasks from "@/components/dashboard/widgets/PendingTasks";
+import TodayHabits from "@/components/dashboard/widgets/TodayHabits";
 import UpcomingEvents from "@/components/dashboard/widgets/UpcomingEvents";
 import UpcomingPayments from "@/components/dashboard/widgets/UpcomingPayments";
 import UpcomingSubs from "@/components/dashboard/widgets/UpcomingSubs";
+import { deck } from "@/components/ui/deckStyles";
 import {
   buildNextLayout,
   isWidgetVisible,
@@ -27,94 +29,53 @@ import {
   type DashboardLayout,
 } from "@/lib/api/dashboard";
 import {
+  useCategories,
+  useMovements,
   useSubscriptions as useFinanceSubscriptions,
 } from "@/lib/api/finance";
-import { formatMoney } from "@/lib/api/money";
+import { formatMoney, toNumber } from "@/lib/api/money";
 import { t } from "@/lib/i18n";
 import { toMonthlyCost } from "@/lib/dashboard/transforms";
-import { toAccountCards, toTotalBalance } from "@/lib/finance/finance";
+import {
+  currentPeriodRange,
+  formatMovementDate,
+  isPaidThisCycle,
+  toAccountCards,
+  toExpenseByCategory,
+  toTotalBalance,
+  todayInBogota,
+} from "@/lib/finance/finance";
 
 /**
- * Dashboard home container. Home-level SWR reads fire in parallel and
- * coercion happens at the boundary; `components/ui/*` stay pure. The
- * telemetry strip reads three live sources only (D4): account count,
- * monthly subscription cost and total balance. The two movement chart
- * sections below the strip own their own lazily mounted reads (the
- * existing `finance/movements` source plus accounts/categories/prefs)
- * and only mount when opened — no removed aggregate endpoint (net worth,
- * debts, savings, flow, budget or category aggregate) is queried.
+ * Dashboard home container. Home-level SWR reads fire in parallel and coercion
+ * happens at the boundary; `components/ui/*` stay pure. The four KPI tiles read
+ * the same `finance/*` and `dashboard/*` keys the sections below already use
+ * (accounts, preferences, subscriptions, movements, categories, habits): no
+ * aggregate endpoint, no write path. The two movement chart sections keep their
+ * lazily mounted panels, and the app-only widgets (tareas, eventos, metas,
+ * personalizar) stay below the design's six cards so nothing was removed.
  */
 
-function SectionSkeleton() {
-  return (
-    <div
-      role="status"
-      aria-label={t("dashboard.loadingDashboard")}
-      className="animate-pulse rounded-xl border border-hull bg-hull/40 p-5"
-    >
-      <div className="h-4 w-24 rounded bg-hull" />
-    </div>
-  );
-}
-
-function SectionError({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
-      <p className="mt-1 text-sm text-instrument/70">{t("dashboard.sectionLoadFailed")}</p>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
-      >
-        {t("common.retry")}
-      </button>
-    </div>
-  );
-}
-
-/**
- * Local Stitch panel. `span` stays optional so shells nested in the 8/4
- * column blocks do not need grid placement classes.
- */
-function WidgetShell({
-  title,
-  hint,
-  children,
-  span,
-  action,
-}: {
-  title: string;
-  hint?: string;
-  children: React.ReactNode;
-  span?: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <section
-      aria-label={title}
-      className={`rounded-xl border border-hull bg-panel/90 p-4 sm:p-5 ${span ?? ""}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="font-display text-base font-medium tracking-wide">{title}</h2>
-          {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
-        </div>
-        {action}
-      </div>
-      <div className="mt-4">{children}</div>
-    </section>
-  );
-}
+/** Honest sub-header pill: it only claims live sync when every page read
+ * finished without error. */
 
 export default function DashboardHome() {
   const { mutate } = useSWRConfig();
   const [layoutOverride, setLayoutOverride] = useState<DashboardLayout | null>(null);
+  // Render the mobile status-row date after mount so the statically exported
+  // HTML never disagrees with the client clock (same rule as the shell pill).
+  const [todayLabel, setTodayLabel] = useState("");
+  useEffect(() => {
+    setTodayLabel(formatMovementDate(todayInBogota()));
+  }, []);
 
   const accounts = useAccounts();
   const habits = useHabitsToday();
   const prefs = usePreferences();
-  // Strip-only finance reads (finance/* scope, independent of widget visibility).
+  // KPI-only finance reads (same SWR keys as the chart sections below).
   const financeSubs = useFinanceSubscriptions();
+  const movements = useMovements();
+  const categories = useCategories();
   const updateLayout = useUpdateLayout();
   const baseLayout = resolveDashboardLayout(prefs.data);
   const layout = layoutOverride ?? baseLayout;
@@ -124,13 +85,20 @@ export default function DashboardHome() {
     setLayoutOverride(next);
     void updateLayout(next);
   };
-  const retryDashboards = () =>
-    void mutate((key) => typeof key === "string" && key.startsWith("dashboard/"));
+  /** Every read whose failure puts the KPI row in its error state:
+   * `useAccounts` (`dashboard/accounts`), `usePreferences` (`dashboard/me`)
+   * and `useSubscriptions` (`finance/subscriptions`). The row's `Reintentar`
+   * revalidates exactly these — a prefix walk over `dashboard/` would be a
+   * no-op for a failed subscriptions read (JD item 6). */
+  const retryKpiRow = () => {
+    void mutate("dashboard/accounts");
+    void mutate("dashboard/me");
+    void mutate("finance/subscriptions");
+  };
 
-  const telemetryLoading = Boolean(accounts.isLoading || financeSubs.isLoading);
-  const telemetryError = Boolean(accounts.error || financeSubs.error);
-  const habitsLoading = Boolean(habits.isLoading);
-  const habitsError = Boolean(habits.error);
+
+  const kpiLoading = Boolean(accounts.isLoading || financeSubs.isLoading || prefs.isLoading);
+  const kpiError = Boolean(accounts.error || financeSubs.error || prefs.error);
 
   const locale = prefs.data?.preferences.locale ?? "es-CO";
   const currency = prefs.data?.preferences.currency_code ?? "COP";
@@ -139,17 +107,99 @@ export default function DashboardHome() {
 
   // The accounts list endpoint already hides archived rows server-side
   // (`NOT is_archived`), so its length is the non-archived account count.
-  const accountsCount = (accounts.data ?? []).length;
-  const monthlyCost = toMonthlyCost(financeSubs.data);
-  const totalBalance = toTotalBalance(toAccountCards(accounts.data), currency);
+  const accountsList = accounts.data ?? [];
+  const accountNames = accountsList.map((account) => account.name);
+  const accountsFooter =
+    accountNames.length === 0
+      ? t("dashboard.kpiAccountsEmpty")
+      : accountNames.length <= 3
+        ? accountNames.join(", ")
+        : `${accountNames.slice(0, 3).join(", ")} ${t("dashboard.kpiAccountsMore", {
+            n: accountNames.length - 3,
+          })}`;
 
-  const strip: TelemetryItem[] = [
-    { id: "accounts", label: t("finance.accounts"), display: String(accountsCount) },
-    { id: "subscriptions", label: t("finance.subscriptions"), display: fmt(monthlyCost) },
-    { id: "total-balance", label: t("dashboard.totalBalance"), display: fmt(totalBalance) },
-  ];
+  // Same-currency rule as Finanzas: `toMonthlyCost` applies frequency factors
+  // only and performs no currency conversion, so a foreign-currency
+  // subscription would silently mix currencies into one total. Exclude it and
+  // state the exclusion (never convert).
+  const subsInCurrency = (financeSubs.data ?? []).filter((sub) => sub.currency === currency);
+  const excludedSubs = (financeSubs.data ?? []).length - subsInCurrency.length;
+  const monthlyCost = toMonthlyCost(subsInCurrency);
+  const today = todayInBogota();
+  const pendingCharges = (financeSubs.data ?? []).filter(
+    (sub) =>
+      sub.is_active === true &&
+      sub.next_billing_on !== null &&
+      sub.next_billing_on !== undefined &&
+      !isPaidThisCycle(
+        { last_paid_on: sub.last_paid_on ?? null, next_billing_on: sub.next_billing_on },
+        today,
+      ),
+  ).length;
+  const subsPendingCopy =
+    pendingCharges === 0
+      ? t("dashboard.kpiSubsNone")
+      : pendingCharges === 1
+        ? t("dashboard.kpiSubsPendingOne")
+        : t("dashboard.kpiSubsPending", { n: pendingCharges });
+  const subsFooter =
+    excludedSubs > 0
+      ? `${subsPendingCopy} · ${t("dashboard.kpiBalanceExcluded", { n: excludedSubs })}`
+      : subsPendingCopy;
 
-  const pendingHabits = (habits.data ?? []).filter((h) => h.today_status === "pending");
+  const accountCards = toAccountCards(accounts.data);
+  const totalBalance = toTotalBalance(accountCards, currency);
+  const excludedAccounts = accountCards.filter((account) => account.currency !== currency).length;
+  const balanceFooter =
+    excludedAccounts > 0
+      ? `${t("dashboard.kpiBalanceFooter", { currency })} · ${t("dashboard.kpiBalanceExcluded", {
+          n: excludedAccounts,
+        })}`
+      : t("dashboard.kpiBalanceFooter", { currency });
+
+  // Current-cycle spend (natural month, same window the chart defaults to) over
+  // same-currency accounts only; the chips are the real categories, truncated
+  // to two plus an honest `+N más` marker so the decomposition never silently
+  // drops a real category (the KPI keeps summing all of them).
+  const cycleRange = currentPeriodRange("month");
+  const currencyByAccountId = new Map(
+    (accounts.data ?? []).map((account) => [account.id, account.currency]),
+  );
+  const cycleSpend = (movements.data ?? []).reduce((sum, movement) => {
+    if (movement.direction !== "expense") return sum;
+    if (currencyByAccountId.get(movement.account_id) !== currency) return sum;
+    if (movement.occurred_on < cycleRange.from || movement.occurred_on > cycleRange.to) return sum;
+    return sum + toNumber(movement.amount);
+  }, 0);
+  const cycleSlices = toExpenseByCategory(movements.data, {
+    range: cycleRange,
+    categories: categories.data,
+    currencyByAccountId,
+    userCurrency: currency,
+  });
+  const cycleChips = cycleSlices
+    .slice(0, 2)
+    .map((slice) => t("dashboard.kpiCycleChip", { name: slice.name, amount: fmt(slice.value) }));
+  const hiddenCycleChips = Math.max(0, cycleSlices.length - cycleChips.length);
+  const cycleTone: "ok" | "empty" | "loading" | "error" = movements.error
+    ? "error"
+    : movements.isLoading
+      ? "loading"
+      : cycleSpend === 0
+        ? "empty"
+        : "ok";
+  const cycleFooter =
+    cycleTone === "error"
+      ? t("dashboard.kpiCycleSpendUnavailable")
+      : cycleTone === "loading"
+        ? t("common.loading")
+        : cycleTone === "empty"
+          ? t("dashboard.kpiCycleSpendEmpty")
+          : cycleChips.length > 0
+            ? hiddenCycleChips > 0
+              ? `${cycleChips.join(" + ")} ${t("dashboard.kpiCycleMore", { n: hiddenCycleChips })}`
+              : cycleChips.join(" + ")
+            : t("dashboard.kpiCycleSpendUncategorized");
 
   const customizeRows = [
     { id: "upcoming-payments", label: t("dashboard.upcomingPayments") },
@@ -159,146 +209,159 @@ export default function DashboardHome() {
   ];
 
   return (
-    <div>
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-wide">
-            {t("dashboard.overviewTitle")}
-          </h1>
-          <p className="mt-1 text-sm text-slate-400">{t("dashboard.overviewSubtitle")}</p>
+    <div className="flex flex-col gap-6">
+      <section className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        {/* Mobile prototype status row (`dashboard-mobile.html:7`): sync pill +
+            real Bogotá date. The date stays out of the desktop branch (`md:hidden`)
+            because the shell's topbar date pill is the desktop affordance. */}
+        <div className="flex items-center justify-between gap-3 md:order-2 md:justify-end">
+          <p className="text-xs text-muted md:hidden">{todayLabel}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard/finance/"
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft"
-          >
-            {t("dashboard.logActivity")}
-          </Link>
-          <NotificationBell />
+        <div className="flex items-start justify-between gap-3 md:order-1 md:w-full">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight text-instrument">
+              {t("dashboard.overviewTitle")}
+            </h1>
+            <p className="mt-0.5 text-sm text-muted">{t("dashboard.overviewSubtitle")}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Link
+              href="/dashboard/finance/"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft"
+            >
+              {t("dashboard.logActivity")}
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {kpiLoading ? (
+        <SectionSkeleton />
+      ) : kpiError ? (
+        <SectionError onRetry={retryKpiRow} />
+      ) : (
+        <DashboardKpis
+          accounts={{
+            count: String(accountsList.length),
+            unit: t("dashboard.kpiAccountsUnit"),
+            footer: accountsFooter,
+          }}
+          subscriptions={{
+            display: fmt(monthlyCost),
+            currency,
+            footer: subsFooter,
+          }}
+          balance={{ display: fmt(totalBalance), footer: balanceFooter }}
+          cycleSpend={{
+            display: cycleTone === "error" || cycleTone === "loading" ? "—" : fmt(cycleSpend),
+            currency: prefs.data?.preferences.currency_code ?? "COP",
+            footer: cycleFooter,
+            tone: cycleTone,
+          }}
+        />
+      )}
+
+      {/* Design order (dashboard-mobile.html): chart, donut, movements, habits,
+          subscriptions, payments. The column wrappers become `display:contents`
+          below `lg`, so the `order-*` classes of each card drive that single
+          stack; from `lg` the wrappers are the two independent 7/5 columns. */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start lg:gap-6">
+        <div className="max-lg:contents lg:col-span-7 lg:space-y-6">
+          <TotalTrendSection className="order-1" />
+          <MovementsSnapshot className="order-3" />
+          <TodayHabits className="order-4" />
+        </div>
+        <div className="max-lg:contents lg:col-span-5 lg:space-y-6">
+          <ExpensePieSection className="order-2" />
+          <UpcomingSubs className="order-5" />
+          {visible("upcoming-payments") ? (
+            <UpcomingPayments
+              className="order-6"
+              action={
+                <WidgetToggle
+                  id="upcoming-payments"
+                  visible
+                  onToggle={(v) => toggle("upcoming-payments", v)}
+                />
+              }
+            />
+          ) : null}
         </div>
       </div>
 
-      <div className="mt-6">
-        {telemetryLoading ? (
-          <SectionSkeleton />
-        ) : telemetryError ? (
-          <SectionError onRetry={retryDashboards} />
-        ) : (
-          <TelemetryStrip items={strip} />
-        )}
-      </div>
-
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
-        <div className="col-span-12 lg:col-span-7">
-          <TotalTrendSection />
-        </div>
-        <div className="col-span-12 lg:col-span-5">
-          <ExpensePieSection />
-        </div>
-      </div>
-
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
-        <WidgetShell
-          title={t("dashboard.latestMovementsTitle")}
-          hint={t("dashboard.latestMovementsHint")}
-          span="col-span-12 lg:col-span-6"
-        >
-          <MovementsSnapshot />
-        </WidgetShell>
-        <WidgetShell
-          title={t("dashboard.upcomingSubscriptionsTitle")}
-          hint={t("dashboard.upcomingSubscriptionsHint")}
-          span="col-span-12 lg:col-span-6"
-        >
-          <UpcomingSubs />
-        </WidgetShell>
-      </div>
-
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
-        <div className="space-y-6 lg:col-span-4">
-          <WidgetShell title={t("dashboard.today")} hint={t("dashboard.todayHint")}>
-            {habitsLoading ? (
-              <SectionSkeleton />
-            ) : habitsError ? (
-              <SectionError onRetry={retryDashboards} />
-            ) : pendingHabits.length === 0 ? (
-              <EmptyState title={t("dashboard.nothingPending")} hint={t("dashboard.allCheckedIn")} />
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {pendingHabits.map((habit) => (
-                  <li
-                    key={habit.habit_id}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
-                  >
-                    <span className="truncate text-sm">{habit.name}</span>
-                    <span className="shrink-0 font-mono text-xs tabular-nums text-slate-400">
-                      {t("dashboard.habitStreak", { n: habit.current_streak })}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </WidgetShell>
-        </div>
-
-        {visible("upcoming-payments") ? (
-          <WidgetShell
-            title={t("dashboard.upcomingPayments")}
-            hint={t("dashboard.upcomingPaymentsHint")}
-            span="col-span-12 lg:col-span-7"
-            action={<WidgetToggle id="upcoming-payments" visible onToggle={(v) => toggle("upcoming-payments", v)} />}
-          >
-            <UpcomingPayments />
-          </WidgetShell>
-        ) : null}
+      {/* App-only widgets the design does not have. They keep their real
+          visibility switches and are grouped below the design's six cards. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {visible("pending-tasks") ? (
-          <WidgetShell
+          <DeckCard
             title={t("dashboard.pendingTasks")}
             hint={t("dashboard.pendingTasksHint")}
-            span="col-span-12 lg:col-span-5"
-            action={<WidgetToggle id="pending-tasks" visible onToggle={(v) => toggle("pending-tasks", v)} />}
+            className="col-span-12 lg:col-span-5"
+            action={
+              <WidgetToggle
+                id="pending-tasks"
+                visible
+                onToggle={(v) => toggle("pending-tasks", v)}
+              />
+            }
           >
             <PendingTasks />
-          </WidgetShell>
+          </DeckCard>
         ) : null}
         {visible("upcoming-events") ? (
-          <WidgetShell
+          <DeckCard
             title={t("dashboard.upcomingEvents")}
             hint={t("dashboard.upcomingEventsHint")}
-            span="col-span-12 lg:col-span-5"
-            action={<WidgetToggle id="upcoming-events" visible onToggle={(v) => toggle("upcoming-events", v)} />}
+            className="col-span-12 lg:col-span-5"
+            action={
+              <WidgetToggle
+                id="upcoming-events"
+                visible
+                onToggle={(v) => toggle("upcoming-events", v)}
+              />
+            }
           >
             <UpcomingEvents />
-          </WidgetShell>
+          </DeckCard>
         ) : null}
         {visible("goal-progress") ? (
-          <WidgetShell
+          <DeckCard
             title={t("dashboard.goalProgress")}
             hint={t("dashboard.goalProgressHint")}
-            span="col-span-12 lg:col-span-5"
-            action={<WidgetToggle id="goal-progress" visible onToggle={(v) => toggle("goal-progress", v)} />}
+            className="col-span-12 lg:col-span-5"
+            action={
+              <WidgetToggle
+                id="goal-progress"
+                visible
+                onToggle={(v) => toggle("goal-progress", v)}
+              />
+            }
           >
             <GoalProgress />
-          </WidgetShell>
+          </DeckCard>
         ) : null}
-        <WidgetShell
+        <DeckCard
           title={t("dashboard.customize")}
           hint={t("dashboard.customizeHint")}
-          span="col-span-12"
+          className="col-span-12"
         >
           <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
             {customizeRows.map((row) => (
               <li
                 key={row.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-lg border border-hair px-3 py-2"
               >
                 <span className="truncate text-sm">{row.label}</span>
                 <WidgetToggle id={row.id} visible={visible(row.id)} onToggle={(v) => toggle(row.id, v)} />
               </li>
             ))}
           </ul>
-        </WidgetShell>
+        </DeckCard>
       </div>
+
+      <footer className="border-t border-hair py-5 text-center text-xs text-faint">
+        <p>{t("dashboard.footerLine")}</p>
+      </footer>
     </div>
   );
 }

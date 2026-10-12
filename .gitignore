@@ -37,3 +37,9 @@ frontend/playwright-report/
 # MCP server
 mcp-dashboard/node_modules/
 mcp-dashboard/dist/
+
+# Local tooling and build caches (never part of a change; a `git add -A` would sweep them in)
+.codegraph/
+.playwright-cli/
+.pi/
+frontend/tsconfig.tsbuildinfo

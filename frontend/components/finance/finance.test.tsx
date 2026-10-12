@@ -301,6 +301,136 @@ describe("finance screens", () => {
   });
 });
 
+// -- T4 Finanzas body (RED/GREEN: real KPI data, toolbar operations, quick links) --
+describe("finance T4 body", () => {
+  it("renders the KPI row from the live reads: real total, real count, no prototype figure", async () => {
+    renderScreens();
+    const kpis = await screen.findByRole("region", { name: "Métricas de finanzas" });
+    // Visa (-500) + Wallet (200) = -300 in the user currency.
+    expect(
+      // `formatMoney` uses a non-breaking space; the matcher normalizes it.
+      within(kpis).getByText(/^-\$\s*300$/),
+    ).toBeInTheDocument();
+    expect(within(kpis).getByText("2")).toBeInTheDocument();
+    expect(within(kpis).getByText("Saldo Total Consolidado")).toBeInTheDocument();
+    expect(within(kpis).getByText("Cuentas & Billeteras")).toBeInTheDocument();
+    expect(within(kpis).getByText("Gastos del Período")).toBeInTheDocument();
+    expect(within(kpis).getByText("Suscripciones Recurrentes")).toBeInTheDocument();
+    // D10: the prototype's figures never render.
+    expect(within(kpis).queryByText(/2\.620\.900/)).not.toBeInTheDocument();
+    expect(within(kpis).queryByText(/5\.2%/)).not.toBeInTheDocument();
+  });
+
+  it("never hides a real cycle category: two chips plus an honest +N más marker", async () => {
+    // The cycle window is the current natural month in Bogotá, so the fixture
+    // dates are derived from the app clock instead of being hardcoded.
+    const day = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Bogota",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const expense = (id: string, amount: string, categoryId: string) => ({
+      id,
+      direction: "expense",
+      amount,
+      occurred_on: day,
+      description: null,
+      account_id: "a1",
+      category_id: categoryId,
+      subscription_id: null,
+      created_at: day,
+      updated_at: day,
+    });
+    const category = (id: string, name: string) => ({
+      id,
+      kind: "finance",
+      name,
+      color: null,
+      icon: null,
+      is_archived: false,
+      created_at: "2026-09-01T00:00:00Z",
+    });
+    server.use(
+      http.get("http://test.local/api/categories", () =>
+        HttpResponse.json([
+          category("c1", "Comida"),
+          category("c2", "Transporte"),
+          category("c3", "Mascotas"),
+        ]),
+      ),
+      http.get("http://test.local/api/movements", () =>
+        HttpResponse.json([
+          expense("m-a", "35000.00", "c1"),
+          expense("m-b", "27000.00", "c2"),
+          expense("m-c", "20000.00", "c3"),
+        ]),
+      ),
+    );
+    renderScreens();
+    const kpis = await screen.findByRole("region", { name: "Métricas de finanzas" });
+    // The KPI stays complete (35.000 + 27.000 + 20.000) while the chips state the
+    // category they folded, so the breakdown can always be reconciled.
+    expect(within(kpis).getByText("$ 82.000")).toBeInTheDocument();
+    expect(
+      within(kpis).getByText("Comida ($ 35.000) + Transporte ($ 27.000) +1 más"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the transfer modal from the header toolbar without a preselected origin", async () => {
+    renderScreens();
+    const toolbarButton = await screen.findByRole("button", { name: "Mover dinero" });
+    fireEvent.click(toolbarButton);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Mover dinero" })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Cuenta origen")).toHaveValue("");
+  });
+
+  it("starts the first real balance editor from the header reconcile action", async () => {
+    renderScreens();
+    fireEvent.click(await screen.findByRole("button", { name: "Conciliar saldo" }));
+    expect(await screen.findByLabelText("Editar saldo de Visa")).toBeInTheDocument();
+  });
+
+  it("filters the movements through the round direction chips", async () => {
+    renderScreens();
+    const panel = await screen.findByRole("region", { name: "Movimientos" });
+    const chip = within(panel).getByRole("button", { name: "Gastos" });
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    expect(within(panel).getByLabelText("Tipo")).toHaveValue("expense");
+  });
+
+  it("links the chart footer and the quick access cards to real routes", async () => {
+    renderScreens();
+    const chart = await screen.findByRole("region", { name: "Gastos e ingresos por categoría" });
+    // Next normalizes the rendered href (no trailing slash).
+    expect(within(chart).getByRole("link", { name: "Comparar categorías de gasto" })).toHaveAttribute(
+      "href",
+      "/dashboard/finance/compare",
+    );
+    const quick = screen.getByRole("navigation", { name: "Acciones rápidas" });
+    expect(within(quick).getByRole("link", { name: /Suscripciones/ })).toHaveAttribute(
+      "href",
+      "/dashboard/ajustes",
+    );
+    expect(within(quick).getByRole("link", { name: /Progreso/ })).toHaveAttribute(
+      "href",
+      "/dashboard/progreso",
+    );
+  });
+
+  it("routes the subscriptions card to the real create/edit path in Ajustes", async () => {
+    renderScreens();
+    const subs = await screen.findByRole("region", { name: "Suscripciones: crear y gestionar" });
+    expect(within(subs).getByRole("link", { name: "Gestionar en Ajustes" })).toHaveAttribute(
+      "href",
+      "/dashboard/ajustes",
+    );
+  });
+});
+
 // -- S5 escritura superviviente (RED: mutadores + forms por dominio, montos string) --
 import {
   createBankAccount,

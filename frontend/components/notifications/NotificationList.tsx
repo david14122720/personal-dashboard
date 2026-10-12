@@ -11,13 +11,13 @@ function Row({ item, muted, onToggleMute }: { item: NotificationItem; muted: Rec
   const isMuted = Boolean(muted[item.id]);
   const finance = item.kind === "subscription";
   return (
-    <li className={`flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2 ${isMuted ? "opacity-60" : ""}`}>
+    <li className={`flex items-center justify-between gap-3 rounded-lg border border-hair px-3 py-2 ${isMuted ? "opacity-60" : ""}`}>
       <div className="min-w-0">
         <p className="truncate text-sm">{item.title}</p>
         <p className="mt-0.5 text-xs text-instrument/60">{item.amount !== undefined ? t("notifications.amountDue", { amount: formatMoney(item.amount), date: item.due }) : t("notifications.dueOn", { date: item.due })}</p>
         <a href={finance ? financeHref : prodHref} className="mt-0.5 inline-block text-xs text-signal underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-signal">{finance ? t("dashboard.viewInFinance") : t("dashboard.viewInProductivity")}</a>
       </div>
-      <button type="button" role="switch" aria-checked={!isMuted} aria-label={`${isMuted ? t("notifications.unmute") : t("notifications.mute")}: ${item.title}`} onClick={() => onToggleMute(item.id)} className="shrink-0 rounded-md border border-hull px-2 py-1 font-display text-xs text-instrument/70 transition-colors hover:border-signal hover:text-signal focus-visible:outline-2 focus-visible:outline-signal">
+      <button type="button" role="switch" aria-checked={!isMuted} aria-label={`${isMuted ? t("notifications.unmute") : t("notifications.mute")}: ${item.title}`} onClick={() => onToggleMute(item.id)} className="shrink-0 rounded-md border border-hair px-2 py-1 font-display text-xs text-instrument/70 transition-colors hover:border-signal hover:text-signal focus-visible:outline-2 focus-visible:outline-signal">
         {isMuted ? t("notifications.unmute") : t("notifications.mute")}
       </button>
     </li>

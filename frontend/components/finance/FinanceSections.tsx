@@ -1,10 +1,14 @@
-import EmptyState from "@/components/ui/EmptyState";
-import { formatMoney } from "@/lib/api/money";
-import type { CompactMoneyRow } from "@/lib/finance/finance";
+import { deck } from "@/components/ui/deckStyles";
 
 /**
- * Pure presentational sections for the finance screens. Containers own all
- * SWR reads and money coercion; these components receive numbers only.
+ * Pure presentational shells for the finance screens. Containers own all SWR
+ * reads and money coercion; these components receive numbers only.
+ *
+ * T4 moved every Finanzas card to `components/dashboard/DeckCard` (the
+ * prototype card chrome shared with Resumen). T8e finished the job: the shell
+ * now uses the shared panel/section-header recipes instead of the old chrome.
+ * Its only consumer is the compare sub-route
+ * (`app/dashboard/finance/compare/page.tsx`), so no other surface changes.
  */
 
 export function SectionShell({
@@ -19,47 +23,14 @@ export function SectionShell({
   span: string;
 }) {
   return (
-    <section aria-label={title} className={`flex h-full flex-col rounded-xl border border-hull bg-panel/90 p-4 sm:p-5 ${span}`}>
-      <h2 className="font-display text-base font-medium tracking-wide">{title}</h2>
-      {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
+    <section aria-label={title} className={`${deck.panel} flex h-full flex-col ${span}`}>
+      <div className={deck.sectionHeader}>
+        <div className="min-w-0">
+          <h2 className={deck.sectionTitle}>{title}</h2>
+          {hint ? <p className={deck.sectionSubtitle}>{hint}</p> : null}
+        </div>
+      </div>
       <div className="mt-4 flex-1">{children}</div>
     </section>
   );
 }
-
-export function CompactMoneyList({
-  rows,
-  locale,
-  emptyTitle,
-  emptyHint,
-}: {
-  rows: CompactMoneyRow[];
-  locale: string;
-  emptyTitle: string;
-  emptyHint: string;
-}) {
-  if (rows.length === 0) {
-    return <EmptyState title={emptyTitle} hint={emptyHint} />;
-  }
-  return (
-    <ul className="flex flex-col gap-2">
-      {rows.map((row) => (
-        <li
-          key={row.id}
-          className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
-        >
-          <div className="min-w-0">
-            <p className="truncate text-sm">{row.title}</p>
-            {row.detail ? (
-              <p className="line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">{row.detail}</p>
-            ) : null}
-          </div>
-          <p className="shrink-0 font-mono text-sm tabular-nums">
-            {formatMoney(row.amount, { locale, currency: row.currency })}
-          </p>
-        </li>
-      ))}
-    </ul>
-  );
-}
-

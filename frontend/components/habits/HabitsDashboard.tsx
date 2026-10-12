@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import { t, type EsKey } from "@/lib/i18n";
+import { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { deck } from "@/components/ui/deckStyles";
+import KpiTile from "@/components/ui/KpiTile";
 import { DASHBOARD_HABITS_TODAY_KEY } from "@/lib/api/dashboard";
 import {
   HABITS_LIST_KEY,
@@ -125,10 +128,14 @@ function subtitleFor(habit: DashHabit): string | null {
   return category ? t("habitsDashboard.habitSubtitle", { category, detail }) : detail;
 }
 
-const KPI_CARD =
-  "flex min-h-[176px] flex-col justify-between rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px]";
-const CARD = "rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px]";
-const KPI_LABEL = "font-display text-[11px] font-semibold uppercase tracking-widest text-instrument/60";
+const CARD = "rounded-2xl border border-hair bg-card p-[22px] shadow-sm";
+
+/** Known categories keep their real i18n labels and lead the tab order. */
+const CANONICAL_CATEGORIES = [
+  { value: "Salud & Físico", labelKey: "habitsDashboard.filterHealth" as EsKey },
+  { value: "Productividad", labelKey: "habitsDashboard.filterProductivity" as EsKey },
+  { value: "Mentalidad", labelKey: "habitsDashboard.filterMind" as EsKey },
+];
 
 function CalendarIcon({ className }: { className?: string }) {
   return (
@@ -202,6 +209,16 @@ function ShieldCheckIcon({ className }: { className?: string }) {
   );
 }
 
+/** Inline stand-in for the prototype's `psychology` glyph: the real level row. */
+function BrainIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M8.2 3.2A2.4 2.4 0 005.4 5c-1.2.3-2 1.3-2 2.5 0 .8.3 1.4.9 1.9-.4.5-.6 1-.6 1.7 0 1.5 1.2 2.7 2.7 2.7h.6v3h4.6V6.1a2.9 2.9 0 00-3.4-2.9z" />
+      <path d="M13.4 3.6a2.6 2.6 0 012.5 1.9c.9.3 1.5 1.2 1.5 2.2 0 .7-.3 1.3-.7 1.7.3.4.4.9.4 1.4 0 1.4-1.1 2.5-2.5 2.5H14" />
+    </svg>
+  );
+}
+
 function BulbIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -212,29 +229,39 @@ function BulbIcon({ className }: { className?: string }) {
 
 function ProgressRing({ pct }: { pct: number }) {
   const clamped = Math.min(100, Math.max(0, pct));
-  const radius = 26;
+  const radius = 24;
   const length = 2 * Math.PI * radius;
   return (
-    <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true" className="shrink-0">
-      <circle cx="32" cy="32" r={radius} fill="none" stroke="var(--color-hull)" strokeWidth="6" />
+    <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true" className="shrink-0">
+      <circle cx="28" cy="28" r={radius} fill="none" stroke="var(--color-container-highest)" strokeWidth="5" />
       <circle
-        cx="32"
-        cy="32"
+        cx="28"
+        cy="28"
         r={radius}
         fill="none"
         stroke="var(--color-signal)"
-        strokeWidth="6"
+        strokeWidth="5"
         strokeLinecap="round"
         strokeDasharray={length.toFixed(1)}
         strokeDashoffset={(length * (1 - clamped / 100)).toFixed(1)}
-        transform="rotate(-90 32 32)"
+        transform="rotate(-90 28 28)"
+        className="drop-shadow-[0_0_6px_rgba(56,189,248,0.6)]"
       />
     </svg>
   );
 }
 
+function DonutIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <circle cx="10" cy="10" r="6.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M10 3.5a6.5 6.5 0 016.4 7.7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function Skeleton({ className }: { className?: string }) {
-  return <div aria-hidden="true" className={`animate-pulse rounded-2xl bg-hull/40 ${className ?? ""}`} />;
+  return <div aria-hidden="true" className={`animate-pulse rounded-2xl bg-card ${className ?? ""}`} />;
 }
 
 export interface HabitsDashboardProps {
@@ -359,17 +386,6 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   const todayPct = todayStats.total > 0 ? Math.round((todayStats.done / todayStats.total) * 100) : 0;
 
   const wireById = useMemo(() => new Map(wires.map((wire) => [wire.id, wire])), [wires]);
-  const gridRows: HabitGridRow[] = activeRows
-    .filter((habit) => (filter ? (habit.category?.trim() ?? "") === filter : true))
-    .map((habit) => {
-      const wire = wireById.get(habit.id);
-      return {
-        habit,
-        color: wire?.color ?? null,
-        icon: wire?.icon ?? null,
-        subtitle: subtitleFor(habit),
-      };
-    });
 
   const reportRows: HabitReportRow[] = useMemo(
     () =>
@@ -387,6 +403,43 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
       }),
     [activeRows, displayLogs, month, today],
   );
+
+  // The matrix reads the same per-habit numbers as the weekly report (one
+  // source, so the Racha/Éxito columns can never drift from the modal).
+  const reportById = useMemo(() => new Map(reportRows.map((row) => [row.id, row])), [reportRows]);
+  const gridRows: HabitGridRow[] = activeRows
+    .filter((habit) => (filter ? (habit.category?.trim() ?? "") === filter : true))
+    .map((habit) => {
+      const wire = wireById.get(habit.id);
+      const report = reportById.get(habit.id);
+      return {
+        habit,
+        color: wire?.color ?? null,
+        icon: wire?.icon ?? null,
+        subtitle: subtitleFor(habit),
+        streakDays: report?.currentStreak ?? 0,
+        successPct: report?.monthPct ?? 0,
+      };
+    });
+
+  // One tab per real category with a real count; a category with no habits in
+  // the visible month is omitted honestly (no empty tabs).
+  const categoryTabs = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const habit of activeRows) {
+      const category = habit.category?.trim();
+      if (category) counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+    const tabs: Array<{ value: string; label: string; count: number }> = [];
+    for (const tab of CANONICAL_CATEGORIES) {
+      const count = counts.get(tab.value) ?? 0;
+      if (count > 0) tabs.push({ value: tab.value, label: t(tab.labelKey), count });
+    }
+    for (const [value, count] of counts) {
+      if (!CANONICAL_CATEGORIES.some((tab) => tab.value === value)) tabs.push({ value, label: value, count });
+    }
+    return tabs;
+  }, [activeRows]);
 
   function isDone(habitId: string, date: string): boolean {
     return donePairs.has(`${habitId}|${date}`);
@@ -478,25 +531,9 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
             })
           : "";
 
-  const canonicalCategories = [
-    { value: "Salud & Físico", labelKey: "habitsDashboard.filterHealth" as EsKey },
-    { value: "Productividad", labelKey: "habitsDashboard.filterProductivity" as EsKey },
-    { value: "Mentalidad", labelKey: "habitsDashboard.filterMind" as EsKey },
-  ];
-  const extraCategories = useMemo(() => {
-    const seen = new Set<string>();
-    for (const habit of activeRows) {
-      const category = habit.category?.trim();
-      if (category && !canonicalCategories.some((tab) => tab.value === category)) seen.add(category);
-    }
-    return [...seen];
-  }, [activeRows]);
-  const categoryCount = (value: string): number =>
-    activeRows.filter((habit) => (habit.category?.trim() ?? "") === value).length;
-
   const archivedSection =
     archivedHabits.length > 0 ? (
-      <section className="rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 px-4 py-3">
+      <section className="rounded-2xl border border-hair bg-card px-4 py-3">
         <button
           type="button"
           aria-expanded={archivedOpen}
@@ -510,14 +547,14 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
             {archivedHabits.map((habit) => (
               <li
                 key={habit.id}
-                className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-deck/50 px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-xl border border-hair bg-panel px-3 py-2"
               >
                 <span className="truncate text-sm text-instrument/80">{habit.name}</span>
                 <button
                   type="button"
                   aria-label={t("habitsDashboard.unarchiveLabel", { name: habit.name })}
                   onClick={() => void handleUnarchive(habit.id)}
-                  className="shrink-0 rounded-lg border border-hull px-3 py-1 font-display text-xs text-instrument transition-colors hover:border-signal hover:text-signal"
+                  className="shrink-0 rounded-lg border border-hair px-3 py-1 font-display text-xs text-instrument transition-colors hover:border-signal hover:text-signal"
                 >
                   {t("habitsDashboard.unarchive")}
                 </button>
@@ -529,40 +566,42 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
     ) : null;
 
   return (
-    <div className="mx-auto flex w-full max-w-[1060px] flex-col gap-5">
-      <header className="flex flex-col gap-5 min-[1200px]:flex-row min-[1200px]:items-start min-[1200px]:justify-between">
+    <div className="flex w-full flex-col gap-5">
+      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="inline-flex items-center gap-2 rounded-full border border-signal/30 bg-signal/10 px-3 py-1 font-display text-[11px] uppercase tracking-widest text-signal">
-            <span aria-hidden="true" className="animate-glow-pulse h-1.5 w-1.5 rounded-full bg-signal" />
-            {t("habitsDashboard.livePill")}
-            <span aria-hidden="true">•</span>
-            <span className="normal-case text-instrument/60">{t("habitsDashboard.cycleActive", { n: dayCount })}</span>
-          </p>
-          <h1 className="font-deck-display mt-4 text-[40px] font-bold leading-tight tracking-wide text-instrument">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={deck.focusChip}>
+              <span aria-hidden="true" className={deck.focusChipDot} />
+              {t("habitsDashboard.livePill")}
+            </span>
+            <span aria-hidden="true" className="text-xs text-slate-500">
+              •
+            </span>
+            <span className="text-xs font-medium text-slate-400">
+              {t("habitsDashboard.cycleActive", { n: dayCount })}
+            </span>
+          </div>
+          <h1 className="font-deck-display mt-3 text-headline-xl-mobile font-bold tracking-tight text-instrument sm:text-headline-xl">
             {t("habitsDashboard.title")}
           </h1>
-          <p className="mt-2 max-w-[640px] text-sm text-instrument/60">{t("habitsDashboard.subtitle")}</p>
+          <p className="mt-1 max-w-[640px] text-body-md text-slate-400">{t("habitsDashboard.subtitle")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <div
-            role="group"
-            aria-label={t("habitsDashboard.monthNav")}
-            className="inline-flex items-center gap-1 rounded-2xl border border-hull bg-deck/70 p-1.5"
-          >
+          <div role="group" aria-label={t("habitsDashboard.monthNav")} className={deck.calendarNavGroup}>
             <button
               type="button"
               aria-label={t("habitsDashboard.monthPrev")}
               disabled={month <= historyStartMonth}
               onClick={() => go(-1)}
-              className="rounded-lg p-1.5 transition-colors hover:bg-signal/10 hover:text-signal disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-instrument"
+              className={deck.calendarNavButton}
             >
               <ChevronLeftIcon className="h-4 w-4" />
             </button>
-            <span aria-live="polite" className="flex min-w-36 items-center justify-center gap-2 px-1">
+            <span aria-live="polite" className="flex min-w-32 items-center justify-center gap-2 px-1">
               <CalendarIcon className="h-4 w-4 text-signal" />
               <span className="flex flex-col leading-tight">
                 <span className="font-display text-sm font-semibold text-instrument">{parts.name}</span>
-                <span className="font-mono text-[11px] tabular-nums text-instrument/50">{parts.year}</span>
+                <span className="font-mono text-[10px] tabular-nums text-slate-500">{parts.year}</span>
               </span>
             </span>
             <button
@@ -570,16 +609,12 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
               aria-label={t("habitsDashboard.monthNext")}
               disabled={month >= currentMonth}
               onClick={() => go(1)}
-              className="rounded-lg p-1.5 transition-colors hover:bg-signal/10 hover:text-signal disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-instrument"
+              className={deck.calendarNavButton}
             >
               <ChevronRightIcon className="h-4 w-4" />
             </button>
           </div>
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#38BDF8] to-[#4F7CFF] px-4 py-2.5 font-display text-sm font-semibold text-white shadow-[0_0_24px_-6px_#38BDF8] transition-transform hover:scale-[1.02]"
-          >
+          <button type="button" onClick={() => setModalOpen(true)} className={deck.heroCta}>
             <PlusIcon className="h-4 w-4" />
             {t("habitsDashboard.addHabit")}
           </button>
@@ -597,9 +632,9 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
           </div>
           <Skeleton className="h-14" />
           <Skeleton className="h-72" />
-          <div className="flex flex-col gap-4 min-[1200px]:flex-row">
-            <Skeleton className="h-64 min-[1200px]:w-3/5" />
-            <Skeleton className="h-64 min-[1200px]:w-2/5" />
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            <Skeleton className="h-64 lg:col-span-7" />
+            <Skeleton className="h-64 lg:col-span-5" />
           </div>
         </div>
       ) : loadFailed ? (
@@ -608,115 +643,114 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
           <button
             type="button"
             onClick={retry}
-            className="rounded-xl border border-hull px-4 py-2 font-display text-sm text-instrument transition-colors hover:border-signal hover:text-signal"
+            className="rounded-xl border border-hair px-4 py-2 font-display text-sm text-instrument transition-colors hover:border-signal hover:text-signal"
           >
             {t("common.retry")}
           </button>
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-[18px] min-[700px]:grid-cols-2 min-[1200px]:grid-cols-4">
-            <section aria-label={t("habitsDashboard.kpiMonthlyCompliance")} className={KPI_CARD}>
-              <p className={KPI_LABEL}>{t("habitsDashboard.kpiMonthlyCompliance")}</p>
-              <div className="flex items-end justify-between gap-3">
-                <div>
-                  <p className="font-display text-[44px] font-bold leading-none tabular-nums text-instrument">
-                    {monthly.pct}
-                    <span className="text-2xl text-signal">%</span>
-                  </p>
-                  {delta !== null ? (
-                    delta === 0 ? (
-                      <p className="mt-1 inline-flex items-center rounded-full bg-instrument/10 px-2 py-0.5 text-xs font-semibold text-instrument/60">
-                        {t("habitsDashboard.deltaNeutral")}
-                      </p>
-                    ) : (
-                      <p className={`mt-1 text-xs font-semibold ${delta > 0 ? "text-[#22C55E]" : "text-alert"}`}>
-                        {delta > 0 ? `↗ +${delta}%` : `↘ ${delta}%`}
-                      </p>
-                    )
-                  ) : null}
-                  <p className="mt-1 text-xs text-instrument/50">
-                    {t("habitsDashboard.monthlyGoal", { n: MONTHLY_GOAL_PCT })}
-                  </p>
-                </div>
+          <section aria-label={t("habitsDashboard.kpiSummary")} className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4 lg:gap-4">
+            <KpiTile
+              label={t("habitsDashboard.kpiMonthlyCompliance")}
+              icon={<DonutIcon className="h-3.5 w-3.5" />}
+              signal
+              glow="corner"
+              value={String(monthly.pct)}
+              valueClass={deck.kpiValue}
+              valueSuffix={
+                <>
+                  <span className="font-mono text-lg font-bold text-signal">%</span>
+                  {delta === null ? null : delta === 0 ? (
+                    <span className={deck.kpiChipNeutral}>{t("habitsDashboard.deltaNeutral")}</span>
+                  ) : (
+                    <span className={delta > 0 ? deck.kpiDeltaUp : deck.kpiDeltaDown}>
+                      {delta > 0
+                        ? t("habitsDashboard.deltaUp", { n: delta })
+                        : t("habitsDashboard.deltaDown", { n: delta })}
+                    </span>
+                  )}
+                </>
+              }
+            >
+              <div className="mt-3 flex items-end justify-between gap-2">
+                <p className="text-[11px] text-slate-500">
+                  {t("habitsDashboard.monthlyGoal", { n: MONTHLY_GOAL_PCT })}
+                </p>
                 <ProgressRing pct={monthly.pct} />
               </div>
-            </section>
+            </KpiTile>
 
-            <section aria-label={t("habitsDashboard.kpiStreak")} className={KPI_CARD}>
-              <p className={KPI_LABEL}>{t("habitsDashboard.kpiStreak")}</p>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-display text-[44px] font-bold leading-none tabular-nums text-instrument">
-                      {streak.days}
-                    </p>
-                    <p className="text-sm font-semibold leading-tight text-signal">
-                      {t("habitsDashboard.streakDays")}
-                      <br />
-                      {t("habitsDashboard.streakInARow")}
-                    </p>
-                  </div>
-                  {streakLabel ? <p className="mt-1 text-xs text-instrument/50">{streakLabel}</p> : null}
-                </div>
-                <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-xl bg-sky/15 text-sky">
-                  <FlameIcon className="h-6 w-6" />
-                </span>
-              </div>
-            </section>
+            <KpiTile
+              label={t("habitsDashboard.kpiStreak")}
+              icon={<FlameIcon className="h-3.5 w-3.5" />}
+              signal
+              value={String(streak.days)}
+              valueClass={deck.kpiValue}
+              unit={`${t("habitsDashboard.streakDays")} ${t("habitsDashboard.streakInARow")}`}
+            >
+              {streakLabel ? (
+                <p className={deck.kpiFooter}>
+                  <span className="line-clamp-2">{streakLabel}</span>
+                </p>
+              ) : null}
+            </KpiTile>
 
-            <section aria-label={t("habitsDashboard.kpiActive")} className={KPI_CARD}>
-              <p className={KPI_LABEL}>{t("habitsDashboard.kpiActive")}</p>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="flex items-baseline gap-2">
-                    <span className="font-display text-[44px] font-bold leading-none tabular-nums text-instrument">
-                      {activeRows.length}
-                    </span>
-                    <span className="text-sm text-instrument/60">{t("habitsDashboard.activeTracking")}</span>
-                  </p>
-                  <p className="mt-1 flex items-center gap-1.5 text-xs text-instrument/50">
-                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-[#22C55E]" />
-                    {categoriesCount === 1
-                      ? t("habitsDashboard.categoriesCoveredOne", { n: categoriesCount })
-                      : t("habitsDashboard.categoriesCoveredMany", { n: categoriesCount })}
-                  </p>
+            <KpiTile
+              label={t("habitsDashboard.kpiActive")}
+              icon={<ListCheckIcon className="h-3.5 w-3.5" />}
+              value={String(activeRows.length)}
+              valueClass={deck.kpiValue}
+              unit={t("habitsDashboard.activeTracking")}
+            >
+              {categoryTabs.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {categoryTabs.map((tab) => (
+                    <span key={tab.value} className={deck.rowChip}>{`${tab.label} (${tab.count})`}</span>
+                  ))}
                 </div>
-                <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-xl bg-instrument/10 text-instrument/70">
-                  <ListCheckIcon className="h-6 w-6" />
-                </span>
-              </div>
-            </section>
+              ) : null}
+              <p className={deck.kpiFooter}>
+                {categoriesCount === 1
+                  ? t("habitsDashboard.categoriesCoveredOne", { n: categoriesCount })
+                  : t("habitsDashboard.categoriesCoveredMany", { n: categoriesCount })}
+              </p>
+            </KpiTile>
 
-            <section aria-label={t("habitsDashboard.kpiToday", { n: todayDay })} className={KPI_CARD}>
-              <p className={KPI_LABEL}>{t("habitsDashboard.kpiToday", { n: todayDay })}</p>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="flex items-baseline gap-1">
-                    <span className="font-display text-[44px] font-bold leading-none tabular-nums text-[#4ADE80]">
-                      {todayStats.done}
-                    </span>
-                    <span className="font-display text-xl tabular-nums text-instrument/40">
-                      {t("habitsDashboard.todayTotal", { n: todayStats.total })}
-                    </span>
-                    <span className="ml-1 text-sm font-semibold text-[#4ADE80]">
-                      {t("habitsDashboard.todayPct", { n: todayPct })}
-                    </span>
-                  </p>
-                  <p className="mt-1 text-xs text-instrument/50">
-                    {todayStats.total === 0
-                      ? "—"
-                      : todayStats.done >= todayStats.total
-                        ? t("habitsDashboard.todayPerfect")
-                        : t("habitsDashboard.todayMissing", { n: todayStats.total - todayStats.done })}
-                  </p>
-                </div>
-                <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-xl bg-[#22C55E]/15 text-[#22C55E]">
-                  <CheckCircleIcon className="h-6 w-6" />
+            <KpiTile
+              label={t("habitsDashboard.kpiToday", { n: todayDay })}
+              icon={<CheckCircleIcon className="h-3.5 w-3.5" />}
+              signal
+              value={String(todayStats.done)}
+              valueClass={deck.kpiValueFlow}
+              unit={t("habitsDashboard.todayTotal", { n: todayStats.total })}
+              valueSuffix={
+                <span className="font-mono text-xs font-bold text-flow-soft">
+                  {t("habitsDashboard.todayPct", { n: todayPct })}
                 </span>
-              </div>
-            </section>
-          </div>
+              }
+            >
+              {todayStats.total > 0 ? (
+                <div
+                  role="progressbar"
+                  aria-label={t("habitsDashboard.todayProgress")}
+                  aria-valuenow={todayPct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  className={deck.kpiProgressTrack}
+                >
+                  <div className={deck.kpiProgressFillFlow} style={{ width: `${todayPct}%` }} />
+                </div>
+              ) : null}
+              <p className={deck.kpiFooter}>
+                {todayStats.total === 0
+                  ? "—"
+                  : todayStats.done >= todayStats.total
+                    ? t("habitsDashboard.todayPerfect")
+                    : t("habitsDashboard.todayMissing", { n: todayStats.total - todayStats.done })}
+              </p>
+            </KpiTile>
+          </section>
 
           {!hasTrackableHabits ? (
             <>
@@ -738,98 +772,76 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
             </>
           ) : (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 px-4 py-3">
+              <div className="flex flex-col gap-3 rounded-xl border border-hair bg-panel/80 p-3.5 backdrop-blur-md lg:flex-row lg:items-center lg:justify-between">
                 <div
                   role="group"
                   aria-label={t("habitsDashboard.filterGroup")}
-                  className="flex flex-wrap items-center gap-2"
+                  className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0"
                 >
                   <button
                     type="button"
                     aria-pressed={filter === null}
                     onClick={() => setFilter(null)}
-                    className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                      filter === null ? "bg-signal font-semibold text-deck" : "text-instrument/60 hover:text-signal"
-                    }`}
+                    className={filter === null ? deck.filterTabActive : deck.filterTabIdle}
                   >
                     {t("habitsDashboard.filterAll", { n: activeRows.length })}
                   </button>
-                  {canonicalCategories.map((tab) => (
+                  {categoryTabs.map((tab) => (
                     <button
                       key={tab.value}
                       type="button"
                       aria-pressed={filter === tab.value}
                       onClick={() => setFilter((prev) => (prev === tab.value ? null : tab.value))}
-                      className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                        filter === tab.value ? "bg-signal font-semibold text-deck" : "text-instrument/60 hover:text-signal"
-                      }`}
+                      className={filter === tab.value ? deck.filterTabActive : deck.filterTabIdle}
                     >
-                      {`${t(tab.labelKey)} (${categoryCount(tab.value)})`}
-                    </button>
-                  ))}
-                  {extraCategories.map((category) => (
-                    <button
-                      key={category}
-                      type="button"
-                      aria-pressed={filter === category}
-                      onClick={() => setFilter((prev) => (prev === category ? null : category))}
-                      className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                        filter === category ? "bg-signal font-semibold text-deck" : "text-instrument/60 hover:text-signal"
-                      }`}
-                    >
-                      {`${category} (${categoryCount(category)})`}
+                      {`${tab.label} (${tab.count})`}
                     </button>
                   ))}
                 </div>
-                <div className="flex flex-wrap items-center gap-4 text-xs text-instrument/60">
+                <div className="flex flex-wrap items-center gap-4 text-body-sm text-slate-400">
                   <span className="inline-flex items-center gap-1.5">
-                    <span aria-hidden="true" className="h-3 w-3 rounded bg-signal" />
+                    <span aria-hidden="true" className={deck.legendSwatchDone} />
                     {t("habitsDashboard.legendDone")}
                   </span>
                   <span className="inline-flex items-center gap-1.5">
-                    <span aria-hidden="true" className="h-3 w-3 rounded bg-hull/60" />
+                    <span aria-hidden="true" className={deck.legendSwatchPending} />
                     {t("habitsDashboard.legendPending")}
                   </span>
                   <span className="inline-flex items-center gap-1.5">
-                    <span aria-hidden="true" className="h-3 w-3 rounded bg-black/40" />
+                    <span aria-hidden="true" className={deck.legendSwatchFuture} />
                     {t("habitsDashboard.legendFuture")}
                   </span>
                   {month === currentMonth ? (
-                    <span className="rounded-full border border-signal/30 bg-signal/10 px-2.5 py-0.5 font-display text-[11px] uppercase tracking-widest text-signal">
-                      {t("habitsDashboard.todayPill", { n: todayDay })}
-                    </span>
+                    <span className={deck.todayChip}>{t("habitsDashboard.todayPill", { n: todayDay })}</span>
                   ) : null}
                 </div>
               </div>
 
               {activeRows.length === 0 ? (
-                <section className={`${CARD} flex flex-col items-center gap-3 py-12 text-center`}>
-                  <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-hull/40 text-instrument/50">
-                    <CalendarIcon className="h-7 w-7" />
-                  </span>
-                  <h2 className="font-display text-lg font-semibold text-instrument">
-                    {t("habitsDashboard.noActiveInMonth")}
-                  </h2>
-                  <p className="max-w-md text-sm text-instrument/50">{t("habitsDashboard.noActiveInMonthHint")}</p>
-                </section>
+                <DeckEmptyState
+                  icon={<CalendarIcon className="h-5 w-5" />}
+                  title={t("habitsDashboard.noActiveInMonth")}
+                  hint={t("habitsDashboard.noActiveInMonthHint")}
+                />
               ) : (
-                <section aria-label={t("habitsDashboard.title")} className={CARD}>
-                  <HabitGrid
-                    rows={gridRows}
-                    days={monthRangeDays(month)}
-                    monthKey={month}
-                    todayYmd={today}
-                    isDone={isDone}
-                    onToggle={(habitId, date) => void handleToggle(habitId, date)}
-                    onArchive={(habitId) => void handleArchive(habitId)}
-                  />
-                </section>
+                <HabitGrid
+                  rows={gridRows}
+                  days={monthRangeDays(month)}
+                  monthKey={month}
+                  todayYmd={today}
+                  isDone={isDone}
+                  onToggle={(habitId, date) => void handleToggle(habitId, date)}
+                  onArchive={(habitId) => void handleArchive(habitId)}
+                />
               )}
 
               {archivedSection}
 
-              <div className="flex flex-col gap-4 min-[1200px]:flex-row">
-                <div className="min-[1200px]:w-3/5">
+              {/* Bottom bento (prototype `habitos-desktop.html:697`): the weekly
+                  chart takes `lg:col-span-7`, the achievement + reflection
+                  column `lg:col-span-5`. */}
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+                <div className="lg:col-span-7">
                   <WeeklyChart
                     values={consistency.values}
                     avg={consistency.avg}
@@ -839,24 +851,26 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                     report={reportRows}
                   />
                 </div>
-                <div className="flex flex-col gap-4 min-[1200px]:w-2/5">
-                  <section aria-label={t("habitsDashboard.milestonePill")} className={CARD}>
-                    <div className="flex items-center gap-3">
-                      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#22C55E]/15 text-[#22C55E]">
-                        <ShieldCheckIcon className="h-6 w-6" />
+                <div className="flex flex-col gap-4 lg:col-span-5">
+                  <section aria-label={t("habitsDashboard.milestonePill")} className={deck.achievementCard}>
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-emerald-500/5 blur-2xl"
+                    />
+                    <div className="flex items-start justify-between gap-2">
+                      <span className={deck.achievementIconTile}>
+                        <ShieldCheckIcon className="h-[22px] w-[22px]" />
                       </span>
-                      <span className="rounded-full border border-[#22C55E]/30 bg-[#22C55E]/10 px-3 py-0.5 font-display text-[11px] uppercase tracking-widest text-[#4ADE80]">
-                        {t("habitsDashboard.milestonePill")}
-                      </span>
+                      <span className={deck.achievementChip}>{t("habitsDashboard.milestonePill")}</span>
                     </div>
                     {milestone ? (
                       <>
-                        <h2 className="mt-3 font-display text-lg font-semibold text-instrument">
+                        <h2 className="mt-4 text-headline-md font-semibold text-instrument">
                           {milestone.kind === "category"
                             ? t("habitsDashboard.milestoneCategoryTitle", { category: milestone.category })
                             : t("habitsDashboard.milestoneStreakTitle", { n: milestone.days })}
                         </h2>
-                        <p className="mt-1 text-sm text-instrument/60">
+                        <p className="mt-1.5 text-body-md leading-relaxed text-muted">
                           {milestone.kind === "category" ? (
                             <>
                               {t("habitsDashboard.milestoneCategoryBodyPre")}
@@ -874,34 +888,41 @@ export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
                         </p>
                       </>
                     ) : (
-                      <p className="mt-3 text-sm text-instrument/60">{t("habitsDashboard.milestoneEmpty")}</p>
+                      <p className="mt-4 text-body-md text-muted">{t("habitsDashboard.milestoneEmpty")}</p>
                     )}
-                    <div className="mt-4 rounded-xl border border-white/5 bg-deck/50 p-3">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-instrument/60">{t("habitsDashboard.milestoneNeuro", { n: level })}</span>
-                        <span className="font-mono tabular-nums text-[#38BDF8]">{t("habitsDashboard.milestoneXp", { n: xpMonth })}</span>
-                      </div>
-                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-hull/60">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-[#38BDF8] to-[#4F7CFF]"
-                          style={{ width: `${levelProgress}%` }}
-                        />
-                      </div>
+                    <div className={deck.achievementStatsRow}>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <BrainIcon className="h-[18px] w-[18px] shrink-0 text-signal" />
+                        <span className="truncate text-xs font-medium text-instrument">
+                          {t("habitsDashboard.milestoneNeuro", { n: level })}
+                        </span>
+                      </span>
+                      <span className={deck.achievementXpValue}>{t("habitsDashboard.milestoneXp", { n: xpMonth })}</span>
+                    </div>
+                    <div
+                      role="progressbar"
+                      aria-label={t("habitsDashboard.milestoneLevelProgress")}
+                      aria-valuenow={levelProgress}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      className={deck.kpiProgressTrack}
+                    >
+                      <div className={deck.kpiProgressFillSignal} style={{ width: `${levelProgress}%` }} />
                     </div>
                   </section>
 
-                  <section aria-label={t("habitsDashboard.reflectionTitle")} className={CARD}>
-                    <div className="flex items-center gap-2">
-                      <BulbIcon className="h-4 w-4 text-signal" />
-                      <h2 className="font-display text-sm font-semibold uppercase tracking-widest text-instrument">
-                        {t("habitsDashboard.reflectionTitle")}
-                      </h2>
+                  <section aria-label={t("habitsDashboard.reflectionTitle")} className={deck.reflectionCard}>
+                    <span className={deck.reflectionIconTile}>
+                      <BulbIcon className="h-5 w-5" />
+                    </span>
+                    <div className="flex min-w-0 flex-col">
+                      <h2 className={deck.reflectionTitle}>{t("habitsDashboard.reflectionTitle")}</h2>
+                      <p className="mt-0.5 text-body-sm text-muted">
+                        {reflection
+                          ? t("habitsDashboard.reflectionLine", { habit: reflection.habitName, n: reflection.points })
+                          : t("habitsDashboard.reflectionEmpty")}
+                      </p>
                     </div>
-                    <p className="mt-3 text-sm text-instrument/60">
-                      {reflection
-                        ? t("habitsDashboard.reflectionLine", { habit: reflection.habitName, n: reflection.points })
-                        : t("habitsDashboard.reflectionEmpty")}
-                    </p>
                   </section>
                 </div>
               </div>

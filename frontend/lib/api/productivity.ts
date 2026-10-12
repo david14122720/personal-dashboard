@@ -132,8 +132,13 @@ export function eventsKey(from: string | null, to: string | null): string | null
 /**
  * Events read. Both bounds are optional and always RFC 3339 (the backend
  * rejects bare `YYYY-MM-DD`); callers convert local day ranges with
- * `toEventRange`. The productivity Eventos section stays one-sided
- * (``useEvents(eventsFrom, null)``) while the calendar sends both grid bounds.
+ * `toEventRange`. The productivity Eventos section reads the **unbounded**
+ * owned list (``useEvents(null, null)``) so its `VENCIDOS` pill is a real
+ * filter result instead of a structural zero — which means that list grows
+ * with the user's whole event history, because the backend applies no bound
+ * and no `LIMIT` (`backend/src/routes/events.rs`, `LIST_EVENTS_SQL`). The
+ * calendar still sends both grid bounds. A server-side bound would be the
+ * proper fix and is tracked as a follow-up, not done here.
  */
 export function useEvents(from: string | null, to: string | null) {
   const key = eventsKey(from, to);

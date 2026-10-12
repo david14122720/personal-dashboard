@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { VerifiedIcon } from "@/components/dashboard/icons";
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 import {
@@ -75,94 +77,88 @@ export default function SessionsPage() {
     <AppShell>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
         <header>
-          <h1 className="font-display text-2xl font-semibold tracking-wide">
+          <h1 className={deck.pageTitle}>
             {t("settings.sessionsTitle")}
           </h1>
-          <p className="mt-1 text-sm text-slate-400">{t("settings.sessionsHint")}</p>
+          <p className="mt-1 text-sm text-muted">{t("settings.sessionsHint")}</p>
         </header>
 
         {revokeError ? (
-          <p role="alert" className="rounded-md border border-alert/50 px-3 py-2 text-sm text-alert">
+          <p role="alert" className={deck.alertBanner}>
             {t("settings.sessionsRevokeFailed")}
           </p>
         ) : null}
 
         {revokedOthers ? (
-          <p
-            role="status"
-            className="rounded-md border border-signal/40 bg-signal/10 px-3 py-2 text-sm text-signal"
-          >
+          <p role="status" className={deck.successBanner}>
             {t("settings.sessionsRevokedOthers")}
           </p>
         ) : null}
 
-        <section
-          aria-label={t("settings.sessionsTitle")}
-          className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5"
-        >
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="font-display text-base font-medium tracking-wide">
-              {t("settings.sessionsTitle")}
-            </h2>
+        <DeckCard
+          title={t("settings.sessionsTitle")}
+          headerClassName={deck.sectionHeaderWrap}
+          action={
             <button
               type="button"
               disabled={revoking || otherCount === 0}
               onClick={() => void onRevokeOthers()}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-alert hover:text-alert disabled:cursor-not-allowed disabled:opacity-50"
+              className={deck.dangerAction}
             >
               {revoking ? t("settings.sessionsRevoking") : t("settings.sessionsRevokeOthers")}
             </button>
-          </div>
-
+          }
+        >
           {loading ? (
-            <p role="status" className="mt-3 text-sm text-instrument/50">
+            <p role="status" className="text-sm text-faint">
               {t("common.loading")}
             </p>
           ) : loadError ? (
-            <div className="mt-3 flex flex-col gap-3">
+            <div className="flex flex-col gap-3">
               <p role="alert" className="text-sm text-alert">
                 {t("settings.sessionsLoadFailed")}
               </p>
               <button
                 type="button"
                 onClick={() => void refresh()}
-                className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
+                className={`w-fit ${deck.headerAction}`}
               >
                 {t("common.retry")}
               </button>
             </div>
           ) : sessions.length === 0 ? (
-            <div className="mt-3">
-              <EmptyState title={t("settings.sessionsEmpty")} />
-            </div>
+            <DeckEmptyState
+              icon={<VerifiedIcon className="h-5 w-5" />}
+              title={t("settings.sessionsEmpty")}
+            />
           ) : (
-            <ul className="mt-3 flex flex-col gap-3">
+            <ul className="flex flex-col gap-2">
               {sessions.map((session) => (
                 <li
                   key={session.id}
-                  className="flex flex-col gap-2 rounded-lg border border-hull bg-deck p-4"
+                  className={deck.cardRow}
                 >
                   <div className="flex items-center gap-2">
-                    <p className="min-w-0 truncate font-medium">
+                    <p className="min-w-0 truncate text-sm font-medium text-instrument">
                       {session.user_agent ?? t("settings.sessionsUnknownAgent")}
                     </p>
                     {session.current ? (
-                      <span className="shrink-0 rounded-full border border-signal/20 bg-signal/10 px-2.5 py-0.5 font-mono text-xs font-medium text-signal">
+                      <span className={deck.signalPill}>
                         {t("settings.sessionsCurrent")}
                       </span>
                     ) : null}
                   </div>
-                  <dl className="grid grid-cols-1 gap-1 text-xs text-instrument/60 sm:grid-cols-2">
+                  <dl className="grid grid-cols-1 gap-1 text-xs text-muted sm:grid-cols-2">
                     <div className="flex gap-1">
-                      <dt>{t("settings.sessionsCreated")}:</dt>
+                      <dt className={deck.accountCaption}>{t("settings.sessionsCreated")}:</dt>
                       <dd>{formatDate(session.created_at)}</dd>
                     </div>
                     <div className="flex gap-1">
-                      <dt>{t("settings.sessionsExpires")}:</dt>
+                      <dt className={deck.accountCaption}>{t("settings.sessionsExpires")}:</dt>
                       <dd>{formatDate(session.expires_at)}</dd>
                     </div>
                     <div className="flex gap-1">
-                      <dt>{t("settings.sessionsIp")}:</dt>
+                      <dt className={deck.accountCaption}>{t("settings.sessionsIp")}:</dt>
                       <dd className="font-mono">{session.ip_address ?? "—"}</dd>
                     </div>
                   </dl>
@@ -170,7 +166,7 @@ export default function SessionsPage() {
               ))}
             </ul>
           )}
-        </section>
+        </DeckCard>
       </div>
     </AppShell>
   );

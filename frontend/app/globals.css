@@ -6,7 +6,7 @@
    Single place for palette, typography, radii, shadows, spacing. */
 @theme {
   /* Surfaces */
-  --color-deck: #0b0f19;
+  --color-deck: #0a0e18;
   --color-abyss: #0a0e18;
   --color-hull: #1e293b;
   --color-elevated: #171b26;
@@ -16,9 +16,15 @@
   --color-container-lowest: #0a0e18;
   --color-container-low: #171b26;
   /* Card/topbar/rail surface (was the raw hex #0f131d at ~16 call sites). */
-  --color-panel: #0f131d;
+  --color-panel: #0f1422;
   /* Elevated panel surface; alias of --color-elevated so call sites stop using hex. */
   --color-panel-soft: #171b26;
+  /* Control Deck card + hairline palette (Stitch `deck.*` -> repo token names).
+     Paired with --color-deck / --color-panel above; no prototype token is left unmapped. */
+  --color-card: #151a28;
+  --color-card-hover: #1a2133;
+  --color-hair: #1f273d;
+  --color-hair-strong: #2a3552;
   /* Text */
   --color-instrument: #f8fafc;
   --color-muted: #94a3b8;
@@ -44,6 +50,65 @@
      next/font sets this variable when Plus Jakarta Sans loads; the stack
      below is the offline fallback. `--font-display` stays global. */
   --font-deck-display: "Plus Jakarta Sans", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+
+  /* Control Deck type scale (Stitch `fontSize` map). Ported verbatim so the
+     prototypes' class names resolve: text-headline-md, text-label-caps, ... */
+  --text-display-lg: 40px;
+  --text-display-lg--line-height: 48px;
+  --text-display-lg--letter-spacing: -0.02em;
+  --text-display-lg--font-weight: 700;
+  --text-headline-xl: 32px;
+  --text-headline-xl--line-height: 40px;
+  --text-headline-xl--letter-spacing: -0.02em;
+  --text-headline-xl--font-weight: 700;
+  --text-headline-xl-mobile: 24px;
+  --text-headline-xl-mobile--line-height: 32px;
+  --text-headline-xl-mobile--letter-spacing: -0.01em;
+  --text-headline-xl-mobile--font-weight: 700;
+  --text-headline-lg: 24px;
+  --text-headline-lg--line-height: 32px;
+  --text-headline-lg--letter-spacing: -0.01em;
+  --text-headline-lg--font-weight: 600;
+  --text-headline-md: 20px;
+  --text-headline-md--line-height: 28px;
+  --text-headline-md--letter-spacing: -0.01em;
+  --text-headline-md--font-weight: 600;
+  --text-metric-val: 28px;
+  --text-metric-val--line-height: 32px;
+  --text-metric-val--letter-spacing: -0.02em;
+  --text-metric-val--font-weight: 700;
+  --text-body-lg: 16px;
+  --text-body-lg--line-height: 24px;
+  --text-body-lg--font-weight: 400;
+  --text-body-md: 14px;
+  --text-body-md--line-height: 20px;
+  --text-body-md--font-weight: 400;
+  --text-body-sm: 12px;
+  --text-body-sm--line-height: 16px;
+  --text-body-sm--letter-spacing: 0.01em;
+  --text-body-sm--font-weight: 400;
+  --text-label-lg: 14px;
+  --text-label-lg--line-height: 20px;
+  --text-label-lg--letter-spacing: 0.01em;
+  --text-label-lg--font-weight: 600;
+  --text-label-md: 12px;
+  --text-label-md--line-height: 16px;
+  --text-label-md--letter-spacing: 0.02em;
+  --text-label-md--font-weight: 500;
+  --text-label-caps: 11px;
+  --text-label-caps--line-height: 14px;
+  --text-label-caps--letter-spacing: 0.08em;
+  --text-label-caps--font-weight: 700;
+
+  /* Control Deck spacing scale (Stitch `spacing` map) so ported class names
+     such as `p-space-md` and `gap-gutter-desktop` resolve. */
+  --spacing-space-xs: 0.25rem;
+  --spacing-space-sm: 0.5rem;
+  --spacing-space-md: 1rem;
+  --spacing-space-lg: 1.5rem;
+  --spacing-space-xl: 2rem;
+  --spacing-gutter: 1.25rem;
+  --spacing-gutter-desktop: 1.5rem;
 
   --animate-fade-in: fade-in 0.4s ease-out;
   --animate-slide-up: slide-up 0.5s ease-out;
@@ -115,6 +180,42 @@
   .glow-cyan-soft {
     box-shadow: 0 0 20px -3px rgb(56 189 248 / 0.25);
   }
+  /* Tighter glows from the Stitch prototypes (dashboard-desktop.html). */
+  .glow-cyan-sm {
+    box-shadow: 0 0 15px -3px rgba(56, 189, 248, 0.25);
+  }
+  .glow-cyan-btn {
+    box-shadow: 0 0 20px -2px rgba(56, 189, 248, 0.4);
+  }
+  /* Thin 6px scrollbar for the deck shell, both axes. */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: #0f1422;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #1f273d;
+    border-radius: 9999px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #2a3552;
+  }
+  /* Safe-area insets for the fixed mobile chrome (dashboard-mobile.html). */
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  /* Chrome-less scrollers (Firefox + WebKit). */
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
   .label-caps {
     font-size: 11px;
     font-weight: 700;
@@ -139,6 +240,7 @@
   body {
     @apply bg-deck text-instrument font-body antialiased;
     font-family: var(--font-body);
+    overscroll-behavior: none;
   }
 
   html.light body {

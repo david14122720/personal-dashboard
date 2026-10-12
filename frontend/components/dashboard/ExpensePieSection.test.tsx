@@ -98,23 +98,22 @@ afterEach(() => {
 
 function renderOpen() {
   render(<ExpensePieSection />);
-  fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
 }
 
 describe("ExpensePieSection", () => {
-  it("arranca colapsada y no monta los hooks de datos ni el panel", () => {
+  it("arranca abierta con los hooks de datos y el panel montados", () => {
     render(<ExpensePieSection />);
     const trigger = screen.getByRole("button", { name: "Gastos por categoría" });
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("group", { name: "Periodo" })).not.toBeInTheDocument();
-    expect(screen.queryByTestId("dynamic-chart")).not.toBeInTheDocument();
-    expect(mock.movements).not.toHaveBeenCalled();
-    expect(mock.accounts).not.toHaveBeenCalled();
-    expect(mock.categories).not.toHaveBeenCalled();
-    expect(mock.prefs).not.toHaveBeenCalled();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("group", { name: "Periodo del pastel" })).toBeInTheDocument();
+    expect(screen.getByTestId("dynamic-chart")).toBeInTheDocument();
+    expect(mock.movements).toHaveBeenCalledTimes(1);
+    expect(mock.accounts).toHaveBeenCalledTimes(1);
+    expect(mock.categories).toHaveBeenCalledTimes(1);
+    expect(mock.prefs).toHaveBeenCalledTimes(1);
   });
 
-  it("abre con el periodo Mes por defecto y monta los hooks recién ahí", () => {
+  it("usa el periodo Mes por defecto al montar el panel", () => {
     renderOpen();
     expect(screen.getByRole("button", { name: "Gastos por categoría" })).toHaveAttribute(
       "aria-expanded",
@@ -201,13 +200,23 @@ describe("ExpensePieSection", () => {
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/me");
   });
 
-  it("al colapsar desmonta el panel pero deja el destino de aria-controls", () => {
+  it("al colapsar desmonta el panel sin volver a montar sus hooks y deja el destino de aria-controls", () => {
     renderOpen();
+    expect(mock.chart.current).not.toBeNull();
+    mock.movements.mockClear();
+    mock.accounts.mockClear();
+    mock.categories.mockClear();
+    mock.prefs.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
     expect(screen.queryByTestId("dynamic-chart")).not.toBeInTheDocument();
     const panel = document.getElementById("dashboard-expense-pie-panel");
     expect(panel).not.toBeNull();
     expect(panel).toHaveAttribute("hidden");
+    // El panel desmontado no vuelve a leer (montaje perezoso al reabrir).
+    expect(mock.movements).not.toHaveBeenCalled();
+    expect(mock.accounts).not.toHaveBeenCalled();
+    expect(mock.categories).not.toHaveBeenCalled();
+    expect(mock.prefs).not.toHaveBeenCalled();
   });
 
   it("conserva el periodo elegido al colapsar y reabrir", () => {
@@ -234,8 +243,6 @@ describe("ExpensePieSection", () => {
         <ExpensePieSection />
       </>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
-    fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
 
     const trendGroup = screen.getByRole("group", { name: "Periodo de la tendencia" });
     const pieGroup = screen.getByRole("group", { name: "Periodo del pastel" });
@@ -251,8 +258,6 @@ describe("ExpensePieSection", () => {
         <ExpensePieSection />
       </>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
-    fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
 
     const trendRadios = document.querySelectorAll('input[name="dashboard-total-trend-period"]');
     const pieRadios = document.querySelectorAll('input[name="dashboard-expense-pie-period"]');

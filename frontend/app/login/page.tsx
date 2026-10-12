@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getToken, login } from "@/lib/api/client";
 import { t } from "@/lib/i18n";
+import { deck } from "@/components/ui/deckStyles";
 
 // Display face for this screen: `font-deck-display` (Plus Jakarta Sans via
 // next/font in the root layout, system fallback in globals.css).
@@ -63,13 +64,26 @@ function ArrowIcon({ className }: { className?: string }) {
   );
 }
 
-function DeckGlyph({ className }: { className?: string }) {
+/** Brand hexagon (login-desktop.html:62-66), drawn in the repo icon style (D3). */
+function HexagonIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      <rect x="3.5" y="3.5" width="7" height="7" rx="1.8" fill="currentColor" opacity="0.95" />
-      <rect x="13.5" y="3.5" width="7" height="7" rx="1.8" fill="currentColor" opacity="0.65" />
-      <rect x="3.5" y="13.5" width="7" height="7" rx="1.8" fill="currentColor" opacity="0.65" />
-      <rect x="13.5" y="13.5" width="7" height="7" rx="3.5" fill="currentColor" opacity="0.95" />
+      <polygon
+        points="12 2 2 7 2 17 12 22 22 17 22 7 12 2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <line x1="12" x2="12" y1="22" y2="15.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <polyline
+        points="22 7 12 12.5 2 7"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="2.5" fill="currentColor" />
     </svg>
   );
 }
@@ -88,7 +102,6 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -112,13 +125,6 @@ export default function LoginPage() {
     }
   }
 
-  const fieldClass =
-    "min-h-11 w-full rounded-md border border-hull bg-deck text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
-  // Canonical field string plus the icon padding the login fields need: `pr-12`
-  // clears the 44px eye toggle on the password field.
-  const inputClass = `${fieldClass} pl-10 pr-10`;
-  const passwordInputClass = `${fieldClass} pl-10 pr-12`;
-
   return (
     <main
       className="relative flex min-h-screen items-center justify-center overflow-hidden bg-deck px-4 py-12 text-slate-100"
@@ -132,51 +138,48 @@ export default function LoginPage() {
       </div>
 
       <div className="relative w-full max-w-md">
-        <section
-          aria-labelledby="login-heading"
-          className="relative overflow-hidden rounded-2xl border border-white/10 bg-panel/80 p-6 shadow-2xl backdrop-blur-xl sm:p-9"
-        >
+        <section aria-labelledby="login-heading" className={deck.loginCard}>
           {/* Top glow line */}
-          <div aria-hidden="true" className="absolute inset-x-8 top-0 h-[2px] bg-gradient-to-r from-transparent via-signal to-transparent" />
+          <div aria-hidden="true" className={deck.loginTopHairline} />
 
-          <div className="flex flex-col items-center text-center">
-            <div className="flex w-full items-center justify-between">
-              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-[#006edc] to-[#38bdf8] ring-1 ring-white/20">
-                <DeckGlyph className="h-5 w-5 text-white" />
+          <header className="text-left">
+            <div className="mb-5 flex items-center justify-between">
+              <span aria-hidden="true" className={deck.loginLogoTile}>
+                <span className={deck.loginLogoGlow} />
+                <HexagonIcon className="relative h-6 w-6 text-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,0.6)]" />
               </span>
-              <span
-                role="status"
-                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] font-medium tracking-wide text-emerald-400"
-              >
-                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              <span role="status" className={deck.loginStatusPill}>
+                <span aria-hidden="true" className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 motion-reduce:animate-none" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                </span>
                 {t("login.online")}
               </span>
             </div>
-            <h1
-              id="login-heading"
-              className="font-deck-display mt-4 flex flex-wrap items-center justify-center gap-2 text-2xl font-bold tracking-tight"
-            >
-              Control{" "}
-              <span className="bg-gradient-to-r from-sky-400 to-[#006edc] bg-clip-text text-transparent">
-                Deck
-              </span>
-              <span className="rounded-full border border-signal/20 bg-signal/10 px-2 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-signal">
-                {t("login.version")}
-              </span>
-            </h1>
-            <p className="mt-1.5 text-sm text-slate-400">{t("login.subtitle")}</p>
-          </div>
-
-          <form onSubmit={onSubmit} className="mt-7 flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="login-email"
-                className="text-xs font-semibold uppercase tracking-wider text-slate-300"
+            <div className="flex flex-wrap items-baseline gap-2.5">
+              <h1
+                id="login-heading"
+                className="font-deck-display flex items-center gap-1.5 text-2xl font-bold tracking-tight sm:text-3xl"
               >
+                Control{" "}
+                <span className="bg-gradient-to-r from-sky-400 via-sky-300 to-cyan-200 bg-clip-text text-transparent drop-shadow-[0_0_12px_rgba(56,189,248,0.35)]">
+                  Deck
+                </span>
+              </h1>
+              <span className={deck.loginVersionBadge}>{t("login.version")}</span>
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-slate-400">{t("login.subtitle")}</p>
+          </header>
+
+          <form onSubmit={onSubmit} className="mt-7 flex flex-col gap-5">
+            <div>
+              <label htmlFor="login-email" className={deck.loginFieldLabel}>
                 {t("login.email")}
               </label>
-              <div className="relative">
-                <MailIcon className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-500" />
+              <div className="group relative mt-2">
+                <span aria-hidden="true" className={deck.loginFieldIcon}>
+                  <MailIcon className="h-[18px] w-[18px]" />
+                </span>
                 <input
                   id="login-email"
                   type="email"
@@ -184,21 +187,20 @@ export default function LoginPage() {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className={inputClass}
+                  className={`${deck.loginField} pl-10 pr-4`}
                   placeholder="you@example.com"
                 />
               </div>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="login-password"
-                className="text-xs font-semibold uppercase tracking-wider text-slate-300"
-              >
+            <div>
+              <label htmlFor="login-password" className={deck.loginFieldLabel}>
                 {t("login.password")}
               </label>
-              <div className="relative">
-                <LockIcon className="pointer-events-none absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-slate-500" />
+              <div className="group relative mt-2">
+                <span aria-hidden="true" className={deck.loginFieldIcon}>
+                  <LockIcon className="h-[18px] w-[18px]" />
+                </span>
                 <input
                   id="login-password"
                   type={showPassword ? "text" : "password"}
@@ -206,7 +208,7 @@ export default function LoginPage() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className={passwordInputClass}
+                  className={`${deck.loginField} pl-10 pr-12`}
                   placeholder="••••••••"
                 />
                 <button
@@ -214,7 +216,7 @@ export default function LoginPage() {
                   onClick={() => setShowPassword((v) => !v)}
                   aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
                   aria-pressed={showPassword}
-                  className="absolute right-0.5 top-1/2 inline-flex h-11 w-11 shrink-0 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-panel-soft hover:text-signal"
+                  className={deck.loginEyeToggle}
                 >
                   {showPassword ? (
                     <EyeOffIcon className="h-[18px] w-[18px]" />
@@ -225,49 +227,34 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-y-1 text-sm">
-              <label htmlFor="login-remember" className="flex min-h-11 cursor-pointer items-center gap-2 text-slate-300">
-                <input
-                  id="login-remember"
-                  type="checkbox"
-                  checked={remember}
-                  onChange={(e) => setRemember(e.target.checked)}
-                  className="h-4 w-4 rounded border-white/20 bg-slate-800 accent-[#006edc]"
-                />
-                {t("login.remember")}
-              </label>
-              <a
-                href="#"
-                onClick={(e) => e.preventDefault()}
-                className="inline-flex min-h-11 items-center font-medium text-sky-400 transition-colors hover:text-sky-300"
-              >
-                {t("login.forgot")}
-              </a>
-            </div>
-
+            {/* D10 (JD item 9): the prototype's `Recordar sesión` checkbox and
+                `¿Olvidaste tu contraseña?` anchor are deliberately NOT rendered.
+                Neither can be made real here: the session is a bearer token in
+                localStorage with a server-side TTL, so a remember flag would be
+                a state nobody reads, and the app has no password-recovery flow
+                to send anyone to. The prototype's `Passkey` / `Token CLI`
+                buttons and its footer links stay omitted for the same reason:
+                a visible control must not claim behaviour the app lacks. */}
             {error ? (
               <p role="alert" className="rounded-xl border border-alert/50 bg-alert/10 px-3 py-2 text-sm text-red-300">
                 {error}
               </p>
             ) : null}
 
-            <button
-              type="submit"
-              disabled={pending}
-              className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#006edc] to-[#0088ff] px-3 py-2.5 font-display text-sm font-semibold tracking-wide text-white shadow-lg shadow-[#006edc]/25 transition-all hover:from-[#006edc] hover:to-[#38bdf8] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-signal active:scale-[0.99] disabled:opacity-60"
-            >
-              {pending ? t("login.pending") : t("login.submit")}
-              <ArrowIcon className="h-4 w-4" />
+            <button type="submit" disabled={pending} className={deck.loginCta}>
+              <span aria-hidden="true" className={deck.loginCtaOverlay} />
+              <span>{pending ? t("login.pending") : t("login.submit")}</span>
+              <ArrowIcon className="h-[18px] w-[18px] motion-safe:transition-transform motion-safe:duration-200 motion-safe:group-hover:translate-x-1" />
             </button>
           </form>
 
-          <div className="mt-7 flex items-center justify-center gap-2 border-t border-white/10 pt-5 text-xs text-slate-500">
-            <ShieldIcon className="h-4 w-4 text-slate-500" />
+          <div className={deck.loginSecureNote}>
+            <ShieldIcon className="h-4 w-4 shrink-0" />
             <span>{t("login.secureNote")}</span>
           </div>
         </section>
 
-        <p className="mt-6 text-center text-xs text-slate-600">{t("login.footerNote")}</p>
+        <p className={deck.loginFooterNote}>{t("login.footerNote")}</p>
       </div>
     </main>
   );

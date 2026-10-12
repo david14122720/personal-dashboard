@@ -8,7 +8,7 @@ import { todayYmdLocal } from "@/lib/productivity/productivity";
 import { HABIT_ICON_NAMES, HabitIcon, type HabitIconName } from "./HabitGrid";
 
 const inputClass =
-  "w-full rounded-lg border border-hull bg-deck px-3 py-2 text-sm text-instrument placeholder:text-instrument/40 focus:border-signal focus:outline-none";
+  "w-full rounded-lg border border-hair bg-deck px-3 py-2 text-sm text-instrument placeholder:text-instrument/40 focus:border-signal focus:outline-none";
 
 const CATEGORY_OPTIONS: Array<{ value: string; labelKey: EsKey }> = [
   { value: "Salud & Físico", labelKey: "habitsDashboard.filterHealth" },
@@ -224,7 +224,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
         role="dialog"
         aria-modal="true"
         aria-labelledby="habit-create-title"
-        className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px] shadow-2xl"
+        className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-white/5 bg-gradient-to-b from-hair/40 to-deck/60 p-[22px] shadow-2xl"
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id="habit-create-title" className="font-deck-display text-xl font-bold text-instrument">
@@ -268,7 +268,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
                 aria-pressed={direction === "build"}
                 onClick={() => setDirection("build")}
                 className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
-                  direction === "build" ? "bg-signal text-deck" : "border border-hull text-instrument/60 hover:text-signal"
+                  direction === "build" ? "bg-signal text-deck" : "border border-hair text-instrument/60 hover:text-signal"
                 }`}
               >
                 {t("habitsDashboard.directionBuild")}
@@ -278,7 +278,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
                 aria-pressed={direction === "quit"}
                 onClick={() => setDirection("quit")}
                 className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
-                  direction === "quit" ? "bg-signal text-deck" : "border border-hull text-instrument/60 hover:text-signal"
+                  direction === "quit" ? "bg-signal text-deck" : "border border-hair text-instrument/60 hover:text-signal"
                 }`}
               >
                 {t("habitsDashboard.directionAvoid")}
@@ -303,7 +303,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
                   aria-pressed={frequency === value}
                   onClick={() => setFrequency(value)}
                   className={`rounded-lg px-3 py-1.5 text-xs transition-colors ${
-                    frequency === value ? "bg-signal text-deck" : "border border-hull text-instrument/60 hover:text-signal"
+                    frequency === value ? "bg-signal text-deck" : "border border-hair text-instrument/60 hover:text-signal"
                   }`}
                 >
                   {t(labelKey)}
@@ -323,7 +323,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
                     aria-pressed={days.includes(value)}
                     onClick={() => toggleDay(value)}
                     className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                      days.includes(value) ? "bg-signal text-deck" : "border border-hull text-instrument/60 hover:text-signal"
+                      days.includes(value) ? "bg-signal text-deck" : "border border-hair text-instrument/60 hover:text-signal"
                     }`}
                   >
                     {t(labelKey)}
@@ -369,7 +369,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
                   aria-pressed={category === value}
                   onClick={() => setCategory((prev) => (prev === value ? "" : value))}
                   className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                    category === value ? "bg-signal text-deck" : "border border-hull text-instrument/60 hover:text-signal"
+                    category === value ? "bg-signal text-deck" : "border border-hair text-instrument/60 hover:text-signal"
                   }`}
                 >
                   {t(labelKey)}
@@ -429,7 +429,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
                   className={`flex h-10 items-center justify-center rounded-lg transition-colors ${
                     icon === iconName
                       ? "bg-signal/20 text-signal ring-1 ring-signal"
-                      : "bg-hull/40 text-instrument/60 hover:text-signal"
+                      : "bg-hair/40 text-instrument/60 hover:text-signal"
                   }`}
                 >
                   <HabitIcon name={iconName} className="h-5 w-5" />
@@ -461,7 +461,7 @@ export default function HabitCreateModal({ open, onClose, onCreated }: HabitCrea
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl border border-hull px-5 py-2 font-display text-sm text-instrument transition-colors hover:border-signal hover:text-signal"
+              className="rounded-xl border border-hair px-5 py-2 font-display text-sm text-instrument transition-colors hover:border-signal hover:text-signal"
             >
               {t("habitsDashboard.cancel")}
             </button>

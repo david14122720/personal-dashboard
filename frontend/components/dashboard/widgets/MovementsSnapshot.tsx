@@ -1,7 +1,14 @@
 "use client";
 import Link from "next/link";
 import { useSWRConfig } from "swr";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { SectionError, SectionSkeleton } from "@/components/dashboard/SectionStates";
+import {
+  ExpenseRowIcon,
+  IncomeRowIcon,
+  TransferRowIcon,
+} from "@/components/dashboard/icons";
+import { deck } from "@/components/ui/deckStyles";
 import { useAccounts } from "@/lib/api/dashboard";
 import { useCategories, useMovements } from "@/lib/api/finance";
 import { formatMoney } from "@/lib/api/money";
@@ -12,121 +19,151 @@ import {
 } from "@/lib/finance/finance";
 import { t } from "@/lib/i18n";
 
+/** Direction color of a movement row: the tile tracks the amount color. */
+const TILE_CLASS: Record<string, string> = {
+  expense: "border-rose-500/20 bg-rose-500/10 text-rose-400",
+  income: "border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
+  transfer: "border-sky-500/20 bg-sky-500/10 text-sky-400",
+};
+
+const AMOUNT_CLASS: Record<string, string> = {
+  expense: "text-rose-400",
+  income: "text-emerald-400",
+  transfer: "text-sky-400",
+};
+
 /**
  * «Últimos movimientos»: latest 5 from `GET /movements` (same
- * `finance/movements` SWR key, API order kept, never re-sorted) with
- * direction, COP amount, Spanish date, category and account, plus a link
- * to Finance. Independent Spanish loading/error/empty; retry revalidates
- * only this section's own SWR keys.
+ * `finance/movements` SWR key, API order kept, never re-sorted) in the
+ * prototype row recipe — direction tiles, category chip, real date/account meta
+ * — plus a link to Finance. The counter states the real record count and marks
+ * the rows the 5-row slice hides (JD item 3), so the slice length is never
+ * reported as the ledger size. Independent Spanish loading/error/empty; retry
+ * revalidates only this section's own SWR keys.
  */
-export default function MovementsSnapshot() {
+export default function MovementsSnapshot({ className }: { className?: string } = {}) {
   const movements = useMovements();
   const accounts = useAccounts();
   const categories = useCategories();
   const { mutate } = useSWRConfig();
 
-  if (movements.isLoading || accounts.isLoading || categories.isLoading) {
-    return (
-      <div
-        role="status"
-        aria-label={t("common.loading")}
-        className="animate-pulse rounded-xl border border-hull bg-hull/40 p-5"
-      >
-        <div className="h-4 w-24 rounded bg-hull" />
-      </div>
-    );
-  }
-  if (movements.error || accounts.error || categories.error) {
-    return (
-      <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
-        <p className="text-sm text-instrument/70">{t("finance.movementsLoadFailed")}</p>
-        <button
-          type="button"
-          onClick={() => {
+  const allRows = toMovementRows(
+    movements.data,
+    toAccountOptions(accounts.data),
+    toCategoryOptions(categories.data),
+  );
+  const rows = allRows.slice(0, 5);
+  const hiddenRows = allRows.length - rows.length;
+
+  return (
+    <DeckCard
+      title={t("dashboard.latestMovementsTitle")}
+      hint={t("dashboard.latestMovementsHint")}
+      className={className}
+      meta={
+        rows.length > 0 ? (
+          <span className={deck.countPill}>
+            {t("dashboard.recordsMeta", { n: allRows.length })}
+            {hiddenRows > 0 ? ` · ${t("dashboard.recordsMore", { n: hiddenRows })}` : ""}
+          </span>
+        ) : null
+      }
+    >
+      {movements.isLoading || accounts.isLoading || categories.isLoading ? (
+        <SectionSkeleton label={t("common.loading")} />
+      ) : movements.error || accounts.error || categories.error ? (
+        <SectionError
+          message={t("finance.movementsLoadFailed")}
+          onRetry={() => {
             void mutate("finance/movements");
             void mutate("dashboard/accounts");
             void mutate("finance/categories");
           }}
-          className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
-        >
-          {t("common.retry")}
-        </button>
-      </div>
-    );
-  }
-
-  const rows = toMovementRows(
-    movements.data,
-    toAccountOptions(accounts.data),
-    toCategoryOptions(categories.data),
-  ).slice(0, 5);
-
-  if (rows.length === 0) {
-    return (
-      <div className="animate-fade-in motion-reduce:animate-none">
-        <EmptyState
-          title={t("dashboard.latestMovementsEmpty")}
-          hint={t("finance.movementsEmptyHint")}
         />
-        <Link
-          href="/dashboard/finance/"
-          className="mt-2 inline-flex min-h-11 items-center text-xs text-signal underline-offset-2 hover:underline"
-        >
-          {t("dashboard.viewInFinance")}
-        </Link>
-      </div>
-    );
-  }
-
-  return (
-    <div className="animate-fade-in motion-reduce:animate-none">
-      <ul className="flex flex-col gap-2">
-        {rows.map((row) => {
-          const directionLabel =
-            row.direction === "expense"
-              ? t("finance.movementDirectionExpense")
-              : row.direction === "income"
-                ? t("finance.movementDirectionIncome")
-                : t("finance.movementDirectionTransfer");
-          return (
-            <li
-              key={row.id}
-              className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ${
-                row.direction === "transfer" ? "border-signal/50 bg-signal/5" : "border-hull"
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="line-clamp-2 sm:block sm:truncate">
-                  {directionLabel}
-                  {row.description ? ` · ${row.description}` : ""}
-                </span>
-                <span className="mt-0.5 line-clamp-2 text-xs text-slate-400 sm:block sm:truncate">
-                  {row.displayDate}
-                  {row.direction === "transfer"
-                    ? ` · ${t("finance.movementTransferRoute", {
-                        from: row.accountName,
-                        to: row.transferAccountName ?? "—",
-                      })}`
-                    : `${row.categoryName ? ` · ${row.categoryName}` : ""} · ${
-                        row.direction === "income"
-                          ? t("finance.movementAccountLabel")
-                          : t("finance.paymentMethod")
-                      }: ${row.accountName}`}
-                </span>
+      ) : (
+        <div className="animate-fade-in motion-reduce:animate-none">
+          {rows.length === 0 ? (
+            <DeckEmptyState
+              icon={<ExpenseRowIcon className="h-5 w-5" />}
+              title={t("dashboard.latestMovementsEmpty")}
+              hint={t("finance.movementsEmptyHint")}
+            />
+          ) : (
+            <ul className="flex flex-col gap-3">
+              {rows.map((row) => {
+                const directionLabel =
+                  row.direction === "expense"
+                    ? t("finance.movementDirectionExpense")
+                    : row.direction === "income"
+                      ? t("finance.movementDirectionIncome")
+                      : t("finance.movementDirectionTransfer");
+                const amountSign =
+                  row.direction === "expense" ? "-" : row.direction === "income" ? "+" : "";
+                return (
+                  <li key={row.id} className={deck.listRow}>
+                    <div className="flex items-start gap-3 sm:items-center">
+                      <span className={`${deck.rowIconTile} ${TILE_CLASS[row.direction] ?? TILE_CLASS.transfer}`}>
+                        {row.direction === "expense" ? (
+                          <ExpenseRowIcon className="h-4 w-4" />
+                        ) : row.direction === "income" ? (
+                          <IncomeRowIcon className="h-4 w-4" />
+                        ) : (
+                          <TransferRowIcon className="h-4 w-4" />
+                        )}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate text-sm font-semibold text-slate-200">
+                            {directionLabel}
+                            {row.description ? ` · ${row.description}` : ""}
+                          </h3>
+                          {row.categoryName ? (
+                            <span className={deck.rowChip}>{row.categoryName}</span>
+                          ) : null}
+                        </div>
+                        <p className="mt-0.5 text-xs text-muted">
+                          {row.displayDate}
+                          {row.direction === "transfer"
+                            ? ` · ${t("finance.movementTransferRoute", {
+                                from: row.accountName,
+                                to: row.transferAccountName ?? "—",
+                              })}`
+                            : ` · ${
+                                row.direction === "income"
+                                  ? t("finance.movementAccountLabel")
+                                  : t("finance.paymentMethod")
+                              }: ${row.accountName}`}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-left sm:flex-col sm:items-end sm:justify-center sm:text-right">
+                      <span
+                        className={`font-mono text-sm font-bold ${
+                          AMOUNT_CLASS[row.direction] ?? AMOUNT_CLASS.transfer
+                        }`}
+                      >
+                        {amountSign}
+                        {formatMoney(row.amount)}
+                      </span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className={deck.cardFooterRow}>
+            <Link href="/dashboard/finance/" className={deck.cardFooterLink}>
+              <span>{t("dashboard.viewInFinance")}</span>
+              <span
+                aria-hidden="true"
+                className="transition-transform group-hover:translate-x-0.5"
+              >
+                →
               </span>
-              <span className="shrink-0 font-mono text-xs tabular-nums">
-                {formatMoney(row.amount)}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-      <Link
-        href="/dashboard/finance/"
-        className="mt-2 inline-flex min-h-11 items-center text-xs text-signal underline-offset-2 hover:underline"
-      >
-        {t("dashboard.viewInFinance")}
-      </Link>
-    </div>
+            </Link>
+          </div>
+        </div>
+      )}
+    </DeckCard>
   );
 }

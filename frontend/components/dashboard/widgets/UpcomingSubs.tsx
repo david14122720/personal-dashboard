@@ -1,47 +1,25 @@
 "use client";
 import Link from "next/link";
 import { useSWRConfig } from "swr";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { SectionError, SectionSkeleton } from "@/components/dashboard/SectionStates";
+import { CalendarActionIcon } from "@/components/dashboard/icons";
+import { deck } from "@/components/ui/deckStyles";
 import { useSubscriptions } from "@/lib/api/finance";
 import { formatMoney, toNumber } from "@/lib/api/money";
-import { isPaidThisCycle, todayInBogota } from "@/lib/finance/finance";
+import { formatMovementDate, isPaidThisCycle, todayInBogota } from "@/lib/finance/finance";
 import { t } from "@/lib/i18n";
 
 /**
  * «Próximas suscripciones»: active subscriptions with
  * `next_billing_on >= today` ascending, top 5, showing name, COP amount
- * and due date plus the render-derived paid state. Independent Spanish
+ * and due date plus the render-derived paid state, in the prototype card
+ * chrome with its dashed empty state and footer link. Independent Spanish
  * loading/error/empty; retry revalidates only `finance/subscriptions`.
  */
-export default function UpcomingSubs() {
+export default function UpcomingSubs({ className }: { className?: string } = {}) {
   const subs = useSubscriptions();
   const { mutate } = useSWRConfig();
-
-  if (subs.isLoading) {
-    return (
-      <div
-        role="status"
-        aria-label={t("common.loading")}
-        className="animate-pulse rounded-xl border border-hull bg-hull/40 p-5"
-      >
-        <div className="h-4 w-24 rounded bg-hull" />
-      </div>
-    );
-  }
-  if (subs.error) {
-    return (
-      <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
-        <p className="text-sm text-instrument/70">{t("dashboard.sectionLoadFailed")}</p>
-        <button
-          type="button"
-          onClick={() => void mutate("finance/subscriptions")}
-          className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
-        >
-          {t("common.retry")}
-        </button>
-      </div>
-    );
-  }
 
   const today = todayInBogota();
   const rows = (subs.data ?? [])
@@ -57,60 +35,77 @@ export default function UpcomingSubs() {
     )
     .slice(0, 5);
 
-  if (rows.length === 0) {
-    return (
-      <div className="animate-fade-in motion-reduce:animate-none">
-        <EmptyState
-          title={t("dashboard.upcomingSubscriptionsEmpty")}
-          hint={t("finance.noSubscriptionsHint")}
-        />
-        <Link
-          href="/dashboard/finance/"
-          className="mt-2 inline-flex min-h-11 items-center text-xs text-signal underline-offset-2 hover:underline"
-        >
-          {t("dashboard.viewInFinance")}
-        </Link>
-      </div>
-    );
-  }
-
   return (
-    <div className="animate-fade-in motion-reduce:animate-none">
-      <ul className="flex flex-col gap-2">
-        {rows.map((sub) => {
-          const paid = isPaidThisCycle(
-            {
-              last_paid_on: sub.last_paid_on ?? null,
-              next_billing_on: sub.next_billing_on,
-            },
-            today,
-          );
-          return (
-            <li
-              key={sub.id}
-              className="flex flex-col gap-3 rounded-lg border border-hull px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
-            >
-              <span className="min-w-0">
-                <span className="line-clamp-2 sm:block sm:truncate">{sub.name}</span>
-                <span className="mt-0.5 block truncate text-xs text-slate-400">
-                  {paid
-                    ? t("finance.paidThisCycle")
-                    : (sub.next_billing_on as string)}
-                </span>
+    <DeckCard
+      title={t("dashboard.upcomingSubscriptionsTitle")}
+      hint={t("dashboard.upcomingSubscriptionsHint")}
+      className={className}
+      meta={
+        rows.length > 0 ? (
+          <span className={deck.countPill}>{t("dashboard.recordsMeta", { n: rows.length })}</span>
+        ) : null
+      }
+    >
+      {subs.isLoading ? (
+        <SectionSkeleton label={t("common.loading")} />
+      ) : subs.error ? (
+        <SectionError onRetry={() => void mutate("finance/subscriptions")} />
+      ) : (
+        <div className="animate-fade-in motion-reduce:animate-none">
+          {rows.length === 0 ? (
+            <DeckEmptyState
+              icon={<CalendarActionIcon className="h-5 w-5 text-sky-400/70" />}
+              title={t("dashboard.upcomingSubscriptionsEmpty")}
+              hint={t("dashboard.upcomingSubscriptionsEmptyHint")}
+            />
+          ) : (
+            <ul className="flex flex-col gap-2.5">
+              {rows.map((sub) => {
+                const paid = isPaidThisCycle(
+                  {
+                    last_paid_on: sub.last_paid_on ?? null,
+                    next_billing_on: sub.next_billing_on,
+                  },
+                  today,
+                );
+                return (
+                  <li key={sub.id} className={deck.listRow}>
+                    <div className="flex items-start gap-3 sm:items-center">
+                      <span
+                        className={`${deck.rowIconTile} border-sky-500/20 bg-sky-500/10 text-sky-400`}
+                      >
+                        <CalendarActionIcon className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-sm font-semibold text-slate-200">{sub.name}</h3>
+                        <p className="mt-0.5 text-xs text-muted">
+                          {paid
+                            ? t("finance.paidThisCycle")
+                            : formatMovementDate(sub.next_billing_on as string)}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="shrink-0 font-mono text-sm font-bold text-slate-200">
+                      {formatMoney(toNumber(sub.price))}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className={deck.cardFooterRow}>
+            <Link href="/dashboard/finance/" className={deck.cardFooterLink}>
+              <span>{t("dashboard.viewInFinance")}</span>
+              <span
+                aria-hidden="true"
+                className="transition-transform group-hover:translate-x-0.5"
+              >
+                →
               </span>
-              <span className="shrink-0 font-mono text-xs tabular-nums">
-                {formatMoney(toNumber(sub.price))}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-      <Link
-        href="/dashboard/finance/"
-        className="mt-2 inline-flex min-h-11 items-center text-xs text-signal underline-offset-2 hover:underline"
-      >
-        {t("dashboard.viewInFinance")}
-      </Link>
-    </div>
+            </Link>
+          </div>
+        </div>
+      )}
+    </DeckCard>
   );
 }

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MovementWire } from "@/lib/api/finance";
+import { chartDeckFrameClass } from "@/components/ui/chartTheme";
 import TotalTrendSection from "./TotalTrendSection";
 
 const mock = vi.hoisted(() => ({
@@ -63,22 +64,21 @@ beforeEach(() => {
 
 function renderOpen() {
   render(<TotalTrendSection />);
-  fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
 }
 
 describe("TotalTrendSection", () => {
-  it("arranca colapsada y no monta los hooks de datos ni el panel", () => {
+  it("arranca abierta con los hooks de datos y el panel montados", () => {
     render(<TotalTrendSection />);
     const trigger = screen.getByRole("button", { name: "Gastos vs. ingresos" });
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("group", { name: "Periodo" })).not.toBeInTheDocument();
-    expect(screen.queryByTestId("total-trend-chart")).not.toBeInTheDocument();
-    expect(mock.movements).not.toHaveBeenCalled();
-    expect(mock.accounts).not.toHaveBeenCalled();
-    expect(mock.prefs).not.toHaveBeenCalled();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("group", { name: "Periodo de la tendencia" })).toBeInTheDocument();
+    expect(screen.getByTestId("total-trend-chart")).toBeInTheDocument();
+    expect(mock.movements).toHaveBeenCalledTimes(1);
+    expect(mock.accounts).toHaveBeenCalledTimes(1);
+    expect(mock.prefs).toHaveBeenCalledTimes(1);
   });
 
-  it("abre con el periodo Mes por defecto y monta los hooks recién ahí", () => {
+  it("usa el periodo Mes por defecto al montar el panel", () => {
     renderOpen();
     expect(screen.getByRole("button", { name: "Gastos vs. ingresos" })).toHaveAttribute(
       "aria-expanded",
@@ -178,13 +178,21 @@ describe("TotalTrendSection", () => {
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/me");
   });
 
-  it("al colapsar desmonta el panel pero deja el destino de aria-controls", () => {
+  it("al colapsar desmonta el panel sin volver a montar sus hooks y deja el destino de aria-controls", () => {
     renderOpen();
+    expect(mock.chart.current).not.toBeNull();
+    mock.movements.mockClear();
+    mock.accounts.mockClear();
+    mock.prefs.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
     expect(screen.queryByTestId("total-trend-chart")).not.toBeInTheDocument();
     const panel = document.getElementById("dashboard-total-trend-panel");
     expect(panel).not.toBeNull();
     expect(panel).toHaveAttribute("hidden");
+    // El panel desmontado no vuelve a leer (montaje perezoso al reabrir).
+    expect(mock.movements).not.toHaveBeenCalled();
+    expect(mock.accounts).not.toHaveBeenCalled();
+    expect(mock.prefs).not.toHaveBeenCalled();
   });
 
   it("conserva el periodo elegido al colapsar y reabrir", () => {
@@ -195,6 +203,18 @@ describe("TotalTrendSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
     expect(screen.getByRole("radio", { name: "Día" })).toBeChecked();
     expect(mock.chart.current?.data).toHaveLength(14);
+  });
+
+  it("aplica el marco D8 de chartTheme al contenedor del gráfico", () => {
+    renderOpen();
+    expect(screen.getByTestId("trend-chart-frame").className).toBe(chartDeckFrameClass);
+  });
+
+  it("muestra la leyenda con los totales reales del periodo, nunca las cifras del prototipo", () => {
+    renderOpen();
+    expect(screen.getByText(/^Gastos:/)).toHaveTextContent("Gastos: $ 100");
+    expect(screen.getByText(/^Ingresos:/)).toHaveTextContent("Ingresos: $ 0");
+    expect(screen.queryByText(/34\.100/)).not.toBeInTheDocument();
   });
 
   it("suprime la animación cuando el usuario prefiere menos movimiento", () => {

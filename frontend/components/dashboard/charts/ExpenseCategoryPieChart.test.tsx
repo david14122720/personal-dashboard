@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { formatMoney } from "@/lib/api/money";
 import ExpenseCategoryPieChart from "./ExpenseCategoryPieChart";
 
 const data = [
@@ -22,7 +23,7 @@ describe("ExpenseCategoryPieChart", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Sin gastos en USD en este periodo");
   });
 
-  it("dibuja una rebanada por categoría con la leyenda en español", async () => {
+  it("dibuja una rebanada por categoría con la leyenda en español, con los valores y porcentajes reales", async () => {
     const { container } = render(
       <ExpenseCategoryPieChart data={data} locale="es-CO" currency="COP" animate={false} />,
     );
@@ -30,8 +31,14 @@ describe("ExpenseCategoryPieChart", () => {
       screen.getByRole("img", { name: "Gastos por categoría en el periodo actual" }),
     ).toBeInTheDocument();
     expect(container.querySelectorAll(".recharts-sector")).toHaveLength(2);
+    // Legend order follows the data (largest first) and carries the real
+    // amount and the real share of the period total.
     const items = await screen.findAllByRole("listitem");
-    expect(items.map((item) => item.textContent)).toEqual(["Comida", "Transporte"]);
+    const cop = (value: number) => formatMoney(value, { locale: "es-CO", currency: "COP" });
+    expect(items.map((item) => item.textContent)).toEqual([
+      `Comida:${cop(300)}(85,7%)`,
+      `Transporte:${cop(50)}(14,3%)`,
+    ]);
   });
 
   it("pinta cada rebanada con un token del tema, nunca un hex literal", () => {
@@ -89,15 +96,25 @@ describe("ExpenseCategoryPieChart", () => {
     expect(Math.abs(Number(endY) - Number(startY))).toBeLessThanOrEqual(0.01);
   });
 
-  it("es un pastel real, no una dona (cada rebanada llega hasta el centro)", () => {
+  it("es una dona real: cada rebanada cierra contra el hueco interior", () => {
     const { container } = render(
       <ExpenseCategoryPieChart data={data} locale="es-CO" currency="COP" animate={false} />,
     );
     const sectors = [...container.querySelectorAll(".recharts-sector")];
     expect(sectors).toHaveLength(2);
     for (const sector of sectors) {
-      expect(sector.getAttribute("d")).toMatch(/L\s*180,130/);
+      const d = sector.getAttribute("d") ?? "";
+      expect(d).toMatch(/A\s*90,90/);
+      expect(d).toMatch(/A\s*54,54/);
+      // The hole is real: no slice reaches the center of the chart.
+      expect(d).not.toMatch(/L\s*180,130/);
     }
+  });
+
+  it("muestra el total real de las rebanadas en el hueco de la dona", () => {
+    render(<ExpenseCategoryPieChart data={data} locale="es-CO" currency="COP" animate={false} />);
+    expect(screen.getByText("Total")).toBeInTheDocument();
+    expect(screen.getByText("$ 350")).toBeInTheDocument();
   });
 
   it("acepta un aria-label propio", () => {

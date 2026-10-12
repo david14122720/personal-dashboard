@@ -206,3 +206,23 @@ describe("ReportsScreens JD-1 fixes", () => {
     expect(await screen.findByText("Leer")).toBeInTheDocument();
   });
 });
+
+describe("ReportsScreens T8c coherence pass (chrome only)", () => {
+  it("los bloques usan el panel compartido con su cabecera de hairline", async () => {
+    renderReports();
+    const goals = await screen.findByRole("region", { name: "Metas del período" });
+    expect(goals.className).toContain("bg-card");
+    expect(goals.className).toContain("border-hair");
+    expect(goals.querySelector("h2")?.className).toContain("text-instrument");
+  });
+
+  it("un bloque sin datos renderiza el marco de estado vacío compartido (D10)", async () => {
+    server.use(http.get("http://test.local/api/goals", () => HttpResponse.json([])));
+    renderReports();
+    const goals = await screen.findByRole("region", { name: "Metas del período" });
+    const title = await within(goals).findByText("Sin metas aún");
+    const frame = title.closest('[role="status"]');
+    expect(frame).not.toBeNull();
+    expect(frame?.className).toContain("border-dashed");
+  });
+});

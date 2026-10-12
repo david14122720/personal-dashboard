@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { t, type EsKey } from "@/lib/i18n";
+import { deck } from "@/components/ui/deckStyles";
 
 /** One report-table row for the five-column summary modal. */
 export interface HabitReportRow {
@@ -54,9 +55,12 @@ function BarsIcon({ className }: { className?: string }) {
 }
 
 /**
- * Weekly consistency card: 7 Monday-first bars (in-proportion heights with a
- * visible minimum), % above, weekday below, average badge and a detailed
- * per-habit report modal.
+ * Weekly consistency card (`habitos-desktop.html` L697-806 /
+ * `habitos-mobile.html` L603-684): 7 Monday-first bars fed by the real
+ * per-weekday compliance of the visible month (in-proportion heights with a
+ * visible minimum), % above, weekday below, average badge and the detailed
+ * per-habit report modal that the prototype's `Ver reporte detallado`
+ * actually opens (no dead link).
  */
 export default function WeeklyChart({ values, avg, best, weeks, monthLabel, report }: WeeklyChartProps) {
   const [reportOpen, setReportOpen] = useState(false);
@@ -122,68 +126,56 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
   const bestDay = t(WEEKDAY_LONG_KEYS[best.index] ?? "habitsDashboard.weekdayLongMon");
 
   return (
-    <section
-      aria-label={t("habitsDashboard.weeklyTitle")}
-      className="rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px]"
-    >
+    <section aria-label={t("habitsDashboard.weeklyTitle")} className={deck.panel}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <BarsIcon className="h-4 w-4 text-signal" />
-          <h2 className="font-display text-sm font-semibold uppercase tracking-widest text-instrument">
-            {t("habitsDashboard.weeklyTitle")}
-          </h2>
+          <BarsIcon className="h-5 w-5 shrink-0 text-signal" />
+          <h2 className="text-headline-md font-semibold text-instrument">{t("habitsDashboard.weeklyTitle")}</h2>
         </div>
-        <span className="rounded-full border border-signal/30 bg-signal/10 px-3 py-0.5 font-display text-[11px] uppercase tracking-widest text-signal">
+        <span className={deck.weeklyAveragePill}>
           {t("habitsDashboard.weeklyAverage", { n: Math.round(avg) })}
         </span>
       </div>
-      <p className="mt-1 text-xs text-instrument/50">
+      <p className="mt-1 text-body-sm text-muted">
         {t("habitsDashboard.weeklyHint", { n: weeks, month: monthLabel })}
       </p>
 
-      <div className="mt-5 flex items-end gap-2 sm:gap-3">
+      <div className="mt-5 grid grid-cols-7 items-end gap-1.5 sm:gap-3">
         {WEEKDAY_KEYS.map((key, index) => {
           const pct = values[index] ?? 0;
           return (
-            <div key={key} className="flex flex-1 flex-col items-center gap-2">
-              <span className="font-mono text-[11px] tabular-nums text-instrument/70">{Math.round(pct)}%</span>
-              <div className="flex h-32 w-full items-end justify-center">
-                <div
-                  aria-hidden="true"
-                  className={`h-full w-full max-w-14 rounded-t-md transition-all ${index === lowest ? "opacity-40" : ""}`}
-                  style={{
-                    height: `${Math.max(pct, 4)}%`,
-                    background: "linear-gradient(to top, #4F7CFF, #38BDF8)",
-                  }}
-                />
+            <div key={key} className="flex min-w-0 flex-col items-center gap-2">
+              <span className="font-mono text-[11px] tabular-nums text-muted">{Math.round(pct)}%</span>
+              <div className="flex h-32 w-full items-end justify-center sm:h-36">
+                <div className={deck.weeklyBarTrack} style={{ height: `${Math.max(pct, 4)}%` }}>
+                  <span
+                    aria-hidden="true"
+                    className={`${deck.weeklyBarFill}${index === lowest ? " opacity-40" : ""}`}
+                  />
+                </div>
               </div>
-              <span className="font-display text-[11px] uppercase tracking-wider text-instrument/50">{t(key)}</span>
+              <span className="text-label-md font-semibold text-instrument">{t(key)}</span>
             </div>
           );
         })}
       </div>
 
-      <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-4 text-xs text-instrument/60">
-        <p>
+      <div className={deck.weeklyFooterRow}>
+        <p className="text-body-sm text-muted">
           {t("habitsDashboard.weeklyBestDayPre")}
           <strong className="font-semibold text-instrument">
             {t("habitsDashboard.weeklyBestDayBold", { day: bestDay, pct: Math.round(best.pct) })}
           </strong>
           {t("habitsDashboard.weeklyBestDayPost")}
         </p>
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={() => setReportOpen(true)}
-          className="font-display text-xs text-signal transition-colors hover:text-flow"
-        >
+        <button ref={triggerRef} type="button" onClick={() => setReportOpen(true)} className={deck.cardFooterLink}>
           {t("habitsDashboard.viewReport")}
         </button>
       </div>
 
       {reportOpen ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-deck/80 p-4 backdrop-blur-sm"
           onClick={(event) => {
             if (event.target === event.currentTarget) setReportOpen(false);
           }}
@@ -193,7 +185,7 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
             role="dialog"
             aria-modal="true"
             aria-labelledby="habit-report-title"
-            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-white/5 bg-gradient-to-b from-hull/40 to-deck/60 p-[22px] shadow-2xl"
+            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-hair bg-card p-5 shadow-2xl"
           >
             <div className="flex items-center justify-between gap-4">
               <h3 id="habit-report-title" className="font-deck-display text-lg font-bold text-instrument">
@@ -203,14 +195,14 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
                 ref={closeRef}
                 type="button"
                 onClick={() => setReportOpen(false)}
-                className="rounded-md border border-hull px-3 py-1 font-display text-xs text-instrument transition-colors hover:border-signal hover:text-signal"
+                className={deck.headerAction}
               >
                 {t("habitsDashboard.reportClose")}
               </button>
             </div>
             <table className="mt-4 w-full border-collapse text-left text-xs">
               <thead>
-                <tr className="font-display text-[11px] uppercase tracking-widest text-instrument/50">
+                <tr className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="py-2 pr-3">
                     {t("habitsDashboard.reportHabit")}
                   </th>
@@ -230,7 +222,7 @@ export default function WeeklyChart({ values, avg, best, weeks, monthLabel, repo
               </thead>
               <tbody>
                 {report.map((row) => (
-                  <tr key={row.id} className="border-t border-white/5 text-instrument/80">
+                  <tr key={row.id} className="border-t border-hair text-muted">
                     <td className="py-2 pr-3 font-medium text-instrument">{row.name}</td>
                     <td className="py-2 pr-3 font-mono tabular-nums">{`${row.monthPct}%`}</td>
                     <td className="py-2 pr-3 font-mono tabular-nums">{row.doneDays}</td>

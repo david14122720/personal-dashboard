@@ -1,0 +1,1905 @@
+diff --git a/frontend/app/dashboard/finance/compare/page.test.tsx b/frontend/app/dashboard/finance/compare/page.test.tsx
+index 8cad113..835d42d 100644
+--- a/frontend/app/dashboard/finance/compare/page.test.tsx
++++ b/frontend/app/dashboard/finance/compare/page.test.tsx
+@@ -16,6 +16,7 @@ vi.mock("next/link", () => ({
+ }));
+ 
+ import ComparePage from "./page";
++import { trendBuckets } from "@/lib/finance/finance";
+ import type { MovementWire } from "@/lib/api/finance";
+ 
+ process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
+@@ -82,6 +83,17 @@ function renderPage() {
+   );
+ }
+ 
++async function pickCategories() {
++  fireEvent.change(await screen.findByLabelText("Categoría A"), { target: { value: "c1" } });
++  fireEvent.change(screen.getByLabelText("Categoría B"), { target: { value: "c2" } });
++}
++
++/** Axis labels of `period` buckets that are currently rendered as text. */
++function renderedPeriodLabels(container: HTMLElement, period: "day" | "month") {
++  const text = container.textContent ?? "";
++  return trendBuckets(period).filter((window) => text.includes(window.label));
++}
++
+ describe("compare page (movement split)", () => {
+   it("warns when both picks are the same category", async () => {
+     renderPage();
+@@ -91,29 +103,33 @@ describe("compare page (movement split)", () => {
+     expect(await screen.findByText("Elegí dos categorías distintas para compararlas.")).toBeInTheDocument();
+   });
+ 
+-  it("shows expense and income side by side with no netted figure", async () => {
++  it("renders one four-line chart labeling expense and income of both categories", async () => {
+     renderPage();
+-    fireEvent.change(await screen.findByLabelText("Categoría A"), { target: { value: "c1" } });
+-    fireEvent.change(screen.getByLabelText("Categoría B"), { target: { value: "c2" } });
+-    expect(await screen.findByRole("heading", { name: "Comida" })).toBeInTheDocument();
+-    expect(screen.getByRole("heading", { name: "Sueldo" })).toBeInTheDocument();
+-    const values = screen
+-      .getAllByRole("progressbar")
+-      .map((bar) => bar.getAttribute("aria-valuenow"));
+-    expect(values).toContain("100");
+-    expect(values).toContain("20");
+-    expect(values).not.toContain("80");
++    await pickCategories();
++    expect(
++      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
++    ).toBeInTheDocument();
++    expect(screen.getAllByRole("listitem")).toHaveLength(4);
++    expect(screen.getByText("Gastos · Comida")).toBeInTheDocument();
++    expect(screen.getByText("Ingresos · Comida")).toBeInTheDocument();
++    expect(screen.getByText("Gastos · Sueldo")).toBeInTheDocument();
++    expect(screen.getByText("Ingresos · Sueldo")).toBeInTheDocument();
+     expect(screen.getByText("Volver a Finanzas")).toHaveAttribute("href", "/dashboard/finance/");
+   });
+ 
+-  it("excludes foreign-currency movements instead of mixing them", async () => {
+-    renderPage();
+-    fireEvent.change(await screen.findByLabelText("Categoría A"), { target: { value: "c1" } });
+-    fireEvent.change(screen.getByLabelText("Categoría B"), { target: { value: "c2" } });
+-    const values = (await screen.findAllByRole("progressbar")).map((bar) =>
+-      bar.getAttribute("aria-valuenow"),
+-    );
+-    expect(values).not.toContain("999");
++  it("switches the shared chart bucket labels between Mes and Día", async () => {
++    const { container } = renderPage();
++    await pickCategories();
++    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
++
++    expect(renderedPeriodLabels(container, "month")).toHaveLength(12);
++
++    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
++
++    expect(screen.getByRole("radio", { name: "Día" })).toBeChecked();
++    expect(renderedPeriodLabels(container, "day")).toHaveLength(14);
++    expect(renderedPeriodLabels(container, "month")).toHaveLength(0);
++    expect(screen.getAllByRole("listitem")).toHaveLength(4);
+   });
+ 
+   it("fetches one unfiltered category set and lists every kind together", async () => {
+diff --git a/frontend/app/dashboard/finance/compare/page.tsx b/frontend/app/dashboard/finance/compare/page.tsx
+index e500706..40fd766 100644
+--- a/frontend/app/dashboard/finance/compare/page.tsx
++++ b/frontend/app/dashboard/finance/compare/page.tsx
+@@ -5,28 +5,35 @@ import Link from "next/link";
+ import { useRouter } from "next/navigation";
+ import AppShell from "@/components/layout/AppShell";
+ import { SectionShell } from "@/components/finance/FinanceSections";
+-import { CategoryBars } from "@/components/finance/CategoryCharts";
++import CategoryTrendChart, {
++  type TrendRow,
++  type TrendSeries,
++} from "@/components/finance/CategoryTrendChart";
++import TrendPeriodSelector from "@/components/finance/TrendPeriodSelector";
+ import { t } from "@/lib/i18n";
+ import { getToken } from "@/lib/api/client";
+ import { useAccounts, usePreferences } from "@/lib/api/dashboard";
+ import { useCategories, useMovements } from "@/lib/api/finance";
+-import { toCategoryMovementTotals, toCategoryOptions } from "@/lib/finance/finance";
++import { toCategoryOptions, toCategoryTrend, type TrendPeriod } from "@/lib/finance/finance";
+ 
+ const selectClass =
+   "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none";
+ 
+ /**
+  * Standalone two-category comparison sourced from `GET /movements` (same
+- * `finance/movements` SWR key as Finance, no new endpoint). Each category
+- * shows expense and income side by side as separate figures — never netted,
+- * never currency-mixed (single-currency guard in `toCategoryMovementTotals`).
+- * A Finance sub-route reached only through the chart button — there is
+- * intentionally no nav entry for this route.
++ * `finance/movements` SWR key as Finance, no new endpoint). Both categories
++ * are bucketed over the same period (`toCategoryTrend`) and merged by bucket
++ * index into one four-line trend: expense and income per category, never
++ * netted, never currency-mixed (single-currency guard in `toCategoryTrend`).
++ * Category A is solid and category B is dashed, so line style — not only
++ * color — separates the two categories. A Finance sub-route reached only
++ * through the chart button — there is intentionally no nav entry.
+  */
+ export default function ComparePage() {
+   const router = useRouter();
+   const [first, setFirst] = useState("");
+   const [second, setSecond] = useState("");
++  const [period, setPeriod] = useState<TrendPeriod>("month");
+ 
+   useEffect(() => {
+     if (!getToken()) {
+@@ -54,12 +61,56 @@ export default function ComparePage() {
+     [accounts.data],
+   );
+ 
+-  const totalsA = first
+-    ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, first)
+-    : null;
+-  const totalsB = second
+-    ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, second)
+-    : null;
++  const rows: TrendRow[] = useMemo(() => {
++    if (!first || !second) return [];
++    const trendA = toCategoryTrend(movements.data, {
++      categoryId: first,
++      period,
++      currencyByAccountId,
++      userCurrency: currency,
++    });
++    const trendB = toCategoryTrend(movements.data, {
++      categoryId: second,
++      period,
++      currencyByAccountId,
++      userCurrency: currency,
++    });
++    return trendA.map((bucket, index) => ({
++      bucket: bucket.bucket,
++      label: bucket.label,
++      a_expense: bucket.expense,
++      a_income: bucket.income,
++      b_expense: trendB[index].expense,
++      b_income: trendB[index].income,
++    }));
++  }, [first, second, movements.data, currencyByAccountId, currency, period]);
++
++  const nameA = options.find((c) => c.id === first)?.name ?? first;
++  const nameB = options.find((c) => c.id === second)?.name ?? second;
++  const series: TrendSeries[] = [
++    {
++      key: "a_expense",
++      label: t("finance.trendExpensesOf", { name: nameA }),
++      token: "--color-signal",
++    },
++    {
++      key: "a_income",
++      label: t("finance.trendIncomeOf", { name: nameA }),
++      token: "--color-flow",
++    },
++    {
++      key: "b_expense",
++      label: t("finance.trendExpensesOf", { name: nameB }),
++      token: "--color-alert",
++      dashed: true,
++    },
++    {
++      key: "b_income",
++      label: t("finance.trendIncomeOf", { name: nameB }),
++      token: "--color-violet",
++      dashed: true,
++    },
++  ];
+   const showHint = first !== "" && first === second;
+ 
+   return (
+@@ -104,38 +155,19 @@ export default function ComparePage() {
+               </select>
+             </label>
+           </div>
++          <div className="mt-4">
++            <TrendPeriodSelector value={period} onChange={setPeriod} />
++          </div>
+           <div className="mt-4">
+             {showHint ? (
+               <p className="text-xs text-signal">{t("compare.sameHint")}</p>
+-            ) : totalsA && totalsB ? (
+-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+-                <div>
+-                  <h3 className="font-display text-sm font-semibold">
+-                    {options.find((c) => c.id === first)?.name ?? first}
+-                  </h3>
+-                  <div className="mt-2">
+-                    <CategoryBars
+-                      expense={totalsA.expense}
+-                      income={totalsA.income}
+-                      locale={locale}
+-                      currency={currency}
+-                    />
+-                  </div>
+-                </div>
+-                <div>
+-                  <h3 className="font-display text-sm font-semibold">
+-                    {options.find((c) => c.id === second)?.name ?? second}
+-                  </h3>
+-                  <div className="mt-2">
+-                    <CategoryBars
+-                      expense={totalsB.expense}
+-                      income={totalsB.income}
+-                      locale={locale}
+-                      currency={currency}
+-                    />
+-                  </div>
+-                </div>
+-              </div>
++            ) : first && second ? (
++              <CategoryTrendChart
++                data={rows}
++                series={series}
++                locale={locale}
++                currency={currency}
++              />
+             ) : (
+               <p className="text-xs text-instrument/60">{t("finance.chartEmptyHint")}</p>
+             )}
+diff --git a/frontend/components/containers/FinanceScreens.tsx b/frontend/components/containers/FinanceScreens.tsx
+index 551c4a8..362456f 100644
+--- a/frontend/components/containers/FinanceScreens.tsx
++++ b/frontend/components/containers/FinanceScreens.tsx
+@@ -3,9 +3,9 @@
+ import { useMemo, useRef, useState } from "react";
+ import { useSWRConfig } from "swr";
+ import AppShell from "@/components/layout/AppShell";
++import EmptyState from "@/components/ui/EmptyState";
+ import { t } from "@/lib/i18n";
+ import {
+-  AccountsList,
+   CompactMoneyList,
+   SectionShell,
+ } from "@/components/finance/FinanceSections";
+@@ -70,7 +70,7 @@ export function isValidBalanceInput(raw: string): boolean {
+ }
+ 
+ /**
+- * Inline balance edit for one account card (design §6.2): the current value
++ * Inline balance edit for one account row (design §6.2): the current value
+  * stays visible, `Cancelar` sends nothing, success revalidates the
+  * `finance/` SWR scope. Control is ≥44px with a focus ring and a
+  * per-account `aria-label`.
+@@ -122,7 +122,15 @@ export function AccountBalanceEdit({
+     return (
+       <div className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2">
+         <div className="min-w-0">
+-          <p className="truncate text-sm">{account.name}</p>
++          <p className="flex items-baseline gap-2 text-sm">
++            <span className="min-w-0 truncate">{account.name}</span>
++            <span
++              aria-label={t("finance.accountTypeLabel")}
++              className="shrink-0 text-xs text-instrument/60"
++            >
++              {account.type}
++            </span>
++          </p>
+           <p className="font-mono text-sm tabular-nums">{currentLabel}</p>
+         </div>
+         <button
+@@ -281,13 +289,10 @@ export default function FinanceScreens() {
+               hint={t("finance.accountsHint")}
+               span="col-span-12 md:col-span-6 xl:col-span-6"
+             >
+-              <AccountsList
+-                accounts={cards}
+-                locale={locale}
+-                activeAccountId={activeAccountId}
+-                onSelect={setActiveAccountId}
+-              />
+-              <div className="mt-4 flex flex-col gap-2 border-t border-hull pt-4">
++              <div className="flex flex-col gap-2">
++                {cards.length === 0 ? (
++                  <EmptyState title={t("finance.noAccounts")} hint={t("finance.noAccountsHint")} />
++                ) : null}
+                 {cards.map((card) => (
+                   <AccountBalanceEdit key={card.id} account={card} locale={locale} />
+                 ))}
+diff --git a/frontend/components/finance/CategoryCharts.test.tsx b/frontend/components/finance/CategoryCharts.test.tsx
+index bd51df4..c6c1013 100644
+--- a/frontend/components/finance/CategoryCharts.test.tsx
++++ b/frontend/components/finance/CategoryCharts.test.tsx
+@@ -3,41 +3,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+ import { http, HttpResponse } from "msw";
+ import { setupServer } from "msw/node";
+ import { SWRConfig } from "swr";
+-import { CategoryBars, CategoryChartSection } from "@/components/finance/CategoryCharts";
++import { CategoryChartSection } from "@/components/finance/CategoryCharts";
++import { trendBuckets } from "@/lib/finance/finance";
+ import type { MovementWire } from "@/lib/api/finance";
+ 
+ process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
+ 
+-function bars(expenses: number, incomes: number) {
+-  return render(<CategoryBars expense={expenses} income={incomes} locale="es-CO" currency="COP" />);
+-}
+-
+-describe("CategoryBars (movement two-series)", () => {
+-  it("mounts gasto + ingreso series when both directions exist, never netted", () => {
+-    const { container } = bars(100, 50);
+-    const series = within(container).getAllByRole("progressbar");
+-    expect(series).toHaveLength(2);
+-    expect(series.map((s) => s.getAttribute("aria-valuenow")).sort()).toEqual(["100", "50"]);
+-    expect(screen.getByText("Gastos")).toBeInTheDocument();
+-    expect(screen.getByText("Ingresos")).toBeInTheDocument();
+-  });
+-
+-  it("mounts a single series otherwise", () => {
+-    const first = bars(100, 0);
+-    expect(within(first.container).getAllByRole("progressbar")).toHaveLength(1);
+-    expect(first.container.textContent).not.toContain("Ingresos");
+-    first.unmount();
+-    const second = bars(0, 50);
+-    expect(within(second.container).getAllByRole("progressbar")).toHaveLength(1);
+-    expect(second.container.textContent).not.toContain("Gastos");
+-  });
+-
+-  it("uses theme tokens only (no hardcoded hex)", () => {
+-    const { container } = bars(100, 50);
+-    expect(container.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+-  });
+-});
+-
+ function movement(id: string, overrides: Partial<MovementWire> = {}): MovementWire {
+   return {
+     id,
+@@ -89,6 +60,12 @@ function renderSection() {
+   );
+ }
+ 
++/** Axis labels of `period` buckets that are currently rendered as text. */
++function renderedPeriodLabels(container: HTMLElement, period: "day" | "month") {
++  const text = container.textContent ?? "";
++  return trendBuckets(period).filter((window) => text.includes(window.label));
++}
++
+ describe("CategoryChartSection (movement source)", () => {
+   it("lists every owned kind together with no kind split", async () => {
+     renderSection();
+@@ -98,18 +75,59 @@ describe("CategoryChartSection (movement source)", () => {
+     expect(within(select).getByRole("option", { name: "Ejercicio" })).toBeInTheDocument();
+   });
+ 
+-  it("renders gasto + ingreso without netting and excludes foreign-currency rows", async () => {
+-    const { container } = renderSection();
++  it("renders the four period pills with Mes active by default", async () => {
++    renderSection();
++    await screen.findByLabelText("Categoría");
++    expect(screen.getByRole("group", { name: "Periodo" })).toBeInTheDocument();
++    expect(screen.getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual([
++      "day",
++      "week",
++      "month",
++      "year",
++    ]);
++    expect(screen.getByRole("radio", { name: "Mes" })).toBeChecked();
++  });
++
++  it("keeps the empty state and hides the chart until a category is selected", async () => {
++    renderSection();
++    await screen.findByLabelText("Categoría");
++    expect(screen.getByRole("status")).toHaveTextContent("Sin movimientos en esta categoría aún");
++    expect(
++      screen.queryByRole("img", { name: "Tendencia de gastos e ingresos" }),
++    ).not.toBeInTheDocument();
++  });
++
++  it("renders the gasto/ingreso trend for the selected category", async () => {
++    renderSection();
+     fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
+-    const series = await within(container).findAllByRole("progressbar");
+-    expect(series.map((s) => s.getAttribute("aria-valuenow")).sort()).toEqual(["100", "20"]);
++    expect(
++      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
++    ).toBeInTheDocument();
++    expect(screen.getByText("Gastos")).toBeInTheDocument();
++    expect(screen.getByText("Ingresos")).toBeInTheDocument();
+   });
+ 
+-  it("renders a single series for an expense-only category", async () => {
++  it("switches the rendered bucket count and labels between Mes and Día", async () => {
+     const { container } = renderSection();
+-    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c2" } });
+-    const series = await within(container).findAllByRole("progressbar");
+-    expect(series).toHaveLength(1);
+-    expect(series[0].getAttribute("aria-valuenow")).toBe("50");
++    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
++    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
++
++    expect(renderedPeriodLabels(container, "month")).toHaveLength(12);
++    expect(renderedPeriodLabels(container, "day")).toHaveLength(0);
++
++    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
++
++    expect(renderedPeriodLabels(container, "day")).toHaveLength(14);
++    expect(renderedPeriodLabels(container, "month")).toHaveLength(0);
++  });
++
++  it("draws the flat trend plus the no-data note for a category with no movements in range", async () => {
++    renderSection();
++    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c3" } });
++    expect(
++      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
++    ).toBeInTheDocument();
++    expect(screen.getByText("Sin movimientos en este periodo")).toBeInTheDocument();
++    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+   });
+ });
+diff --git a/frontend/components/finance/CategoryCharts.tsx b/frontend/components/finance/CategoryCharts.tsx
+index ebbcd35..b88dcce 100644
+--- a/frontend/components/finance/CategoryCharts.tsx
++++ b/frontend/components/finance/CategoryCharts.tsx
+@@ -3,76 +3,29 @@
+ import { useMemo, useState } from "react";
+ import Link from "next/link";
+ import { t } from "@/lib/i18n";
+-import { formatMoney } from "@/lib/api/money";
+ import { useAccounts } from "@/lib/api/dashboard";
+ import { useMovements } from "@/lib/api/finance";
+-import { toCategoryMovementTotals, type NamedOption } from "@/lib/finance/finance";
++import { toCategoryTrend, type NamedOption, type TrendPeriod } from "@/lib/finance/finance";
++import CategoryTrendChart, {
++  type TrendRow,
++  type TrendSeries,
++} from "@/components/finance/CategoryTrendChart";
++import TrendPeriodSelector from "@/components/finance/TrendPeriodSelector";
+ import { SectionShell } from "@/components/finance/FinanceSections";
+ import EmptyState from "@/components/ui/EmptyState";
+ 
+ const selectClass =
+   "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none";
+ 
+-/** Two labeled div-bars (gasto/ingreso) with COP amounts, no chart dependency.
+- * A series mounts only when its aggregated value is greater than zero, so an
+- * expense-only category renders a single bar and the two directions are never
+- * netted. Widths are static (no animated properties), so there is nothing to
+- * suppress under `prefers-reduced-motion`. */
+-export function CategoryBars({
+-  expense,
+-  income,
+-  locale,
+-  currency,
+-}: {
+-  expense: number;
+-  income: number;
+-  locale: string;
+-  currency: string;
+-}) {
+-  const max = Math.max(expense, income, 1);
+-  const rows = [
+-    ...(expense > 0
+-      ? [{ key: "expense", label: t("finance.chartExpenses"), value: expense, className: "bg-signal" }]
+-      : []),
+-    ...(income > 0
+-      ? [{ key: "income", label: t("finance.chartIncome"), value: income, className: "bg-flow" }]
+-      : []),
+-  ];
+-  return (
+-    <div className="flex flex-col gap-3">
+-      {rows.map((row) => (
+-        <div key={row.key}>
+-          <div className="flex flex-wrap items-baseline justify-between gap-2">
+-            <p className="text-xs text-instrument/60">{row.label}</p>
+-            <p className="font-mono text-sm tabular-nums">
+-              {formatMoney(row.value, { locale, currency })}
+-            </p>
+-          </div>
+-          <div
+-            role="progressbar"
+-            aria-label={row.label}
+-            aria-valuenow={Math.round(row.value)}
+-            aria-valuemin={0}
+-            aria-valuemax={Math.round(max)}
+-            className="mt-1 h-2.5 overflow-hidden rounded-full bg-deck"
+-          >
+-            <div
+-              className={`h-full rounded-full ${row.className}`}
+-              style={{ width: `${max > 0 ? (row.value / max) * 100 : 0}%` }}
+-            />
+-          </div>
+-        </div>
+-      ))}
+-    </div>
+-  );
+-}
+-
+ /**
+- * Per-category gasto/ingreso chart sourced from `GET /movements` (same
++ * Per-category gasto/ingreso trend sourced from `GET /movements` (same
+  * `finance/movements` SWR key as the history list, no new endpoint).
+- * Aggregates are single-currency and never netted (see
+- * `toCategoryMovementTotals`). The compare view lives on its own
+- * sub-route and is reached only through the button below — never the nav.
++ * `toCategoryTrend` splits the category into a fixed number of consecutive
++ * time buckets (14 days / 8 weeks / 12 months / 5 years) ordered oldest to
++ * newest, keeps empty buckets at zero and never nets the two directions.
++ * Aggregates are single-currency: only movements whose account matches the
++ * user currency participate. The compare view lives on its own sub-route and
++ * is reached only through the button below — never the nav.
+  */
+ export function CategoryChartSection({
+   categories,
+@@ -84,19 +37,41 @@ export function CategoryChartSection({
+   currency: string;
+ }) {
+   const [selected, setSelected] = useState("");
++  const [period, setPeriod] = useState<TrendPeriod>("month");
+   const movements = useMovements();
+   const accounts = useAccounts();
+   const currencyByAccountId = useMemo(
+     () => new Map((accounts.data ?? []).map((a) => [a.id, a.currency])),
+     [accounts.data],
+   );
+-  const totals = useMemo(
++  const buckets = useMemo(
+     () =>
+       selected
+-        ? toCategoryMovementTotals(movements.data, currencyByAccountId, currency, selected)
++        ? toCategoryTrend(movements.data, {
++            categoryId: selected,
++            period,
++            currencyByAccountId,
++            userCurrency: currency,
++          })
+         : null,
+-    [movements.data, currencyByAccountId, currency, selected],
++    [movements.data, currencyByAccountId, currency, selected, period],
++  );
++  const rows: TrendRow[] = useMemo(
++    () =>
++      (buckets ?? []).map((bucket) => ({
++        bucket: bucket.bucket,
++        label: bucket.label,
++        expense: bucket.expense,
++        income: bucket.income,
++      })),
++    [buckets],
+   );
++  const series: TrendSeries[] = [
++    { key: "expense", label: t("finance.chartExpenses"), token: "--color-signal" },
++    { key: "income", label: t("finance.chartIncome"), token: "--color-flow" },
++  ];
++  const noDataInRange =
++    buckets !== null && buckets.every((bucket) => bucket.expense === 0 && bucket.income === 0);
+   return (
+     <SectionShell
+       title={t("finance.categoryChartTitle")}
+@@ -104,28 +79,34 @@ export function CategoryChartSection({
+       span="col-span-12"
+     >
+       <div className="flex flex-col gap-4">
+-        <label className="flex max-w-md flex-col gap-1 text-xs text-instrument/60">
+-          {t("finance.categorySelectLabel")}
+-          <select
+-            aria-label={t("finance.categorySelectLabel")}
+-            className={selectClass}
+-            value={selected}
+-            onChange={(e) => setSelected(e.target.value)}
+-          >
+-            <option value="">{t("finance.selectCategory")}</option>
+-            {categories.map((c) => (
+-              <option key={c.id} value={c.id}>
+-                {c.name}
+-              </option>
+-            ))}
+-          </select>
+-        </label>
+-        {!totals ? (
+-          <EmptyState title={t("finance.chartEmpty")} hint={t("finance.chartEmptyHint")} />
+-        ) : totals.expense === 0 && totals.income === 0 ? (
++        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
++          <label className="flex w-full max-w-md flex-col gap-1 text-xs text-instrument/60">
++            {t("finance.categorySelectLabel")}
++            <select
++              aria-label={t("finance.categorySelectLabel")}
++              className={selectClass}
++              value={selected}
++              onChange={(e) => setSelected(e.target.value)}
++            >
++              <option value="">{t("finance.selectCategory")}</option>
++              {categories.map((c) => (
++                <option key={c.id} value={c.id}>
++                  {c.name}
++                </option>
++              ))}
++            </select>
++          </label>
++          <TrendPeriodSelector value={period} onChange={setPeriod} />
++        </div>
++        {buckets === null ? (
+           <EmptyState title={t("finance.chartEmpty")} hint={t("finance.chartEmptyHint")} />
+         ) : (
+-          <CategoryBars expense={totals.expense} income={totals.income} locale={locale} currency={currency} />
++          <div className="flex flex-col gap-2">
++            <CategoryTrendChart data={rows} series={series} locale={locale} currency={currency} />
++            {noDataInRange ? (
++              <p className="text-xs text-instrument/60">{t("finance.trendNoDataInRange")}</p>
++            ) : null}
++          </div>
+         )}
+         <div>
+           <Link
+diff --git a/frontend/components/finance/CategoryTrendChart.test.tsx b/frontend/components/finance/CategoryTrendChart.test.tsx
+new file mode 100644
+index 0000000..086c121
+--- /dev/null
++++ b/frontend/components/finance/CategoryTrendChart.test.tsx
+@@ -0,0 +1,53 @@
++import { render, screen } from "@testing-library/react";
++import { describe, expect, it } from "vitest";
++import CategoryTrendChart, { type TrendRow, type TrendSeries } from "./CategoryTrendChart";
++
++const series: TrendSeries[] = [
++  { key: "expense", label: "Gastos", token: "--color-signal" },
++  { key: "income", label: "Ingresos", token: "--color-flow", dashed: true },
++];
++
++const data: TrendRow[] = [
++  { bucket: "2026-09", label: "sep 26", expense: 25000, income: 0 },
++  { bucket: "2026-10", label: "oct 26", expense: 1200000, income: 40000 },
++];
++
++describe("CategoryTrendChart", () => {
++  it("renders the accessible chart with one legend entry per series", () => {
++    const { container } = render(
++      <CategoryTrendChart data={data} series={series} locale="es-CO" currency="COP" animate={false} />,
++    );
++    expect(screen.getByRole("img", { name: "Tendencia de gastos e ingresos" })).toBeInTheDocument();
++    expect(container.querySelector("svg")).not.toBeNull();
++    expect(screen.getAllByRole("listitem")).toHaveLength(2);
++    expect(screen.getByText("Gastos")).toBeInTheDocument();
++    expect(screen.getByText("Ingresos")).toBeInTheDocument();
++  });
++
++  it("accepts a custom accessible name", () => {
++    render(
++      <CategoryTrendChart
++        data={data}
++        series={series}
++        locale="es-CO"
++        currency="COP"
++        ariaLabel="Comparar categorías"
++        animate={false}
++      />,
++    );
++    expect(screen.getByRole("img", { name: "Comparar categorías" })).toBeInTheDocument();
++  });
++
++  it("falls back to the empty state without data or without series", () => {
++    const first = render(
++      <CategoryTrendChart data={[]} series={series} locale="es-CO" currency="COP" animate={false} />,
++    );
++    expect(screen.getByRole("status")).toHaveTextContent("Sin movimientos en esta categoría aún");
++    first.unmount();
++    const { container } = render(
++      <CategoryTrendChart data={data} series={[]} locale="es-CO" currency="COP" animate={false} />,
++    );
++    expect(screen.getByRole("status")).toHaveTextContent("Sin movimientos en esta categoría aún");
++    expect(container.querySelector("svg")).toBeNull();
++  });
++});
+diff --git a/frontend/components/finance/CategoryTrendChart.tsx b/frontend/components/finance/CategoryTrendChart.tsx
+new file mode 100644
+index 0000000..82061eb
+--- /dev/null
++++ b/frontend/components/finance/CategoryTrendChart.tsx
+@@ -0,0 +1,98 @@
++"use client";
++
++import { CartesianGrid, Legend, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
++import { t } from "@/lib/i18n";
++import { chartTick, chartTok, chartTooltipStyle } from "@/components/ui/chartTheme";
++import EmptyState from "@/components/ui/EmptyState";
++import { formatMoney } from "@/lib/api/money";
++
++export interface TrendRow {
++  bucket: string;
++  label: string;
++  [series: string]: string | number;
++}
++
++export interface TrendSeries {
++  key: string;
++  label: string;
++  token: `--color-${string}`;
++  dashed?: boolean;
++}
++
++/**
++ * Multi-series category trend (1..4 lines). Pure presentational: the section
++ * hands rows already bucketed by `toCategoryTrend` and one descriptor per
++ * line. Y ticks are compact (COP millions do not fit otherwise), the tooltip
++ * shows full money, and every color comes from theme tokens.
++ */
++export default function CategoryTrendChart({
++  data,
++  series,
++  locale,
++  currency,
++  ariaLabel,
++  animate = true,
++}: {
++  data: TrendRow[];
++  series: TrendSeries[];
++  locale: string;
++  currency: string;
++  ariaLabel?: string;
++  animate?: boolean;
++}) {
++  if (!data || data.length === 0 || series.length === 0) {
++    return <EmptyState title={t("finance.chartEmpty")} hint={t("finance.chartEmptyHint")} />;
++  }
++  const compact = new Intl.NumberFormat(locale, {
++    notation: "compact",
++    maximumFractionDigits: 1,
++  });
++  return (
++    <div
++      className="w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal"
++      tabIndex={0}
++      role="img"
++      aria-label={ariaLabel ?? t("finance.trendChartLabel")}
++    >
++      <LineChart
++        width={560}
++        height={260}
++        data={data}
++        margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
++      >
++        <CartesianGrid stroke={chartTok("--color-hull")} strokeDasharray="3 3" />
++        <XAxis
++          dataKey="label"
++          tick={chartTick()}
++          tickLine={false}
++          axisLine={{ stroke: chartTok("--color-hull") }}
++        />
++        <YAxis
++          tick={chartTick()}
++          tickLine={false}
++          axisLine={false}
++          width={48}
++          tickFormatter={(value) => compact.format(Number(value))}
++        />
++        <Tooltip
++          contentStyle={chartTooltipStyle()}
++          formatter={(value) => formatMoney(Number(value), { locale, currency })}
++        />
++        <Legend wrapperStyle={chartTick()} />
++        {series.map((line) => (
++          <Line
++            key={line.key}
++            type="monotone"
++            dataKey={line.key}
++            name={line.label}
++            stroke={chartTok(line.token)}
++            strokeWidth={2}
++            dot={false}
++            strokeDasharray={line.dashed ? "5 3" : undefined}
++            isAnimationActive={animate}
++          />
++        ))}
++      </LineChart>
++    </div>
++  );
++}
+diff --git a/frontend/components/finance/FinanceSections.tsx b/frontend/components/finance/FinanceSections.tsx
+index 09b2c11..e1f629c 100644
+--- a/frontend/components/finance/FinanceSections.tsx
++++ b/frontend/components/finance/FinanceSections.tsx
+@@ -1,17 +1,10 @@
+ import EmptyState from "@/components/ui/EmptyState";
+-import { t } from "@/lib/i18n";
+ import { formatMoney } from "@/lib/api/money";
+-import { ledDotClass } from "@/lib/dashboard/transforms";
+-import type {
+-  AccountCardView,
+-  CompactMoneyRow,
+-} from "@/lib/finance/finance";
++import type { CompactMoneyRow } from "@/lib/finance/finance";
+ 
+ /**
+  * Pure presentational sections for the finance screens. Containers own all
+- * SWR reads and money coercion; these components receive numbers only and
+- * reuse the shared LED mapping (`ledDotClass`) for account `alert_level`
+- * (ok|warn|high) enums.
++ * SWR reads and money coercion; these components receive numbers only.
+  */
+ 
+ export function SectionShell({
+@@ -34,116 +27,6 @@ export function SectionShell({
+   );
+ }
+ 
+-function LedDot({ label, status }: { label: string; status: string }) {
+-  return (
+-    <span
+-      role="img"
+-      aria-label={t("finance.ledStatus", { label, status })}
+-      title={status}
+-      className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${ledDotClass(status)}`}
+-    />
+-  );
+-}
+-
+-function ProgressBar({ pct, status, label }: { pct: number; status: string; label: string }) {
+-  return (
+-    <div
+-      role="progressbar"
+-      aria-label={label}
+-      aria-valuenow={Math.round(pct * 100)}
+-      aria-valuemin={0}
+-      aria-valuemax={100}
+-      className="h-2 overflow-hidden rounded-full bg-deck"
+-    >
+-      <div className={`h-full rounded-full ${ledDotClass(status)}`} style={{ width: `${pct * 100}%` }} />
+-    </div>
+-  );
+-}
+-
+-export function AccountsList({
+-  accounts,
+-  locale,
+-  activeAccountId,
+-  onSelect,
+-}: {
+-  accounts: AccountCardView[];
+-  locale: string;
+-  /** Selected account id for the movements history filter (S-C). */
+-  activeAccountId?: string | null;
+-  /** Account-card click sets the history filter; undefined keeps cards inert. */
+-  onSelect?: (id: string | null) => void;
+-}) {
+-  if (accounts.length === 0) {
+-    return <EmptyState title={t("finance.noAccounts")} hint={t("finance.noAccountsHint")} />;
+-  }
+-  return (
+-    <ul className="flex flex-col gap-3">
+-      {accounts.map((account) => {
+-        const active = activeAccountId === account.id;
+-        const selectable = onSelect !== undefined;
+-        return (
+-          <li
+-            key={account.id}
+-            className={`rounded-lg border px-4 py-3 ${active ? "border-signal" : "border-hull"}`}
+-          >
+-            {selectable ? (
+-              <button
+-                type="button"
+-                onClick={() => onSelect(active ? null : account.id)}
+-                aria-pressed={active}
+-                aria-label={account.name}
+-                className="block min-h-[44px] w-full rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+-              >
+-                <AccountCardBody account={account} locale={locale} />
+-              </button>
+-            ) : (
+-              <AccountCardBody account={account} locale={locale} />
+-            )}
+-          </li>
+-        );
+-      })}
+-    </ul>
+-  );
+-}
+-
+-function AccountCardBody({ account, locale }: { account: AccountCardView; locale: string }) {
+-  return (
+-    <div className="flex items-start gap-2.5">
+-      {account.alertLevel ? <LedDot label={account.name} status={account.alertLevel} /> : null}
+-      <div className="min-w-0 flex-1">
+-        <div className="flex flex-wrap items-baseline justify-between gap-2">
+-          <p className="truncate text-sm font-medium">
+-            {account.name}
+-            <span className="ml-2 text-xs font-normal text-instrument/50">{account.type}</span>
+-          </p>
+-          <p className="font-mono text-sm tabular-nums">
+-            {formatMoney(account.balance, { locale, currency: account.currency })}
+-          </p>
+-        </div>
+-        {account.isCard && account.used !== null ? (
+-          <div className="mt-2">
+-            <ProgressBar
+-              pct={Math.min(1, Math.max(0, (account.usagePct ?? 0) / 100))}
+-              status={account.alertLevel ?? "ok"}
+-              label={t("finance.cardUsageLabel", { name: account.name })}
+-            />
+-            <p className="mt-1 font-mono text-[11px] tabular-nums text-instrument/60">
+-              {t("finance.usedAvailable", {
+-                used: formatMoney(account.used, { locale, currency: account.currency }),
+-                available: formatMoney(account.available ?? 0, { locale, currency: account.currency }),
+-                pct: (account.usagePct ?? 0).toFixed(1),
+-              })}
+-              {account.statementBalance !== null
+-                ? ` · ${t("finance.statementBalance", { amount: formatMoney(account.statementBalance, { locale, currency: account.currency }) })}`
+-                : ""}
+-            </p>
+-          </div>
+-        ) : null}
+-      </div>
+-    </div>
+-  );
+-}
+-
+ export function CompactMoneyList({
+   rows,
+   locale,
+diff --git a/frontend/components/finance/MovementHistory.test.tsx b/frontend/components/finance/MovementHistory.test.tsx
+index a80e240..d826371 100644
+--- a/frontend/components/finance/MovementHistory.test.tsx
++++ b/frontend/components/finance/MovementHistory.test.tsx
+@@ -1,4 +1,5 @@
+ import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
++import { useState } from "react";
+ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+ import { http, HttpResponse } from "msw";
+ import { setupServer } from "msw/node";
+@@ -33,6 +34,13 @@ function wire(id: string, overrides: Partial<MovementWire> = {}): MovementWire {
+   };
+ }
+ 
++/** Movement `m{n}` with `occurred_on` descending from 2026-09-30: API order. */
++function dated(n: number, overrides: Partial<MovementWire> = {}): MovementWire {
++  const date = new Date(Date.UTC(2026, 8, 30));
++  date.setUTCDate(date.getUTCDate() - n);
++  return wire(`m${n}`, { occurred_on: date.toISOString().slice(0, 10), ...overrides });
++}
++
+ let movements: MovementWire[] = [];
+ let movementsGets = 0;
+ 
+@@ -72,15 +80,145 @@ function renderHistory(props: Partial<typeof baseProps> = {}) {
+   );
+ }
+ 
++/** Simulates `FinanceScreens`, which owns `activeAccountId`. */
++function renderHistoryWithAccountFilter() {
++  function Host() {
++    const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
++    return (
++      <MovementHistory
++        {...baseProps}
++        activeAccountId={activeAccountId}
++        onSelectAccount={setActiveAccountId}
++      />
++    );
++  }
++  return render(
++    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
++      <Host />
++    </SWRConfig>,
++  );
++}
++
+ describe("MovementHistory", () => {
+-  it("renders the latest 50 in API order", async () => {
+-    movements = Array.from({ length: 60 }, (_, n) => wire(`m${n}`));
++  it("renders the first five rows in API order with a Ver más control", async () => {
++    movements = Array.from({ length: 34 }, (_, n) => dated(n));
+     const { container } = renderHistory();
+-    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(50));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
+     const items = container.querySelectorAll("li");
+     expect(items[0].textContent).toContain("desc-m0");
+-    expect(items[49].textContent).toContain("desc-m49");
+-    expect(container.textContent).not.toContain("desc-m59");
++    expect(items[1].textContent).toContain("desc-m1");
++    expect(items[4].textContent).toContain("desc-m4");
++    expect(container.textContent).not.toContain("desc-m5");
++    expect(screen.getByRole("button", { name: "Ver más" })).toBeInTheDocument();
++  });
++
++  it("appends ten rows per activation, accumulatively, without replacing them", async () => {
++    movements = Array.from({ length: 44 }, (_, n) => dated(n));
++    const { container } = renderHistory();
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(15));
++    let items = container.querySelectorAll("li");
++    expect(items[0].textContent).toContain("desc-m0");
++    expect(items[4].textContent).toContain("desc-m4");
++    expect(items[14].textContent).toContain("desc-m14");
++    expect(container.textContent).not.toContain("desc-m15");
++
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
++
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(35));
++    items = container.querySelectorAll("li");
++    expect(items[0].textContent).toContain("desc-m0");
++    expect(items[34].textContent).toContain("desc-m34");
++  });
++
++  it("shows every row and hides Ver más once the list is exhausted", async () => {
++    movements = Array.from({ length: 23 }, (_, n) => dated(n));
++    const { container } = renderHistory();
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(15));
++
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(23));
++    expect(container.querySelectorAll("li")[22].textContent).toContain("desc-m22");
++    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
++  });
++
++  it("renders three rows and no Ver más control with three movements", async () => {
++    movements = Array.from({ length: 3 }, (_, n) => dated(n));
++    const { container } = renderHistory();
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(3));
++    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
++  });
++
++  it("resets to five rows when the direction filter changes without changing the filter", async () => {
++    movements = Array.from({ length: 30 }, (_, n) =>
++      dated(n, { direction: n % 2 === 0 ? "expense" : "income" }),
++    );
++    const { container } = renderHistory();
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
++
++    const directionSelect = screen.getByLabelText("Tipo") as HTMLSelectElement;
++    fireEvent.change(directionSelect, { target: { value: "income" } });
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++    expect(directionSelect.value).toBe("income");
++    let items = container.querySelectorAll("li");
++    expect(items[0].textContent).toContain("desc-m1");
++    expect(items[4].textContent).toContain("desc-m9");
++    expect(container.textContent).not.toContain("desc-m0");
++
++    // Returning to "Todas" must not restore the previously expanded window.
++    fireEvent.change(directionSelect, { target: { value: "" } });
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++    expect(directionSelect.value).toBe("");
++    items = container.querySelectorAll("li");
++    expect(items[0].textContent).toContain("desc-m0");
++  });
++
++  it("resets to five rows when the category filter changes without changing the filter", async () => {
++    movements = Array.from({ length: 30 }, (_, n) =>
++      dated(n, { category_id: n % 2 === 0 ? "c1" : "c2" }),
++    );
++    const { container } = renderHistory();
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
++
++    const categorySelect = screen.getByLabelText("Categoría") as HTMLSelectElement;
++    fireEvent.change(categorySelect, { target: { value: "c2" } });
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++    expect(categorySelect.value).toBe("c2");
++    const items = container.querySelectorAll("li");
++    expect(items[0].textContent).toContain("desc-m1");
++    expect(items[4].textContent).toContain("desc-m9");
++  });
++
++  it("resets to five rows when the parent-owned account filter changes", async () => {
++    movements = Array.from({ length: 30 }, (_, n) =>
++      dated(n, { account_id: n % 2 === 0 ? "a1" : "a2" }),
++    );
++    const { container } = renderHistoryWithAccountFilter();
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    fireEvent.click(screen.getByRole("button", { name: "Ver más" }));
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(25));
++
++    const accountSelect = screen.getByLabelText("Cuenta") as HTMLSelectElement;
++    fireEvent.change(accountSelect, { target: { value: "a2" } });
++    await waitFor(() => expect(container.querySelectorAll("li").length).toBe(5));
++    expect(accountSelect.value).toBe("a2");
++    const items = container.querySelectorAll("li");
++    expect(items[0].textContent).toContain("desc-m1");
++    expect(items[4].textContent).toContain("desc-m9");
+   });
+ 
+   it("composes direction and category filters", async () => {
+@@ -113,6 +251,7 @@ describe("MovementHistory", () => {
+     movements = [];
+     renderHistory();
+     expect(await screen.findByText("Sin movimientos aún")).toBeInTheDocument();
++    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
+   });
+ 
+   it("renders an independent error panel whose retry revalidates only finance/movements", async () => {
+diff --git a/frontend/components/finance/MovementHistory.tsx b/frontend/components/finance/MovementHistory.tsx
+index 66ed80d..79af839 100644
+--- a/frontend/components/finance/MovementHistory.tsx
++++ b/frontend/components/finance/MovementHistory.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { useState } from "react";
++import { useEffect, useState } from "react";
+ import { useSWRConfig } from "swr";
+ import EmptyState from "@/components/ui/EmptyState";
+ import { t } from "@/lib/i18n";
+@@ -16,15 +16,19 @@ import {
+ } from "@/lib/finance/finance";
+ 
+ /**
+- * Movements history (`/dashboard/finance`): the latest 50 movements in API
+- * order with composable account/category/direction filters. The account
+- * filter is owned by `FinanceScreens` (account-card click sets it); category
+- * and direction live here. Loading/error/empty render independently in
+- * Spanish so the rest of Finance keeps rendering; retry revalidates only
+- * `finance/movements`.
++ * Movements history (`/dashboard/finance`): the movements in API order
++ * (`occurred_on DESC`) with composable account/category/direction filters,
++ * paginated for presentation. `INITIAL_VISIBLE` rows render initially and
++ * each "Ver más" activation appends `PAGE_STEP` more, accumulatively, until
++ * the filtered list is exhausted; changing any filter resets the window to
++ * the first `INITIAL_VISIBLE` filtered rows. The account filter is owned by
++ * `FinanceScreens` and driven by the select below; category and direction
++ * live here. Loading/error/empty render independently in Spanish so the rest
++ * of Finance keeps rendering; retry revalidates only `finance/movements`.
+  */
+ 
+-const HISTORY_LIMIT = 50;
++const INITIAL_VISIBLE = 5;
++const PAGE_STEP = 10;
+ 
+ export function MovementHistory({
+   accounts,
+@@ -47,18 +51,23 @@ export function MovementHistory({
+   const movements = useMovements();
+   const [categoryId, setCategoryId] = useState("");
+   const [direction, setDirection] = useState<"" | "expense" | "income">("");
++  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
+   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+   const [actionError, setActionError] = useState<string | null>(null);
+   const [deleting, setDeleting] = useState(false);
+ 
++  useEffect(() => {
++    setVisibleCount(INITIAL_VISIBLE);
++  }, [activeAccountId, categoryId, direction]);
++
+   const wires = movements.data ?? [];
+-  const latest = wires.slice(0, HISTORY_LIMIT);
+-  const visible = latest.filter(
++  const filtered = wires.filter(
+     (m) =>
+       (!activeAccountId || m.account_id === activeAccountId) &&
+       (!categoryId || (m.category_id ?? "") === categoryId) &&
+       (!direction || m.direction === direction),
+   );
++  const visible = filtered.slice(0, visibleCount);
+   const rows = toMovementRows(visible, accounts, categories, locale);
+   const hasFilters = activeAccountId !== null || categoryId !== "" || direction !== "";
+ 
+@@ -191,83 +200,94 @@ export function MovementHistory({
+           <EmptyState title={t("finance.movementsEmpty")} hint={t("finance.movementsEmptyHint")} />
+         </div>
+       ) : (
+-        <ul className="mt-3 flex flex-col gap-2">
+-          {rows.map((row) => {
+-            const wire = visible.find((w) => w.id === row.id) as MovementWire;
+-            const confirming = confirmingDeleteId === row.id;
+-            return (
+-              <li
+-                key={row.id}
+-                style={{ contentVisibility: "auto", containIntrinsicSize: "0 72px" }}
+-                className="rounded-lg border border-hull px-3 py-2"
+-              >
+-                <div className="flex items-center justify-between gap-3">
+-                  <div className="min-w-0">
+-                    <p className="truncate text-sm font-medium">
+-                      {row.direction === "expense"
+-                        ? t("finance.movementDirectionExpense")
+-                        : t("finance.movementDirectionIncome")}{" "}
+-                      · {row.categoryName ?? "—"}
+-                    </p>
+-                    <p className="truncate text-xs text-instrument/60">
+-                      {row.displayDate} · {row.accountName}
+-                      {row.description ? ` · ${row.description}` : ""}
++        <>
++          <ul className="mt-3 flex flex-col gap-2">
++            {rows.map((row) => {
++              const wire = visible.find((w) => w.id === row.id) as MovementWire;
++              const confirming = confirmingDeleteId === row.id;
++              return (
++                <li
++                  key={row.id}
++                  style={{ contentVisibility: "auto", containIntrinsicSize: "0 72px" }}
++                  className="rounded-lg border border-hull px-3 py-2"
++                >
++                  <div className="flex items-center justify-between gap-3">
++                    <div className="min-w-0">
++                      <p className="truncate text-sm font-medium">
++                        {row.direction === "expense"
++                          ? t("finance.movementDirectionExpense")
++                          : t("finance.movementDirectionIncome")}{" "}
++                        · {row.categoryName ?? "—"}
++                      </p>
++                      <p className="truncate text-xs text-instrument/60">
++                        {row.displayDate} · {row.accountName}
++                        {row.description ? ` · ${row.description}` : ""}
++                      </p>
++                    </div>
++                    <p className="shrink-0 font-mono text-sm tabular-nums">
++                      {formatMoney(row.amount, { locale, currency })}
+                     </p>
+                   </div>
+-                  <p className="shrink-0 font-mono text-sm tabular-nums">
+-                    {formatMoney(row.amount, { locale, currency })}
+-                  </p>
+-                </div>
+-                <div className="mt-2 flex gap-2">
+-                  <button
+-                    type="button"
+-                    onClick={() => onEdit(wire)}
+-                    aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
+-                    className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+-                  >
+-                    {t("finance.editMovement")}
+-                  </button>
+-                  {!confirming ? (
++                  <div className="mt-2 flex gap-2">
+                     <button
+                       type="button"
+-                      onClick={() => setConfirmingDeleteId(row.id)}
+-                      aria-label={`${t("finance.movementDelete")}: ${row.displayDate}`}
+-                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-alert hover:text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert"
++                      onClick={() => onEdit(wire)}
++                      aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
++                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                     >
+-                      {t("finance.movementDelete")}
++                      {t("finance.editMovement")}
+                     </button>
+-                  ) : (
+-                    <>
+-                      <span className="inline-flex min-h-[44px] items-center text-xs text-instrument/70">
+-                        {t("finance.movementDeleteConfirm")}
+-                      </span>
++                    {!confirming ? (
+                       <button
+                         type="button"
+-                        disabled={deleting}
+-                        onClick={() => void remove(row.id)}
+-                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-alert px-3 py-2 text-xs font-bold text-deck transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert disabled:opacity-50"
++                        onClick={() => setConfirmingDeleteId(row.id)}
++                        aria-label={`${t("finance.movementDelete")}: ${row.displayDate}`}
++                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-alert hover:text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert"
+                       >
+                         {t("finance.movementDelete")}
+                       </button>
+-                      <button
+-                        type="button"
+-                        onClick={() => setConfirmingDeleteId(null)}
+-                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+-                      >
+-                        {t("finance.cancel")}
+-                      </button>
+-                    </>
+-                  )}
+-                </div>
+-                {confirming && actionError ? (
+-                  <p role="alert" className="mt-1 text-xs text-alert">
+-                    {actionError}
+-                  </p>
+-                ) : null}
+-              </li>
+-            );
+-          })}
+-        </ul>
++                    ) : (
++                      <>
++                        <span className="inline-flex min-h-[44px] items-center text-xs text-instrument/70">
++                          {t("finance.movementDeleteConfirm")}
++                        </span>
++                        <button
++                          type="button"
++                          disabled={deleting}
++                          onClick={() => void remove(row.id)}
++                          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-alert px-3 py-2 text-xs font-bold text-deck transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert disabled:opacity-50"
++                        >
++                          {t("finance.movementDelete")}
++                        </button>
++                        <button
++                          type="button"
++                          onClick={() => setConfirmingDeleteId(null)}
++                          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
++                        >
++                          {t("finance.cancel")}
++                        </button>
++                      </>
++                    )}
++                  </div>
++                  {confirming && actionError ? (
++                    <p role="alert" className="mt-1 text-xs text-alert">
++                      {actionError}
++                    </p>
++                  ) : null}
++                </li>
++              );
++            })}
++          </ul>
++          {filtered.length > visibleCount ? (
++            <button
++              type="button"
++              onClick={() => setVisibleCount((count) => count + PAGE_STEP)}
++              className="mt-3 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
++            >
++              {t("finance.movementShowMore")}
++            </button>
++          ) : null}
++        </>
+       )}
+     </div>
+   );
+diff --git a/frontend/components/finance/TrendPeriodSelector.test.tsx b/frontend/components/finance/TrendPeriodSelector.test.tsx
+new file mode 100644
+index 0000000..91e3d1f
+--- /dev/null
++++ b/frontend/components/finance/TrendPeriodSelector.test.tsx
+@@ -0,0 +1,29 @@
++import { fireEvent, render, screen } from "@testing-library/react";
++import { describe, expect, it, vi } from "vitest";
++import TrendPeriodSelector from "./TrendPeriodSelector";
++
++describe("TrendPeriodSelector", () => {
++  it("renders the four period pills in order with the active one checked", () => {
++    render(<TrendPeriodSelector value="month" onChange={() => {}} />);
++    expect(screen.getByRole("group", { name: "Periodo" })).toBeInTheDocument();
++    expect(screen.getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual([
++      "day",
++      "week",
++      "month",
++      "year",
++    ]);
++    expect(screen.getByRole("radio", { name: "Día" })).not.toBeChecked();
++    expect(screen.getByRole("radio", { name: "Semana" })).not.toBeChecked();
++    expect(screen.getByRole("radio", { name: "Mes" })).toBeChecked();
++    expect(screen.getByRole("radio", { name: "Año" })).not.toBeChecked();
++  });
++
++  it("calls onChange with the clicked period", () => {
++    const onChange = vi.fn();
++    render(<TrendPeriodSelector value="month" onChange={onChange} />);
++    fireEvent.click(screen.getByRole("radio", { name: "Semana" }));
++    expect(onChange).toHaveBeenCalledWith("week");
++    fireEvent.click(screen.getByRole("radio", { name: "Año" }));
++    expect(onChange).toHaveBeenLastCalledWith("year");
++  });
++});
+diff --git a/frontend/components/finance/TrendPeriodSelector.tsx b/frontend/components/finance/TrendPeriodSelector.tsx
+new file mode 100644
+index 0000000..f07716b
+--- /dev/null
++++ b/frontend/components/finance/TrendPeriodSelector.tsx
+@@ -0,0 +1,47 @@
++"use client";
++
++import { t, type EsKey } from "@/lib/i18n";
++import { TREND_PERIODS, type TrendPeriod } from "@/lib/finance/finance";
++
++// Same pill treatment as `PeriodSelector` (border hull + has-checked signal),
++// with a 44px hit area for the 4 bucket periods. `PeriodSelector` stays intact.
++const pillClass =
++  "inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center gap-2 rounded-full border border-hull px-3 py-1.5 text-xs text-instrument transition-colors focus-within:border-signal has-checked:border-signal has-checked:text-signal";
++
++const TREND_LABEL_KEYS: Record<TrendPeriod, EsKey> = {
++  day: "finance.trendPeriodDay",
++  week: "finance.trendPeriodWeek",
++  month: "finance.trendPeriodMonth",
++  year: "finance.trendPeriodYear",
++};
++
++/** Día/Semana/Mes/Año radio-pills for the category line chart (bucket count,
++ * not a date range). The parent owns the `month` default and the state. */
++export default function TrendPeriodSelector({
++  value,
++  onChange,
++}: {
++  value: TrendPeriod;
++  onChange: (period: TrendPeriod) => void;
++}) {
++  return (
++    <fieldset>
++      <legend className="font-display text-sm font-medium">{t("finance.trendPeriodLabel")}</legend>
++      <div className="mt-2 flex flex-wrap gap-2">
++        {TREND_PERIODS.map((period) => (
++          <label key={period} className={pillClass}>
++            <input
++              type="radio"
++              name="trend-period"
++              value={period}
++              checked={value === period}
++              onChange={() => onChange(period)}
++              className="accent-current"
++            />
++            {t(TREND_LABEL_KEYS[period])}
++          </label>
++        ))}
++      </div>
++    </fieldset>
++  );
++}
+diff --git a/frontend/components/finance/finance.test.tsx b/frontend/components/finance/finance.test.tsx
+index 5b5dd9a..68ef70d 100644
+--- a/frontend/components/finance/finance.test.tsx
++++ b/frontend/components/finance/finance.test.tsx
+@@ -126,19 +126,25 @@ function renderScreens() {
+ }
+ 
+ describe("finance screens", () => {
+-  it("reuses the shared LED mapping for card alert levels", async () => {
++  it("renders each account exactly once with its raw type in the editable row", async () => {
+     renderScreens();
+-    expect(await screen.findByRole("img", { name: "Visa, estado warn" })).toHaveClass("bg-signal");
++    const accounts = await screen.findByRole("region", { name: "Cuentas" });
++    expect(within(accounts).getAllByText("Visa")).toHaveLength(1);
++    expect(within(accounts).getAllByText("Wallet")).toHaveLength(1);
++    // The card type moves to the surviving row, raw and untranslated.
++    expect(within(accounts).getAllByText("credit_card")).toHaveLength(1);
++    expect(within(accounts).getAllByText("cash")).toHaveLength(1);
++    expect(within(accounts).getAllByLabelText("Tipo")).toHaveLength(2);
++    expect(within(accounts).getAllByRole("button", { name: /^Editar saldo de/ })).toHaveLength(2);
++    expect(await screen.findByText("Saldos de tus cuentas bancarias.")).toBeInTheDocument();
+   });
+ 
+-  it("shows card usage metrics and balances without a ledger", async () => {
++  it("drops the card-only decoration (LED, credit usage) without a ledger", async () => {
+     renderScreens();
+     const accounts = await screen.findByRole("region", { name: "Cuentas" });
+-    expect(within(accounts).getAllByText("Visa").length).toBeGreaterThanOrEqual(1);
+-    expect(within(accounts).getByText(/25\.0%/)).toBeInTheDocument();
+-    expect(within(accounts).getAllByText("Wallet").length).toBeGreaterThanOrEqual(1);
+-    expect(await screen.findByRole("progressbar", { name: "Uso de tarjeta de Visa" })).toBeInTheDocument();
+-    expect(await screen.findByText("Saldos de tus cuentas bancarias.")).toBeInTheDocument();
++    expect(within(accounts).queryByRole("img")).not.toBeInTheDocument();
++    expect(within(accounts).queryByRole("progressbar")).not.toBeInTheDocument();
++    expect(within(accounts).queryByText(/25\.0%/)).not.toBeInTheDocument();
+   });
+ 
+   it("renders subscriptions with money detail and no debts/savings sections", async () => {
+@@ -163,7 +169,7 @@ describe("finance screens", () => {
+     expect(within(history).getByText(/Mercado semanal/)).toBeInTheDocument();
+   });
+ 
+-  it("renders the two-series category chart from movement aggregates", async () => {
++  it("renders the two-series category trend from movement aggregates", async () => {
+     renderScreens();
+     const chart = await screen.findByRole("region", { name: "Gastos e ingresos por categoría" });
+     // The kind-free picker lists finance + subscription kinds together.
+@@ -171,9 +177,12 @@ describe("finance screens", () => {
+     expect(within(select).getByRole("option", { name: "Alimentación" })).toBeInTheDocument();
+     expect(within(select).getByRole("option", { name: "Transporte" })).toBeInTheDocument();
+     fireEvent.change(select, { target: { value: "c1" } });
+-    // Both directions aggregate without netting: gasto + ingreso series mount.
+-    expect(await within(chart).findByRole("progressbar", { name: "Gastos" })).toBeInTheDocument();
+-    expect(within(chart).getByRole("progressbar", { name: "Ingresos" })).toBeInTheDocument();
++    // Both directions aggregate over time without netting: the gasto and ingreso
++    // lines mount, and the period pills stay available.
++    expect(await within(chart).findByRole("img", { name: "Tendencia de gastos e ingresos" })).toBeInTheDocument();
++    expect(within(chart).getByText("Gastos")).toBeInTheDocument();
++    expect(within(chart).getByText("Ingresos")).toBeInTheDocument();
++    expect(within(chart).getByRole("radio", { name: "Mes" })).toBeChecked();
+   });
+ 
+   it("exposes the inline balance edit per account with the current value", async () => {
+diff --git a/frontend/lib/finance/finance.test.ts b/frontend/lib/finance/finance.test.ts
+index 0b3c765..fade4de 100644
+--- a/frontend/lib/finance/finance.test.ts
++++ b/frontend/lib/finance/finance.test.ts
+@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
+ import {
+   normalizeManualAmount,
+   toAccountCards,
++  toCategoryTrend,
+   toMonthlyPrice,
+   toPeriodRange,
+   toSubscriptionRows,
+   todayInBogota,
++  TREND_BUCKETS,
++  TREND_PERIODS,
++  trendBuckets,
+ } from "./finance";
++import type { MovementWire } from "@/lib/api/finance";
+ 
+ describe("finance transforms", () => {
+   it("returns empty rows for nullish input", () => {
+@@ -157,3 +162,168 @@ describe("puros PR-3 triangulate", () => {
+     });
+   });
+ });
++
++// -- W3: tendencia por categoría (buckets puros, sin reloj real) --
++describe("trendBuckets", () => {
++  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
++
++  it("expone el orden de periodos y el N fijo por periodo (14/8/12/5)", () => {
++    expect(TREND_PERIODS).toEqual(["day", "week", "month", "year"]);
++    expect(TREND_BUCKETS).toEqual({ day: 14, week: 8, month: 12, year: 5 });
++    expect(trendBuckets("day", now)).toHaveLength(14);
++    expect(trendBuckets("week", now)).toHaveLength(8);
++    expect(trendBuckets("month", now)).toHaveLength(12);
++    expect(trendBuckets("year", now)).toHaveLength(5);
++  });
++
++  it("emite de más viejo a más nuevo y el último bucket es la unidad en curso", () => {
++    const days = trendBuckets("day", now);
++    expect(days[0]).toMatchObject({ key: "2026-09-20", from: "2026-09-20", to: "2026-09-20" });
++    expect(days[13]).toMatchObject({ key: "2026-10-03", from: "2026-10-03", to: "2026-10-03" });
++    expect(days[13].label).toBe("3 oct");
++
++    const weeks = trendBuckets("week", now);
++    expect(weeks[0]).toMatchObject({ from: "2026-08-10", to: "2026-08-16" });
++    expect(weeks[7]).toMatchObject({ key: "2026-W40", from: "2026-09-28", to: "2026-10-04" });
++    expect(weeks[7].label).toMatch(/^sem 28 se/);
++
++    const months = trendBuckets("month", now);
++    expect(months[0]).toMatchObject({ key: "2025-11", from: "2025-11-01", to: "2025-11-30" });
++    expect(months[11]).toMatchObject({ key: "2026-10", from: "2026-10-01", to: "2026-10-31" });
++    expect(months[11].label).toBe("oct 26");
++
++    const years = trendBuckets("year", now);
++    expect(years[0]).toMatchObject({ key: "2022", from: "2022-01-01", to: "2022-12-31" });
++    expect(years[4]).toMatchObject({ key: "2026", from: "2026-01-01", to: "2026-12-31" });
++    expect(years[4].label).toBe("2026");
++  });
++
++  it("respeta el override de buckets", () => {
++    expect(trendBuckets("day", now, 3).map((b) => b.key)).toEqual([
++      "2026-10-01",
++      "2026-10-02",
++      "2026-10-03",
++    ]);
++  });
++
++  it("usa semanas que arrancan en lunes (el domingo cierra su lunes)", () => {
++    const weeks = trendBuckets("week", now);
++    expect(weeks[6].to).toBe("2026-09-27");
++    expect(weeks[7].from).toBe("2026-09-28");
++  });
++});
++
++function trendMovement(overrides: Partial<MovementWire> = {}): MovementWire {
++  return {
++    id: "m1",
++    direction: "expense",
++    amount: "100.00",
++    occurred_on: "2026-10-03",
++    description: null,
++    account_id: "a1",
++    category_id: "c1",
++    subscription_id: null,
++    created_at: "2026-10-03T10:00:00Z",
++    updated_at: "2026-10-03T10:00:00Z",
++    ...overrides,
++  };
++}
++
++const TREND_ACCOUNTS = new Map([
++  ["a1", "COP"],
++  ["usd1", "USD"],
++]);
++
++const TREND_BASE = {
++  categoryId: "c1",
++  currencyByAccountId: TREND_ACCOUNTS,
++  userCurrency: "COP",
++} as const;
++
++describe("toCategoryTrend", () => {
++  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
++
++  it("devuelve siempre N buckets y deja los vacíos en 0/0", () => {
++    const buckets = toCategoryTrend([trendMovement()], { ...TREND_BASE, period: "day", now });
++    expect(buckets).toHaveLength(14);
++    expect(buckets[13]).toMatchObject({ bucket: "2026-10-03", expense: 100, income: 0 });
++    expect(buckets.slice(0, 13).every((b) => b.expense === 0 && b.income === 0)).toBe(true);
++  });
++
++  it("acumula gasto e ingreso por separado en el mismo bucket (nunca netea)", () => {
++    const buckets = toCategoryTrend(
++      [
++        trendMovement({ id: "e1", direction: "expense", amount: "25000.00" }),
++        trendMovement({ id: "i1", direction: "income", amount: "40000.00" }),
++      ],
++      { ...TREND_BASE, period: "day", now },
++    );
++    expect(buckets[13]).toMatchObject({ expense: 25000, income: 40000 });
++    expect(Object.keys(buckets[13]).sort()).toEqual(["bucket", "expense", "income", "label"]);
++  });
++
++  it("excluye movimientos de cuentas en otra moneda (sin convertir)", () => {
++    const buckets = toCategoryTrend([trendMovement({ account_id: "usd1", amount: "999.00" })], {
++      ...TREND_BASE,
++      period: "day",
++      now,
++    });
++    expect(buckets.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
++  });
++
++  it("excluye otras categorías, sin categoría y movimientos fuera de rango", () => {
++    const buckets = toCategoryTrend(
++      [
++        trendMovement({ id: "x", category_id: "c2", amount: "555.00" }),
++        trendMovement({ id: "z", category_id: null, amount: "666.00" }),
++        trendMovement({ id: "y", occurred_on: "2026-09-19", amount: "777.00" }),
++      ],
++      { ...TREND_BASE, period: "day", now },
++    );
++    expect(buckets.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
++  });
++
++  it("incluye los bordes from/to exactos y excluye el día anterior", () => {
++    const buckets = toCategoryTrend(
++      [
++        trendMovement({ id: "b1", occurred_on: "2026-09-20", amount: "10.00" }),
++        trendMovement({ id: "b2", occurred_on: "2026-10-03", amount: "20.00" }),
++        trendMovement({ id: "b3", occurred_on: "2026-09-19", amount: "30.00" }),
++      ],
++      { ...TREND_BASE, period: "day", now },
++    );
++    expect(buckets[0].expense).toBe(10);
++    expect(buckets[13].expense).toBe(20);
++    expect(buckets.reduce((sum, b) => sum + b.expense, 0)).toBe(30);
++  });
++
++  it("asigna la semana por lunes (el domingo cae en la semana de su lunes)", () => {
++    const buckets = toCategoryTrend(
++      [
++        trendMovement({ id: "w1", occurred_on: "2026-10-04", amount: "40.00" }),
++        trendMovement({ id: "w2", occurred_on: "2026-09-27", amount: "60.00" }),
++      ],
++      { ...TREND_BASE, period: "week", now },
++    );
++    expect(buckets[7].expense).toBe(40);
++    expect(buckets[6].expense).toBe(60);
++  });
++
++  it("no desplaza el día por parsear la fecha como UTC (primero del mes)", () => {
++    const buckets = toCategoryTrend(
++      [trendMovement({ occurred_on: "2026-10-01", amount: "500.00" })],
++      { ...TREND_BASE, period: "month", now },
++    );
++    expect(buckets[11]).toMatchObject({ bucket: "2026-10", expense: 500 });
++    expect(buckets[10].expense).toBe(0);
++  });
++
++  it("tolera payload indefinido o vacío y mantiene los N buckets en cero", () => {
++    const years = toCategoryTrend(undefined, { ...TREND_BASE, period: "year", now });
++    expect(years).toHaveLength(5);
++    expect(years.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
++
++    const weeks = toCategoryTrend([], { ...TREND_BASE, period: "week", now, buckets: 2 });
++    expect(weeks.map((b) => b.bucket)).toEqual(["2026-W39", "2026-W40"]);
++  });
++});
+diff --git a/frontend/lib/finance/finance.ts b/frontend/lib/finance/finance.ts
+index 76ecc99..8a8cffa 100644
+--- a/frontend/lib/finance/finance.ts
++++ b/frontend/lib/finance/finance.ts
+@@ -361,3 +361,169 @@ export function isPaidThisCycle(
+ ): boolean {
+   return sub.last_paid_on != null && sub.next_billing_on != null && sub.next_billing_on > today;
+ }
++
++// -- W3: categoría en el tiempo (buckets puros, sin JSX, sin fetch) --
++
++export type TrendPeriod = "day" | "week" | "month" | "year";
++
++/** Pill order of the Día/Semana/Mes/Año selector. */
++export const TREND_PERIODS: readonly TrendPeriod[] = ["day", "week", "month", "year"];
++
++/** Fixed number of consecutive buckets rendered per period (owner-tunable). */
++export const TREND_BUCKETS: Record<TrendPeriod, number> = {
++  day: 14,
++  week: 8,
++  month: 12,
++  year: 5,
++};
++
++export interface TrendBucket {
++  /** Stable key: `2026-10-03` | `2026-W40` | `2026-10` | `2026`. */
++  bucket: string;
++  /** Short es-CO axis label: `3 oct` | `sem 28 sep` | `oct 26` | `2026`. */
++  label: string;
++  expense: number;
++  income: number;
++}
++
++const SHORT_MONTH_ES = new Intl.DateTimeFormat("es-CO", {
++  month: "short",
++  timeZone: "UTC",
++});
++
++/** `oct.` → `oct` (ICU adds a trailing dot to es-CO short months). */
++function monthShort(year: number, monthIndex: number): string {
++  return SHORT_MONTH_ES.format(new Date(Date.UTC(year, monthIndex, 1))).replace(/\.$/, "");
++}
++
++function dayMonthLabel(d: Date): string {
++  return `${d.getDate()} ${monthShort(d.getFullYear(), d.getMonth())}`;
++}
++
++function addLocalDays(d: Date, days: number): Date {
++  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
++}
++
++/** First local calendar day of the unit containing `now` (Monday-first week). */
++function trendUnitStart(period: TrendPeriod, now: Date): Date {
++  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
++  switch (period) {
++    case "day":
++      return day;
++    case "week":
++      return addLocalDays(day, -((day.getDay() + 6) % 7));
++    case "month":
++      return new Date(day.getFullYear(), day.getMonth(), 1);
++    case "year":
++      return new Date(day.getFullYear(), 0, 1);
++  }
++}
++
++function shiftUnits(period: TrendPeriod, unitStart: Date, steps: number): Date {
++  switch (period) {
++    case "day":
++      return addLocalDays(unitStart, -steps);
++    case "week":
++      return addLocalDays(unitStart, -steps * 7);
++    case "month":
++      return new Date(unitStart.getFullYear(), unitStart.getMonth() - steps, 1);
++    case "year":
++      return new Date(unitStart.getFullYear() - steps, 0, 1);
++  }
++}
++
++/** ISO week key `YYYY-Www` for the Monday `unitStart` (week of its Thursday). */
++function isoWeekKey(unitStart: Date): string {
++  const thursday = addLocalDays(unitStart, 3);
++  const isoYear = thursday.getFullYear();
++  const jan4 = new Date(isoYear, 0, 4);
++  const firstMonday = addLocalDays(jan4, -((jan4.getDay() + 6) % 7));
++  const week = 1 + Math.round((thursday.getTime() - firstMonday.getTime()) / (7 * 24 * 60 * 60 * 1000));
++  return `${isoYear}-W${pad2(week)}`;
++}
++
++function trendWindow(
++  period: TrendPeriod,
++  unitStart: Date,
++): { key: string; label: string; from: string; to: string } {
++  switch (period) {
++    case "day": {
++      const day = toISODateLocal(unitStart);
++      return { key: day, label: dayMonthLabel(unitStart), from: day, to: day };
++    }
++    case "week":
++      return {
++        key: isoWeekKey(unitStart),
++        label: `sem ${dayMonthLabel(unitStart)}`,
++        from: toISODateLocal(unitStart),
++        to: toISODateLocal(addLocalDays(unitStart, 6)),
++      };
++    case "month": {
++      const year = unitStart.getFullYear();
++      const month = unitStart.getMonth();
++      return {
++        key: `${year}-${pad2(month + 1)}`,
++        label: `${monthShort(year, month)} ${String(year).slice(-2)}`,
++        from: `${year}-${pad2(month + 1)}-01`,
++        to: toISODateLocal(new Date(year, month + 1, 0)),
++      };
++    }
++    case "year": {
++      const year = unitStart.getFullYear();
++      return { key: `${year}`, label: `${year}`, from: `${year}-01-01`, to: `${year}-12-31` };
++    }
++  }
++}
++
++/** N consecutive trend windows for `period`, oldest → newest; the last one is
++ * the unit in progress at `now`. Boundaries are local `YYYY-MM-DD` strings, so
++ * plain string comparison against `occurred_on` is exact (never `new
++ * Date(wire)`: that parses as UTC midnight and shifts the day). */
++export function trendBuckets(
++  period: TrendPeriod,
++  now: Date = new Date(),
++  buckets?: number,
++): { key: string; label: string; from: string; to: string }[] {
++  const count = buckets ?? TREND_BUCKETS[period];
++  const current = trendUnitStart(period, now);
++  const windows: { key: string; label: string; from: string; to: string }[] = [];
++  for (let steps = count - 1; steps >= 0; steps -= 1) {
++    windows.push(trendWindow(period, shiftUnits(period, current, steps)));
++  }
++  return windows;
++}
++
++/** One category's movements split into the N period buckets. Applies the
++ * single-currency rule of `toCategoryMovementTotals` (never converts), keeps
++ * expense and income separate (never nets) and always returns every bucket,
++ * empty ones as 0/0 so the trend has no gaps. */
++export function toCategoryTrend(
++  movements: MovementWire[] | undefined,
++  opts: {
++    categoryId: string;
++    period: TrendPeriod;
++    currencyByAccountId: Map<string, string>;
++    userCurrency: string;
++    now?: Date;
++    buckets?: number;
++  },
++): TrendBucket[] {
++  const windows = trendBuckets(opts.period, opts.now, opts.buckets);
++  const totals = new Map<string, { expense: number; income: number }>(
++    windows.map((w) => [w.key, { expense: 0, income: 0 }]),
++  );
++  for (const m of movements ?? []) {
++    if ((m.category_id ?? null) !== opts.categoryId) continue;
++    if ((opts.currencyByAccountId.get(m.account_id) ?? opts.userCurrency) !== opts.userCurrency) continue;
++    const window = windows.find((w) => w.from <= m.occurred_on && m.occurred_on <= w.to);
++    if (!window) continue;
++    const total = totals.get(window.key)!;
++    const amount = toNumber(m.amount);
++    if (m.direction === "expense") total.expense += amount;
++    else total.income += amount;
++  }
++  return windows.map((w) => {
++    const total = totals.get(w.key)!;
++    return { bucket: w.key, label: w.label, expense: total.expense, income: total.income };
++  });
++}
+diff --git a/frontend/lib/i18n/es.ts b/frontend/lib/i18n/es.ts
+index 87baef1..791d7e8 100644
+--- a/frontend/lib/i18n/es.ts
++++ b/frontend/lib/i18n/es.ts
+@@ -108,11 +108,10 @@ export const es = {
+     noAccounts: "Sin cuentas aún",
+     noAccountsHint: "Agrega una cuenta para ver los saldos aquí.",
+     account: "Cuenta",
++    accountTypeLabel: "Tipo",
+     category: "Categoría",
+     selectAccount: "Elige una cuenta",
+     selectCategory: "Elige una categoría",
+-    noAccountsForSelect: "Primero crea una cuenta",
+-    noCategoriesForSelect: "Sin categorías",
+     paymentMethod: "Método de pago",
+     selectPaymentMethod: "Elige cómo pagaste",
+     paymentCash: "Efectivo",
+@@ -121,10 +120,6 @@ export const es = {
+     paymentCard: "Tarjeta",
+     paymentOther: "Otro",
+     description: "Descripción",
+-    usedAvailable: "{used} usados · {available} disponibles · {pct}%",
+-    statementBalance: "extracto {amount}",
+-    ledStatus: "{label}, estado {status}",
+-    cardUsageLabel: "Uso de tarjeta de {name}",
+     accountsHint: "Saldos de tus cuentas bancarias.",
+     subscriptionsHint: "Cargos recurrentes activos.",
+     noSubscriptions: "Sin suscripciones activas",
+@@ -166,6 +161,15 @@ export const es = {
+     chartIncome: "Ingresos",
+     chartEmpty: "Sin movimientos en esta categoría aún",
+     chartEmptyHint: "Los movimientos con esta categoría aparecerán aquí.",
++    trendPeriodLabel: "Periodo",
++    trendPeriodDay: "Día",
++    trendPeriodWeek: "Semana",
++    trendPeriodMonth: "Mes",
++    trendPeriodYear: "Año",
++    trendNoDataInRange: "Sin movimientos en este periodo",
++    trendChartLabel: "Tendencia de gastos e ingresos",
++    trendExpensesOf: "Gastos · {name}",
++    trendIncomeOf: "Ingresos · {name}",
+     compareButton: "Comparar categorías",
+     // Movements ledger (S-C): history, add/edit modal, filters.
+     movementsTitle: "Movimientos",
+@@ -195,6 +199,7 @@ export const es = {
+     movementFilterDirection: "Tipo",
+     movementFilterAll: "Todas",
+     movementFilterClear: "Limpiar filtros",
++    movementShowMore: "Ver más",
+     movementActiveAccount: "Mostrando movimientos de {name}",
+     accountDeleteBlocked: "Esta cuenta tiene movimientos y no se puede eliminar.",
+     // Subscriptions manager (Settings) + Pay flow (S-D): monthly-fixed,

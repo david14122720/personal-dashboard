@@ -1,0 +1,682 @@
+<!DOCTYPE html><html class="dark" lang="es"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>Control Deck — Dashboard</title>
+<!-- Tailwind CSS CDN with forms and container queries plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com" rel="preconnect">
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            deck: {
+              bg: '#0a0e18',
+              surface: '#0f1422',
+              card: '#151a28',
+              cardHover: '#1a2133',
+              border: '#1f273d',
+              borderLight: '#2a3552',
+              cyan: '#38bdf8',
+              emerald: '#10b981',
+              amber: '#f59e0b',
+              muted: '#64748b',
+              text: '#94a3b8',
+              white: '#f8fafc'
+            }
+          },
+          fontFamily: {
+            sans: ['Plus Jakarta Sans', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+<style data-purpose="custom-layout">
+    body {
+      background-color: #0a0e18;
+      color: #94a3b8;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      overflow-x: hidden;
+    }
+
+    /* Custom subtle glass/glow styles */
+    .glow-cyan-sm {
+      box-shadow: 0 0 15px -3px rgba(56, 189, 248, 0.25);
+    }
+    .glow-cyan-btn {
+      box-shadow: 0 0 20px -2px rgba(56, 189, 248, 0.4);
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #0f1422;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #1f273d;
+      border-radius: 9999px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #2a3552;
+    }
+  </style>
+</head>
+<body class="flex min-h-screen antialiased selection:bg-sky-500/20 selection:text-sky-300">
+<!-- BEGIN: LeftSidebar -->
+<aside class="w-64 flex-shrink-0 bg-deck-surface border-r border-deck-border flex flex-col justify-between hidden md:flex sticky top-0 h-screen z-30" data-purpose="app-sidebar">
+<div>
+<!-- Brand Logo Header -->
+<div class="h-16 flex items-center px-6 gap-3 border-b border-deck-border">
+<div class="h-9 w-9 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center glow-cyan-sm text-sky-400">
+<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" stroke-linecap="round" stroke-linejoin="round"></path>
+<polyline points="3.27 6.96 12 12.01 20.73 6.96" stroke-linecap="round" stroke-linejoin="round"></polyline>
+<line stroke-linecap="round" stroke-linejoin="round" x1="12" x2="12" y1="22.08" y2="12"></line>
+</svg>
+</div>
+<div>
+<span class="text-deck-white font-bold tracking-tight text-base flex items-center gap-1.5">
+            Control Deck
+            <span class="text-[10px] font-mono uppercase bg-sky-500/10 text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded font-semibold">v2.4</span>
+</span>
+<p class="text-[11px] text-deck-muted">Centro de Mando</p>
+</div>
+</div>
+<!-- Navigation Links -->
+<nav aria-label="Navegación principal" class="p-4 space-y-1.5">
+<div class="px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-deck-muted">Plataforma</div>
+<!-- Active Nav: Resumen / Dashboard -->
+<a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg bg-sky-500/10 border border-sky-500/30 text-deck-white font-medium text-sm transition-all group" href="#">
+<svg class="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<rect height="7" rx="1.5" width="7" x="3" y="3"></rect>
+<rect height="7" rx="1.5" width="7" x="14" y="3"></rect>
+<rect height="7" rx="1.5" width="7" x="14" y="14"></rect>
+<rect height="7" rx="1.5" width="7" x="3" y="14"></rect>
+</svg>
+<span class="text-sky-300">Resumen / Dashboard</span>
+<span class="ml-auto w-1.5 h-1.5 rounded-full bg-sky-400 shadow-[0_0_8px_#38bdf8]"></span>
+</a>
+<!-- Inactive Nav items -->
+<a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-slate-400 hover:text-deck-white hover:bg-deck-card transition-colors text-sm font-medium" href="#">
+<svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<line x1="12" x2="12" y1="1" y2="23"></line>
+<path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+</svg>
+<span>Finanzas</span>
+</a>
+<a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-slate-400 hover:text-deck-white hover:bg-deck-card transition-colors text-sm font-medium" href="#">
+<svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+</svg>
+<span>Productividad</span>
+</a>
+<a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-slate-400 hover:text-deck-white hover:bg-deck-card transition-colors text-sm font-medium" href="#">
+<svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path>
+</svg>
+<span>Hábitos</span>
+<span class="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">3 activos</span>
+</a>
+<div class="px-3 pt-4 pb-2 text-[10px] font-bold uppercase tracking-wider text-deck-muted">Sistema</div>
+<a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-slate-400 hover:text-deck-white hover:bg-deck-card transition-colors text-sm font-medium" href="#">
+<svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<rect height="16" rx="2" ry="2" width="16" x="4" y="4"></rect>
+<rect height="6" width="6" x="9" y="9"></rect>
+<line x1="9" x2="9" y1="1" y2="4"></line>
+<line x1="15" x2="15" y1="1" y2="4"></line>
+<line x1="9" x2="9" y1="20" y2="23"></line>
+<line x1="15" x2="15" y1="20" y2="23"></line>
+<line x1="20" x2="23" y1="9" y2="9"></line>
+<line x1="20" x2="23" y1="14" y2="14"></line>
+<line x1="1" x2="4" y1="9" y2="9"></line>
+<line x1="1" x2="4" y1="14" y2="14"></line>
+</svg>
+<span>Tokens de API</span>
+</a>
+<a class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-slate-400 hover:text-deck-white hover:bg-deck-card transition-colors text-sm font-medium" href="#">
+<svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<circle cx="12" cy="12" r="3"></circle>
+<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+</svg>
+<span>Preferencias</span>
+</a>
+</nav>
+</div>
+<!-- Bottom Profile Component -->
+<div class="p-4 border-t border-deck-border">
+<div class="flex items-center justify-between p-2 rounded-lg bg-deck-card border border-deck-border">
+<div class="flex items-center gap-3">
+<div class="w-9 h-9 rounded-full bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-deck-white font-bold text-xs shadow-inner">
+            AD
+          </div>
+<div class="flex flex-col min-w-0">
+<span class="text-xs font-semibold text-deck-white truncate">Admin Dev</span>
+<span class="text-[11px] text-deck-muted truncate">admin@controldeck.io</span>
+</div>
+</div>
+<button aria-label="Cerrar sesión" class="text-slate-400 hover:text-rose-400 transition-colors p-1.5 rounded hover:bg-deck-border" type="button">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+<path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div>
+</div>
+</aside>
+<!-- END: LeftSidebar -->
+<!-- BEGIN: MainContentShell -->
+<div class="flex-1 flex flex-col min-w-0 bg-deck-bg overflow-y-auto custom-scrollbar">
+<!-- Top Sticky Header -->
+<header class="h-16 sticky top-0 z-20 bg-deck-bg/80 backdrop-blur-md border-b border-deck-border px-6 flex items-center justify-between gap-4" data-purpose="top-navigation">
+<!-- Breadcrumb -->
+<div class="flex items-center gap-2 text-xs font-medium text-slate-400">
+<span class="hover:text-deck-white cursor-pointer transition-colors">Panel</span>
+<svg class="w-3.5 h-3.5 text-deck-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+<span class="text-sky-400 font-semibold">Dashboard</span>
+</div>
+<!-- Quick Search Bar -->
+<div class="flex-1 max-w-md hidden sm:block">
+<div class="relative">
+<span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</span>
+<input class="w-full pl-9 pr-16 py-1.5 text-xs bg-deck-surface border border-deck-border rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 focus:border-sky-500 transition-all font-sans" placeholder="Buscar métricas, transacciones... (Ctrl+K)" type="text">
+<span class="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none">
+<kbd class="text-[10px] bg-deck-card px-1.5 py-0.5 rounded border border-deck-border font-mono text-slate-400">⌘K</kbd>
+</span>
+</div>
+</div>
+<!-- Right Header Actions -->
+<div class="flex items-center gap-3">
+<!-- Date indicator pill -->
+<div class="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-deck-surface border border-deck-border text-xs font-mono text-slate-300">
+<svg class="w-3.5 h-3.5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<rect height="18" rx="2" ry="2" stroke-width="2" width="18" x="3" y="4"></rect>
+<line stroke-width="2" x1="16" x2="16" y1="2" y2="6"></line>
+<line stroke-width="2" x1="8" x2="8" y1="2" y2="6"></line>
+<line stroke-width="2" x1="3" x2="21" y1="10" y2="10"></line>
+</svg>
+<span>11 de oct de 2026</span>
+</div>
+<!-- Avisos Button -->
+<button class="relative flex items-center gap-2 px-3 py-1.5 rounded-lg bg-deck-surface hover:bg-deck-card border border-deck-border text-xs font-medium text-slate-300 transition-colors" type="button">
+<span class="relative flex h-2 w-2">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+<span class="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
+</span>
+<svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+<span>Avisos</span>
+<span class="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500/10 text-amber-300 font-mono font-bold border border-amber-500/30">2</span>
+</button>
+<!-- Primary Action Button -->
+<button class="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold transition-all glow-cyan-btn shadow-sky-500/30" type="button">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path>
+</svg>
+<span>Registrar actividad</span>
+</button>
+</div>
+</header>
+<!-- Main Workspace Container -->
+<main class="p-6 md:p-8 space-y-7 max-w-[1600px] w-full mx-auto">
+<!-- BEGIN: SubheaderSection -->
+<section class="flex flex-col md:flex-row md:items-end justify-between gap-4" data-purpose="sub-header">
+<div>
+<h1 class="text-2xl font-bold tracking-tight text-deck-white">Dashboard</h1>
+<p class="text-sm text-deck-muted mt-0.5">Telemetría en vivo de tus cuentas, suscripciones y hábitos.</p>
+</div>
+<div class="flex items-center gap-2 self-start md:self-auto">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            Sincronización activa
+          </span>
+</div>
+</section>
+<!-- END: SubheaderSection -->
+<!-- BEGIN: KpiMetricsGrid -->
+<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" data-purpose="kpi-metrics-grid">
+<!-- Metric 1: Cuentas -->
+<div class="bg-deck-card border border-deck-border hover:border-deck-borderLight p-4 rounded-xl transition-all shadow-sm">
+<div class="flex items-center justify-between text-xs text-deck-muted mb-2 font-mono uppercase tracking-wider">
+<span>Cuentas</span>
+<div class="p-1.5 rounded-md bg-slate-800 text-slate-400">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<rect height="14" rx="2" stroke-width="2" width="20" x="2" y="5"></rect>
+<line stroke-width="2" x1="2" x2="22" y1="10" y2="10"></line>
+</svg>
+</div>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="text-2xl font-bold font-mono text-deck-white tracking-tight">9</span>
+<span class="text-xs text-slate-400 font-medium">vinculadas</span>
+</div>
+<div class="mt-2 text-[11px] text-slate-500 flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+<span>Bancolombia, Nu, Nequi &amp; 6 más</span>
+</div>
+</div>
+<!-- Metric 2: Suscripciones -->
+<div class="bg-deck-card border border-deck-border hover:border-deck-borderLight p-4 rounded-xl transition-all shadow-sm">
+<div class="flex items-center justify-between text-xs text-deck-muted mb-2 font-mono uppercase tracking-wider">
+<span>Suscripciones</span>
+<div class="p-1.5 rounded-md bg-slate-800 text-slate-400">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="text-2xl font-bold font-mono text-deck-white tracking-tight">$ 0</span>
+<span class="text-xs text-slate-400 font-medium">COP</span>
+</div>
+<div class="mt-2 text-[11px] text-emerald-400/90 flex items-center gap-1.5">
+<span>✓ 0 cargos pendientes este ciclo</span>
+</div>
+</div>
+<!-- Metric 3: Saldo Total -->
+<div class="bg-deck-card border border-deck-border hover:border-deck-borderLight p-4 rounded-xl transition-all shadow-sm relative overflow-hidden">
+<div class="absolute -right-4 -bottom-4 w-20 h-20 bg-sky-500/5 rounded-full blur-xl pointer-events-none"></div>
+<div class="flex items-center justify-between text-xs text-deck-muted mb-2 font-mono uppercase tracking-wider">
+<span>Saldo Total</span>
+<div class="p-1.5 rounded-md bg-sky-500/10 text-sky-400 border border-sky-500/20">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="text-2xl font-bold font-mono text-deck-white tracking-tight">$ 2.620.900</span>
+</div>
+<div class="mt-2 text-[11px] text-emerald-400 flex items-center gap-1">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+<span>+5.2% vs. mes anterior</span>
+</div>
+</div>
+<!-- Metric 4: Gasto del Ciclo -->
+<div class="bg-deck-card border border-deck-border hover:border-deck-borderLight p-4 rounded-xl transition-all shadow-sm">
+<div class="flex items-center justify-between text-xs text-deck-muted mb-2 font-mono uppercase tracking-wider">
+<span>Gasto del Ciclo</span>
+<div class="p-1.5 rounded-md bg-slate-800 text-slate-400">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="text-2xl font-bold font-mono text-sky-400 tracking-tight">$ 34.100</span>
+<span class="text-xs text-slate-400 font-medium">COP</span>
+</div>
+<div class="mt-2 text-[11px] text-slate-400 flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+<span>Gustos ($14.100) + Moto ($20.000)</span>
+</div>
+</div>
+</section>
+<!-- END: KpiMetricsGrid -->
+<!-- BEGIN: Dashboard2Columns -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+<!-- ======================= LEFT COLUMN (7 COLS / ~60%) ======================= -->
+<div class="lg:col-span-7 space-y-6">
+<!-- SECTION: Gastos vs Ingresos (Chart) -->
+<article class="bg-deck-card border border-deck-border rounded-xl p-5 shadow-sm" data-purpose="chart-gastos-vs-ingresos">
+<!-- Header with Title & Period Filter Pills -->
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-deck-border">
+<div>
+<div class="flex items-center gap-2">
+<h2 class="text-base font-semibold text-deck-white">Gastos vs. ingresos</h2>
+<button class="text-slate-500 hover:text-slate-300 transition-colors" title="Colapsar bloque" type="button">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M5 15l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</button>
+</div>
+<p class="text-xs text-deck-muted mt-0.5">Totales por periodo en tu moneda, sin agrupar por categoría.</p>
+</div>
+<!-- Time Filters -->
+<div class="flex items-center bg-deck-surface border border-deck-border p-1 rounded-lg self-start sm:self-auto">
+<button class="px-2.5 py-1 text-xs font-semibold rounded bg-sky-500/15 text-sky-400 border border-sky-500/30" type="button">Día</button>
+<button class="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors" type="button">Semana</button>
+<button class="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors" type="button">Mes</button>
+<button class="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors" type="button">Año</button>
+</div>
+</div>
+<!-- SVG Spline / Area Chart Area -->
+<div class="mt-4 pt-2">
+<div class="relative w-full h-64">
+<!-- SVG Area Chart reproducing the peak at 10 oct -->
+<svg class="w-full h-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 800 240">
+<defs>
+<!-- Cyan Gradient for Gastos spike -->
+<linearGradient id="cyanGradient" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"></stop>
+<stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0"></stop>
+</linearGradient>
+<!-- Grid pattern -->
+<pattern height="40" id="gridPattern" patternUnits="userSpaceOnUse" width="61.5">
+<line stroke="#1f273d" stroke-dasharray="3 3" stroke-width="1" x1="0" x2="800" y1="0" y2="0"></line>
+</pattern>
+</defs>
+<!-- Horizontal Grid Lines -->
+<rect fill="url(#gridPattern)" height="200" width="100%"></rect>
+<line stroke="#2a3552" stroke-width="1.2" x1="0" x2="800" y1="200" y2="200"></line>
+<!-- Ingresos Line (Flat baseline at 0) -->
+<line stroke="#10b981" stroke-linecap="round" stroke-width="2.5" x1="0" x2="800" y1="199" y2="199"></line>
+<!-- Gastos Area Fill -->
+<!-- Points represent flatline from 28 sept until 9 oct, high spike at 10 oct (34k), falling on 11 oct -->
+<path d="M 0,199 
+                           L 560,199 
+                           C 600,199 640,40 670,40 
+                           C 700,40 730,199 760,199 
+                           L 800,199 
+                           L 800,200 
+                           L 0,200 Z" fill="url(#cyanGradient)"></path>
+<!-- Gastos Spline Curve Line -->
+<path class="filter drop-shadow-[0_0_8px_rgba(56,189,248,0.5)]" d="M 0,199 
+                           L 560,199 
+                           C 600,199 640,40 670,40 
+                           C 700,40 730,199 760,199 
+                           L 800,199" fill="none" stroke="#38bdf8" stroke-linecap="round" stroke-width="2.5"></path>
+<!-- Peak Indicator Dot at 10 oct -->
+<circle class="animate-pulse" cx="670" cy="40" fill="#38bdf8" r="4.5" stroke="#0f1422" stroke-width="2.5"></circle>
+<!-- Tooltip marker on peak -->
+<g transform="translate(620, 10)">
+<rect fill="#0f1422" height="22" rx="4" stroke="#38bdf8" stroke-width="1" width="100"></rect>
+<text fill="#38bdf8" font-family="JetBrains Mono" font-size="11" font-weight="600" text-anchor="middle" x="50" y="15">$ 34.100 COP</text>
+</g>
+</svg>
+<!-- Y-Axis Value Labels -->
+<div class="absolute left-0 top-0 h-[200px] flex flex-col justify-between text-[10px] font-mono text-slate-500 pointer-events-none -translate-x-2">
+<span>36 k</span>
+<span>27 k</span>
+<span>18 k</span>
+<span>9 k</span>
+<span>0</span>
+</div>
+</div>
+<!-- X-Axis Labels Matching Screenshot Dates -->
+<div class="flex justify-between items-center text-[10px] font-mono text-slate-500 pt-3 border-t border-deck-border/60">
+<span>28 sept</span>
+<span>29 sept</span>
+<span>30 sept</span>
+<span>1 oct</span>
+<span>2 oct</span>
+<span>3 oct</span>
+<span>4 oct</span>
+<span>5 oct</span>
+<span>6 oct</span>
+<span>7 oct</span>
+<span>8 oct</span>
+<span>9 oct</span>
+<span class="text-sky-400 font-semibold">10 oct</span>
+<span>11 oct</span>
+</div>
+</div>
+<!-- Chart Legends -->
+<div class="mt-4 pt-3 border-t border-deck-border flex items-center justify-center gap-6 text-xs">
+<div class="flex items-center gap-2">
+<span class="w-3 h-1.5 rounded-full bg-sky-400 shadow-[0_0_8px_#38bdf8]"></span>
+<span class="text-slate-300">Gastos: <strong class="font-mono text-sky-400 font-semibold">$ 34.100</strong></span>
+</div>
+<div class="flex items-center gap-2">
+<span class="w-3 h-1.5 rounded-full bg-emerald-400"></span>
+<span class="text-slate-300">Ingresos: <strong class="font-mono text-emerald-400 font-semibold">$ 0</strong></span>
+</div>
+</div>
+</article>
+<!-- SECTION: Últimos movimientos -->
+<article class="bg-deck-card border border-deck-border rounded-xl p-5 shadow-sm" data-purpose="ultimos-movimientos-card">
+<div class="flex items-center justify-between pb-3 border-b border-deck-border">
+<div>
+<h2 class="text-base font-semibold text-deck-white">Últimos movimientos</h2>
+<p class="text-xs text-deck-muted mt-0.5">Tus gastos e ingresos más recientes.</p>
+</div>
+<span class="text-xs text-slate-500 font-mono">2 registros</span>
+</div>
+<div class="mt-4 space-y-3">
+<!-- Item 1: Gasto Gustos -->
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-lg bg-deck-surface border border-deck-border hover:border-slate-700 transition-colors">
+<div class="flex items-start sm:items-center gap-3">
+<div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 flex-shrink-0">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="text-sm font-semibold text-slate-200">Gasto · Gasto pendiente Gustos</h3>
+<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">gustos</span>
+</div>
+<p class="text-xs text-deck-muted mt-0.5">10 de oct de 2026 · Método de pago: <span class="text-slate-400 font-medium">Efectivo</span></p>
+</div>
+</div>
+<div class="text-left sm:text-right flex sm:flex-col items-center sm:items-end justify-between">
+<span class="text-sm font-mono font-bold text-rose-400">-$ 14.100</span>
+<span class="text-[10px] text-slate-500 font-mono">COP</span>
+</div>
+</div>
+<!-- Item 2: Gasto Moto -->
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-lg bg-deck-surface border border-deck-border hover:border-slate-700 transition-colors">
+<div class="flex items-start sm:items-center gap-3">
+<div class="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 flex-shrink-0">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="text-sm font-semibold text-slate-200">Gasto · Gasto pendiente Moto</h3>
+<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">moto</span>
+</div>
+<p class="text-xs text-deck-muted mt-0.5">10 de oct de 2026 · Método de pago: <span class="text-slate-400 font-medium">Efectivo</span></p>
+</div>
+</div>
+<div class="text-left sm:text-right flex sm:flex-col items-center sm:items-end justify-between">
+<span class="text-sm font-mono font-bold text-rose-400">-$ 20.000</span>
+<span class="text-[10px] text-slate-500 font-mono">COP</span>
+</div>
+</div>
+</div>
+<!-- Card Action Footer -->
+<div class="mt-4 pt-3 border-t border-deck-border flex justify-end">
+<a class="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 transition-colors group" href="#">
+<span>Ver en Finanzas</span>
+<span class="group-hover:translate-x-0.5 transition-transform">→</span>
+</a>
+</div>
+</article>
+<!-- SECTION: Hoy — Hábitos pendientes -->
+<article class="bg-deck-card border border-deck-border rounded-xl p-5 shadow-sm" data-purpose="habitos-hoy-card">
+<div class="flex items-center justify-between pb-3 border-b border-deck-border">
+<div>
+<h2 class="text-base font-semibold text-deck-white">Hoy</h2>
+<p class="text-xs text-deck-muted mt-0.5">Hábitos pendientes de registro.</p>
+</div>
+<span class="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">3 pendientes</span>
+</div>
+<div class="mt-4 space-y-2.5">
+<!-- Habit Row 1 -->
+<div class="flex items-center justify-between p-3 rounded-lg bg-deck-surface border border-deck-border hover:border-slate-700 transition-all">
+<label class="flex items-center gap-3 cursor-pointer">
+<input class="w-4 h-4 rounded border-deck-border bg-deck-card text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer" type="checkbox">
+<span class="text-sm font-medium text-slate-200">Ejercicio</span>
+</label>
+<div class="flex items-center gap-2">
+<span class="text-xs font-mono px-2.5 py-0.5 rounded-full bg-slate-800/80 text-slate-400 border border-slate-700/60">
+                    racha de 0 días
+                  </span>
+</div>
+</div>
+<!-- Habit Row 2 -->
+<div class="flex items-center justify-between p-3 rounded-lg bg-deck-surface border border-deck-border hover:border-slate-700 transition-all">
+<label class="flex items-center gap-3 cursor-pointer">
+<input class="w-4 h-4 rounded border-deck-border bg-deck-card text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer" type="checkbox">
+<span class="text-sm font-medium text-slate-200">NO F, NO P</span>
+</label>
+<div class="flex items-center gap-2">
+<span class="text-xs font-mono px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+<span>racha de 1 día</span>
+<span>🔥</span>
+</span>
+</div>
+</div>
+<!-- Habit Row 3 -->
+<div class="flex items-center justify-between p-3 rounded-lg bg-deck-surface border border-deck-border hover:border-slate-700 transition-all">
+<label class="flex items-center gap-3 cursor-pointer">
+<input class="w-4 h-4 rounded border-deck-border bg-deck-card text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer" type="checkbox">
+<span class="text-sm font-medium text-slate-200">tender la cama</span>
+</label>
+<div class="flex items-center gap-2">
+<span class="text-xs font-mono px-2.5 py-0.5 rounded-full bg-sky-500/10 text-sky-300 border border-sky-500/30 flex items-center gap-1">
+<span>racha de 2 días</span>
+<span>🔥🔥</span>
+</span>
+</div>
+</div>
+</div>
+</article>
+</div>
+<!-- ======================= RIGHT COLUMN (5 COLS / ~40%) ======================= -->
+<div class="lg:col-span-5 space-y-6">
+<!-- SECTION: Gastos por categoría (Donut Chart) -->
+<article class="bg-deck-card border border-deck-border rounded-xl p-5 shadow-sm" data-purpose="chart-gastos-categoria">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-deck-border">
+<div>
+<div class="flex items-center gap-2">
+<h2 class="text-base font-semibold text-deck-white">Gastos por categoría</h2>
+<button class="text-slate-500 hover:text-slate-300 transition-colors" title="Colapsar bloque" type="button">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M5 15l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</button>
+</div>
+<p class="text-xs text-deck-muted mt-0.5">Solo gastos del periodo actual en tu moneda, agrupados por categoría.</p>
+</div>
+<!-- Time Filters for Category -->
+<div class="flex items-center bg-deck-surface border border-deck-border p-1 rounded-lg self-start sm:self-auto">
+<button class="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors" type="button">Día</button>
+<button class="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors" type="button">Semana</button>
+<button class="px-2.5 py-1 text-xs font-semibold rounded bg-sky-500/15 text-sky-400 border border-sky-500/30" type="button">Mes</button>
+<button class="px-2.5 py-1 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors" type="button">Año</button>
+</div>
+</div>
+<!-- Pie/Donut Chart Container matching screenshot -->
+<div class="py-6 flex flex-col items-center justify-center">
+<div class="relative w-48 h-48">
+<!-- SVG Pie Chart -->
+<svg class="w-full h-full -rotate-90 transform" viewBox="0 0 100 100">
+<!-- Total = 34.100 -->
+<!-- gustos = 14.100 (41.34%) -> Circumference = 2 * PI * 28 = 175.92 -->
+<!-- moto = 20.000 (58.66%) -->
+<!-- Moto portion (58.7% -> #38bdf8) -->
+<circle class="transition-all hover:opacity-90 cursor-pointer" cx="50" cy="50" fill="transparent" r="28" stroke="#38bdf8" stroke-dasharray="103.2 175.92" stroke-dashoffset="0" stroke-width="32"></circle>
+<!-- Gustos portion (41.3% -> #10b981) -->
+<circle class="transition-all hover:opacity-90 cursor-pointer" cx="50" cy="50" fill="transparent" r="28" stroke="#10b981" stroke-dasharray="72.7 175.92" stroke-dashoffset="-103.2" stroke-width="32"></circle>
+</svg>
+<!-- Center label/hole cover to create neat modern look -->
+<div class="absolute inset-0 m-auto w-16 h-16 rounded-full bg-deck-card flex flex-col items-center justify-center border border-deck-border">
+<span class="text-[9px] uppercase tracking-wider text-deck-muted font-mono">Total</span>
+<span class="text-[11px] font-bold text-deck-white font-mono">$34.1k</span>
+</div>
+</div>
+<!-- Legends with Values and Percentages -->
+<div class="mt-6 flex flex-wrap items-center justify-center gap-4 text-xs">
+<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-deck-surface border border-deck-border">
+<span class="w-3 h-3 rounded bg-emerald-500"></span>
+<span class="text-slate-300">gustos:</span>
+<span class="font-mono font-semibold text-emerald-400">$ 14.100</span>
+<span class="text-[10px] font-mono text-slate-500">(41.3%)</span>
+</div>
+<div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-deck-surface border border-deck-border">
+<span class="w-3 h-3 rounded bg-sky-400 shadow-[0_0_8px_#38bdf8]"></span>
+<span class="text-slate-300">moto:</span>
+<span class="font-mono font-semibold text-sky-400">$ 20.000</span>
+<span class="text-[10px] font-mono text-slate-500">(58.7%)</span>
+</div>
+</div>
+</div>
+</article>
+<!-- SECTION: Próximas suscripciones (Empty State) -->
+<article class="bg-deck-card border border-deck-border rounded-xl p-5 shadow-sm" data-purpose="proximas-suscripciones-card">
+<div class="pb-3 border-b border-deck-border">
+<h2 class="text-base font-semibold text-deck-white">Próximas suscripciones</h2>
+<p class="text-xs text-deck-muted mt-0.5">Cargos mensuales por vencer.</p>
+</div>
+<!-- Empty state frame matching screenshot dashed container -->
+<div class="mt-4 p-8 rounded-xl border border-dashed border-deck-border bg-deck-surface/40 flex flex-col items-center justify-center text-center">
+<div class="w-11 h-11 rounded-full bg-slate-800/80 border border-slate-700/80 flex items-center justify-center text-slate-400 mb-3">
+<svg class="w-5 h-5 text-sky-400/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<rect height="18" rx="2" ry="2" stroke-width="2" width="18" x="3" y="4"></rect>
+<line stroke-width="2" x1="16" x2="16" y1="2" y2="6"></line>
+<line stroke-width="2" x1="8" x2="8" y1="2" y2="6"></line>
+<line stroke-width="2" x1="3" x2="21" y1="10" y2="10"></line>
+</svg>
+</div>
+<h3 class="text-sm font-semibold text-slate-200">Sin próximas suscripciones</h3>
+<p class="text-xs text-slate-500 max-w-xs mt-1">Los cargos recurrentes aparecerán aquí cuando estén programados.</p>
+</div>
+<div class="mt-4 pt-3 border-t border-deck-border flex justify-end">
+<a class="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 transition-colors group" href="#">
+<span>Ver en Finanzas</span>
+<span class="group-hover:translate-x-0.5 transition-transform">→</span>
+</a>
+</div>
+</article>
+<!-- SECTION: Próximos pagos (Empty State) -->
+<article class="bg-deck-card border border-deck-border rounded-xl p-5 shadow-sm" data-purpose="proximos-pagos-card">
+<div class="flex items-center justify-between pb-3 border-b border-deck-border">
+<div>
+<h2 class="text-base font-semibold text-deck-white">Próximos pagos</h2>
+<p class="text-xs text-deck-muted mt-0.5">Vencen en los próximos 7 días.</p>
+</div>
+<button class="px-2.5 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-200 bg-deck-surface border border-deck-border rounded-md transition-colors" type="button">
+                Ocultar bloque
+              </button>
+</div>
+<!-- Empty state frame matching screenshot dashed container -->
+<div class="mt-4 p-8 rounded-xl border border-dashed border-deck-border bg-deck-surface/40 flex flex-col items-center justify-center text-center">
+<div class="w-11 h-11 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3">
+<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+<h3 class="text-sm font-semibold text-slate-200">Nada por vencer en 7 días</h3>
+<p class="text-xs text-slate-500 max-w-xs mt-1">Tus compromisos y facturas están completamente al día.</p>
+</div>
+<div class="mt-4 pt-3 border-t border-deck-border flex justify-end">
+<a class="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 transition-colors group" href="#">
+<span>Ver en Finanzas</span>
+<span class="group-hover:translate-x-0.5 transition-transform">→</span>
+</a>
+</div>
+</article>
+</div>
+</div>
+<!-- END: Dashboard2Columns -->
+</main>
+<!-- Footer Notice -->
+<footer class="border-t border-deck-border mt-auto py-5 px-8 text-center text-xs text-slate-600">
+<div class="flex flex-col sm:flex-row items-center justify-between gap-3 max-w-[1600px] mx-auto">
+<p>Control Deck © 2026 — Telemetría Financiera y Hábitos</p>
+<div class="flex items-center gap-4 text-slate-500">
+<span>Latencia de red: <strong class="text-emerald-400 font-mono">18ms</strong></span>
+<span>•</span>
+<span>Región: <strong class="text-slate-300 font-mono">bog1-co</strong></span>
+</div>
+</div>
+</footer>
+</div>
+<!-- END: MainContentShell -->
+</body></html>

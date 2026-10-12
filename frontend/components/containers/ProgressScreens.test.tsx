@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
-import ProgressScreens from "@/components/containers/ProgressScreens";
+import ProgressScreens, { habitStatusOnBogotaDay } from "@/components/containers/ProgressScreens";
+import { todayInBogota } from "@/lib/finance/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
@@ -47,7 +48,10 @@ const server = setupServer(
 );
 
 beforeAll(() => server.listen());
-afterEach(() => server.resetHandlers());
+afterEach(() => {
+  server.resetHandlers();
+  vi.useRealTimers();
+});
 afterAll(() => server.close());
 
 function renderProgress() {
@@ -170,6 +174,10 @@ describe("ProgressScreens JD-1 fixes", () => {
   });
 
   it("W-01: el retry de hábitos revalida también /habits/today, no solo el historial", async () => {
+    // Clock pinned so the real Bogotá day is deterministic and the default
+    // fixture log (2026-09-10) never coincides with it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-12T00:09:00Z"));
     server.use(
       http.get("http://test.local/api/habits/today", () => HttpResponse.json({ message: "caído" }, { status: 500 })),
       http.get("http://test.local/api/habits/logs", () => HttpResponse.json({ message: "caído" }, { status: 500 })),
@@ -190,5 +198,111 @@ describe("ProgressScreens JD-1 fixes", () => {
     renderProgress();
     const score = await screen.findByRole("region", { name: "Puntaje por área" });
     expect(within(score).getByText(DISCLAIMER)).toBeVisible();
+  });
+});
+
+describe("ProgressScreens T8c coherence pass (chrome only)", () => {
+  it("los bloques usan el panel compartido con su cabecera de hairline", async () => {
+    renderProgress();
+    const habits = await screen.findByRole("region", { name: "Hábitos" });
+    expect(habits.className).toContain("bg-card");
+    expect(habits.className).toContain("border-hair");
+    // El header del panel es el compartido (`pb-3 border-b border-hair`).
+    expect(habits.querySelector("h2")?.className).toContain("text-instrument");
+  });
+
+  it("un bloque sin datos renderiza el marco de estado vacío compartido (D10)", async () => {
+    server.use(
+      http.get("http://test.local/api/habits/today", () => HttpResponse.json([])),
+      http.get("http://test.local/api/habits/logs", () => HttpResponse.json([])),
+    );
+    renderProgress();
+    const habits = await screen.findByRole("region", { name: "Hábitos" });
+    const title = await within(habits).findByText("Sin registros de hábitos en estos 30 días");
+    const frame = title.closest('[role="status"]');
+    expect(frame).not.toBeNull();
+    expect(frame?.className).toContain("border-dashed");
+  });
+
+  it("el estado de error conserva su copy y su acción de 44px", async () => {
+    server.use(http.get("http://test.local/api/goals", () => HttpResponse.json({ message: "caído" }, { status: 500 })));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
+        <ProgressScreens now={new Date(2026, 8, 15)} />
+      </SWRConfig>,
+    );
+    const goals = await screen.findByRole("region", { name: "Metas" });
+    const alert = await within(goals).findByRole("alert");
+    expect(alert).toHaveTextContent("No se pudo cargar este bloque");
+    expect(alert).toHaveTextContent("Revisa tu conexión e inténtalo de nuevo.");
+    const retry = within(alert).getByRole("button", { name: "Reintentar" });
+    expect(retry.className).toContain("min-h-11");
+  });
+});
+
+/**
+ * T8e: `GET /habits/today` builds `today_status` from the database's UTC
+ * `CURRENT_DATE`; from 19:00 Bogotá that is already the next day, so the
+ * `PENDIENTES DE HOY` list must derive each habit's state from the real logs
+ * of the Bogotá business day, never from the endpoint field.
+ */
+describe("ProgressScreens PENDIENTES DE HOY: UTC/Bogotá boundary (T8e)", () => {
+  /** 00:09 UTC on the 12th = 19:09 on the 11th in America/Bogota. */
+  const bogotaBoundary = new Date("2026-10-12T00:09:00Z");
+  const pendingRow = {
+    habit_id: "h1",
+    name: "Leer",
+    habit_frequency: "daily",
+    days_of_week: [] as number[],
+    current_streak: 3,
+    today_status: "pending",
+  };
+
+  it("habitStatusOnBogotaDay: la fila real manda; solo un log ausente cae al calendario", () => {
+    const day = "2026-10-11";
+    expect(
+      habitStatusOnBogotaDay(pendingRow, day, [
+        { habit_id: "h1", log_date: day, status: "done" },
+      ]),
+    ).toBe("done");
+    expect(habitStatusOnBogotaDay(pendingRow, day, [])).toBe("pending");
+    // 2026-10-12 es lunes; una máscara de solo domingos no lo espera.
+    expect(habitStatusOnBogotaDay({ ...pendingRow, days_of_week: [0] }, "2026-10-12", [])).toBe("skipped");
+  });
+
+  it("no lista como pendiente lo que el log real del día Bogotá dice hecho", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(bogotaBoundary);
+    const day = todayInBogota();
+    expect(day).toBe("2026-10-11");
+    server.use(
+      http.get("http://test.local/api/habits/today", () => HttpResponse.json([pendingRow])),
+      http.get("http://test.local/api/habits/logs", () =>
+        HttpResponse.json([{ habit_id: "h1", log_date: day, status: "done" }]),
+      ),
+    );
+    renderProgress();
+
+    const habits = await screen.findByRole("region", { name: "Hábitos" });
+    expect(within(habits).getByText("Pendientes de hoy")).toBeInTheDocument();
+    expect(await within(habits).findByText("Ninguno pendiente hoy")).toBeInTheDocument();
+    // El campo `today_status` por sí solo habría listado el hábito como pendiente.
+    expect(within(habits).queryByText("Leer")).toBeNull();
+  });
+
+  it("no afirma pendientes mientras la lectura del día real no ha respondido", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(bogotaBoundary);
+    server.use(
+      http.get("http://test.local/api/habits/today", () => HttpResponse.json([pendingRow])),
+      http.get("http://test.local/api/habits/logs", () => new Promise<Response>(() => {})),
+    );
+    renderProgress();
+
+    const habits = await screen.findByRole("region", { name: "Hábitos" });
+    // El bloque está en carga; la lista de pendientes (y su título) no se afirma.
+    expect(within(habits).getByRole("status")).toBeInTheDocument();
+    expect(within(habits).queryByText("Pendientes de hoy")).toBeNull();
+    expect(within(habits).queryByText("Leer")).toBeNull();
   });
 });

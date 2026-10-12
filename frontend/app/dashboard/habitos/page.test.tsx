@@ -215,6 +215,13 @@ async function findGrid(): Promise<HTMLElement> {
   return screen.findByRole("grid", { name: "Rastreador de Hábitos" });
 }
 
+/** KPI tiles are `<article>`s: find the one under a given label (T5a pattern). */
+function kpiTile(label: string): HTMLElement {
+  const tile = screen.getByText(label).closest("article");
+  if (!tile) throw new Error(`No KPI tile for ${label}`);
+  return tile as HTMLElement;
+}
+
 describe("habitos dashboard page", () => {
   it("renders the header with no create form open on load", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
@@ -259,7 +266,8 @@ describe("habitos dashboard page", () => {
     const grid = await findGrid();
 
     expect(within(grid).getAllByRole("row")).toHaveLength(5); // header + 4 habits
-    expect(within(grid).getAllByRole("gridcell")).toHaveLength(4 * DAYS_IN_MONTH);
+    // 30 day cells + the real Racha and Éxito cells per habit.
+    expect(within(grid).getAllByRole("gridcell")).toHaveLength(4 * (DAYS_IN_MONTH + 2));
 
     const header = within(grid).getByRole("rowheader", { name: /Entrenamiento de fuerza/ });
     expect(header).toHaveTextContent("Salud & Físico • 45m");
@@ -267,20 +275,107 @@ describe("habitos dashboard page", () => {
     const done = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 1 de septiembre: completado" });
     expect(done).toHaveClass("bg-signal");
     expect(done).toHaveAttribute("aria-pressed", "true");
+    expect(done).toBeDisabled(); // past days stay visual-only
 
     const pending = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 3 de septiembre: sin registrar" });
     expect(pending).toHaveAttribute("aria-pressed", "false");
-    expect(pending.className).toContain("bg-hull/60");
+    expect(pending.className).toContain("bg-container-highest/60");
 
     const future = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 20 de septiembre: futuro" });
     expect(future).toBeDisabled();
-    expect(future.className).toContain("bg-black/40");
+    expect(future.className).toContain("bg-container-lowest/50");
 
     const unscheduled = within(grid).getByRole("button", { name: "Leer, 10 de septiembre: no programado" });
     expect(unscheduled).toBeDisabled();
   });
 
-  it("ignores future cells and persists past/today toggles through POST then DELETE", async () => {
+  it("recomputes every KPI from the live reads", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [habit({ id: "h1", name: "Entrenamiento de fuerza", category: "Salud & Físico" })];
+    logRows = [];
+    for (let day = 1; day <= 14; day += 1) {
+      logRows.push({ habit_id: "h1", log_date: `2026-09-${String(day).padStart(2, "0")}`, status: "done" });
+    }
+    renderPage();
+    await findGrid();
+
+    const compliance = kpiTile("CUMPLIMIENTO MENSUAL");
+    expect(within(compliance).getByText("93.3")).toBeInTheDocument();
+    expect(within(compliance).getByText("Meta mensual: 80%")).toBeInTheDocument();
+
+    const streakTile = kpiTile("RACHA MÁS LARGA");
+    expect(within(streakTile).getByText("14")).toBeInTheDocument();
+    expect(within(streakTile).getByText("días seguidos")).toBeInTheDocument();
+    expect(within(streakTile).getByText("En 'Entrenamiento de fuerza'")).toBeInTheDocument();
+
+    const active = kpiTile("HÁBITOS ACTIVOS");
+    expect(within(active).getByText("1")).toBeInTheDocument();
+    expect(within(active).getByText("Salud & Físico (1)")).toBeInTheDocument();
+    expect(within(active).getByText("1 categoría cubierta")).toBeInTheDocument();
+
+    const today = kpiTile("COMPLETADOS HOY (DÍA 15)");
+    expect(within(today).getByText("0")).toBeInTheDocument();
+    expect(within(today).getByText("/1")).toBeInTheDocument();
+    expect(within(today).getByText("0%")).toBeInTheDocument();
+    expect(within(today).getByText("Faltan 1 para el día perfecto")).toBeInTheDocument();
+  });
+
+  it("renders the real Racha and Éxito columns per habit", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    const grid = await findGrid();
+
+    expect(within(grid).getByRole("columnheader", { name: "RACHA" })).toBeInTheDocument();
+    expect(within(grid).getByRole("columnheader", { name: "ÉXITO" })).toBeInTheDocument();
+
+    const water = within(grid).getByRole("row", { name: "Agua" });
+    const cells = within(water).getAllByRole("gridcell");
+    expect(cells[cells.length - 2]).toHaveTextContent("1 d");
+    expect(cells[cells.length - 1]).toHaveTextContent("6.7%");
+  });
+
+  it("filters the matrix by real category and clears back to Todos", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    const grid = await findGrid();
+
+    fireEvent.click(screen.getByRole("button", { name: "Salud & Físico (2)" }));
+    expect(within(grid).getAllByRole("row")).toHaveLength(3); // header + 2
+    expect(within(grid).getByRole("rowheader", { name: /Agua/ })).toBeInTheDocument();
+    expect(within(grid).queryByRole("rowheader", { name: /Leer/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Todos (4)" }));
+    expect(within(grid).getAllByRole("row")).toHaveLength(5);
+  });
+
+  it("omits category tabs with no habits in the visible month", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [BASE_HABITS[0]];
+    renderPage();
+    await findGrid();
+
+    expect(screen.getByRole("button", { name: "Salud & Físico (1)" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Productividad/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Mentalidad/ })).toBeNull();
+  });
+
+  it("renders a mobile card per habit with its own scrollable strip and today toggle", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    renderPage();
+    await findGrid();
+
+    expect(screen.getByRole("heading", { name: "Agua" })).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: /^Agua, / })).toHaveLength(DAYS_IN_MONTH);
+
+    const toggle = screen.getByRole("button", { name: "Marcar hoy: Agua" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(seenLogPosts).toHaveLength(1));
+    expect(seenLogPosts[0]).toEqual({ id: "h2", body: { log_date: TODAY, status: "done" } });
+    expect(await screen.findByRole("button", { name: "Desmarcar hoy: Agua" })).toBeInTheDocument();
+  });
+
+  it("ignores future cells and persists today's toggle through POST then DELETE", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
     renderPage();
     const grid = await findGrid();
@@ -367,7 +462,7 @@ describe("habitos dashboard page", () => {
     expect(await screen.findByText("Agosto")).toBeInTheDocument();
     await waitFor(() => expect(historyRanges).toContain("2026-08-01|2026-08-31"));
 
-    const kpi = await screen.findByRole("region", { name: "COMPLETADOS HOY (DÍA 15)" });
+    const kpi = kpiTile("COMPLETADOS HOY (DÍA 15)");
     expect(within(kpi).getByText("1")).toBeInTheDocument();
     expect(within(kpi).getByText("/3")).toBeInTheDocument();
   });
@@ -392,7 +487,7 @@ describe("habitos dashboard page", () => {
 
     // 422 would swap the dashboard for the load-failed card; grid + KPIs must render.
     expect(await findGrid()).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "CUMPLIMIENTO MENSUAL" })).toBeInTheDocument();
+    expect(kpiTile("CUMPLIMIENTO MENSUAL")).toBeInTheDocument();
     expect(screen.queryByText("No se pudo cargar el rastreador")).toBeNull();
   });
 
@@ -416,7 +511,7 @@ describe("habitos dashboard page", () => {
     );
     renderPage();
     const grid = await findGrid();
-    const kpi = screen.getByRole("region", { name: "COMPLETADOS HOY (DÍA 15)" });
+    const kpi = kpiTile("COMPLETADOS HOY (DÍA 15)");
     expect(within(kpi).getByText("0")).toBeInTheDocument();
 
     fireEvent.click(within(grid).getByRole("button", { name: "Agua, 15 de septiembre: sin registrar" }));
@@ -538,14 +633,18 @@ describe("habitos dashboard page", () => {
 
     const early = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 3 de septiembre: futuro" });
     expect(early).toBeDisabled();
-    expect(early.className).toContain("bg-black/40");
+    expect(early.className).toContain("bg-container-lowest/50");
     expect(early).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(early);
     expect(seenLogPosts).toHaveLength(0);
     expect(seenLogDeletes).toHaveLength(0);
 
-    const inRange = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 12 de septiembre: sin registrar" });
-    expect(inRange).not.toBeDisabled();
+    // In range but in the past: still visual-only under the standing decision.
+    const inRangePast = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 12 de septiembre: sin registrar" });
+    expect(inRangePast).toBeDisabled();
+    // Today is the only writable cell of the matrix.
+    const todayCell = within(grid).getByRole("button", { name: "Entrenamiento de fuerza, 15 de septiembre: sin registrar" });
+    expect(todayCell).not.toBeDisabled();
   });
 
   it("reverts an optimistic toggle and shows a toast when the POST fails", async () => {
@@ -565,14 +664,22 @@ describe("habitos dashboard page", () => {
     expect(await within(grid).findByRole("button", { name: "Agua, 15 de septiembre: sin registrar" })).toBeInTheDocument();
   });
 
-  it("completes an unlogged past cell with POST only, never DELETE", async () => {
+  it("keeps past days visual-only and only writes today's cell", async () => {
     localStorage.setItem("dashboard-token", "tok-123");
     renderPage();
     const grid = await findGrid();
 
-    fireEvent.click(within(grid).getByRole("button", { name: "Agua, 3 de septiembre: sin registrar" }));
+    const past = within(grid).getByRole("button", { name: "Agua, 3 de septiembre: sin registrar" });
+    expect(past).toBeDisabled();
+    fireEvent.click(past);
+    expect(seenLogPosts).toHaveLength(0);
+    expect(seenLogDeletes).toHaveLength(0);
+
+    const today = within(grid).getByRole("button", { name: "Agua, 15 de septiembre: sin registrar" });
+    expect(today).not.toBeDisabled();
+    fireEvent.click(today);
     await waitFor(() => expect(seenLogPosts).toHaveLength(1));
-    expect(seenLogPosts[0]).toEqual({ id: "h2", body: { log_date: "2026-09-03", status: "done" } });
+    expect(seenLogPosts[0]).toEqual({ id: "h2", body: { log_date: TODAY, status: "done" } });
     expect(seenLogDeletes).toHaveLength(0);
   });
 
@@ -653,6 +760,23 @@ describe("habitos dashboard page", () => {
 
     screen.getByRole("button", { name: "Mes anterior" }).focus();
     expect(nameInput).toHaveFocus();
+  });
+
+  it("labels the month-over-month compliance delta in percentage points, never percent", async () => {
+    localStorage.setItem("dashboard-token", "tok-123");
+    habitRows = [habit({ id: "h1", name: "Agua" })];
+    // September (frozen today: 15 days) 9/15 = 60%; August (31 days) 0/31 = 0%.
+    logRows = Array.from({ length: 9 }, (_, index) => ({
+      habit_id: "h1",
+      log_date: `2026-09-${String(index + 1).padStart(2, "0")}`,
+      status: "done",
+    }));
+    renderPage();
+    await findGrid();
+
+    const chip = await screen.findByText("↗ +60 pp");
+    expect(chip).toBeInTheDocument();
+    expect(chip.textContent).not.toContain("%");
   });
 
   it("shows a neutral delta pill when month-over-month compliance does not change", async () => {

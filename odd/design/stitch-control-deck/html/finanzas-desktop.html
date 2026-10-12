@@ -1,0 +1,637 @@
+<!DOCTYPE html><html class="dark" lang="es"><head><meta charset="utf-8"><meta content="width=device-width, initial-scale=1.0" name="viewport"><meta content="web_dashboard" name="shell-type"><link href="https://fonts.googleapis.com" rel="preconnect"><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@600;700&amp;display=swap" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={darkMode:"class",theme:{extend:{colors:{"on-secondary-fixed":"#001a43","on-error":"#690005","primary-fixed":"#c4e7ff","tertiary-fixed":"#6bff8f","on-primary-fixed":"#001e2c","secondary-fixed-dim":"#aec6ff","secondary-fixed":"#d8e2ff","on-primary-fixed-variant":"#004c69","surface-dim":"#0f131d","error-container":"#93000a","surface-bright":"#353944","on-tertiary-fixed":"#002109","on-error-container":"#ffdad6","inverse-surface":"#dfe2f1","surface-container-lowest":"#0a0e18","primary":"#8ed5ff","on-tertiary-fixed-variant":"#005321","surface-container":"#1c1f2a","on-secondary-fixed-variant":"#004397","on-secondary":"#002e6b","secondary-container":"#508eff","surface-tint":"#7bd0ff","tertiary-container":"#2ccb63","surface-container-low":"#171b26","primary-container":"#38bdf8","on-tertiary-container":"#004f20","surface-container-highest":"#313540","outline":"#87929a","on-primary-container":"#004965","primary-fixed-dim":"#7bd0ff","tertiary-fixed-dim":"#4ae176","secondary":"#aec6ff","error":"#ffb4ab","on-surface":"#dfe2f1","on-secondary-container":"#00275e","on-background":"#dfe2f1","on-tertiary":"#003915","inverse-on-surface":"#2c303b","tertiary":"#52e87c","surface-variant":"#313540","outline-variant":"#3e484f","inverse-primary":"#00668a","surface":"#0f131d","surface-container-high":"#262a35","on-surface-variant":"#bdc8d1","background":"#0f131d","on-primary":"#00354a"},borderRadius:{DEFAULT:"0.25rem",lg:"0.5rem",xl:"0.75rem",full:"9999px"},spacing:{"space-lg":"1.5rem",margin:"1rem","space-sm":"0.5rem","space-xs":"0.25rem",gutter:"1.25rem","space-md":"1rem","gutter-desktop":"1.5rem","margin-tablet":"1.5rem","margin-desktop":"2.5rem","space-xl":"2rem"},fontFamily:{"headline-md":["Plus Jakarta Sans"],"headline-xl-mobile":["Plus Jakarta Sans"],"metric-val":["Plus Jakarta Sans"],"display-lg":["Plus Jakarta Sans"],"headline-lg":["Plus Jakarta Sans"],"headline-xl":["Plus Jakarta Sans"],"body-md":["Inter"],"body-lg":["Inter"],"label-caps":["Inter"],"label-lg":["Inter"],"label-md":["Inter"],"body-sm":["Inter"]},fontSize:{"headline-md":["20px",{lineHeight:"28px",letterSpacing:"-0.01em",fontWeight:"600"}],"headline-xl-mobile":["24px",{lineHeight:"32px",letterSpacing:"-0.01em",fontWeight:"700"}],"metric-val":["28px",{lineHeight:"32px",letterSpacing:"-0.02em",fontWeight:"700"}],"display-lg":["40px",{lineHeight:"48px",letterSpacing:"-0.02em",fontWeight:"700"}],"headline-lg":["24px",{lineHeight:"32px",letterSpacing:"-0.01em",fontWeight:"600"}],"headline-xl":["32px",{lineHeight:"40px",letterSpacing:"-0.02em",fontWeight:"700"}],"body-md":["14px",{lineHeight:"20px",letterSpacing:"0",fontWeight:"400"}],"body-lg":["16px",{lineHeight:"24px",letterSpacing:"0",fontWeight:"400"}],"label-caps":["11px",{lineHeight:"14px",letterSpacing:"0.08em",fontWeight:"700"}],"label-lg":["14px",{lineHeight:"20px",letterSpacing:"0.01em",fontWeight:"600"}],"label-md":["12px",{lineHeight:"16px",letterSpacing:"0.02em",fontWeight:"500"}],"body-sm":["12px",{lineHeight:"16px",letterSpacing:"0.01em",fontWeight:"400"}]}}}};</script></head><body class="bg-background font-body-md text-body-md text-on-surface antialiased"><aside class="fixed left-0 top-0 h-full w-72 bg-surface-container-low/90 backdrop-blur-xl z-50 flex flex-col justify-between py-6 px-4 shadow-[0_1px_8px_rgba(0,0,0,0.3)]"><div class="flex flex-col gap-6"><div class="flex items-center gap-3 px-3"><div class="w-9 h-9 rounded-xl bg-surface-container-high flex items-center justify-center text-primary shadow-[0_0_16px_-2px_rgba(56,189,248,0.45)]"><span class="material-symbols-outlined text-[20px]">terminal</span></div><div><span class="font-headline-md text-headline-md text-on-surface block tracking-tight">CONTROL DECK</span><span class="font-label-caps text-label-caps text-primary uppercase block tracking-wider">Telemetría &amp; Finanzas</span></div></div><div class="px-3"><div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-high/60 w-fit"><span class="w-2 h-2 rounded-full bg-tertiary shadow-[0_0_8px_rgba(82,232,124,0.6)]"></span><span class="font-label-caps text-label-caps text-tertiary uppercase">Sistema Operativo</span></div></div><nav class="flex flex-col gap-1.5" data-active-classes="bg-primary-container text-on-primary-container font-headline-md shadow-[0_0_16px_-2px_rgba(56,189,248,0.45)] rounded-xl"><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-label-lg text-label-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all" data-path="resumen" href="#"><span class="material-symbols-outlined text-[20px]">space_dashboard</span><span>Resumen</span></a><a aria-current="page" class="flex items-center gap-3 px-3.5 py-2.5 transition-all bg-primary-container text-on-primary-container font-headline-md shadow-[0_0_16px_-2px_rgba(56,189,248,0.45)] rounded-xl" data-path="finanzas" href="#"><span class="material-symbols-outlined text-[20px]">account_balance_wallet</span><span>Finanzas</span></a><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-label-lg text-label-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all" data-path="productividad" href="#"><span class="material-symbols-outlined text-[20px]">monitoring</span><span>Productividad</span></a><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-label-lg text-label-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all" data-path="habitos" href="#"><span class="material-symbols-outlined text-[20px]">check_circle</span><span>Hábitos</span></a><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-label-lg text-label-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all" data-path="tokens-de-api" href="#"><span class="material-symbols-outlined text-[20px]">key</span><span>Tokens de API</span></a><a class="flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-label-lg text-label-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all" data-path="preferencias" href="#"><span class="material-symbols-outlined text-[20px]">tune</span><span>Preferencias</span></a></nav></div><div class="flex flex-col gap-3 px-3"><div class="p-3 rounded-xl bg-surface-container/70 backdrop-blur-md flex flex-col gap-2"><div class="flex items-center justify-between"><span class="font-label-caps text-label-caps text-on-surface-variant uppercase">Enlace Cuántico</span><span class="font-label-caps text-label-caps text-primary">99.98%</span></div><div class="w-full h-1 rounded-full bg-surface-container-highest overflow-hidden"><div class="h-full w-[85%] rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.7)]"></div></div></div><div class="flex items-center justify-between pt-2"><span class="font-body-sm text-body-sm text-outline">v4.8.2-prod</span><span class="font-body-sm text-body-sm text-outline">Latencia 12ms</span></div></div></aside><div class="pl-72"><header class="fixed top-0 left-72 right-0 h-16 bg-surface/80 backdrop-blur-xl z-40 shadow-[0_1px_8px_rgba(0,0,0,0.3)]"><div class="h-16 w-full px-margin-desktop flex items-center justify-between gap-6"><div class="flex-1 max-w-md"><div class="relative flex items-center"><span class="material-symbols-outlined absolute left-3 text-outline text-[18px]">search</span><input class="w-full bg-surface-container-lowest/80 text-on-surface placeholder:text-outline pl-9 pr-12 py-2 rounded-lg font-body-sm text-body-sm focus:outline-none focus:ring-1 focus:ring-primary-container transition-all" placeholder="Buscar transacciones, nodos, comandos..." type="text"><kbd class="absolute right-3 font-label-caps text-label-caps text-outline bg-surface-container-high px-1.5 py-0.5 rounded">⌘K</kbd></div></div><div class="flex items-center gap-4"><div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container-low text-on-surface-variant font-label-md text-label-md"><span class="material-symbols-outlined text-[16px] text-primary">calendar_today</span><span>11 de oct de 2026</span></div><button aria-label="Avisos y notificaciones" class="relative p-2 rounded-lg bg-surface-container-low text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span><span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary-container shadow-[0_0_6px_rgba(56,189,248,0.8)]"></span></button><button class="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-container text-on-primary-container font-label-lg text-label-lg shadow-[0_0_16px_-2px_rgba(56,189,248,0.45)] hover:bg-primary transition-all" type="button"><span class="material-symbols-outlined text-[18px]">add</span><span>Registrar Movimiento</span></button><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></header><main class="w-full pt-16 bg-surface min-h-screen"><div class="flex flex-col w-full">
+<!-- Dynamic Glow Ambience (Contained & Non-intrusive) -->
+<div class="relative w-full px-margin-desktop py-space-xl flex flex-col gap-gutter-desktop overflow-hidden">
+<div class="absolute -top-24 right-1/4 w-96 h-96 bg-primary-container/10 rounded-full blur-3xl pointer-events-none"></div>
+<div class="absolute top-1/2 -left-20 w-80 h-80 bg-secondary-container/5 rounded-full blur-3xl pointer-events-none"></div>
+<!-- 1. Header Section -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md z-10">
+<div class="flex flex-col gap-1">
+<div class="flex items-center gap-3">
+<h1 class="font-headline-xl text-headline-xl text-on-surface tracking-tight">Finanzas</h1>
+<span class="px-2.5 py-0.5 rounded-full bg-primary-container/15 text-primary font-label-caps text-label-caps tracking-widest shadow-[0_0_12px_rgba(56,189,248,0.3)]">COP</span>
+<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-caps text-label-caps uppercase">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary shadow-[0_0_8px_rgba(82,232,124,0.7)]"></span>
+            En sincronía
+          </span>
+</div>
+<p class="font-body-md text-body-md text-on-surface-variant">Cuentas, dinero recurrente y movimientos en COP.</p>
+</div>
+<!-- Quick Action Toolbar -->
+<div class="flex flex-wrap items-center gap-2.5">
+<button class="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-label-md text-label-md transition-all shadow-sm" type="button">
+<span class="material-symbols-outlined text-[18px] text-secondary">sync_alt</span>
+<span>Mover dinero</span>
+</button>
+<button class="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-label-md text-label-md transition-all shadow-sm" type="button">
+<span class="material-symbols-outlined text-[18px] text-outline">tune</span>
+<span>Conciliar saldo</span>
+</button>
+<button class="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-tertiary-container/20 hover:bg-tertiary-container/30 text-tertiary font-label-md text-label-md transition-all shadow-[0_0_12px_-2px_rgba(82,232,124,0.3)]" type="button">
+<span class="material-symbols-outlined text-[18px]">add_circle</span>
+<span>+ Agregar ingreso</span>
+</button>
+<button class="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-container text-on-primary-container font-label-lg text-label-lg shadow-[0_0_16px_-2px_rgba(56,189,248,0.5)] hover:bg-primary transition-all" type="button">
+<span class="material-symbols-outlined text-[20px]">payments</span>
+<span>+ Agregar gasto</span>
+</button>
+</div>
+</div>
+<!-- 2. KPIs / Telemetry Top Bar -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-gutter-desktop z-10">
+<!-- KPI 1: Saldo Consolidado -->
+<div class="p-space-lg rounded-xl bg-surface-container-low/80 backdrop-blur-md shadow-md flex flex-col justify-between gap-3 relative overflow-hidden group hover:bg-surface-container-low transition-all">
+<div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-primary-container via-primary to-transparent"></div>
+<div class="flex items-center justify-between">
+<span class="font-label-caps text-label-caps uppercase text-on-surface-variant tracking-wider">Saldo Total Consolidado</span>
+<span class="p-1.5 rounded-lg bg-surface-container text-primary">
+<span class="material-symbols-outlined text-[20px]">account_balance</span>
+</span>
+</div>
+<div>
+<div class="font-headline-xl text-headline-xl text-on-surface font-bold tracking-tight text-white">$ 2.620.900 <span class="font-label-md text-label-md text-on-surface-variant font-normal">COP</span></div>
+<div class="flex items-center gap-1.5 mt-1">
+<span class="material-symbols-outlined text-[16px] text-tertiary">trending_up</span>
+<span class="font-label-md text-label-md text-tertiary font-semibold">+5.2%</span>
+<span class="font-body-sm text-body-sm text-outline">vs mes anterior</span>
+</div>
+</div>
+</div>
+<!-- KPI 2: Cuentas Activas -->
+<div class="p-space-lg rounded-xl bg-surface-container-low/80 backdrop-blur-md shadow-md flex flex-col justify-between gap-3 relative overflow-hidden group hover:bg-surface-container-low transition-all">
+<div class="flex items-center justify-between">
+<span class="font-label-caps text-label-caps uppercase text-on-surface-variant tracking-wider">Cuentas &amp; Billeteras</span>
+<span class="p-1.5 rounded-lg bg-surface-container text-secondary">
+<span class="material-symbols-outlined text-[20px]">account_tree</span>
+</span>
+</div>
+<div>
+<div class="font-headline-xl text-headline-xl text-on-surface font-bold tracking-tight">9 <span class="font-headline-md text-headline-md font-medium text-on-surface-variant">cuentas</span></div>
+<div class="flex items-center gap-1.5 mt-1 text-on-surface-variant">
+<span class="material-symbols-outlined text-[16px] text-primary">done_all</span>
+<span class="font-body-sm text-body-sm">100% conciliadas hoy</span>
+</div>
+</div>
+</div>
+<!-- KPI 3: Gastos del Período -->
+<div class="p-space-lg rounded-xl bg-surface-container-low/80 backdrop-blur-md shadow-md flex flex-col justify-between gap-3 relative overflow-hidden group hover:bg-surface-container-low transition-all">
+<div class="flex items-center justify-between">
+<span class="font-label-caps text-label-caps uppercase text-on-surface-variant tracking-wider">Gastos del Período</span>
+<span class="p-1.5 rounded-lg bg-surface-container text-error">
+<span class="material-symbols-outlined text-[20px]">output</span>
+</span>
+</div>
+<div>
+<div class="font-headline-xl text-headline-xl text-error font-bold tracking-tight">$ 34.100 <span class="font-label-md text-label-md text-on-surface-variant font-normal">COP</span></div>
+<div class="flex items-center gap-2 mt-1">
+<span class="px-2 py-0.5 rounded bg-surface-container-high text-on-surface-variant font-label-caps text-label-caps">Gustos: $14.1k</span>
+<span class="px-2 py-0.5 rounded bg-surface-container-high text-on-surface-variant font-label-caps text-label-caps">Moto: $20.0k</span>
+</div>
+</div>
+</div>
+<!-- KPI 4: Suscripciones Activas -->
+<div class="p-space-lg rounded-xl bg-surface-container-low/80 backdrop-blur-md shadow-md flex flex-col justify-between gap-3 relative overflow-hidden group hover:bg-surface-container-low transition-all">
+<div class="flex items-center justify-between">
+<span class="font-label-caps text-label-caps uppercase text-on-surface-variant tracking-wider">Suscripciones Recurrentes</span>
+<span class="p-1.5 rounded-lg bg-surface-container text-primary">
+<span class="material-symbols-outlined text-[20px]">event_repeat</span>
+</span>
+</div>
+<div>
+<div class="font-headline-xl text-headline-xl text-on-surface font-bold tracking-tight">$ 0 <span class="font-label-md text-label-md text-on-surface-variant font-normal">COP</span></div>
+<div class="flex items-center gap-1.5 mt-1 text-on-surface-variant">
+<span class="material-symbols-outlined text-[16px] text-tertiary">check_circle</span>
+<span class="font-body-sm text-body-sm">0 cargos pendientes este ciclo</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 3. Main Modular Layout (2 Columns: ~58% Left, ~42% Right) -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-gutter-desktop z-10 items-start">
+<!-- LEFT COLUMN (~58%, 7 Cols) -->
+<div class="lg:col-span-7 flex flex-col gap-gutter-desktop">
+<!-- BLOQUE: Cuentas -->
+<section class="p-space-lg rounded-xl bg-surface-container-low/90 backdrop-blur-md shadow-md flex flex-col gap-space-md">
+<div class="flex items-center justify-between">
+<div class="flex flex-col">
+<h2 class="font-headline-md text-headline-md text-on-surface font-semibold">Cuentas</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Saldos de tus cuentas bancarias y billeteras de efectivo.</p>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface transition-colors" title="Actualizar saldos" type="button">
+<span class="material-symbols-outlined text-[18px]">refresh</span>
+</button>
+<button class="px-3 py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-primary font-label-md text-label-md transition-colors flex items-center gap-1.5" type="button">
+<span class="material-symbols-outlined text-[16px]">add</span>
+<span>Nueva cuenta</span>
+</button>
+</div>
+</div>
+<!-- Accounts 3x3 Grid Matrix -->
+<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+<!-- Nu -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-[#531278]/40 text-[#c084fc] flex items-center justify-center font-bold text-xs tracking-tighter">Nu</div>
+<span class="font-label-lg text-label-lg text-on-surface">NU</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">credit_card</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 840.000</span>
+<span class="font-label-caps text-label-caps text-outline uppercase">Cuenta principal</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- Nequi -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-[#200020]/80 text-[#f43f5e] flex items-center justify-center font-bold text-xs">NQ</div>
+<span class="font-label-lg text-label-lg text-on-surface">Nequi</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">phone_iphone</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 283.000</span>
+<span class="font-label-caps text-label-caps text-outline uppercase">Billetera móvil</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- Pibank -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-[#004d40]/40 text-[#2dd4bf] flex items-center justify-center font-bold text-xs">PI</div>
+<span class="font-label-lg text-label-lg text-on-surface">Pibank</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">savings</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 215.000</span>
+<span class="font-label-caps text-label-caps text-tertiary uppercase">Rendimiento 13%</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- Bancolombia -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-[#eab308]/20 text-[#facc15] flex items-center justify-center font-bold text-xs">BC</div>
+<span class="font-label-lg text-label-lg text-on-surface">Bancolombia</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">account_balance</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 37.000</span>
+<span class="font-label-caps text-label-caps text-outline uppercase">Ahorros</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- Efectivo -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-surface-container-highest text-tertiary flex items-center justify-center font-bold text-xs">
+<span class="material-symbols-outlined text-[16px]">payments</span>
+</div>
+<span class="font-label-lg text-label-lg text-on-surface">Efectivo</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">wallet</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 41.900</span>
+<span class="font-label-caps text-label-caps text-outline uppercase">Billetera física</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- Lulo Bank -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-[#a3e635]/20 text-[#bef264] flex items-center justify-center font-bold text-xs">LU</div>
+<span class="font-label-lg text-label-lg text-on-surface">Lulo bank</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">account_balance_wallet</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 783.000</span>
+<span class="font-label-caps text-label-caps text-outline uppercase">Bolsillo ahorros</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- Ualá -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-[#3b82f6]/20 text-[#60a5fa] flex items-center justify-center font-bold text-xs">UÁ</div>
+<span class="font-label-lg text-label-lg text-on-surface">Ualá</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">credit_card</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 51.000</span>
+<span class="font-label-caps text-label-caps text-outline uppercase">Débito digital</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- ARQ -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-surface-container-highest text-on-surface flex items-center justify-center font-bold text-xs">AR</div>
+<span class="font-label-lg text-label-lg text-on-surface">ARQ</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">token</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 30.000</span>
+<span class="font-label-caps text-label-caps text-outline uppercase">Reserva</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+<!-- Binance -->
+<div class="p-3.5 rounded-xl bg-surface-container/80 hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-sm group">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-[#f59e0b]/20 text-[#fbbf24] flex items-center justify-center font-bold text-xs">BN</div>
+<span class="font-label-lg text-label-lg text-on-surface">Binance</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-outline group-hover:text-primary transition-colors">currency_bitcoin</span>
+</div>
+<div>
+<span class="font-headline-md text-headline-md font-bold text-on-surface block tracking-tight">$ 420.000</span>
+<span class="font-label-caps text-label-caps text-tertiary uppercase">USDT / Web3</span>
+</div>
+<div class="flex items-center justify-between pt-2">
+<button class="font-label-caps text-label-caps text-primary hover:underline" type="button">Mover</button>
+<button class="font-label-caps text-label-caps text-outline hover:text-on-surface" type="button">Editar</button>
+</div>
+</div>
+</div>
+</section>
+<!-- BLOQUE: Movimientos Recientes -->
+<section class="p-space-lg rounded-xl bg-surface-container-low/90 backdrop-blur-md shadow-md flex flex-col gap-space-md">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+<div>
+<h2 class="font-headline-md text-headline-md text-on-surface font-semibold">Movimientos Recientes</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Tus gastos e ingresos más recientes registrados en la plataforma.</p>
+</div>
+<div class="flex items-center gap-2">
+<button class="px-3 py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-label-md text-label-md flex items-center gap-1.5 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">file_download</span>
+<span>Exportar</span>
+</button>
+</div>
+</div>
+<!-- Filtros de búsqueda y agrupación -->
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 p-2 rounded-xl bg-surface-container-lowest/60">
+<div class="flex flex-col gap-1">
+<label class="font-label-caps text-label-caps text-outline uppercase px-1">Cuenta</label>
+<div class="relative">
+<select class="w-full bg-surface-container text-on-surface font-label-md text-label-md rounded-lg px-3 py-2 pr-8 appearance-none focus:outline-none focus:ring-1 focus:ring-primary-container cursor-pointer">
+<option selected="">Todas las cuentas</option>
+<option>NU</option>
+<option>Nequi</option>
+<option>Pibank</option>
+<option>Efectivo</option>
+</select>
+<span class="material-symbols-outlined absolute right-2.5 top-2.5 pointer-events-none text-outline text-[16px]">expand_more</span>
+</div>
+</div>
+<div class="flex flex-col gap-1">
+<label class="font-label-caps text-label-caps text-outline uppercase px-1">Categoría</label>
+<div class="relative">
+<select class="w-full bg-surface-container text-on-surface font-label-md text-label-md rounded-lg px-3 py-2 pr-8 appearance-none focus:outline-none focus:ring-1 focus:ring-primary-container cursor-pointer">
+<option selected="">Todas las categorías</option>
+<option>gustos</option>
+<option>moto</option>
+<option>alimentación</option>
+</select>
+<span class="material-symbols-outlined absolute right-2.5 top-2.5 pointer-events-none text-outline text-[16px]">expand_more</span>
+</div>
+</div>
+<div class="flex flex-col gap-1">
+<label class="font-label-caps text-label-caps text-outline uppercase px-1">Tipo</label>
+<div class="relative">
+<select class="w-full bg-surface-container text-on-surface font-label-md text-label-md rounded-lg px-3 py-2 pr-8 appearance-none focus:outline-none focus:ring-1 focus:ring-primary-container cursor-pointer">
+<option selected="">Todos los tipos</option>
+<option>Gasto</option>
+<option>Ingreso</option>
+<option>Transferencia</option>
+</select>
+<span class="material-symbols-outlined absolute right-2.5 top-2.5 pointer-events-none text-outline text-[16px]">expand_more</span>
+</div>
+</div>
+</div>
+<!-- Listado Detallado de Movimientos -->
+<div class="flex flex-col gap-3">
+<!-- Movimiento 1: Gustos -->
+<div class="p-4 rounded-xl bg-surface-container/70 hover:bg-surface-container transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm group">
+<div class="flex items-start gap-3.5">
+<div class="w-10 h-10 rounded-xl bg-error-container/20 text-error flex items-center justify-center mt-0.5">
+<span class="material-symbols-outlined text-[20px]">local_cafe</span>
+</div>
+<div class="flex flex-col gap-0.5">
+<div class="flex items-center gap-2">
+<span class="font-label-lg text-label-lg text-on-surface font-semibold">Gasto · gustos</span>
+<span class="px-2 py-0.5 rounded-full bg-surface-container-high text-outline font-label-caps text-label-caps">Pendiente</span>
+</div>
+<div class="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant flex-wrap">
+<span>10 de oct de 2026</span>
+<span>•</span>
+<span class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px] text-tertiary">payments</span>
+                      Método de pago: Efectivo
+                    </span>
+<span>•</span>
+<span class="text-outline">Gasto pendiente Gustos</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between md:justify-end gap-4">
+<div class="text-right">
+<span class="font-headline-md text-headline-md font-bold text-error tracking-tight block">-$ 14.100</span>
+<span class="font-label-caps text-label-caps text-outline">COP</span>
+</div>
+<div class="flex items-center gap-1">
+<button class="p-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant hover:text-on-surface transition-colors" title="Editar movimiento" type="button">
+<span class="material-symbols-outlined text-[18px]">edit</span>
+</button>
+<button class="p-2 rounded-lg bg-surface-container-high hover:bg-error-container/30 text-on-surface-variant hover:text-error transition-colors" title="Eliminar" type="button">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Movimiento 2: Moto -->
+<div class="p-4 rounded-xl bg-surface-container/70 hover:bg-surface-container transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm group">
+<div class="flex items-start gap-3.5">
+<div class="w-10 h-10 rounded-xl bg-error-container/20 text-error flex items-center justify-center mt-0.5">
+<span class="material-symbols-outlined text-[20px]">two_wheeler</span>
+</div>
+<div class="flex flex-col gap-0.5">
+<div class="flex items-center gap-2">
+<span class="font-label-lg text-label-lg text-on-surface font-semibold">Gasto · moto</span>
+<span class="px-2 py-0.5 rounded-full bg-surface-container-high text-outline font-label-caps text-label-caps">Combustible</span>
+</div>
+<div class="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant flex-wrap">
+<span>10 de oct de 2026</span>
+<span>•</span>
+<span class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px] text-tertiary">payments</span>
+                      Método de pago: Efectivo
+                    </span>
+<span>•</span>
+<span class="text-outline">Gasto pendiente Moto</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between md:justify-end gap-4">
+<div class="text-right">
+<span class="font-headline-md text-headline-md font-bold text-error tracking-tight block">-$ 20.000</span>
+<span class="font-label-caps text-label-caps text-outline">COP</span>
+</div>
+<div class="flex items-center gap-1">
+<button class="p-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant hover:text-on-surface transition-colors" title="Editar movimiento" type="button">
+<span class="material-symbols-outlined text-[18px]">edit</span>
+</button>
+<button class="p-2 rounded-lg bg-surface-container-high hover:bg-error-container/30 text-on-surface-variant hover:text-error transition-colors" title="Eliminar" type="button">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Bloque Multimedia / Visual Contextual Telemetry -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-gutter-desktop">
+<div class="relative rounded-xl overflow-hidden bg-surface-container-low p-4 flex flex-col justify-between shadow-md h-48">
+<img alt="Finanzas Deck" class="absolute inset-0 w-full h-full object-cover opacity-20 filter grayscale hover:opacity-30 transition-all pointer-events-none" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB2K9O1oDw7izMi4khwF9gs4HzJmP8ryswBORA45avCV6ZK95H4zAWSWJMtpA3lCApVuS4-BON1BNkMAoBlZAlGV_WgHO7lSt0MVze-RhLHuLHJu3Zgjr4KBIhbuK6zAexbmY-jGuZf-sHyWyVZUENVrUPl_jjioLPButLAKS-RzqAOawx4KDg4oQgUV3QL0aeDVfnqw8fbl8TvIRytye-rxXQd5aYHr8-1jTi6zXtgqhxn0FfhYR5Vqz_qK-erRjcbokw">
+<div class="relative z-10 flex items-center justify-between">
+<span class="font-label-caps text-label-caps text-primary uppercase tracking-wider">Caché de Libro Mayor</span>
+<span class="p-1 rounded bg-surface-container-high text-on-surface">
+<span class="material-symbols-outlined text-[16px]">receipt_long</span>
+</span>
+</div>
+<div class="relative z-10">
+<p class="font-headline-md text-headline-md text-on-surface font-bold tracking-tight">Sincronización Local</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Base SQLite encriptada en nodo local. 0 discrepancias encontradas.</p>
+</div>
+</div>
+<div class="relative rounded-xl overflow-hidden bg-surface-container-low p-4 flex flex-col justify-between shadow-md h-48">
+<img alt="Finanzas Consola" class="absolute inset-0 w-full h-full object-cover opacity-20 filter grayscale hover:opacity-30 transition-all pointer-events-none" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDVbCRwzn3vG0sT1zoWe4P6npdpGe6Yej92nZNTJFhOv5dxWrUznwG40H2KWnhgBMUTAcFCl8u40QNnBIYrQverZStVif-GxGLpVkGnWVsfuPnCvn2LfVQuIfhJDholh7ieS77tHeF-var3XSpx6u7HHXwsjpF6--o57g_yKQDUuJ5JXV_vldk1J3U2cZJVE7vk20HQEJf7GkptZwTilukTsBwlB4dQ1IlFyq_crq_Rg88_cMrTK9l27lncy3QmFBPPRhg">
+<div class="relative z-10 flex items-center justify-between">
+<span class="font-label-caps text-label-caps text-tertiary uppercase tracking-wider">Flujo de Liquidez</span>
+<span class="p-1 rounded bg-surface-container-high text-tertiary">
+<span class="material-symbols-outlined text-[16px]">security</span>
+</span>
+</div>
+<div class="relative z-10">
+<p class="font-headline-md text-headline-md text-on-surface font-bold tracking-tight">Ratio de Disponibilidad</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">85% del capital líquido en cuentas de rendimiento diario disponible.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- RIGHT COLUMN (~42%, 5 Cols) -->
+<div class="lg:col-span-5 flex flex-col gap-gutter-desktop">
+<!-- BLOQUE: Suscripciones -->
+<section class="p-space-lg rounded-xl bg-surface-container-low/90 backdrop-blur-md shadow-md flex flex-col gap-space-md">
+<div class="flex items-center justify-between">
+<div>
+<h2 class="font-headline-md text-headline-md text-on-surface font-semibold">Suscripciones</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Cargos recurrentes activos y débito automático.</p>
+</div>
+<button class="p-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-on-surface transition-colors" title="Configurar ciclos" type="button">
+<span class="material-symbols-outlined text-[18px]">settings_suggest</span>
+</button>
+</div>
+<!-- Empty State Elegante -->
+<div class="py-8 px-4 rounded-xl bg-surface-container-lowest/70 flex flex-col items-center justify-center text-center gap-3">
+<div class="w-12 h-12 rounded-2xl bg-surface-container-high flex items-center justify-center text-outline shadow-inner">
+<span class="material-symbols-outlined text-[24px]">event_repeat</span>
+</div>
+<div class="flex flex-col gap-1 max-w-xs">
+<span class="font-label-lg text-label-lg text-on-surface font-semibold">Sin suscripciones activas</span>
+<p class="font-body-sm text-body-sm text-outline">Los cargos recurrentes que crees aparecerán organizados aquí por fecha de corte.</p>
+</div>
+<div class="flex items-center gap-2 pt-2">
+<button class="px-3 py-1.5 rounded-lg bg-primary-container text-on-primary-container font-label-md text-label-md hover:bg-primary transition-all shadow-[0_0_12px_rgba(56,189,248,0.3)]" type="button">
+                + Nueva suscripción recurrente
+              </button>
+<button class="px-3 py-1.5 rounded-lg bg-surface-container-high text-on-surface font-label-md text-label-md hover:bg-surface-container-highest transition-all" type="button">
+                Verificar ciclos
+              </button>
+</div>
+</div>
+</section>
+<!-- BLOQUE: Gastos e Ingresos por Categoría (Gráfico Analítico) -->
+<section class="p-space-lg rounded-xl bg-surface-container-low/90 backdrop-blur-md shadow-md flex flex-col gap-space-md relative overflow-hidden">
+<div class="flex flex-col gap-1">
+<h2 class="font-headline-md text-headline-md text-on-surface font-semibold">Gastos e Ingresos por Categoría</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Elige una categoría para ver sus gastos y sus ingresos.</p>
+</div>
+<!-- Controles de Filtro: Dropdown de Categoría + Píldoras de Período -->
+<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+<div class="relative flex-1">
+<select class="w-full bg-surface-container text-on-surface font-label-md text-label-md rounded-lg px-3 py-2 pr-8 appearance-none focus:outline-none focus:ring-1 focus:ring-primary-container cursor-pointer" id="categorySelect">
+<option selected="" value="gustos">gustos</option>
+<option value="moto">moto</option>
+<option value="alimentacion">alimentación</option>
+<option value="todas">todas las categorías</option>
+</select>
+<span class="material-symbols-outlined absolute right-2.5 top-2.5 pointer-events-none text-outline text-[16px]">expand_more</span>
+</div>
+<!-- Granularidad Temporal -->
+<div class="flex items-center p-1 rounded-lg bg-surface-container-lowest/80 gap-1 self-start sm:self-auto">
+<button class="px-3 py-1 rounded-md bg-primary-container text-on-primary-container font-label-caps text-label-caps font-bold transition-all shadow-[0_0_8px_rgba(56,189,248,0.4)]" type="button">Día</button>
+<button class="px-3 py-1 rounded-md text-on-surface-variant hover:text-on-surface font-label-caps text-label-caps transition-all" type="button">Semana</button>
+<button class="px-3 py-1 rounded-md text-on-surface-variant hover:text-on-surface font-label-caps text-label-caps transition-all" type="button">Mes</button>
+<button class="px-3 py-1 rounded-md text-on-surface-variant hover:text-on-surface font-label-caps text-label-caps transition-all" type="button">Año</button>
+</div>
+</div>
+<!-- Leyenda del Gráfico -->
+<div class="flex items-center justify-between px-1">
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-1.5">
+<span class="w-2.5 h-2.5 rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span>
+<span class="font-label-md text-label-md text-on-surface font-medium">Gastos ($14.1k pico)</span>
+</div>
+<div class="flex items-center gap-1.5">
+<span class="w-2.5 h-2.5 rounded-full bg-tertiary shadow-[0_0_8px_rgba(82,232,124,0.8)]"></span>
+<span class="font-label-md text-label-md text-on-surface-variant font-medium">Ingresos ($0k)</span>
+</div>
+</div>
+<span class="font-label-caps text-label-caps text-outline uppercase">28 Sep - 11 Oct</span>
+</div>
+<!-- Visualización Vectorial: Gráfica de Área Suave -->
+<div class="w-full bg-surface-container-lowest/50 rounded-xl p-3 flex flex-col gap-2 relative">
+<svg class="w-full h-44 overflow-visible" preserveAspectRatio="none" viewBox="0 0 500 200">
+<defs>
+<!-- Gradiente de área cian para gastos -->
+<linearGradient id="cyanGradient" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"></stop>
+<stop offset="100%" stop-color="#38bdf8" stop-opacity="0.0"></stop>
+</linearGradient>
+<!-- Gradiente para línea -->
+<linearGradient id="lineCyan" x1="0" x2="1" y1="0" y2="0">
+<stop offset="0%" stop-color="#0070f3"></stop>
+<stop offset="100%" stop-color="#38bdf8"></stop>
+</linearGradient>
+</defs>
+<!-- Guías Horizontales y Etiquetas del Eje Y -->
+<line stroke="rgba(255,255,255,0.05)" stroke-dasharray="4,4" x1="35" x2="490" y1="20" y2="20"></line>
+<text fill="#87929a" font-family="Inter" font-size="10" x="5" y="24">16k</text>
+<line stroke="rgba(255,255,255,0.05)" stroke-dasharray="4,4" x1="35" x2="490" y1="65" y2="65"></line>
+<text fill="#87929a" font-family="Inter" font-size="10" x="5" y="69">12k</text>
+<line stroke="rgba(255,255,255,0.05)" stroke-dasharray="4,4" x1="35" x2="490" y1="110" y2="110"></line>
+<text fill="#87929a" font-family="Inter" font-size="10" x="10" y="114">8k</text>
+<line stroke="rgba(255,255,255,0.05)" stroke-dasharray="4,4" x1="35" x2="490" y1="155" y2="155"></line>
+<text fill="#87929a" font-family="Inter" font-size="10" x="10" y="159">4k</text>
+<!-- Eje Base (0k) -->
+<line stroke="rgba(255,255,255,0.1)" x1="35" x2="490" y1="180" y2="180"></line>
+<text fill="#87929a" font-family="Inter" font-size="10" x="14" y="184">0</text>
+<!-- Área de curva Gastos (Curva con pico el día 10 de Oct: x=430, y=41 para $14.1k) -->
+<path d="M 35,180 L 35,180 Q 150,180 250,180 T 380,180 C 400,180 415,160 430,41 C 445,41 465,160 485,180 Z" fill="url(#cyanGradient)"></path>
+<!-- Línea de Curva Gastos -->
+<path d="M 35,180 Q 150,180 250,180 T 380,180 C 400,180 415,160 430,41 C 445,41 465,160 485,180" fill="none" stroke="url(#lineCyan)" stroke-linecap="round" stroke-width="2.5"></path>
+<!-- Línea plana base para Ingresos ($0k) -->
+<line opacity="0.6" stroke="#52e87c" stroke-dasharray="3,3" stroke-width="1.5" x1="35" x2="485" y1="180" y2="180"></line>
+<!-- Marcador de Pico Activo (10 oct - $14.100) -->
+<g transform="translate(430, 41)">
+<circle fill="#38bdf8" fill-opacity="0.3" r="7"></circle>
+<circle fill="#ffffff" r="4" stroke="#38bdf8" stroke-width="2"></circle>
+<rect fill="#1c1f2a" height="22" rx="4" stroke="rgba(56,189,248,0.4)" stroke-width="1" width="70" x="-35" y="-30"></rect>
+<text fill="#8ed5ff" font-family="Plus Jakarta Sans" font-size="11" font-weight="bold" text-anchor="middle" x="0" y="-15">$ 14.100</text>
+</g>
+<!-- Etiquetas del Eje X Temporal -->
+<text fill="#87929a" font-family="Inter" font-size="9" x="40" y="196">28 sep</text>
+<text fill="#87929a" font-family="Inter" font-size="9" x="145" y="196">01 oct</text>
+<text fill="#87929a" font-family="Inter" font-size="9" x="250" y="196">04 oct</text>
+<text fill="#87929a" font-family="Inter" font-size="9" x="355" y="196">07 oct</text>
+<text fill="#38bdf8" font-family="Inter" font-size="9" font-weight="bold" x="420" y="196">10 oct</text>
+<text fill="#87929a" font-family="Inter" font-size="9" x="470" y="196">11 oct</text>
+</svg>
+</div>
+<button class="w-full py-2.5 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-primary font-label-md text-label-md flex items-center justify-center gap-2 transition-all" type="button">
+<span class="material-symbols-outlined text-[18px]">query_stats</span>
+<span>Comparar categorías de gasto</span>
+</button>
+</section>
+<!-- BLOQUE: Accesos Rápidos Inferiores -->
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+<!-- Tarjeta 1: Suscripciones gestión -->
+<div class="p-4 rounded-xl bg-surface-container-low hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-md group cursor-pointer">
+<div class="flex items-center justify-between">
+<span class="p-2 rounded-lg bg-surface-container-high text-primary">
+<span class="material-symbols-outlined text-[20px]">fact_check</span>
+</span>
+<span class="material-symbols-outlined text-[18px] text-outline group-hover:translate-x-1 group-hover:text-primary transition-all">arrow_forward</span>
+</div>
+<div>
+<span class="font-label-lg text-label-lg text-on-surface font-semibold block">Suscripciones</span>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Crear, monitorear y gestionar débitos recurrentes.</p>
+</div>
+</div>
+<!-- Tarjeta 2: Activos y Patrimonio -->
+<div class="p-4 rounded-xl bg-surface-container-low hover:bg-surface-container transition-all flex flex-col justify-between gap-3 shadow-md group cursor-pointer">
+<div class="flex items-center justify-between">
+<span class="p-2 rounded-lg bg-surface-container-high text-tertiary">
+<span class="material-symbols-outlined text-[20px]">account_balance</span>
+</span>
+<span class="material-symbols-outlined text-[18px] text-outline group-hover:translate-x-1 group-hover:text-tertiary transition-all">arrow_forward</span>
+</div>
+<div>
+<span class="font-label-lg text-label-lg text-on-surface font-semibold block">Activos y Patrimonio</span>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Control de inventario, vehículos y activos netos.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<script>
+  // Micro-interacción: Cambio dinámico de filtro de categoría
+  document.addEventListener('DOMContentLoaded', () => {
+    const categorySelect = document.getElementById('categorySelect');
+    if (categorySelect) {
+      categorySelect.addEventListener('change', (e) => {
+        // Feedback visual sutil al cambiar categoría
+        const chartContainer = e.target.closest('section').querySelector('svg');
+        if (chartContainer) {
+          chartContainer.style.opacity = '0.5';
+          setTimeout(() => {
+            chartContainer.style.opacity = '1';
+          }, 180);
+        }
+      });
+    }
+  });
+</script></main></div></body></html>

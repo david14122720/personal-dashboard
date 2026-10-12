@@ -99,6 +99,35 @@ describe("HabitHistorySection (S2b RED)", () => {
   });
 });
 
+describe("HabitHistorySection deck restyle (T6b)", () => {
+  it("wraps the history in deck panels and keeps every real control at 44px", async () => {
+    renderSection();
+    const section = await screen.findByRole("region", { name: "Historial" });
+    // Three deck panels: calendar+stats, evolution, compare.
+    expect(section.querySelectorAll("div.bg-card.border.border-hair").length).toBeGreaterThanOrEqual(3);
+    // Real controls: the S/M/A pills and the compare chips that wrap a checkbox.
+    const controls = [
+      ...within(section).getAllByRole("button"),
+      ...within(section).getAllByRole("checkbox").map((input) => input.closest("label") as HTMLElement),
+    ];
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) {
+      expect(control.className, control.textContent ?? "").toContain("min-h-11");
+    }
+    expect(within(section).getByRole("combobox", { name: "Hábito" }).className).toContain("min-h-11");
+  });
+
+  it("applies the Control Deck chart frame to the evolution plot (D8)", async () => {
+    renderSection();
+    const section = await screen.findByRole("region", { name: "Historial" });
+    const plot = await within(section).findByRole("img", { name: "Evolución" });
+    expect(plot.className).toContain("[&_.recharts-cartesian-grid-vertical]:hidden");
+    expect(plot.className).toContain("[&_.recharts-cartesian-axis-line]:hidden");
+    // The phone keeps the plot inside its own horizontal strip, not the page.
+    expect(plot.className).toContain("overflow-x-auto");
+  });
+});
+
 describe("HabitHistorySection JD-1 fixes", () => {
   it("H-01: siembra el comparador cuando los hábitos llegan después del primer render", async () => {
     const { rerender } = render(wrap(<HabitHistorySection habits={[]} monthKey="2026-09" />));

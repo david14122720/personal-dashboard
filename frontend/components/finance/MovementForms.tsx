@@ -212,12 +212,12 @@ export function MovementModal({
         : t("finance.movementModalIncomeTitle");
 
   const fieldClass =
-    "mt-1 min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+    "mt-1 min-h-11 w-full rounded-md border border-hair bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
   const labelClass = "block text-xs text-instrument/60";
   const primaryBtn =
     "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
   const ghostBtn =
-    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-hull px-4 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-hair px-4 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
     <div
@@ -229,7 +229,7 @@ export function MovementModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="movement-modal-title"
-        className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-xl border border-hull bg-panel p-4 sm:p-5"
+        className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-xl border border-hair bg-panel p-4 sm:p-5"
       >
         <h2 id="movement-modal-title" className="font-display text-lg font-semibold">
           {title}
@@ -504,12 +504,12 @@ export function TransferModal({
   }
 
   const fieldClass =
-    "mt-1 min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+    "mt-1 min-h-11 w-full rounded-md border border-hair bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
   const labelClass = "block text-xs text-instrument/60";
   const primaryBtn =
     "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
   const ghostBtn =
-    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-hull px-4 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
+    "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-hair px-4 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
     <div
@@ -521,7 +521,7 @@ export function TransferModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="transfer-modal-title"
-        className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-xl border border-hull bg-panel p-4 sm:p-5"
+        className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-xl border border-hair bg-panel p-4 sm:p-5"
       >
         <h2 id="transfer-modal-title" className="font-display text-lg font-semibold">
           {t("finance.transferModalTitle")}

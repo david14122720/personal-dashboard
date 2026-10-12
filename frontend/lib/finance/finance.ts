@@ -265,20 +265,31 @@ export interface MovementRowView {
   categoryName: string | null;
 }
 
-/** `YYYY-MM-DD` → Spanish date (e.g. `24 sept 2026`). The input is parsed as
- * calendar fields (never `new Date(str)`, which is UTC-midnight and shifts
- * the day under American timezones); unparseable input passes through. */
+/** The real calendar day `YYYY-MM-DD` as a Date anchored at UTC noon: the day
+ * is never re-derived from a device-zone instant, so `formatMovementDate`
+ * cannot shift it. */
+function calendarDate(day: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day.trim());
+  if (!match) return null;
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
+}
+
+/** `YYYY-MM-DD` → Spanish date (e.g. `24 de sept de 2026`). The input is a
+ * calendar date, never an instant: it is read into UTC fields and formatted in
+ * UTC, so the rendered day is always that same calendar day. (A local-midnight
+ * `Date` formatted with `timeZone: "America/Bogota"` renders the previous day
+ * on any device set to UTC or east of Bogotá.) Unparseable input passes
+ * through. */
 export function formatMovementDate(occurredOn: string, locale = "es-CO"): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(occurredOn.trim());
-  if (!match) return occurredOn;
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const date = calendarDate(occurredOn);
+  if (date === null) return occurredOn;
   if (Number.isNaN(date.getTime())) return occurredOn;
   try {
     return new Intl.DateTimeFormat(locale, {
       day: "numeric",
       month: "short",
       year: "numeric",
-      timeZone: "America/Bogota",
+      timeZone: "UTC",
     }).format(date);
   } catch {
     return occurredOn;

@@ -5,18 +5,52 @@ import Link from "next/link";
 import { t } from "@/lib/i18n";
 import { useAccounts } from "@/lib/api/dashboard";
 import { useMovements } from "@/lib/api/finance";
-import { toCategoryTrend, type NamedOption, type TrendPeriod } from "@/lib/finance/finance";
+import {
+  toCategoryTrend,
+  trendBuckets,
+  type NamedOption,
+  type TrendPeriod,
+} from "@/lib/finance/finance";
 import CategoryTrendChart, {
   type TrendRow,
   type TrendSeries,
 } from "@/components/finance/CategoryTrendChart";
 import TrendPeriodSelector from "@/components/finance/TrendPeriodSelector";
-import { SectionShell } from "@/components/finance/FinanceSections";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { CalendarActionIcon } from "@/components/dashboard/icons";
+import { deck } from "@/components/ui/deckStyles";
+import { chartDeckFrameClass } from "@/components/ui/chartTheme";
+import { QueryStatsIcon } from "@/components/finance/FinanceIcons";
+import { formatMoney } from "@/lib/api/money";
 
 // Canonical field string from the UI-polish contract (`design.md`).
 const selectClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+  "min-h-11 w-full rounded-lg border border-hair bg-card px-3 text-xs text-instrument transition-colors focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+
+/** Real period range of the current buckets (`YYYY-MM-DD` bounds, inclusive). */
+function trendRangeLabel(
+  period: TrendPeriod,
+  locale: string,
+  now?: Date,
+): string | null {
+  const windows = trendBuckets(period, now);
+  const first = windows[0];
+  const last = windows[windows.length - 1];
+  if (!first || !last) return null;
+  if (period === "year") return `${first.from.slice(0, 4)} – ${last.to.slice(0, 4)}`;
+  // UTC anchors: the bounds are local `YYYY-MM-DD` strings and must not shift.
+  // The month span crosses a year boundary, so it carries the 2-digit year.
+  const options: Intl.DateTimeFormatOptions = {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  };
+  if (period === "month") options.year = "2-digit";
+  const fmt = new Intl.DateTimeFormat(locale, options);
+  return `${fmt.format(new Date(`${first.from}T00:00:00Z`))} – ${fmt.format(
+    new Date(`${last.to}T00:00:00Z`),
+  )}`;
+}
 
 /**
  * Per-category gasto/ingreso trend sourced from `GET /movements` (same
@@ -73,15 +107,21 @@ export function CategoryChartSection({
   ];
   const noDataInRange =
     buckets !== null && buckets.every((bucket) => bucket.expense === 0 && bucket.income === 0);
+  // Real totals of the rendered buckets, never the chart's annotated peak.
+  const expenseTotal = rows.reduce((sum, row) => sum + Number(row.expense), 0);
+  const incomeTotal = rows.reduce((sum, row) => sum + Number(row.income), 0);
+  const rangeLabel = trendRangeLabel(period, locale);
+  const money = (value: number) => formatMoney(value, { locale, currency });
   return (
-    <SectionShell
+    <DeckCard
       title={t("finance.categoryChartTitle")}
       hint={t("finance.categoryChartHint")}
-      span="col-span-12"
+      className="col-span-12"
+      headerClassName={deck.sectionHeaderWrap}
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <label className="flex w-full max-w-md flex-col gap-1 text-xs text-instrument/60">
+          <label className="flex w-full max-w-md flex-col gap-1 text-xs text-muted">
             {t("finance.categorySelectLabel")}
             <select
               aria-label={t("finance.categorySelectLabel")}
@@ -100,24 +140,53 @@ export function CategoryChartSection({
           <TrendPeriodSelector value={period} onChange={setPeriod} />
         </div>
         {buckets === null ? (
-          <EmptyState title={t("finance.chartEmpty")} hint={t("finance.chartEmptyHint")} />
+          <DeckEmptyState
+            icon={<CalendarActionIcon className="h-5 w-5 text-sky-400/70" />}
+            title={t("finance.chartEmpty")}
+            hint={t("finance.chartEmptyHint")}
+          />
         ) : (
           <div className="flex flex-col gap-2">
-            <CategoryTrendChart data={rows} series={series} locale={locale} currency={currency} />
+            {/* D8: the frame restyles the Recharts plot (hair grid, no axis
+                lines, no built-in legend) and keeps the real tooltip. */}
+            <div className={chartDeckFrameClass}>
+              <CategoryTrendChart data={rows} series={series} locale={locale} currency={currency} />
+            </div>
+            <div className={deck.chartLegendRow}>
+              <div className="flex items-center gap-2">
+                <span aria-hidden="true" className={deck.legendSwatchGlow} />
+                <span className="text-slate-300">
+                  {t("finance.chartExpenses")}:{" "}
+                  <strong className="font-mono font-semibold text-sky-400">
+                    {money(expenseTotal)}
+                  </strong>
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span aria-hidden="true" className={deck.legendSwatchFlow} />
+                <span className="text-slate-300">
+                  {t("finance.chartIncome")}:{" "}
+                  <strong className="font-mono font-semibold text-emerald-400">
+                    {money(incomeTotal)}
+                  </strong>
+                </span>
+              </div>
+              {rangeLabel ? (
+                <span className={`ml-auto ${deck.chartRangeLabel}`}>{rangeLabel}</span>
+              ) : null}
+            </div>
             {noDataInRange ? (
-              <p className="text-xs text-instrument/60">{t("finance.trendNoDataInRange")}</p>
+              <p className="text-xs text-muted">{t("finance.trendNoDataInRange")}</p>
             ) : null}
           </div>
         )}
-        <div>
-          <Link
-            href="/dashboard/finance/compare/"
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal"
-          >
+        <div className={deck.cardFooterRow}>
+          <Link href="/dashboard/finance/compare/" className={deck.cardFooterLink}>
+            <QueryStatsIcon className="h-4 w-4" />
             {t("finance.compareButton")}
           </Link>
         </div>
       </div>
-    </SectionShell>
+    </DeckCard>
   );
 }

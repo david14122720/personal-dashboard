@@ -3,7 +3,14 @@
 import { useEffect, useState } from "react";
 import { useSWRConfig } from "swr";
 import EmptyState from "@/components/ui/EmptyState";
-import { t } from "@/lib/i18n";
+import { t, type EsKey } from "@/lib/i18n";
+import { deck } from "@/components/ui/deckStyles";
+import {
+  ExpenseRowIcon,
+  IncomeRowIcon,
+  TransferRowIcon,
+} from "@/components/dashboard/icons";
+import { PencilIcon, TrashIcon } from "@/components/finance/FinanceIcons";
 import { formatMoney } from "@/lib/api/money";
 import {
   deleteMovement,
@@ -32,6 +39,14 @@ import {
 
 const INITIAL_VISIBLE = 5;
 const PAGE_STEP = 10;
+
+/** Round direction chips of the mobile prototype: each maps to a real
+ * `direction` value the `Tipo` select also offers (same state, one filter). */
+const DIRECTION_CHIPS: { value: "" | MovementDirection; labelKey: EsKey }[] = [
+  { value: "", labelKey: "finance.movementFilterAll" },
+  { value: "expense", labelKey: "finance.chartExpenses" },
+  { value: "income", labelKey: "finance.chartIncome" },
+];
 
 export function MovementHistory({
   accounts,
@@ -102,16 +117,16 @@ export function MovementHistory({
   }
 
   // Canonical field string from the UI-polish contract (`design.md`); the row
-  // action buttons keep their asserted 44px ghost string on purpose.
-  const selectClass =
-    "mt-1 min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
-  const labelClass = "block text-xs text-instrument/60";
+  // action buttons keep their asserted 44px ghost string on purpose. The
+  // filter tray, labels and chips come from `deckStyles` (prototype recipe).
+  const selectClass = deck.filterField;
+  const labelClass = deck.filterLabel;
 
   if (movements.isLoading && !movements.data) {
     return (
       <div role="status" aria-busy="true" className="flex flex-col gap-2">
         {[0, 1, 2].map((n) => (
-          <div key={n} className="h-16 animate-pulse rounded-lg border border-hull bg-hull/40" />
+          <div key={n} className="h-16 animate-pulse rounded-lg border border-hair bg-card" />
         ))}
       </div>
     );
@@ -124,7 +139,7 @@ export function MovementHistory({
         <button
           type="button"
           onClick={() => void retry()}
-          className="mt-3 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+          className="mt-3 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hair px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
         >
           {t("common.retry")}
         </button>
@@ -134,9 +149,9 @@ export function MovementHistory({
 
   return (
     <div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <label className={labelClass}>
-          {t("finance.movementFilterAccount")}
+      <div className={deck.filterTray}>
+        <label className="block">
+          <span className={labelClass}>{t("finance.movementFilterAccount")}</span>
           <select
             aria-label={t("finance.movementFilterAccount")}
             value={activeAccountId ?? ""}
@@ -151,8 +166,8 @@ export function MovementHistory({
             ))}
           </select>
         </label>
-        <label className={labelClass}>
-          {t("finance.movementFilterCategory")}
+        <label className="block">
+          <span className={labelClass}>{t("finance.movementFilterCategory")}</span>
           <select
             aria-label={t("finance.movementFilterCategory")}
             value={categoryId}
@@ -167,20 +182,40 @@ export function MovementHistory({
             ))}
           </select>
         </label>
-        <label className={labelClass}>
-          {t("finance.movementFilterDirection")}
-          <select
-            aria-label={t("finance.movementFilterDirection")}
-            value={direction}
-            onChange={(e) => setDirection(e.target.value as "" | MovementDirection)}
-            className={selectClass}
-          >
-            <option value="">{t("finance.movementFilterAll")}</option>
-            <option value="expense">{t("finance.movementDirectionExpense")}</option>
-            <option value="income">{t("finance.movementDirectionIncome")}</option>
-            <option value="transfer">{t("finance.movementDirectionTransfer")}</option>
-          </select>
-        </label>
+        <div>
+          <span className={`${labelClass} block`}>{t("finance.movementFilterDirection")}</span>
+          {/* Mobile prototype: round direction chips over the same `direction`
+              state as the select, which keeps the `Tipo` field from `sm` up.
+              The chips are real controls, so they carry the ≥44px area. */}
+          <div className="mt-1 flex flex-wrap gap-2 sm:hidden">
+            {DIRECTION_CHIPS.map((chip) => (
+              <button
+                key={chip.value || "all"}
+                type="button"
+                aria-pressed={direction === chip.value}
+                onClick={() => setDirection(chip.value)}
+                className={
+                  direction === chip.value ? deck.filterChipActive : deck.filterChipIdle
+                }
+              >
+                {t(chip.labelKey)}
+              </button>
+            ))}
+          </div>
+          <label className="hidden sm:block">
+            <select
+              aria-label={t("finance.movementFilterDirection")}
+              value={direction}
+              onChange={(e) => setDirection(e.target.value as "" | MovementDirection)}
+              className={selectClass}
+            >
+              <option value="">{t("finance.movementFilterAll")}</option>
+              <option value="expense">{t("finance.movementDirectionExpense")}</option>
+              <option value="income">{t("finance.movementDirectionIncome")}</option>
+              <option value="transfer">{t("finance.movementDirectionTransfer")}</option>
+            </select>
+          </label>
+        </div>
       </div>
       {activeAccountId ? (
         <p className="mt-2 text-xs text-instrument/70">
@@ -193,7 +228,7 @@ export function MovementHistory({
         <button
           type="button"
           onClick={clearFilters}
-          className="mt-2 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+          className="mt-2 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hair px-4 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
         >
           {t("finance.movementFilterClear")}
         </button>
@@ -241,15 +276,34 @@ export function MovementHistory({
                   key={row.id}
                   data-direction={row.direction}
                   style={{ contentVisibility: "auto", containIntrinsicSize: "0 72px" }}
-                  className={`rounded-lg border px-3 py-2 ${
-                    row.direction === "transfer" ? "border-signal/50 bg-signal/5" : "border-hull"
-                  }`}
+                  className={
+                    row.direction === "transfer" ? deck.listRowTransfer : deck.listRow
+                  }
                 >
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-3.5">
+                    <span
+                      aria-hidden="true"
+                      className={`${deck.rowIconTile} ${
+                        row.direction === "expense"
+                          ? "border-alert/30 bg-alert/10 text-alert-soft"
+                          : row.direction === "income"
+                            ? "border-flow/30 bg-flow/10 text-flow-soft"
+                            : "border-sky-500/30 bg-sky-500/10 text-sky-300"
+                      }`}
+                    >
+                      {row.direction === "expense" ? (
+                        <ExpenseRowIcon className="h-4 w-4" />
+                      ) : row.direction === "income" ? (
+                        <IncomeRowIcon className="h-4 w-4" />
+                      ) : (
+                        <TransferRowIcon className="h-4 w-4" />
+                      )}
+                    </span>
                     <div className="min-w-0">
-                      <p className="flex items-center gap-2 truncate text-sm font-medium">
+                      <p className="flex items-center gap-2 truncate text-sm font-semibold text-instrument">
                         <span className="truncate">
-                          {directionLabel} · {row.categoryName ?? "—"}
+                          {directionLabel}
+                          {row.categoryName ? ` · ${row.categoryName}` : ""}
                         </span>
                         {row.direction === "transfer" ? (
                           <span
@@ -260,62 +314,75 @@ export function MovementHistory({
                           </span>
                         ) : null}
                       </p>
-                      <p className="line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">
+                      <p className="line-clamp-2 text-xs text-muted sm:block sm:truncate">
                         {row.displayDate} · {accountMeta}
                         {row.description ? ` · ${row.description}` : ""}
                       </p>
                     </div>
-                    <p className="shrink-0 font-mono text-sm tabular-nums">
+                  </div>
+                  <div className="flex items-center justify-between gap-3 sm:justify-end">
+                    <p
+                      className={`shrink-0 font-mono text-sm font-bold tabular-nums ${
+                        row.direction === "expense"
+                          ? "text-alert-soft"
+                          : row.direction === "income"
+                            ? "text-flow-soft"
+                            : "text-signal"
+                      }`}
+                    >
                       {formatMoney(row.amount, { locale, currency })}
                     </p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {row.editable ? (
+                        <button
+                          type="button"
+                          onClick={() => onEdit(wire)}
+                          aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
+                          title={t("finance.editMovement")}
+                          className={deck.headerIconButton}
+                        >
+                          <PencilIcon className="h-4 w-4" />
+                        </button>
+                      ) : null}
+                      {!confirming ? (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingDeleteId(row.id)}
+                          aria-label={`${t("finance.movementDelete")}: ${row.displayDate}`}
+                          title={t("finance.movementDelete")}
+                          className={deck.headerIconButton}
+                        >
+                          <TrashIcon className="h-4 w-4" />
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="mt-2 flex gap-2">
-                    {row.editable ? (
+                  {confirming ? (
+                    <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
+                      <span className="inline-flex min-h-11 items-center text-xs text-instrument/70">
+                        {t("finance.movementDeleteConfirm")}
+                      </span>
                       <button
                         type="button"
-                        onClick={() => onEdit(wire)}
-                        aria-label={`${t("finance.editMovement")}: ${row.displayDate}`}
-                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
-                      >
-                        {t("finance.editMovement")}
-                      </button>
-                    ) : null}
-                    {!confirming ? (
-                      <button
-                        type="button"
-                        onClick={() => setConfirmingDeleteId(row.id)}
-                        aria-label={`${t("finance.movementDelete")}: ${row.displayDate}`}
-                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-alert hover:text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert"
+                        disabled={deleting}
+                        onClick={() => void remove(row.id)}
+                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-alert px-3 py-2 text-xs font-bold text-deck transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert disabled:opacity-50"
                       >
                         {t("finance.movementDelete")}
                       </button>
-                    ) : (
-                      <>
-                        <span className="inline-flex min-h-[44px] items-center text-xs text-instrument/70">
-                          {t("finance.movementDeleteConfirm")}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={deleting}
-                          onClick={() => void remove(row.id)}
-                          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-alert px-3 py-2 text-xs font-bold text-deck transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-alert disabled:opacity-50"
-                        >
-                          {t("finance.movementDelete")}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmingDeleteId(null)}
-                          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
-                        >
-                          {t("finance.cancel")}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  {confirming && actionError ? (
-                    <p role="alert" className="mt-1 text-xs text-alert">
-                      {actionError}
-                    </p>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingDeleteId(null)}
+                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hair px-3 py-2 text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+                      >
+                        {t("finance.cancel")}
+                      </button>
+                      {actionError ? (
+                        <p role="alert" className="text-xs text-alert">
+                          {actionError}
+                        </p>
+                      ) : null}
+                    </div>
                   ) : null}
                 </li>
               );
@@ -325,7 +392,7 @@ export function MovementHistory({
             <button
               type="button"
               onClick={() => setVisibleCount((count) => count + PAGE_STEP)}
-              className="mt-3 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+              className="mt-3 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hair px-4 py-2 text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
             >
               {t("finance.movementShowMore")}
             </button>

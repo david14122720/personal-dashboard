@@ -6,8 +6,10 @@
  * and never inside UI components.
  */
 
+import { useEffect, useState } from "react";
 import useSWR, { useSWRConfig, type SWRConfiguration } from "swr";
 import { apiGet, apiPatch } from "@/lib/api/client";
+import type { HabitLogWire } from "@/lib/api/productivity";
 
 export type { NotificationItem } from "@/lib/dashboard/transforms";
 
@@ -96,6 +98,40 @@ export function useHabitsToday() {
     () => apiGet<HabitTodayWire[]>("/habits/today"),
     config,
   );
+}
+
+/**
+ * One-day `GET /habits/logs` read scoped to the «Hoy» widget.
+ *
+ * The widget derives its day from `todayInBogota()`, while `/habits/today`
+ * anchors `today_status` to the database's UTC `CURRENT_DATE`: between 19:00
+ * and midnight Bogotá that is already the next day and every habit reads
+ * `pending` on a day whose real log is `done`. That day's own logs are the
+ * only honest source for the checkbox, so this read stays scoped to the card
+ * as a mount/day effect instead of joining the shared SWR graph: it resolves
+ * on mount and on day change, and `undefined` means the day is still
+ * unanswered (the widget then renders no count and no `pending`).
+ */
+export function useHabitDayLogs(day: string): HabitLogWire[] | undefined {
+  const [state, setState] = useState<{ day: string; data?: HabitLogWire[] }>({ day });
+  useEffect(() => {
+    let active = true;
+    // A new day drops the previous day's logs before the request answers.
+    setState((current) => (current.day === day ? current : { day }));
+    apiGet<HabitLogWire[]>(
+      `/habits/logs?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`,
+    )
+      .then((data) => {
+        if (active) setState({ day, data });
+      })
+      .catch(() => {
+        if (active) setState({ day });
+      });
+    return () => {
+      active = false;
+    };
+  }, [day]);
+  return state.day === day ? state.data : undefined;
 }
 // NOTE: range history (`habits-history`) lives in lib/api/productivity.ts
 // (`useHabitsHistory`); do not duplicate the hook here.

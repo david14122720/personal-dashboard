@@ -13,7 +13,7 @@ import {
 } from "@/lib/finance/finance";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 import DashboardDisclosure from "@/components/dashboard/DashboardDisclosure";
-import TrendPeriodSelector from "@/components/finance/TrendPeriodSelector";
+import DeckPeriodPills from "@/components/dashboard/DeckPeriodPills";
 
 const ExpenseCategoryPieChart = dynamic(
   () => import("@/components/dashboard/charts/ExpenseCategoryPieChart"),
@@ -69,7 +69,7 @@ function ExpensePiePanel({ period }: { period: TrendPeriod }) {
             void mutate("finance/categories");
             void mutate("dashboard/me");
           }}
-          className="inline-flex min-h-[44px] items-center rounded-md border border-hull px-4 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+          className="inline-flex min-h-[44px] items-center rounded-md border border-hair px-4 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
         >
           {t("common.retry")}
         </button>
@@ -93,9 +93,10 @@ const PANEL_ID = "dashboard-expense-pie-panel";
 /** Independently collapsible expense-by-category pie scoped to the current
  * period. The section owns `open`/`period` and a radio group named apart from
  * the totals trend, so collapsing keeps the selected period and toggling one
- * disclosure never moves the other. */
-export default function ExpensePieSection() {
-  const [open, setOpen] = useState(false);
+ * disclosure never moves the other. Open by default: the prototype draws this
+ * card expanded (`dashboard-desktop.html:554-612`). */
+export default function ExpensePieSection({ className }: { className?: string } = {}) {
+  const [open, setOpen] = useState(true);
   const [period, setPeriod] = useState<TrendPeriod>("month");
   return (
     <DashboardDisclosure
@@ -104,9 +105,10 @@ export default function ExpensePieSection() {
       open={open}
       onToggle={() => setOpen((value) => !value)}
       panelId={PANEL_ID}
+      className={className}
     >
       <div className="flex flex-col gap-4">
-        <TrendPeriodSelector
+        <DeckPeriodPills
           name="dashboard-expense-pie-period"
           label={t("dashboard.expensePiePeriodLabel")}
           value={period}

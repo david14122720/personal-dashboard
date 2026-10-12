@@ -2,7 +2,13 @@
 
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
 import { t } from "@/lib/i18n";
-import { chartTick, chartTok, chartTooltipStyle, EVOLUTION_SERIES_TOKENS } from "@/components/ui/chartTheme";
+import {
+  chartDeckFrameClass,
+  chartTick,
+  chartTok,
+  chartTooltipStyle,
+  EVOLUTION_SERIES_TOKENS,
+} from "@/components/ui/chartTheme";
 import { useContainerWidth } from "@/components/ui/useContainerWidth";
 import EmptyState from "@/components/ui/EmptyState";
 
@@ -12,6 +18,10 @@ export interface EvolutionRow { bucket: string; [series: string]: string | numbe
  * Multi-series habit evolution (done-counts per bucket, one Line per habit
  * labelled by name, max 4). Pure presentational; the section merges
  * `aggregateEvolution` series into rows before rendering.
+ *
+ * Control Deck frame (D8): horizontal dashed hairlines only, no axis lines,
+ * card-colored tooltip and the sky glow on the primary series; every axis
+ * still comes from the real bucket range.
  */
 export default function HabitEvolutionChart({
   data,
@@ -29,7 +39,7 @@ export default function HabitEvolutionChart({
   return (
     <div
       ref={chartRef}
-      className="w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+      className={`w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal ${chartDeckFrameClass}`}
       tabIndex={0}
       role="img"
       aria-label={t("productivity.evolution.title")}
@@ -41,8 +51,8 @@ export default function HabitEvolutionChart({
         accessibilityLayer
         margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
       >
-        <CartesianGrid stroke={chartTok("--color-hull")} strokeDasharray="3 3" />
-        <XAxis dataKey="bucket" tick={chartTick()} tickLine={false} axisLine={{ stroke: chartTok("--color-hull") }} />
+        <CartesianGrid stroke={chartTok("--color-hair")} strokeDasharray="3 3" vertical={false} />
+        <XAxis dataKey="bucket" tick={chartTick()} tickLine={false} axisLine={false} />
         <YAxis tick={chartTick()} tickLine={false} axisLine={false} width={40} allowDecimals={false} />
         <Tooltip contentStyle={chartTooltipStyle()} />
         {series.map((name, index) => (

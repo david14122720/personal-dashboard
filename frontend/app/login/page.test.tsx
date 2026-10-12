@@ -84,18 +84,18 @@ describe("login screen control deck visuals", () => {
     expect(password.type).toBe("password");
   });
 
-  it("renders remember-me checkbox, forgot link, secure note and footer note", () => {
+  it("renders no control that claims behaviour the app lacks (JD item 9)", () => {
     render(<LoginPage />);
 
     expect(screen.getByRole("status")).toHaveTextContent("EN LÍNEA");
-    expect(screen.getByText("v1.4")).toBeInTheDocument();
+    expect(screen.getByText("v0.1.0")).toBeInTheDocument();
 
-    const remember = screen.getByLabelText("Recordar sesión") as HTMLInputElement;
-    expect(remember.type).toBe("checkbox");
-    fireEvent.click(remember);
-    expect(remember.checked).toBe(true);
+    // `Recordar sesión` wrote state nothing read and `¿Olvidaste tu
+    // contraseña?` was an anchor whose handler did nothing: both are gone.
+    expect(screen.queryByLabelText("Recordar sesión")).toBeNull();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByRole("link", { name: "¿Olvidaste tu contraseña?" })).toBeNull();
 
-    expect(screen.getByRole("link", { name: "¿Olvidaste tu contraseña?" })).toBeInTheDocument();
     expect(
       screen.getByText("Conexión segura cifrada de extremo a extremo"),
     ).toBeInTheDocument();

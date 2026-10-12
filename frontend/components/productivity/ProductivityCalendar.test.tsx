@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
-import ProductivityCalendar from "./ProductivityCalendar";
+import ProductivityCalendar, { isoWeekNumber } from "./ProductivityCalendar";
 import { formatMonth, t } from "@/lib/i18n";
 import { toEventRange } from "@/lib/finance/finance";
 import {
@@ -114,6 +114,14 @@ function renderCalendar() {
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
       <ProductivityCalendar />
     </SWRConfig>,
+  );
+}
+
+function CalendarWrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
+      {children}
+    </SWRConfig>
   );
 }
 
@@ -322,6 +330,69 @@ describe("ProductivityCalendar", () => {
     expect(document.querySelector("#productivity-calendar-day-panel")?.className).toContain(
       "motion-reduce:transition-none",
     );
+  });
+});
+
+describe("ProductivityCalendar title block and legend (T5a)", () => {
+  it("states the ISO week of the reference day of the visible month", async () => {
+    renderCalendar();
+    openCalendar();
+    await screen.findByRole("grid");
+    const currentWeek = isoWeekNumber(todayYmdLocal());
+    expect(screen.getByText(`Semana ${currentWeek} · Telemetría semanal`)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: t("productivity.calendarPrev") }));
+    const prevWeek = isoWeekNumber(`${prevMonthKey}-01`);
+    expect(await screen.findByText(`Semana ${prevWeek} · Telemetría semanal`)).toBeInTheDocument();
+  });
+
+  it("lists only the series the grid really draws", async () => {
+    renderCalendar();
+    openCalendar();
+    await screen.findByRole("grid");
+    const legend = screen.getByRole("list", { name: t("productivity.calendarLegendLabel") });
+    expect(within(legend).getByText(t("productivity.tasks"))).toBeInTheDocument();
+    expect(within(legend).getByText(t("productivity.events"))).toBeInTheDocument();
+    // No habit series is read by this calendar, so none is claimed.
+    expect(within(legend).queryByText(t("productivity.habits"))).not.toBeInTheDocument();
+  });
+
+  it("keeps the prototype's 72px day cells from sm while holding the 44px target", async () => {
+    renderCalendar();
+    openCalendar();
+    await screen.findByRole("grid");
+    for (const cell of screen.getAllByRole("gridcell")) {
+      expect(cell.className).toContain("min-h-[44px]");
+      expect(cell.className).toContain("sm:min-h-[72px]");
+    }
+  });
+});
+
+describe("ProductivityCalendar controlled by the module header (T5a)", () => {
+  it("renders only the panel, with no internal trigger, when controlled", async () => {
+    const { container, rerender } = render(<ProductivityCalendar open={false} onToggle={() => {}} />, {
+      wrapper: CalendarWrapper,
+    });
+    expect(
+      screen.queryByRole("button", { name: t("productivity.calendarTitle") }),
+    ).not.toBeInTheDocument();
+    const panel = container.querySelector("#productivity-calendar-panel");
+    expect(panel).toHaveAttribute("hidden");
+    expect(screen.queryByRole("grid")).not.toBeInTheDocument();
+
+    rerender(<ProductivityCalendar open onToggle={() => {}} />);
+    expect(container.querySelector("#productivity-calendar-panel")).not.toHaveAttribute("hidden");
+    expect(await screen.findByRole("grid")).toBeInTheDocument();
+  });
+});
+
+describe("isoWeekNumber", () => {
+  it("matches the ISO calendar across year edges", () => {
+    expect(isoWeekNumber("2026-10-11")).toBe(41);
+    expect(isoWeekNumber("2026-10-05")).toBe(41);
+    expect(isoWeekNumber("2026-01-01")).toBe(1);
+    expect(isoWeekNumber("2027-01-01")).toBe(53);
+    expect(isoWeekNumber("not-a-date")).toBeNull();
   });
 });
 

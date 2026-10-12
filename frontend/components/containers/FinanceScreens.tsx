@@ -1,34 +1,49 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import FinanceKpis from "@/components/finance/FinanceKpis";
+import {
+  CalendarActionIcon,
+  SubscriptionsIcon,
+} from "@/components/dashboard/icons";
+import {
+  AddCircleIcon,
+  ArrowRightIcon,
+  PaymentsIcon,
+  PlusIcon,
+  RefreshIcon,
+  TransferActionIcon,
+  TuneIcon,
+  WalletIcon,
+} from "@/components/finance/FinanceIcons";
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
-import {
-  CompactMoneyList,
-  SectionShell,
-} from "@/components/finance/FinanceSections";
-import {
-  useAccounts,
-  usePreferences,
-} from "@/lib/api/dashboard";
+import { useAccounts, usePreferences } from "@/lib/api/dashboard";
 import {
   patchAccount,
   useAssets,
   useCategories,
+  useMovements,
   useSubscriptions,
   type MovementWire,
-  type SubscriptionWire,
 } from "@/lib/api/finance";
 import {
+  currentPeriodRange,
+  isPaidThisCycle,
   toAccountCards,
   toAccountOptions,
   toCategoryOptions,
-  toSubscriptionRows,
+  toExpenseByCategory,
+  toTotalBalance,
+  todayInBogota,
   type AccountCardView,
 } from "@/lib/finance/finance";
-import { formatMoney } from "@/lib/api/money";
+import { formatMoney, toNumber } from "@/lib/api/money";
+import { toMonthlyCost } from "@/lib/dashboard/transforms";
 import { SubscriptionRow } from "@/components/finance/SubscriptionForms";
 import {
   MovementModal,
@@ -44,17 +59,25 @@ import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetFor
  * money coercion at the boundary; `components/finance/*` sections stay
  * pure. Flow, ledger, capture and analysis blocks were removed in S3b:
  * every rendered block reads a surviving endpoint.
+ *
+ * T4 layout (canonical `finanzas-desktop.html` + `finanzas-mobile.html`):
+ * header (title, currency chip, sync pill, real-action toolbar) → four KPI
+ * tiles → `lg:grid-cols-12` with the accounts/movements/assets column (7) and
+ * the subscriptions/chart/quick-links column (5). Below `md` the header and
+ * the KPI grid hand their children back to the page flex container, so the
+ * phone order is title → balance tile → quick bar → cards, with no duplicated
+ * control and one accessible name per operation.
  */
 
 // Canonical strings from the UI-polish contract (`design.md`, "Canonical visual
 // contract"): one role, one look for fields, primary and ghost buttons. Every
 // control in this file uses them verbatim.
 const fieldClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+  "min-h-11 w-full rounded-md border border-hair bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 const primaryBtn =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft disabled:cursor-not-allowed disabled:opacity-50";
 const ghostBtn =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal";
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hair px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal";
 
 function AggregatesSkeleton() {
   return (
@@ -62,15 +85,16 @@ function AggregatesSkeleton() {
       {[0, 1, 2].map((n) => (
         <div
           key={n}
-          className="col-span-12 animate-pulse rounded-xl border border-hull bg-hull/40 p-5 md:col-span-6"
+          className="col-span-12 animate-pulse rounded-xl border border-hair bg-card p-5 md:col-span-6"
         >
-          <div className="h-4 w-24 rounded bg-hull" />
-          <div className="mt-3 h-8 w-32 rounded bg-hull" />
+          <div className="h-4 w-24 rounded bg-hair" />
+          <div className="mt-3 h-8 w-32 rounded bg-hair" />
         </div>
       ))}
     </div>
   );
 }
+
 
 /** Client guard mirroring the server: `/^-?\d{1,9}(\.\d{1,2})?$/` and `|v| < 1e9`. */
 export const BALANCE_INPUT_RE = /^-?\d{1,9}(\.\d{1,2})?$/;
@@ -82,28 +106,46 @@ export function isValidBalanceInput(raw: string): boolean {
   return Number.isFinite(value) && Math.abs(value) < 1e9;
 }
 
+/** Initials avatar of an account tile. The wire has no type or brand, so the
+ * tile never invents one: the letters come from the real account name. */
+export function accountInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "—";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
 /**
- * Inline balance edit for one account row (design §6.2): the current value
- * stays visible, `Cancelar` sends nothing, success revalidates the
- * `finance/` SWR scope and the `dashboard/accounts` balance cache (the row
+ * One account tile of the Cuentas card (`finanzas-desktop.html` matrix cell):
+ * initials avatar, real name, real balance, real currency caption and the two
+ * existing per-account actions. Inline balance edit (design §6.2): the current
+ * value stays visible, `Cancelar` sends nothing, success revalidates the
+ * `finance/` SWR scope and the `dashboard/accounts` balance cache (the tile
  * reads the latter, so skipping it would leave the old amount on screen).
  * Control is ≥44px with a focus ring and a per-account `aria-label`.
+ *
+ * `openEditorToken` lets the header's `Conciliar saldo` action open exactly one
+ * real editor (the first account) without inventing a second write path.
  */
 export function AccountBalanceEdit({
   account,
   locale,
   onMoveMoney,
+  openEditorToken,
 }: {
   account: AccountCardView;
   locale: string;
   /** Opens the transfer modal with this account preselected as origin. */
   onMoveMoney?: (account: AccountCardView, opener: HTMLButtonElement) => void;
+  /** Increments when the header asks this tile to start reconciling. */
+  openEditorToken?: number;
 }) {
   const { mutate } = useSWRConfig();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const handledToken = useRef(0);
   const currentLabel = formatMoney(account.balance, { locale, currency: account.currency });
 
   function open() {
@@ -111,6 +153,15 @@ export function AccountBalanceEdit({
     setError(null);
     setEditing(true);
   }
+
+  // The header action targets one tile; the ref makes the token fire once.
+  useEffect(() => {
+    if (!openEditorToken || openEditorToken === handledToken.current) return;
+    handledToken.current = openEditorToken;
+    setDraft(String(account.balance));
+    setError(null);
+    setEditing(true);
+  }, [openEditorToken, account.balance]);
 
   function cancel() {
     setEditing(false);
@@ -138,44 +189,56 @@ export function AccountBalanceEdit({
 
   if (!editing) {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border border-hull px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <p className="min-w-0 truncate text-sm">{account.name}</p>
-          <p className="font-mono text-sm tabular-nums">{currentLabel}</p>
+      <div className={deck.accountTile}>
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span aria-hidden="true" className={deck.accountAvatar}>
+            {accountInitials(account.name)}
+          </span>
+          <span className="truncate text-sm font-medium text-instrument">{account.name}</span>
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">
-          <button
-            type="button"
-            onClick={open}
-            aria-label={t("finance.balanceEditLabel", { name: account.name })}
-            className={ghostBtn}
-          >
-            {t("finance.balanceEdit")}
-          </button>
+        <div className="min-w-0">
+          <span className="block truncate font-mono text-base font-bold tracking-tight text-instrument sm:text-lg">
+            {currentLabel}
+          </span>
+          <span className={`${deck.accountCaption} mt-0.5 block truncate`}>
+            {account.currency}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-1 border-t border-hair pt-2">
           {onMoveMoney ? (
             <button
               type="button"
               onClick={(event) => onMoveMoney(account, event.currentTarget)}
               aria-label={`${t("finance.addTransfer")}: ${account.name}`}
-              className={ghostBtn}
+              className={deck.tileActionSignal}
             >
-              {t("finance.addTransfer")}
+              {t("finance.tileMove")}
             </button>
-          ) : null}
+          ) : (
+            <span />
+          )}
+          <button
+            type="button"
+            onClick={open}
+            aria-label={t("finance.balanceEditLabel", { name: account.name })}
+            className={deck.tileActionNeutral}
+          >
+            {t("finance.tileEdit")}
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-hull px-3 py-2">
-      <div className="flex items-center justify-between gap-3">
-        <p className="truncate text-sm">{account.name}</p>
-        <p className="shrink-0 font-mono text-sm tabular-nums">{currentLabel}</p>
+    <div className={deck.accountTile}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-sm text-instrument">{account.name}</p>
+        <p className="shrink-0 font-mono text-xs tabular-nums text-muted">{currentLabel}</p>
       </div>
       <label
         htmlFor={`balance-${account.id}`}
-        className="mt-2 block text-xs text-instrument/60"
+        className="block text-[11px] uppercase tracking-wider text-faint"
       >
         {t("finance.amountCop")}
       </label>
@@ -187,14 +250,14 @@ export function AccountBalanceEdit({
         onChange={(e) => setDraft(e.target.value)}
         aria-label={t("finance.balanceEditLabel", { name: account.name })}
         aria-invalid={error ? true : undefined}
-        className={`mt-1 ${fieldClass} font-mono tabular-nums`}
+        className={`${fieldClass} font-mono tabular-nums`}
       />
       {error ? (
-        <p role="alert" className="mt-1 text-xs text-alert">
+        <p role="alert" className="text-xs text-alert">
           {error}
         </p>
       ) : null}
-      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col gap-2">
         <button
           type="button"
           onClick={() => void save()}
@@ -219,27 +282,37 @@ export default function FinanceScreens() {
   const prefs = usePreferences();
   const allCategories = useCategories();
   const assets = useAssets();
+  const movements = useMovements();
 
   // S-C movements UI: account-click filter + add/edit modal state. The
   // subscription-pay wiring belongs to S-D and chart props to S-E.
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [movementModal, setMovementModal] = useState<MovementModalMode | null>(null);
   const [transferModal, setTransferModal] = useState<{ fromAccountId: string } | null>(null);
+  const [reconcileToken, setReconcileToken] = useState(0);
   const openerRef = useRef<HTMLElement | null>(null);
-  const expenseBtnRef = useRef<HTMLButtonElement>(null);
-  const incomeBtnRef = useRef<HTMLButtonElement>(null);
 
-  function openMovementModal(mode: MovementModalMode): void {
-    openerRef.current =
-      mode.kind === "create" && mode.direction === "income"
-        ? incomeBtnRef.current
-        : expenseBtnRef.current;
+  /** Remembers the control that opened a dialog so focus returns to it. */
+  function openMovementModal(mode: MovementModalMode, opener: HTMLElement | null): void {
+    openerRef.current = opener;
     setMovementModal(mode);
   }
 
   function openTransferModal(account: AccountCardView, opener: HTMLButtonElement): void {
     openerRef.current = opener;
     setTransferModal({ fromAccountId: account.id });
+  }
+
+  /** Toolbar `Mover dinero`: same modal, no preselected origin. */
+  function openTransferFromToolbar(opener: HTMLButtonElement): void {
+    openerRef.current = opener;
+    setTransferModal({ fromAccountId: "" });
+  }
+
+  /** Toolbar `Conciliar saldo`: scroll to Cuentas and start its first editor. */
+  function openReconcile(): void {
+    document.getElementById("finance-accounts")?.scrollIntoView?.({ block: "nearest" });
+    setReconcileToken((token) => token + 1);
   }
 
   const queries = [accounts, subscriptions, prefs];
@@ -278,135 +351,488 @@ export default function FinanceScreens() {
     setMovementModal({ kind: "edit", movement });
   }
 
+  const fmt = (value: string | number | null | undefined) =>
+    formatMoney(value, { locale, currency });
+
+  // -- KPI data: real reads only (D10). ------------------------------------
+  const totalBalance = toTotalBalance(cards, currency);
+  const excludedAccounts = cards.filter((account) => account.currency !== currency).length;
+  const balanceFooter =
+    cards.length === 0
+      ? t("finance.kpiBalanceEmpty")
+      : excludedAccounts > 0
+        ? `${t("dashboard.kpiBalanceFooter", { currency })} · ${t("dashboard.kpiBalanceExcluded", {
+            n: excludedAccounts,
+          })}`
+        : t("dashboard.kpiBalanceFooter", { currency });
+  const accountsFooter =
+    cards.length === 0
+      ? t("dashboard.kpiAccountsEmpty")
+      : t("finance.kpiAccountsInCurrency", {
+          n: cards.length - excludedAccounts,
+          total: cards.length,
+          currency,
+        });
+
+  // The charts default to the natural month, so the spend tile uses the same
+  // window over same-currency accounts only; the chips are the real top-2.
+  const cycleRange = currentPeriodRange("month");
+  const currencyByAccountId = new Map(
+    (accounts.data ?? []).map((account) => [account.id, account.currency]),
+  );
+  const cycleSpend = (movements.data ?? []).reduce((sum, movement) => {
+    if (movement.direction !== "expense") return sum;
+    if (currencyByAccountId.get(movement.account_id) !== currency) return sum;
+    if (movement.occurred_on < cycleRange.from || movement.occurred_on > cycleRange.to) return sum;
+    return sum + toNumber(movement.amount);
+  }, 0);
+  // Truncated to two chips plus an honest `+N más` marker: the KPI keeps summing
+  // every category, so folding one silently would leave the breakdown
+  // unreconcilable with the figure above it (same rule as the Resumen tile).
+  const cycleSlices = toExpenseByCategory(movements.data, {
+    range: cycleRange,
+    categories: allCategories.data,
+    currencyByAccountId,
+    userCurrency: currency,
+  });
+  const cycleChips = cycleSlices
+    .slice(0, 2)
+    .map((slice) => t("dashboard.kpiCycleChip", { name: slice.name, amount: fmt(slice.value) }));
+  const hiddenCycleChips = Math.max(0, cycleSlices.length - cycleChips.length);
+  const cycleTone: "ok" | "empty" | "loading" | "error" = movements.error
+    ? "error"
+    : movements.isLoading
+      ? "loading"
+      : cycleSpend === 0
+        ? "empty"
+        : "ok";
+  const cycleFooter =
+    cycleTone === "error"
+      ? t("dashboard.kpiCycleSpendUnavailable")
+      : cycleTone === "loading"
+        ? t("common.loading")
+        : cycleTone === "empty"
+          ? t("dashboard.kpiCycleSpendEmpty")
+          : cycleChips.length > 0
+            ? hiddenCycleChips > 0
+              ? `${cycleChips.join(" + ")} ${t("dashboard.kpiCycleMore", { n: hiddenCycleChips })}`
+              : cycleChips.join(" + ")
+            : t("dashboard.kpiCycleSpendUncategorized");
+
+  // Monthly-equivalent total over same-currency subscriptions only (foreign
+  // ones are excluded and stated, never converted — same rule as the balance).
+  const subsInCurrency = (subscriptions.data ?? []).filter((sub) => sub.currency === currency);
+  const excludedSubs = (subscriptions.data ?? []).length - subsInCurrency.length;
+  const monthlyCost = toMonthlyCost(subsInCurrency);
+  const today = todayInBogota();
+  const pendingCharges = (subscriptions.data ?? []).filter(
+    (sub) =>
+      sub.is_active === true &&
+      sub.next_billing_on !== null &&
+      sub.next_billing_on !== undefined &&
+      !isPaidThisCycle(
+        { last_paid_on: sub.last_paid_on ?? null, next_billing_on: sub.next_billing_on },
+        today,
+      ),
+  ).length;
+  const subsTone: "ok" | "empty" | "loading" | "error" = subscriptions.error
+    ? "error"
+    : subscriptions.isLoading
+      ? "loading"
+      : pendingCharges === 0
+        ? "ok"
+        : "empty";
+  const subsPendingCopy =
+    subsTone === "error"
+      ? t("dashboard.sectionLoadFailed")
+      : subsTone === "loading"
+        ? t("common.loading")
+        : pendingCharges === 0
+          ? t("dashboard.kpiSubsNone")
+          : pendingCharges === 1
+            ? t("dashboard.kpiSubsPendingOne")
+            : t("dashboard.kpiSubsPending", { n: pendingCharges });
+  const subsFooter =
+    excludedSubs > 0
+      ? `${subsPendingCopy} · ${t("dashboard.kpiBalanceExcluded", { n: excludedSubs })}`
+      : subsPendingCopy;
+
+  /** Revalidate every read the page owns (retry + «Actualizar saldos»). */
+  const revalidateAll = () =>
+    void mutate(
+      (key) =>
+        typeof key === "string" && (key.startsWith("finance/") || key.startsWith("dashboard/")),
+    );
+
+  const subsData = subscriptions.data ?? [];
+  const assetsData = assets.data ?? [];
+  const firstAsset = assetsData[0];
+  const assetNameById = new Map(movementAccountOptions.map((option) => [option.id, option.name]));
+
   return (
-    <div>
-      <h1 className="flex items-center gap-3 font-display text-2xl font-semibold tracking-wide">
-        {t("finance.title")}
-        <span className="rounded-full border border-signal/20 bg-signal/10 px-2.5 py-0.5 font-mono text-xs font-medium text-signal">
-          {currency}
-        </span>
-      </h1>
-      <p className="mt-1 text-sm text-slate-400">
-        {t("finance.subtitle", { currency })}
-      </p>
-      <div className="mt-6 grid grid-cols-12 gap-6">
-        {isLoading ? (
-          <div className="col-span-12">
-            <AggregatesSkeleton />
+    <div className="flex flex-col gap-gutter-desktop">
+      {/* 1. Header: title, real currency chip, honest status pill and the
+          prototype's toolbar mapped onto existing operations only. Below `md`
+          the wrapper hands both blocks back to the page flex container so the
+          phone order is title → KPI row → quick bar. */}
+      <div className="max-md:contents md:flex md:flex-col md:gap-3 lg:flex-row lg:items-start lg:justify-between lg:gap-4">
+        <div className="max-md:order-1 flex min-w-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2 md:gap-3">
+            <h1 className={deck.pageTitle}>{t("finance.title")}</h1>
+            <span className={deck.currencyChip}>{currency}</span>
+            <span className="max-md:ml-auto">
+            </span>
           </div>
-        ) : failed.length > 0 ? (
-          <div className="col-span-12">
-            <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
-              <h2 className="font-display text-base font-medium tracking-wide">{t("finance.loadFailed")}</h2>
-              <p className="mt-1 text-sm text-slate-400">
-                {t("finance.loadFailedDetail", { failed: failed.length, total: queries.length })}
-              </p>
-              <button
-                type="button"
-                onClick={() =>
-                  void mutate(
-                    (key) =>
-                      typeof key === "string" &&
-                      (key.startsWith("finance/") || key.startsWith("dashboard/")),
-                  )
-                }
-                className={`mt-4 ${ghostBtn}`}
-              >
-                {t("common.retry")}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <SectionShell
-              title={t("finance.accounts")}
-              hint={t("finance.accountsHint")}
-              span="col-span-12 md:col-span-6 xl:col-span-6"
-            >
-              <div className="flex flex-col gap-2">
-                {cards.length === 0 ? (
-                  <EmptyState title={t("finance.noAccounts")} hint={t("finance.noAccountsHint")} />
-                ) : null}
-                {cards.map((card) => (
-                  <AccountBalanceEdit
-                    key={card.id}
-                    account={card}
+          <p className="text-sm text-muted">{t("finance.subtitle", { currency })}</p>
+        </div>
+        <div className="max-md:order-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:flex lg:flex-wrap lg:items-center lg:justify-end lg:gap-2.5">
+          <button
+            type="button"
+            onClick={(event) => openTransferFromToolbar(event.currentTarget)}
+            className={deck.toolbarActionNeutral}
+          >
+            <TransferActionIcon className="h-4 w-4 text-sky-400" />
+            {t("finance.addTransfer")}
+          </button>
+          <button
+            type="button"
+            onClick={openReconcile}
+            disabled={cards.length === 0}
+            className={`${deck.toolbarActionNeutral} disabled:cursor-not-allowed disabled:opacity-50`}
+          >
+            <TuneIcon className="h-4 w-4 text-faint" />
+            {t("finance.reconcileBalance")}
+          </button>
+          <button
+            type="button"
+            onClick={(event) =>
+              openMovementModal({ kind: "create", direction: "income" }, event.currentTarget)
+            }
+            className={deck.toolbarActionFlow}
+          >
+            <AddCircleIcon className="h-4 w-4" />
+            {t("finance.addIncomeCta")}
+          </button>
+          <button
+            type="button"
+            onClick={(event) =>
+              openMovementModal({ kind: "create", direction: "expense" }, event.currentTarget)
+            }
+            className={deck.toolbarActionSignal}
+          >
+            <PaymentsIcon className="h-4 w-4" />
+            {t("finance.addExpenseCta")}
+          </button>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <AggregatesSkeleton />
+      ) : failed.length > 0 ? (
+        <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
+          <h2 className="font-display text-base font-medium tracking-wide">{t("finance.loadFailed")}</h2>
+          <p className="mt-1 text-sm text-muted">
+            {t("finance.loadFailedDetail", { failed: failed.length, total: queries.length })}
+          </p>
+          <button type="button" onClick={revalidateAll} className={`mt-4 ${ghostBtn}`}>
+            {t("common.retry")}
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* 2. KPI row (prototype "KPIs / Telemetry Top Bar"). */}
+          <FinanceKpis
+            currency={currency}
+            balance={{ display: fmt(totalBalance), footer: balanceFooter, tone: "ok" }}
+            accounts={{
+              count: String(cards.length),
+              unit: t("finance.kpiAccountsUnit"),
+              footer: accountsFooter,
+            }}
+            spend={{
+              display: cycleTone === "error" || cycleTone === "loading" ? "—" : fmt(cycleSpend),
+              footer: cycleFooter,
+              tone: cycleTone,
+            }}
+            subscriptions={{
+              display: subsTone === "error" || subsTone === "loading" ? "—" : fmt(monthlyCost),
+              footer: subsFooter,
+              tone: subsTone,
+            }}
+          />
+
+          {/* 3. Main grid: left column (accounts, movements, assets) and right
+              column (subscriptions, chart, quick links). Below `lg` both
+              wrappers become `display: contents`, so the `order-*` classes
+              drive the phone sequence of the mobile prototype. */}
+          <div className="max-md:order-4 grid grid-cols-1 gap-gutter-desktop lg:grid-cols-12 lg:items-start">
+            <div className="max-lg:contents lg:col-span-7 lg:flex lg:flex-col lg:gap-gutter-desktop">
+              <div id="finance-accounts" className="max-lg:order-1">
+                <DeckCard
+                  title={t("finance.accounts")}
+                  hint={t("finance.accountsHint")}
+                  headerClassName={deck.sectionHeaderWrap}
+                  meta={
+                    cards.length > 0 ? (
+                      <span className={deck.countPill}>
+                        {cards.length} {t("finance.kpiAccountsUnit")}
+                      </span>
+                    ) : null
+                  }
+                  action={
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={revalidateAll}
+                        aria-label={t("finance.refreshBalances")}
+                        title={t("finance.refreshBalances")}
+                        className={deck.headerIconButton}
+                      >
+                        <RefreshIcon className="h-4 w-4" />
+                      </button>
+                      <Link href="/dashboard/ajustes/" className={deck.ghostButton}>
+                        <PlusIcon className="h-3.5 w-3.5" />
+                        {t("finance.newAccount")}
+                      </Link>
+                    </div>
+                  }
+                >
+                  {cards.length === 0 ? (
+                    <DeckEmptyState
+                      icon={<WalletIcon className="h-5 w-5 text-sky-400/70" />}
+                      title={t("finance.noAccounts")}
+                      hint={t("finance.noAccountsHint")}
+                    />
+                  ) : (
+                    <ul className="grid grid-cols-2 gap-2.5 md:grid-cols-3 md:gap-3">
+                      {cards.map((card, index) => (
+                        <li key={card.id} className="min-w-0">
+                          <AccountBalanceEdit
+                            account={card}
+                            locale={locale}
+                            onMoveMoney={openTransferModal}
+                            openEditorToken={index === 0 ? reconcileToken : undefined}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </DeckCard>
+              </div>
+
+              <div className="max-lg:order-3">
+                <DeckCard
+                  title={t("finance.movementsTitle")}
+                  hint={t("finance.movementsRecentHint")}
+                  headerClassName={deck.sectionHeaderWrap}
+                  action={
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={(event) =>
+                          openMovementModal(
+                            { kind: "create", direction: "expense" },
+                            event.currentTarget,
+                          )
+                        }
+                        className={primaryBtn}
+                      >
+                        {t("finance.addExpense")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) =>
+                          openMovementModal(
+                            { kind: "create", direction: "income" },
+                            event.currentTarget,
+                          )
+                        }
+                        className={ghostBtn}
+                      >
+                        {t("finance.addIncome")}
+                      </button>
+                    </div>
+                  }
+                >
+                  <MovementHistory
+                    accounts={movementAccountOptions}
+                    categories={movementCategoryOptions}
                     locale={locale}
-                    onMoveMoney={openTransferModal}
+                    currency={currency}
+                    activeAccountId={activeAccountId}
+                    onSelectAccount={setActiveAccountId}
+                    onEdit={openMovementEditor}
                   />
-                ))}
+                </DeckCard>
               </div>
-            </SectionShell>
-            <SectionShell
-              title={t("finance.subscriptions")}
-              hint={t("finance.subscriptionsHint")}
-              span="col-span-12 md:col-span-6 xl:col-span-6"
-            >
-              <CompactMoneyList
-                rows={toSubscriptionRows(subscriptions.data)}
-                locale={locale}
-                emptyTitle={t("finance.noSubscriptions")}
-                emptyHint={t("finance.noSubscriptionsHint")}
-              />
-            </SectionShell>
-            <SectionShell
-              title={t("finance.movementsTitle")}
-              hint={t("finance.movementsHint")}
-              span="col-span-12"
-            >
-              <div className="flex flex-wrap gap-2">
-                <button
-                  ref={expenseBtnRef}
-                  type="button"
-                  onClick={() => openMovementModal({ kind: "create", direction: "expense" })}
-                  className={primaryBtn}
+
+              {/* Real assets aggregate (the prototype's second media slot).
+                  The net-worth figure and the liquidity/persistence telemetry
+                  are omitted: no series exists here and the prototype's claims
+                  are invented (D10). */}
+              <div className="max-lg:order-4">
+                <DeckCard
+                  title={t("finance.manageAssets")}
+                  hint={t("finance.assetsHint")}
+                  headerClassName={deck.sectionHeaderWrap}
+                  meta={
+                    assetsData.length > 0 ? (
+                      <span className={deck.countPill}>
+                        {t("finance.assetsCount", { n: assetsData.length })}
+                      </span>
+                    ) : null
+                  }
                 >
-                  {t("finance.addExpense")}
-                </button>
-                <button
-                  ref={incomeBtnRef}
-                  type="button"
-                  onClick={() => openMovementModal({ kind: "create", direction: "income" })}
-                  className={ghostBtn}
-                >
-                  {t("finance.addIncome")}
-                </button>
+                  {firstAsset ? (
+                    <>
+                      <ul className="flex flex-col gap-2">
+                        {assetsData.slice(0, 4).map((asset) => (
+                          <li key={asset.id} className={deck.listRow}>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-instrument">
+                                {asset.name}
+                              </p>
+                              <p className="truncate text-xs text-muted">
+                                {asset.category}
+                                {asset.account_id
+                                  ? ` · ${assetNameById.get(asset.account_id) ?? asset.currency}`
+                                  : ` · ${asset.currency}`}
+                              </p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-4 border-t border-hair pt-4">
+                        <AssetEditForm
+                          assetId={firstAsset.id}
+                          accounts={movementAccountOptions}
+                          initial={toAssetEditInitial(firstAsset)}
+                          onDone={() => undefined}
+                        />
+                        <div className="mt-4">
+                          <AssetValuationForm assetId={firstAsset.id} onDone={() => undefined} />
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <DeckEmptyState
+                      icon={<WalletIcon className="h-5 w-5 text-sky-400/70" />}
+                      title={t("progress.emptyWorth")}
+                      hint={t("progress.emptyWorthHint")}
+                    />
+                  )}
+                </DeckCard>
               </div>
-              <div className="mt-4 border-t border-hull/60 pt-4">
-                <MovementHistory
-                  accounts={movementAccountOptions}
+            </div>
+
+            <div className="max-lg:contents lg:col-span-5 lg:flex lg:flex-col lg:gap-gutter-desktop">
+              <div className="max-lg:order-2">
+                <CategoryChartSection
                   categories={movementCategoryOptions}
                   locale={locale}
                   currency={currency}
-                  activeAccountId={activeAccountId}
-                  onSelectAccount={setActiveAccountId}
-                  onEdit={openMovementEditor}
                 />
               </div>
-            </SectionShell>
-            <CategoryChartSection categories={movementCategoryOptions} locale={locale} currency={currency} />
-            <S5Sections accounts={toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })))} subs={subscriptions.data ?? []} assets={assets.data ?? []} />
-            {movementModal ? (
-              <MovementModal
-                mode={movementModal}
-                accounts={movementAccountOptions}
-                categories={movementCategoryOptions}
-                openerRef={openerRef}
-                onClose={() => setMovementModal(null)}
-              />
-            ) : null}
-            {transferModal ? (
-              <TransferModal
-                key={transferModal.fromAccountId}
-                accounts={transferAccountOptions}
-                initialFromAccountId={transferModal.fromAccountId}
-                openerRef={openerRef}
-                onClose={() => setTransferModal(null)}
-              />
-            ) : null}
-          </>
-        )}
-      </div>
+
+              <div className="max-lg:order-5">
+                <DeckCard
+                  title={t("finance.manageSubs")}
+                  hint={t("finance.subscriptionsHint")}
+                  headerClassName={deck.sectionHeaderWrap}
+                  meta={
+                    subsData.length > 0 ? (
+                      <span className={deck.countPill}>
+                        {t("dashboard.recordsMeta", { n: subsData.length })}
+                      </span>
+                    ) : null
+                  }
+                >
+                  {subsData.length === 0 ? (
+                    <>
+                      <DeckEmptyState
+                        icon={<CalendarActionIcon className="h-5 w-5 text-sky-400/70" />}
+                        title={t("finance.noSubscriptions")}
+                        hint={t("finance.noSubscriptionsHint")}
+                      />
+                      <div className="mt-3 flex justify-center">
+                        <Link href="/dashboard/ajustes/" className={deck.cardFooterLink}>
+                          <PlusIcon className="h-4 w-4" />
+                          {t("finance.newSubscriptionCta")}
+                        </Link>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {subsData.map((sub) => (
+                        <SubscriptionRow key={sub.id} sub={sub} />
+                      ))}
+                    </div>
+                  )}
+                  {subsData.length > 0 ? (
+                    <div className={deck.cardFooterRow}>
+                      <Link href="/dashboard/ajustes/" className={deck.cardFooterLink}>
+                        <PlusIcon className="h-4 w-4" />
+                        {t("finance.manageInSettings")}
+                      </Link>
+                    </div>
+                  ) : null}
+                </DeckCard>
+              </div>
+
+              {/* Quick links to real routes: Ajustes owns the create/edit
+                  paths, Progreso owns the read-only patrimonio view. */}
+              <nav
+                aria-label={t("finance.quickActionsLabel")}
+                className="max-lg:order-6 grid grid-cols-1 gap-3 sm:grid-cols-2"
+              >
+                <Link href="/dashboard/ajustes/" className={deck.quickCard}>
+                  <span className="flex items-center justify-between">
+                    <span className={deck.quickCardIcon}>
+                      <SubscriptionsIcon className="h-4 w-4" />
+                    </span>
+                    <ArrowRightIcon className="h-4 w-4 text-faint transition-transform group-hover:translate-x-1 group-hover:text-sky-400" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className={deck.quickCardTitle}>{t("finance.subscriptions")}</span>
+                    <span className={deck.quickCardCopy}>{t("finance.subscriptionSettingsHint")}</span>
+                  </span>
+                </Link>
+                <Link href="/dashboard/progreso/" className={deck.quickCard}>
+                  <span className="flex items-center justify-between">
+                    <span className={deck.quickCardIcon}>
+                      <WalletIcon className="h-4 w-4" />
+                    </span>
+                    <ArrowRightIcon className="h-4 w-4 text-faint transition-transform group-hover:translate-x-1 group-hover:text-emerald-400" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className={deck.quickCardTitle}>{t("progress.title")}</span>
+                    <span className={deck.quickCardCopy}>{t("progress.subtitle")}</span>
+                  </span>
+                </Link>
+              </nav>
+            </div>
+          </div>
+        </>
+      )}
+
+      {movementModal ? (
+        <MovementModal
+          mode={movementModal}
+          accounts={movementAccountOptions}
+          categories={movementCategoryOptions}
+          openerRef={openerRef}
+          onClose={() => setMovementModal(null)}
+        />
+      ) : null}
+      {transferModal ? (
+        <TransferModal
+          key={transferModal.fromAccountId}
+          accounts={transferAccountOptions}
+          initialFromAccountId={transferModal.fromAccountId}
+          openerRef={openerRef}
+          onClose={() => setTransferModal(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -436,28 +862,6 @@ export function toAssetEditInitial(a: AssetWireWithDetails): {
     acquired_on: a.acquired_on ?? null,
     notes: a.notes ?? null,
   };
-}
-
-/* S5 escritura: SubscriptionRow (Pay) + Assets shells tras las F1 intactas. */
-/* The savings/debts write sections were deleted in S-F with their ledgers. */
-function S5Sections({ accounts, subs, assets }: { accounts: { id: string; name: string }[]; subs: SubscriptionWire[]; assets: AssetWireWithDetails[] }) {
-  const noop = (): void => undefined;
-  const firstAsset = assets[0];
-  return (
-    <>
-      <SectionShell title={t("finance.manageSubs")} span="col-span-12 xl:col-span-6">
-        {/* Create/edit lives in Settings (SubscriptionsSection); Finance keeps the rows with Pay. */}
-        {subs.map((sub) => (
-          <div key={sub.id} className="mt-2">
-            <SubscriptionRow sub={sub} />
-          </div>
-        ))}
-      </SectionShell>
-      <SectionShell title={t("finance.manageAssets")} span="col-span-12 xl:col-span-6">
-        {firstAsset ? (<><AssetEditForm assetId={firstAsset.id} accounts={accounts} initial={toAssetEditInitial(firstAsset)} onDone={noop} /><div className="mt-4"><AssetValuationForm assetId={firstAsset.id} onDone={noop} /></div></>) : null}
-      </SectionShell>
-    </>
-  );
 }
 
 export function FinanceScreensShell() {

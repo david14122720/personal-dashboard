@@ -2,12 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { SubscriptionsIcon } from "@/components/dashboard/icons";
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import {
   createSubscription,
   patchSubscription,
-  useCategories,
+  useFinanceCategories,
   useSubscriptions,
   type SubscriptionWire,
 } from "@/lib/api/finance";
@@ -21,11 +23,25 @@ import {
 } from "@/lib/finance/finance";
 import { formatMoney } from "@/lib/api/money";
 
-const inputClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
-const btnClass =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal disabled:cursor-not-allowed disabled:opacity-50";
-const labelClass = "flex flex-col gap-1 text-xs text-instrument/60";
+const labelClass = "flex flex-col gap-1.5";
+
+/** Real form field with the deck caption (label-caps) above it. */
+function Field({
+  label,
+  className,
+  children,
+}: {
+  label: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className={`${labelClass} ${className ?? ""}`}>
+      <span className={deck.fieldLabel}>{label}</span>
+      {children}
+    </label>
+  );
+}
 
 const PAYMENT_METHODS = ["efectivo", "débito", "transferencia", "tarjeta", "otro"] as const;
 
@@ -52,15 +68,24 @@ function paymentMethodLabel(value: string): string {
  * omits `frequency` entirely. Edits send only widened-PATCH allowlisted
  * fields (`name|price|next_billing_on`); mutations refresh the `finance/`
  * SWR scope. Paid state is derived at render time via `isPaidThisCycle`.
+ *
+ * The category picker is finance-only, the same rule the categories section
+ * uses (`useFinanceCategories()` → `GET /categories?kind=finance`) plus a
+ * defensive `kind === "finance"` filter, so another module's category (a
+ * habit, goal, task or subscription row) can never be selected here even if a
+ * response slipped one through.
  */
 export default function SubscriptionsSection() {
   const { mutate } = useSWRConfig();
   const subscriptions = useSubscriptions();
-  const categories = useCategories();
+  const categories = useFinanceCategories();
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const categoryOptions: NamedOption[] = useMemo(
-    () => toCategoryOptions(categories.data ?? []),
+    () =>
+      toCategoryOptions(
+        (categories.data ?? []).filter((row) => row.kind === "finance"),
+      ),
     [categories.data],
   );
   const today = todayInBogota();
@@ -72,34 +97,35 @@ export default function SubscriptionsSection() {
 
   if (subscriptions.error) {
     return (
-      <section aria-label={t("finance.subscriptionSettingsTitle")} className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5">
-        <h2 className="font-display text-base font-medium tracking-wide">{t("finance.subscriptionSettingsTitle")}</h2>
-        <p role="alert" className="mt-2 text-sm text-alert">{t("finance.loadFailed")}</p>
-        <button type="button" onClick={() => void subscriptions.mutate()} className={btnClass}>
+      <DeckCard title={t("finance.subscriptionSettingsTitle")}>
+        <p role="alert" className="text-sm text-alert">{t("finance.loadFailed")}</p>
+        <button type="button" onClick={() => void subscriptions.mutate()} className={`mt-3 ${deck.headerAction}`}>
           {t("common.retry")}
         </button>
-      </section>
+      </DeckCard>
     );
   }
 
   return (
-    <section aria-label={t("finance.subscriptionSettingsTitle")} className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5">
-      <h2 className="font-display text-base font-medium tracking-wide">{t("finance.subscriptionSettingsTitle")}</h2>
-      <p className="mt-1 text-sm text-slate-400">{t("finance.subscriptionSettingsHint")}</p>
-      <p className="mt-1 text-xs text-slate-400">{t("finance.subscriptionMonthlyNote")}</p>
+    <DeckCard title={t("finance.subscriptionSettingsTitle")} hint={t("finance.subscriptionSettingsHint")}>
+      <p className={deck.monoMicroLabel}>{t("finance.subscriptionMonthlyNote")}</p>
 
-      <div className="mt-4 flex flex-col gap-2">
+      <div className="flex flex-col gap-2">
         {subscriptions.isLoading ? (
-          <p role="status" className="text-sm text-instrument/60">{t("finance.loadingSections")}</p>
+          <p role="status" className="text-sm text-faint">{t("finance.loadingSections")}</p>
         ) : (subscriptions.data ?? []).length === 0 ? (
-          <EmptyState title={t("finance.noSubscriptions")} hint={t("finance.noSubscriptionsHint")} />
+          <DeckEmptyState
+            icon={<SubscriptionsIcon className="h-5 w-5" />}
+            title={t("finance.noSubscriptions")}
+            hint={t("finance.noSubscriptionsHint")}
+          />
         ) : (
           (subscriptions.data ?? []).map((sub) => (
-            <div key={sub.id} className="rounded-lg border border-hull px-3 py-2">
+            <div key={sub.id} className={deck.cardRow}>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{sub.name}</p>
-                  <p className="font-mono text-sm tabular-nums">
+                  <p className="truncate text-sm font-medium text-instrument">{sub.name}</p>
+                  <p className="font-mono text-sm tabular-nums text-instrument">
                     {formatMoney(sub.price, { currency: sub.currency ?? "COP" })}
                     {sub.next_billing_on ? ` · ${sub.next_billing_on}` : null}
                   </p>
@@ -115,7 +141,7 @@ export default function SubscriptionsSection() {
                     type="button"
                     onClick={() => setEditingId(editingId === sub.id ? null : sub.id)}
                     aria-label={t("productivity.edit")}
-                    className={btnClass}
+                    className={deck.headerAction}
                   >
                     {t("productivity.edit")}
                   </button>
@@ -135,10 +161,10 @@ export default function SubscriptionsSection() {
         )}
       </div>
 
-      <div className="mt-4 border-t border-hull pt-4">
+      <div className="mt-4 border-t border-hair pt-4">
         <SubscriptionCreateForm categories={categoryOptions} onDone={() => void revalidate()} />
       </div>
-    </section>
+    </DeckCard>
   );
 }
 
@@ -200,34 +226,29 @@ export function SubscriptionCreateForm({
 
   return (
     <form aria-label={t("finance.subscriptionCreate")} className="grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={(e) => void handleSubmit(e)}>
-      <label className={labelClass}>
-        {t("finance.goalName")}
-        <input aria-label={t("finance.goalName")} className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className={labelClass}>
-        {t("finance.price")}
-        <input aria-label={t("finance.price")} inputMode="decimal" placeholder={t("finance.amountPlaceholder")} className={inputClass} value={price} onChange={(e) => setPrice(e.target.value)} />
-      </label>
-      <label className={labelClass}>
-        {t("finance.subscriptionDueDate")}
-        <input aria-label={t("finance.subscriptionDueDate")} type="date" className={inputClass} value={nextBilling} onChange={(e) => setNextBilling(e.target.value)} />
-      </label>
-      <label className={labelClass}>
-        {t("finance.category")}
-        <select aria-label={t("finance.category")} className={inputClass} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+      <Field label={t("finance.goalName")}>
+        <input aria-label={t("finance.goalName")} className={deck.fieldInput} value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label={t("finance.price")}>
+        <input aria-label={t("finance.price")} inputMode="decimal" placeholder={t("finance.amountPlaceholder")} className={deck.fieldInput} value={price} onChange={(e) => setPrice(e.target.value)} />
+      </Field>
+      <Field label={t("finance.subscriptionDueDate")}>
+        <input aria-label={t("finance.subscriptionDueDate")} type="date" className={deck.fieldInput} value={nextBilling} onChange={(e) => setNextBilling(e.target.value)} />
+      </Field>
+      <Field label={t("finance.category")}>
+        <select aria-label={t("finance.category")} className={deck.fieldInput} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
           <option value="">{t("finance.selectCategory")}</option>
           {categories.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
         </select>
-      </label>
-      <label className={`${labelClass} sm:col-span-2`}>
-        {t("finance.paymentMethod")}
-        <select aria-label={t("finance.paymentMethod")} className={inputClass} value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+      </Field>
+      <Field label={t("finance.paymentMethod")} className="sm:col-span-2">
+        <select aria-label={t("finance.paymentMethod")} className={deck.fieldInput} value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
           <option value="">{t("finance.selectPaymentMethod")}</option>
           {PAYMENT_METHODS.map((m) => (<option key={m} value={m}>{paymentMethodLabel(m)}</option>))}
         </select>
-      </label>
+      </Field>
       <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:gap-3">
-        <button type="submit" disabled={pending} className={`${btnClass} w-full sm:w-auto`}>{pending ? t("finance.saving") : t("finance.subscriptionCreate")}</button>
+        <button type="submit" disabled={pending} className={`${deck.signalAction} w-full sm:w-auto`}>{pending ? t("finance.saving") : t("finance.subscriptionCreate")}</button>
         {error ? (<p role="alert" className="text-xs text-alert">{error}</p>) : null}
       </div>
     </form>
@@ -282,21 +303,18 @@ export function SubscriptionEditForm({
   }
 
   return (
-    <form aria-label={t("productivity.edit")} className="mt-3 grid grid-cols-1 gap-3 border-t border-hull pt-3 sm:grid-cols-2" onSubmit={(e) => void handleSubmit(e)}>
-      <label className={labelClass}>
-        {t("finance.goalName")}
-        <input aria-label={t("finance.goalName")} className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className={labelClass}>
-        {t("finance.price")}
-        <input aria-label={t("finance.price")} inputMode="decimal" className={inputClass} value={price} onChange={(e) => setPrice(e.target.value)} />
-      </label>
-      <label className={`${labelClass} sm:col-span-2`}>
-        {t("finance.subscriptionDueDate")}
-        <input aria-label={t("finance.subscriptionDueDate")} type="date" className={inputClass} value={nextBilling} onChange={(e) => setNextBilling(e.target.value)} />
-      </label>
+    <form aria-label={t("productivity.edit")} className="mt-3 grid grid-cols-1 gap-3 border-t border-hair pt-3 sm:grid-cols-2" onSubmit={(e) => void handleSubmit(e)}>
+      <Field label={t("finance.goalName")}>
+        <input aria-label={t("finance.goalName")} className={deck.fieldInput} value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label={t("finance.price")}>
+        <input aria-label={t("finance.price")} inputMode="decimal" className={deck.fieldInput} value={price} onChange={(e) => setPrice(e.target.value)} />
+      </Field>
+      <Field label={t("finance.subscriptionDueDate")} className="sm:col-span-2">
+        <input aria-label={t("finance.subscriptionDueDate")} type="date" className={deck.fieldInput} value={nextBilling} onChange={(e) => setNextBilling(e.target.value)} />
+      </Field>
       <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center sm:gap-3">
-        <button type="submit" disabled={pending} className={`${btnClass} w-full sm:w-auto`}>{pending ? t("finance.saving") : t("finance.save")}</button>
+        <button type="submit" disabled={pending} className={`${deck.signalAction} w-full sm:w-auto`}>{pending ? t("finance.saving") : t("finance.save")}</button>
         {error ? (<p role="alert" className="text-xs text-alert">{error}</p>) : null}
       </div>
     </form>

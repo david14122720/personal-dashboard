@@ -23,4 +23,13 @@ describe("PeriodSelector (PR-3 RED)", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Semana" }));
     expect(onChange).toHaveBeenCalledWith({ kind: "week" });
   });
+  // T8c: the pills were the last `border-hull` element showing inside a deck
+  // panel; the shared chip vocabulary must stay (`border-hair`).
+  it("renders the pills with the shared deck vocabulary", () => {
+    render(<PeriodSelector value={{ kind: "month" }} onChange={vi.fn()} now={now} />);
+    const pill = screen.getByRole("radio", { name: "Mes" }).closest("label");
+    expect(pill).not.toBeNull();
+    expect(pill?.className).toContain("border-hair");
+    expect(pill?.className).not.toContain("border-hull");
+  });
 });

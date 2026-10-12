@@ -10,14 +10,15 @@ import CategoryTrendChart, {
   type TrendSeries,
 } from "@/components/finance/CategoryTrendChart";
 import TrendPeriodSelector from "@/components/finance/TrendPeriodSelector";
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 import { useAccounts, usePreferences } from "@/lib/api/dashboard";
 import { useCategories, useMovements } from "@/lib/api/finance";
 import { toCategoryOptions, toCategoryTrend, type TrendPeriod } from "@/lib/finance/finance";
 
-const selectClass =
-  "w-full rounded-md border border-hull bg-deck px-3 py-2 text-sm text-instrument focus:border-signal focus:outline-none";
+/** Canonical deck field recipe (same class string as the Finanzas filters). */
+const selectClass = deck.filterField;
 
 /**
  * Standalone two-category comparison sourced from `GET /movements` (same
@@ -176,7 +177,7 @@ export default function ComparePage() {
         <div>
           <Link
             href="/dashboard/finance/"
-            className="inline-flex items-center rounded-lg border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal"
+            className={deck.headerAction}
           >
             {t("compare.backToFinance")}
           </Link>

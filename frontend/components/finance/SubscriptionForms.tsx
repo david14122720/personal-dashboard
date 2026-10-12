@@ -12,6 +12,7 @@ import {
   type SubscriptionWire,
 } from "@/lib/api/finance";
 import {
+  formatMovementDate,
   isPaidThisCycle,
   toAccountOptions,
   todayInBogota,
@@ -19,9 +20,9 @@ import {
 import { formatMoney, toNumber } from "@/lib/api/money";
 
 const inputClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+  "min-h-11 w-full rounded-md border border-hair bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 const btnClass =
-  "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
+  "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hair px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:opacity-50";
 
 /**
  * Finance subscription row: price + due + paid state, cancel/reactivate via
@@ -84,13 +85,13 @@ export function SubscriptionRow({ sub }: { sub: SubscriptionWire }) {
   }
 
   return (
-    <div className="flex flex-col gap-1 rounded-lg border border-hull px-3 py-2">
+    <div className="flex flex-col gap-1 rounded-lg border border-hair px-3 py-2">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{sub.name}</p>
           <p className="font-mono text-sm tabular-nums">
             {formatMoney(sub.price, { currency: sub.currency ?? "COP" })}
-            {sub.next_billing_on ? ` · ${sub.next_billing_on}` : null}
+            {sub.next_billing_on ? ` · ${formatMovementDate(sub.next_billing_on)}` : null}
           </p>
           {paid ? (
             <p className="mt-0.5 text-xs text-signal">{t("finance.paidThisCycle")}</p>
@@ -206,7 +207,7 @@ export function PaySubscriptionModal({
   }
 
   return (
-    <div role="dialog" aria-modal="true" aria-label={t("finance.subscriptionPayTitle")} className="mt-2 rounded-xl border border-hull bg-panel/90 p-4 sm:p-5">
+    <div role="dialog" aria-modal="true" aria-label={t("finance.subscriptionPayTitle")} className="mt-2 rounded-xl border border-hair bg-panel/90 p-4 sm:p-5">
       <h3 className="font-display text-sm font-semibold">{t("finance.subscriptionPayTitle")}</h3>
       <p className="mt-1 break-words font-mono text-sm tabular-nums">
         {sub.name} · {formatMoney(sub.price, { currency: sub.currency ?? "COP" })}

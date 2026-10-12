@@ -2,11 +2,7 @@
 
 import { t, type EsKey } from "@/lib/i18n";
 import { TREND_PERIODS, type TrendPeriod } from "@/lib/finance/finance";
-
-// Same pill treatment as `PeriodSelector` (border hull + has-checked signal),
-// with a ≥44px hit area for the 4 bucket periods in both selectors.
-const pillClass =
-  "inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center gap-2 rounded-full border border-hull px-3 py-1.5 text-xs text-instrument transition-colors hover:border-signal hover:text-signal focus-within:border-signal has-checked:border-signal has-checked:text-signal";
+import { deck } from "@/components/ui/deckStyles";
 
 const TREND_LABEL_KEYS: Record<TrendPeriod, EsKey> = {
   day: "finance.trendPeriodDay",
@@ -15,8 +11,15 @@ const TREND_LABEL_KEYS: Record<TrendPeriod, EsKey> = {
   year: "finance.trendPeriodYear",
 };
 
-/** Día/Semana/Mes/Año radio-pills for the category line chart (bucket count,
- * not a date range). The parent owns the `month` default and the state. */
+/**
+ * Single source for the Día/Semana/Mes/Año period control: the prototype's
+ * segmented track (`finanzas-desktop.html`, `finanzas-mobile.html` chart card)
+ * rendered through the `deckStyles` recipes. It keeps the native radio-group
+ * semantics (`one input[name]` per period) and the accessible group name
+ * (`Periodo`, overridable with `label`); the legend is visually hidden because
+ * the prototype places the track inline. `DeckPeriodPills` (Resumen) delegates
+ * here, so both surfaces share exactly one implementation.
+ */
 export default function TrendPeriodSelector({
   value,
   onChange,
@@ -29,20 +32,23 @@ export default function TrendPeriodSelector({
   label?: string;
 }) {
   return (
-    <fieldset>
-      <legend className="font-display text-sm font-medium">
-        {label ?? t("finance.trendPeriodLabel")}
-      </legend>
-      <div className="mt-2 flex flex-wrap gap-2">
+    <fieldset className="flex justify-end">
+      <legend className="sr-only">{label ?? t("finance.trendPeriodLabel")}</legend>
+      <div className={deck.segmentedTrack}>
         {TREND_PERIODS.map((period) => (
-          <label key={period} className={pillClass}>
+          <label
+            key={period}
+            className={`relative ${
+              value === period ? deck.segmentedActive : deck.segmentedInactive
+            } inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center focus-within:ring-2 focus-within:ring-signal`}
+          >
             <input
               type="radio"
               name={name}
               value={period}
               checked={value === period}
               onChange={() => onChange(period)}
-              className="accent-current"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             />
             {t(TREND_LABEL_KEYS[period])}
           </label>

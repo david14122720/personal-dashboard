@@ -1,15 +1,13 @@
 "use client";
 
 import EmptyState from "@/components/ui/EmptyState";
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import type { EventWire, GoalWire, NoteWire, TaskWire } from "@/lib/api/productivity";
 import { ledDotClass } from "@/lib/dashboard/transforms";
 import {
-  eventWhenLabel,
   goalProgressFraction,
-  groupTasksByStatus,
   noteExcerpt,
-  type EventTimeView,
   type TaskDateView,
 } from "@/lib/productivity/productivity";
 
@@ -17,18 +15,110 @@ import {
  * Pure presentational sections for the productivity screens. The container
  * owns all SWR reads, debounced search state, and log/toggle mutations;
  * these components receive plain views and callbacks only.
+ *
+ * T5b restyles the four content cards onto the Control Deck recipes in
+ * `deckStyles.ts` while keeping every real control: the goal `Editar` /
+ * `Eliminar` actions replace the prototype's `Vincular tareas` / `Ver
+ * desglose` (the app has no such operations, so they are never rendered as
+ * dead controls), the task checkbox is the real `PATCH /tasks` toggle, and
+ * the event rows carry the real Bogotá date/time. Every count and date is
+ * computed from the wire (D10); the prototype's fabricated figures are gone.
  */
 
-const rowActionClass =
-  "shrink-0 rounded-md border border-hull px-3 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal disabled:opacity-50 min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+/** Bogotá calendar for the event date block and the note timestamps. */
+const BOGOTA_TZ = "America/Bogota";
+const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-/** View tabs: ≥44px pills with a visible hover state (`design.md`, "Pill / tab"). */
-const viewTabClass =
-  "inline-flex min-h-11 items-center justify-center rounded-full border px-3 font-display text-xs transition-colors";
+/** `10 sept` for a real `YYYY-MM-DD` calendar date (prototype `Vence 20 oct`). */
+export function formatShortDate(ymd: string): string {
+  const match = YMD_RE.exec(ymd);
+  if (!match) return ymd;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.toLocaleDateString("es", { day: "numeric", month: "short" });
+}
 
-// Canonical field string from the UI-polish contract (`design.md`).
-const fieldClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+/** `OCT` + `11` of a real start instant, read on the Bogotá calendar. */
+export function eventDateParts(iso: string): { month: string; day: string } | null {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const month = new Intl.DateTimeFormat("es-CO", { month: "short", timeZone: BOGOTA_TZ })
+    .format(date)
+    .replace(/\.$/, "")
+    .toUpperCase();
+  const day = new Intl.DateTimeFormat("es-CO", { day: "numeric", timeZone: BOGOTA_TZ }).format(date);
+  return { month, day };
+}
+
+function bogotaTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat("es-CO", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: BOGOTA_TZ,
+  }).format(date);
+}
+
+/** Real start–end range in Bogotá (`todo el día` for all-day rows). */
+export function eventTimeRange(event: {
+  starts_at: string;
+  ends_at: string | null;
+  all_day: boolean;
+}): string {
+  if (event.all_day) return t("productivity.kpiAllDay");
+  const start = bogotaTime(event.starts_at);
+  return event.ends_at ? `${start} – ${bogotaTime(event.ends_at)}` : start;
+}
+
+/** Long real date (`7 de septiembre de 2026`) for the note card footer. */
+function formatLongDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat("es-CO", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: BOGOTA_TZ,
+  }).format(date);
+}
+
+/** Inline SVG icons (D3): the prototypes' Material Symbols names are mapped to
+ * inline paths; no icon-font dependency. All decorative. */
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+    >
+      <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function SearchIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="M20 20l-3.5-3.5" />
+    </svg>
+  );
+}
 
 function DeleteButton({
   label,
@@ -45,7 +135,7 @@ function DeleteButton({
       disabled={pending}
       aria-label={label}
       onClick={onDelete}
-      className={rowActionClass}
+      className={deck.cardTextAction}
     >
       {pending ? t("productivity.deleting") : t("productivity.delete")}
     </button>
@@ -54,13 +144,35 @@ function DeleteButton({
 
 function EditButton({ label, onEdit }: { label: string; onEdit: () => void }) {
   return (
-    <button type="button" aria-label={label} onClick={onEdit} className={rowActionClass}>
+    <button type="button" aria-label={label} onClick={onEdit} className={deck.cardTextActionSignal}>
       {t("productivity.edit")}
     </button>
   );
 }
 
-/** Date-view tabs (Hoy / Próximas / Vencidas / Completadas). Counts in parens. */
+/** One pill of a content-card filter row; `aria-pressed` carries the state. */
+function ViewPill({
+  active,
+  label,
+  onSelect,
+}: {
+  active: boolean;
+  label: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onSelect}
+      className={active ? deck.cardPillActive : deck.cardPillIdle}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Date-view tabs (Todas / Hoy / Próximas / Vencidas / Completadas). Counts in parens. */
 export function TaskViewTabs({
   view,
   counts,
@@ -80,76 +192,72 @@ export function TaskViewTabs({
   return (
     <div role="group" aria-label={t("productivity.tasks")} className="flex flex-wrap gap-2">
       {options.map((option) => (
-        <button
+        <ViewPill
           key={option.value}
-          type="button"
-          aria-pressed={view === option.value}
-          onClick={() => onView(option.value)}
-          className={`${viewTabClass} ${
-            view === option.value
-              ? "border-signal text-signal"
-              : "border-hull hover:border-signal hover:text-signal"
-          }`}
-        >
-          {`${option.label} (${counts[option.value] ?? 0})`}
-        </button>
+          active={view === option.value}
+          label={`${option.label} (${counts[option.value] ?? 0})`}
+          onSelect={() => onView(option.value)}
+        />
       ))}
     </div>
   );
 }
 
-/** Time-view tabs (Próximos / Vencidos) for the events list. */
+/** Event-card views: real counts partition Todos into Hoy / Próximos / Vencidos. */
+export type EventCardView = "all" | "today" | "upcoming" | "overdue";
+
+/** Time-view tabs (Todos / Hoy / Próximos / Vencidos) for the events list. */
 export function EventViewTabs({
   view,
   counts,
   onView,
 }: {
-  view: EventTimeView;
-  counts: Record<EventTimeView, number>;
-  onView: (next: EventTimeView) => void;
+  view: EventCardView;
+  counts: Record<EventCardView, number>;
+  onView: (next: EventCardView) => void;
 }) {
-  const options: Array<{ value: EventTimeView; label: string }> = [
-    { value: "all", label: t("productivity.viewAll") },
+  const options: Array<{ value: EventCardView; label: string }> = [
+    { value: "all", label: t("productivity.viewAllEvents") },
+    { value: "today", label: t("productivity.viewToday") },
     { value: "upcoming", label: t("productivity.viewUpcomingEvents") },
     { value: "overdue", label: t("productivity.viewOverdueEvents") },
   ];
   return (
     <div role="group" aria-label={t("productivity.events")} className="flex flex-wrap gap-2">
       {options.map((option) => (
-        <button
+        <ViewPill
           key={option.value}
-          type="button"
-          aria-pressed={view === option.value}
-          onClick={() => onView(option.value)}
-          className={`${viewTabClass} ${
-            view === option.value
-              ? "border-signal text-signal"
-              : "border-hull hover:border-signal hover:text-signal"
-          }`}
-        >
-          {`${option.label} (${counts[option.value] ?? 0})`}
-        </button>
+          active={view === option.value}
+          label={`${option.label} (${counts[option.value] ?? 0})`}
+          onSelect={() => onView(option.value)}
+        />
       ))}
     </div>
   );
 }
 
-/** Per-section collapsed-form toggle («Nuevo»). Always rendered in the
- * section header — including over an empty list — so creation is never a
- * dead end. `aria-expanded`/`aria-controls` expose the collapsed state;
- * focus moves into the form on open and back here on collapse. */
+/** Per-section collapsed-form toggle («Nuevo» / «Nueva»). Always rendered in
+ * the section header — including over an empty list — so creation is never a
+ * dead end. `aria-expanded`/`aria-controls` expose the collapsed state; focus
+ * moves into the form on open and back here on collapse. */
 export function NewEntryButton({
   section,
   formId,
   open,
   onToggle,
   ref,
+  label,
+  ariaLabel,
 }: {
   section: string;
   formId: string;
   open: boolean;
   onToggle: () => void;
   ref?: React.Ref<HTMLButtonElement>;
+  /** Visible label override (`Nueva` on Metas). */
+  label?: string;
+  /** Accessible-name override; it must contain the visible label (WCAG 2.5.3). */
+  ariaLabel?: string;
 }) {
   return (
     <button
@@ -157,11 +265,11 @@ export function NewEntryButton({
       type="button"
       aria-expanded={open}
       aria-controls={formId}
-      aria-label={t("productivity.newEntryLabel", { section })}
+      aria-label={ariaLabel ?? t("productivity.newEntryLabel", { section })}
       onClick={onToggle}
-      className="shrink-0 rounded-md border border-hull px-4 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+      className={deck.cardAction}
     >
-      {t("productivity.newEntry")}
+      {label ?? t("productivity.newEntry")}
     </button>
   );
 }
@@ -180,12 +288,14 @@ export function SectionShell({
   span: string;
 }) {
   return (
-    <section aria-label={title} className={`rounded-xl border border-hull bg-panel/90 p-4 sm:p-5 ${span}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-display text-base font-medium tracking-wide">{title}</h2>
+    <section aria-label={title} className={`${deck.panel} flex min-w-0 flex-col ${span}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className={deck.sectionTitle}>{title}</h2>
+          {hint ? <p className={deck.sectionSubtitle}>{hint}</p> : null}
+        </div>
         {action}
       </div>
-      {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
       <div className="mt-4 flex flex-col gap-4">{children}</div>
     </section>
   );
@@ -199,7 +309,7 @@ function ProgressBar({ pct, status, label }: { pct: number; status: string; labe
       aria-valuenow={Math.round(pct * 100)}
       aria-valuemin={0}
       aria-valuemax={100}
-      className="h-2 overflow-hidden rounded-full bg-deck"
+      className={deck.cardProgressTrack}
     >
       <div className={`h-full rounded-full ${ledDotClass(status)}`} style={{ width: `${pct * 100}%` }} />
     </div>
@@ -218,6 +328,7 @@ function taskPriorityText(priority: string): string {
   if (priority === "high") return t("productivity.taskPriorityHigh");
   if (priority === "medium") return t("productivity.taskPriorityMedium");
   if (priority === "low") return t("productivity.taskPriorityLow");
+  if (priority === "urgent") return t("productivity.taskPriorityUrgent");
   return priority;
 }
 
@@ -246,16 +357,45 @@ function goalLed(status: string): string {
   return "ok";
 }
 
+/** Real goal area chip: preset areas are translated, anything else shows as stored. */
+const GOAL_AREA_LABEL_KEYS: Record<string, Parameters<typeof t>[0]> = {
+  finanzas: "productivity.goalAreaFinances",
+  estudios: "productivity.goalAreaStudy",
+  trabajo: "productivity.goalAreaWork",
+  salud: "productivity.goalAreaHealth",
+  productividad: "productivity.goalAreaProductivity",
+  proyectos: "productivity.goalAreaProjects",
+  lectura: "productivity.goalAreaReading",
+  aprendizaje: "productivity.goalAreaLearning",
+  otras: "productivity.goalAreaOther",
+};
+
+function goalAreaChipLabel(area: string): string {
+  const key = GOAL_AREA_LABEL_KEYS[area];
+  return key ? t(key) : area;
+}
+
+/** Real linked-task summary of one goal, or the honest "none" note. */
+function linkedTaskText(counts: { total: number; done: number } | undefined): string {
+  if (!counts || counts.total === 0) return t("productivity.noLinkedTasks");
+  return counts.total === 1
+    ? t("productivity.goalTasksReadyOne", { done: counts.done })
+    : t("productivity.goalTasksReadyMany", { done: counts.done, total: counts.total });
+}
+
 export function GoalsList({
   goals,
   onEdit,
   onDelete,
   deletingId,
+  taskCountsByGoal,
 }: {
   goals: GoalWire[];
   onEdit?: (goal: GoalWire) => void;
   onDelete?: (goal: GoalWire) => void;
   deletingId?: string | null;
+  /** Real per-goal task counts computed from `GET /tasks` by the container. */
+  taskCountsByGoal?: Record<string, { total: number; done: number }>;
 }) {
   if (goals.length === 0) {
     return <EmptyState title={t("productivity.noGoals")} hint={t("productivity.noGoalsHint")} />;
@@ -265,27 +405,35 @@ export function GoalsList({
       {goals.map((goal) => {
         const fraction = goalProgressFraction(goal.progress);
         return (
-          <li key={goal.id} className="rounded-lg border border-hull px-4 py-3">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <p className="line-clamp-2 text-sm font-medium sm:block sm:truncate">
-                {goal.name}
-                <span className="ml-2 text-xs font-normal text-instrument/50">{goalStatusText(goal.status)}</span>
-              </p>
-              <p className="font-mono text-xs tabular-nums text-instrument/60">
-                {Math.round(fraction * 100)}% · {goal.area}
-              </p>
+          <li key={goal.id} className={deck.cardRow}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className={`${deck.goalDot} ${goal.color ? "" : ledDotClass(goalLed(goal.status))}`}
+                  style={goal.color ? { backgroundColor: goal.color } : undefined}
+                />
+                <span className="min-w-0 truncate text-sm font-semibold text-instrument">{goal.name}</span>
+                <span className={deck.rowChip}>{goalAreaChipLabel(goal.area)}</span>
+              </div>
+              <span className={deck.cardMetric}>{`${Math.round(fraction * 100)}%`}</span>
             </div>
-            {goal.description ? (
-              <p className="mt-0.5 line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">{goal.description}</p>
-            ) : null}
-            <div className="mt-2">
-              <ProgressBar pct={fraction} status={goalLed(goal.status)} label={t("productivity.goalProgressOf", { name: goal.name })} />
+            <div className="mt-3">
+              <ProgressBar
+                pct={fraction}
+                status={goalLed(goal.status)}
+                label={t("productivity.goalProgressOf", { name: goal.name })}
+              />
             </div>
-            {goal.due_date ? (
-              <p className="mt-1 font-mono text-xs tabular-nums text-instrument/60">{t("productivity.dueOn", { date: goal.due_date })}</p>
-            ) : null}
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+              <span>{goalStatusText(goal.status)}</span>
+              <span>{linkedTaskText(taskCountsByGoal?.[goal.id])}</span>
+              {goal.due_date ? (
+                <span>{t("productivity.dueOn", { date: formatShortDate(goal.due_date) })}</span>
+              ) : null}
+            </div>
             {onEdit || onDelete ? (
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="mt-2 flex flex-wrap items-center justify-end gap-1 border-t border-hair pt-2">
                 {onEdit ? (
                   <EditButton
                     label={t("productivity.editGoalLabel", { name: goal.name })}
@@ -316,6 +464,7 @@ export function TasksList({
   onDelete,
   deletingId,
   goalNameById,
+  view,
 }: {
   tasks: TaskWire[];
   togglingId: string | null;
@@ -324,70 +473,86 @@ export function TasksList({
   onDelete?: (task: TaskWire) => void;
   deletingId?: string | null;
   goalNameById?: Record<string, string>;
+  /** Active date view; a filtered empty list says so instead of a generic empty. */
+  view?: TaskDateView;
 }) {
   if (tasks.length === 0) {
+    if (view && view !== "all") {
+      return <EmptyState title={t("productivity.noTasksInView")} />;
+    }
     return <EmptyState title={t("productivity.noTasks")} hint={t("productivity.noTasksHint")} />;
   }
-  const groups = groupTasksByStatus(tasks);
   return (
-    <div className="flex flex-col gap-4">
-      {groups.map((group) => (
-        <div key={group.status}>
-          <h3 className="font-display text-xs font-semibold uppercase tracking-widest text-instrument/50">
-            {t("productivity.taskGroupCount", { status: taskStatusText(group.status), n: group.items.length })}
-          </h3>
-          <ul className="mt-2 flex flex-col gap-2">
-            {group.items.map((task) => {
-              const done = task.status === "completed";
-              return (
-                <li
-                  key={task.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="line-clamp-2 text-sm sm:block sm:truncate">{task.title}</p>
-                    <p className="truncate text-xs text-instrument/60">
-                      {taskPriorityText(task.priority)}
-                      {task.due_date ? ` · ${t("productivity.dueOn", { date: task.due_date })}` : ""}
-                    </p>
-                    {task.goal_id && goalNameById?.[task.goal_id] ? (
-                      <p className="line-clamp-2 text-xs text-instrument/50 sm:block sm:truncate">{goalNameById[task.goal_id]}</p>
+    <ul className="flex flex-col gap-2">
+      {tasks.map((task) => {
+        const done = task.status === "completed";
+        const cancelled = task.status === "cancelled";
+        const chip = done || cancelled ? taskStatusText(task.status) : taskPriorityText(task.priority);
+        return (
+          <li key={task.id} className={deck.cardRow}>
+            <div className="flex items-start gap-2">
+              <label className="relative flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center">
+                <input
+                  type="checkbox"
+                  checked={done}
+                  disabled={togglingId === task.id}
+                  aria-label={
+                    done
+                      ? t("productivity.reopenTask", { title: task.title })
+                      : t("productivity.completeTask", { title: task.title })
+                  }
+                  onChange={() => onToggle(task)}
+                  className={deck.taskToggle}
+                />
+                <span aria-hidden="true" className={deck.taskToggleMark}>
+                  <CheckIcon className="h-3.5 w-3.5" />
+                </span>
+              </label>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-2">
+                  <span
+                    className={`min-w-0 flex-1 text-sm ${
+                      done ? "text-muted line-through" : "font-medium text-instrument"
+                    }`}
+                  >
+                    {task.title}
+                  </span>
+                  <span className={deck.rowChip}>{chip}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+                  {!done && !cancelled ? <span>{taskStatusText(task.status)}</span> : null}
+                  {task.goal_id && goalNameById?.[task.goal_id] ? (
+                    <span className="min-w-0 truncate">
+                      {t("productivity.taskGoalPrefix", { name: goalNameById[task.goal_id] })}
+                    </span>
+                  ) : null}
+                  {task.due_date ? (
+                    <span>{t("productivity.dueOn", { date: formatShortDate(task.due_date) })}</span>
+                  ) : null}
+                </div>
+                {onEdit || onDelete ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    {onEdit ? (
+                      <EditButton
+                        label={t("productivity.editTaskLabel", { title: task.title })}
+                        onEdit={() => onEdit(task)}
+                      />
                     ) : null}
-                    {onEdit || onDelete ? (
-                      <div className="mt-1.5 flex flex-wrap gap-2">
-                        {onEdit ? (
-                          <EditButton
-                            label={t("productivity.editTaskLabel", { title: task.title })}
-                            onEdit={() => onEdit(task)}
-                          />
-                        ) : null}
-                        {onDelete ? (
-                          <DeleteButton
-                            label={t("productivity.deleteTaskLabel", { title: task.title })}
-                            pending={deletingId === task.id}
-                            onDelete={() => onDelete(task)}
-                          />
-                        ) : null}
-                      </div>
+                    {onDelete ? (
+                      <DeleteButton
+                        label={t("productivity.deleteTaskLabel", { title: task.title })}
+                        pending={deletingId === task.id}
+                        onDelete={() => onDelete(task)}
+                      />
                     ) : null}
                   </div>
-                  <button
-                    type="button"
-                    disabled={togglingId === task.id}
-                    aria-label={done ? t("productivity.reopenTask", { title: task.title }) : t("productivity.completeTask", { title: task.title })}
-                    aria-pressed={done}
-                    onClick={() => onToggle(task)}
-                    className={`${rowActionClass} hover:border-flow hover:text-flow`}
-                  >
-                    {done ? t("productivity.markReopen") : t("productivity.markDone")}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
-    </div>
+                ) : null}
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -396,59 +561,73 @@ export function EventsList({
   onEdit,
   onDelete,
   deletingId,
+  view,
 }: {
   events: EventWire[];
   onEdit?: (event: EventWire) => void;
   onDelete?: (event: EventWire) => void;
   deletingId?: string | null;
+  /** Active time view; a filtered empty list says so instead of a generic empty. */
+  view?: EventCardView;
 }) {
   if (events.length === 0) {
+    if (view && view !== "all") {
+      return <EmptyState title={t("productivity.noEventsInView")} />;
+    }
     return <EmptyState title={t("productivity.noEvents")} hint={t("productivity.noEventsHint")} />;
   }
   return (
     <ul className="flex flex-col gap-2">
-      {events.map((event) => (
-        <li
-          key={event.id}
-          className="flex items-center justify-between gap-3 rounded-lg border border-hull px-3 py-2"
-        >
-          <div className="min-w-0 flex-1">
-            <p className="line-clamp-2 text-sm sm:block sm:truncate">{event.title}</p>
-            <p className="line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">
-              {eventKindText(event.kind)}
-              {event.location ? ` · ${event.location}` : ""}
-            </p>
-            {onEdit || onDelete ? (
-              <div className="mt-1.5 flex flex-wrap gap-2">
-                {onEdit ? (
-                  <EditButton
-                    label={t("productivity.editEventLabel", { title: event.title })}
-                    onEdit={() => onEdit(event)}
-                  />
-                ) : null}
-                {onDelete ? (
-                  <DeleteButton
-                    label={t("productivity.deleteEventLabel", { title: event.title })}
-                    pending={deletingId === event.id}
-                    onDelete={() => onDelete(event)}
-                  />
+      {events.map((event) => {
+        const parts = eventDateParts(event.starts_at);
+        return (
+          <li key={event.id} className={deck.cardRow}>
+            <div className="flex items-start gap-3">
+              {parts ? (
+                <time dateTime={event.starts_at} className={deck.dateBlock}>
+                  <span className={deck.dateBlockMonth}>{parts.month}</span>
+                  <span className={deck.dateBlockDay}>{parts.day}</span>
+                </time>
+              ) : null}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-sm font-semibold text-instrument">{event.title}</span>
+                  <span className={deck.rowChip}>{eventKindText(event.kind)}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+                  <span className="font-mono text-[11px] tabular-nums">{eventTimeRange(event)}</span>
+                  {event.location ? <span className="min-w-0 truncate">{event.location}</span> : null}
+                </div>
+                {onEdit || onDelete ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    {onEdit ? (
+                      <EditButton
+                        label={t("productivity.editEventLabel", { title: event.title })}
+                        onEdit={() => onEdit(event)}
+                      />
+                    ) : null}
+                    {onDelete ? (
+                      <DeleteButton
+                        label={t("productivity.deleteEventLabel", { title: event.title })}
+                        pending={deletingId === event.id}
+                        onDelete={() => onDelete(event)}
+                      />
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
-            ) : null}
-          </div>
-          <p className="shrink-0 font-mono text-xs tabular-nums text-instrument/70">
-            {eventWhenLabel(event.starts_at, event.all_day)}
-          </p>
-        </li>
-      ))}
+            </div>
+          </li>
+        );
+      })}
     </ul>
   );
 }
 
 export function NotesSearchBox({ query, onQuery }: { query: string; onQuery: (value: string) => void }) {
   return (
-    <label className="block">
-      <span className="sr-only">{t("productivity.searchNotes")}</span>
+    <div className="flex items-center gap-2 rounded-lg border border-hair bg-deck/60 px-3 transition-colors focus-within:border-signal/50">
+      <SearchIcon className="h-4 w-4 shrink-0 text-muted" />
       <input
         type="search"
         role="searchbox"
@@ -456,9 +635,9 @@ export function NotesSearchBox({ query, onQuery }: { query: string; onQuery: (va
         placeholder={t("productivity.searchNotes")}
         value={query}
         onChange={(event) => onQuery(event.target.value)}
-        className={fieldClass}
+        className="min-h-11 w-full bg-transparent text-sm text-instrument placeholder:text-slate-500 focus:outline-none"
       />
-    </label>
+    </div>
   );
 }
 
@@ -483,20 +662,19 @@ export function NotesResults({
   return (
     <ul className="flex flex-col gap-2">
       {notes.map((note) => (
-        <li key={note.id} className="rounded-lg border border-hull px-3 py-2">
-          <p className="line-clamp-2 text-sm font-medium sm:block sm:truncate">
-            {note.title}
-            {note.is_pinned ? (
-              <span className="ml-2 rounded-full border border-signal/40 px-2 py-0.5 font-display text-xs text-signal">
-                {t("productivity.pinnedBadge")}
-              </span>
-            ) : null}
-          </p>
+        <li key={note.id} className={deck.cardRow}>
+          <div className="flex items-start justify-between gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-instrument">
+              {note.title}
+            </span>
+            {note.is_pinned ? <span className={deck.rowChip}>{t("productivity.pinnedBadge")}</span> : null}
+          </div>
           {note.body ? (
-            <p className="mt-0.5 line-clamp-2 text-xs text-instrument/60 sm:block sm:truncate">{noteExcerpt(note.body)}</p>
+            <p className="mt-1 line-clamp-2 text-xs text-muted">{noteExcerpt(note.body)}</p>
           ) : null}
-          {onEdit || onDelete || onTogglePin ? (
-            <div className="mt-1.5 flex flex-wrap gap-2">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-hair pt-2 text-[11px] text-faint">
+            <span>{t("productivity.noteUpdatedAt", { date: formatLongDate(note.updated_at) })}</span>
+            <div className="flex flex-wrap items-center gap-1">
               {onTogglePin ? (
                 <button
                   type="button"
@@ -508,9 +686,9 @@ export function NotesResults({
                       : t("productivity.pinNoteLabel", { title: note.title })
                   }
                   onClick={() => onTogglePin(note)}
-                  className={rowActionClass}
+                  className={deck.cardTextAction}
                 >
-                  {t("productivity.notePinned")}
+                  {note.is_pinned ? t("productivity.noteUnpin") : t("productivity.notePin")}
                 </button>
               ) : null}
               {onEdit ? (
@@ -527,7 +705,7 @@ export function NotesResults({
                 />
               ) : null}
             </div>
-          ) : null}
+          </div>
         </li>
       ))}
     </ul>

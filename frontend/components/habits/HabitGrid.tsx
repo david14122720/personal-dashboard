@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { t } from "@/lib/i18n";
+import { deck } from "@/components/ui/deckStyles";
 import { isExpected, type DashHabit } from "@/lib/productivity/habitDashboard";
 
 /** One grid row: the pure habit view plus wire-owned presentation metadata. */
@@ -11,6 +12,10 @@ export interface HabitGridRow {
   icon: string | null;
   /** `Categoría • Detalle`; null when the habit has neither. */
   subtitle: string | null;
+  /** Real current streak in days (0 when ended or never logged). */
+  streakDays: number;
+  /** Real success percentage over the visible month. */
+  successPct: number;
 }
 
 /**
@@ -176,8 +181,144 @@ function tint(color: string | null): { style?: React.CSSProperties; className: s
   return { className: "bg-signal/15 text-signal" };
 }
 
-const cellBase =
-  "flex h-[30px] w-[30px] items-center justify-center rounded-md font-mono text-[11px] tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+function CheckMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className ?? "h-3.5 w-3.5"}>
+      <path
+        d="M5 10.4l3 3 7-7.4"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CircleMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className ?? "h-3.5 w-3.5"}>
+      <circle cx="10" cy="10" r="6.5" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+/**
+ * One cell of the month: expected/unlogged/done plus the honest status label.
+ * `inRange` is the habit window, `scheduled` also requires the weekday mask and
+ * `date <= today`; out-of-range days always read "futuro" (even with a log).
+ */
+function cellView(
+  habit: DashHabit,
+  date: string,
+  todayYmd: string,
+  isDone: (habitId: string, date: string) => boolean,
+): { scheduled: boolean; done: boolean; status: string } {
+  const inRange = (!habit.startDate || date >= habit.startDate) && (!habit.endDate || date <= habit.endDate);
+  const scheduled = inRange && isExpected(habit, date, todayYmd);
+  const done = scheduled && isDone(habit.id, date);
+  const status = !inRange
+    ? t("habitsDashboard.cellFuture")
+    : !scheduled
+      ? date > todayYmd
+        ? t("habitsDashboard.cellFuture")
+        : t("habitsDashboard.cellUnscheduled")
+      : done
+        ? t("habitsDashboard.cellDone")
+        : t("habitsDashboard.cellPending");
+  return { scheduled, done, status };
+}
+
+/** Mobile-only card: header with today's real toggle plus a visual day strip. */
+function HabitMobileCard({
+  row,
+  days,
+  monthKey,
+  todayYmd,
+  isDone,
+  onToggle,
+}: {
+  row: HabitGridRow;
+  days: string[];
+  monthKey: string;
+  todayYmd: string;
+  isDone: (habitId: string, date: string) => boolean;
+  onToggle: (habitId: string, date: string) => void;
+}) {
+  const habit = row.habit;
+  const badge = tint(row.color);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const doneToday = isDone(habit.id, todayYmd);
+  const todayIndex = days.indexOf(todayYmd);
+
+  // Centre today in its own strip (the prototype does it imperatively). The
+  // desktop matrix keeps its own scroll-into-view effect untouched.
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip || todayIndex < 0) return;
+    const cell = strip.children[todayIndex] as HTMLElement | undefined;
+    if (!cell) return;
+    strip.scrollLeft = Math.max(0, cell.offsetLeft - strip.clientWidth / 2 + cell.offsetWidth / 2);
+  }, [monthKey, todayYmd, todayIndex, days.length]);
+
+  return (
+    <article className={deck.habitCard}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <span aria-hidden="true" className={`${deck.habitCardIcon} ${badge.className}`} style={badge.style}>
+            <HabitIcon name={row.icon} className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold text-instrument">{habit.name}</h3>
+            {row.subtitle ? <p className="truncate text-[11px] text-slate-500">{row.subtitle}</p> : null}
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-pressed={doneToday}
+          aria-label={
+            doneToday
+              ? t("habitsDashboard.mobileTodayToggleDone", { name: habit.name })
+              : t("habitsDashboard.mobileTodayToggle", { name: habit.name })
+          }
+          onClick={() => onToggle(habit.id, todayYmd)}
+          className={`${deck.habitTodayToggle} ${doneToday ? deck.habitTodayDone : deck.habitTodayIdle}`}
+        >
+          {doneToday ? <CheckMark className="h-5 w-5" /> : <CircleMark className="h-5 w-5" />}
+        </button>
+      </div>
+
+      <div ref={stripRef} className="no-scrollbar relative flex items-center gap-1 overflow-x-auto pb-1" data-days-strip>
+        {days.map((date) => {
+          const { scheduled, done, status } = cellView(habit, date, todayYmd, isDone);
+          const isToday = date === todayYmd;
+          const state = done ? deck.habitDayDone : scheduled ? deck.habitDayPending : deck.habitDayFuture;
+          return (
+            <span
+              key={date}
+              role="img"
+              aria-label={t("habitsDashboard.cellLabel", { name: habit.name, date: dayLabelEs(date), status })}
+              className={`${deck.habitDayCell} ${state} ${isToday ? deck.habitDayToday : ""}`}
+            >
+              {date.slice(8)}
+            </span>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center justify-between text-xs">
+        <span className={row.streakDays > 0 ? deck.habitCardStreak : deck.habitCardStreakPending}>
+          {row.streakDays > 0
+            ? t("habitsDashboard.mobileStreak", { n: row.streakDays })
+            : t("habitsDashboard.mobileStreakPending")}
+        </span>
+        <span className={deck.habitCardEffectiveness}>
+          {t("habitsDashboard.mobileEffectiveness", { n: row.successPct })}
+        </span>
+      </div>
+    </article>
+  );
+}
 
 export interface HabitGridProps {
   rows: HabitGridRow[];
@@ -191,12 +332,18 @@ export interface HabitGridProps {
 }
 
 /**
- * Month grid: one row per habit, one 30×30 cell button per day wrapped in a
- * `gridcell`. Past/today in-range cells toggle (optimistic, owned by the
- * container); future, off-range (before `startDate`/after `endDate`, even with
- * a stored log) and off-schedule cells render disabled futuro-style. The left
- * column is sticky and the grid scrolls horizontally; the today column scrolls
- * into view whenever the month changes.
+ * Month tracker, two skins of the same real data (DESIGN-SPEC D7):
+ *
+ * - `lg` and up: the prototype's month matrix — a 260px label column, one
+ *   column per day of the visible month, plus the real `Racha`/`Éxito`
+ *   columns, inside an `overflow-x-auto` wrapper with `min-w-[1240px]`.
+ * - below `lg`: one card per habit with a horizontally scrollable day strip
+ *   centred on today, the prototype's `Marcar hoy` toggle and its real
+ *   streak/effectiveness footer.
+ *
+ * Owner decision (prior, still standing): today is the only writable cell —
+ * it POSTs/DELETEs the real log; past and future days are visual-only/inert.
+ * The grid keeps its `role="grid"` and the `Rastreador de Hábitos` name.
  */
 export default function HabitGrid({ rows, days, monthKey, todayYmd, isDone, onToggle, onArchive }: HabitGridProps) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -226,150 +373,181 @@ export default function HabitGrid({ rows, days, monthKey, todayYmd, isDone, onTo
   const gridTitle = t("habitsDashboard.title");
 
   return (
-    <div className="overflow-x-auto pb-1">
-      <div
-        role="grid"
-        aria-label={gridTitle}
-        className="grid w-max min-w-full gap-x-1 gap-y-1.5"
-        style={{ gridTemplateColumns: `300px repeat(${days.length}, 30px)` }}
-      >
-        <div role="row" className="contents">
-          <div
-            role="columnheader"
-            className="sticky left-0 z-20 flex h-8 items-center bg-deck px-2 font-display text-[11px] uppercase tracking-widest text-instrument/50"
-          >
-            {t("habitsDashboard.colHabit")}
-          </div>
-          {days.map((date) => {
-            const isToday = date === todayYmd;
-            return (
-              <div
-                key={date}
-                ref={isToday ? todayRef : undefined}
-                role="columnheader"
-                aria-label={dayLabelEs(date)}
-                aria-current={isToday ? "date" : undefined}
-                className={`flex h-8 items-center justify-center font-mono text-[10px] tabular-nums ${
-                  isToday ? "rounded bg-signal/15 font-semibold text-signal" : "text-instrument/45"
-                }`}
-              >
-                {date.slice(8)}
-              </div>
-            );
-          })}
-        </div>
-
-        {rows.map((row) => {
-          const habit = row.habit;
-          const badge = tint(row.color);
-          return (
-            <div key={habit.id} role="row" aria-label={habit.name} className="contents">
-              <div
-                role="rowheader"
-                className="group sticky left-0 z-10 flex h-10 items-center gap-3 overflow-visible bg-deck px-2"
-              >
-                <span
-                  aria-hidden="true"
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${badge.className}`}
-                  style={badge.style}
+    <section aria-label={gridTitle} className="flex flex-col gap-4">
+      <div className={`${deck.matrixPanel} hidden lg:block`}>
+        <div className="overflow-x-auto custom-scrollbar">
+          <div className="min-w-[1240px]">
+            <div
+              role="grid"
+              aria-label={gridTitle}
+              className="grid items-center gap-1"
+              style={{ gridTemplateColumns: `260px repeat(${days.length}, minmax(26px, 1fr)) 85px 95px` }}
+            >
+              <div role="row" className="contents">
+                <div
+                  role="columnheader"
+                  className="sticky left-0 z-20 flex h-8 items-center bg-card pl-2 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500"
                 >
-                  <HabitIcon name={row.icon} className="h-5 w-5" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-bold text-instrument">{habit.name}</span>
-                  {row.subtitle ? (
-                    <span className="block truncate text-[11px] text-instrument/50">{row.subtitle}</span>
-                  ) : null}
-                </span>
-                <span className="relative shrink-0">
-                  <button
-                    type="button"
-                    aria-label={t("habitsDashboard.rowMenu", { name: habit.name })}
-                    aria-haspopup="menu"
-                    aria-expanded={menuFor === habit.id}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setMenuFor((prev) => (prev === habit.id ? null : habit.id));
-                    }}
-                    className="rounded-md px-1.5 py-1 text-instrument/50 opacity-0 transition-opacity hover:text-signal focus-visible:opacity-100 group-hover:opacity-100"
-                  >
-                    ⋯
-                  </button>
-                  {menuFor === habit.id ? (
-                    <span
-                      role="menu"
-                      className="absolute right-0 top-8 z-30 w-36 rounded-lg border border-hull bg-deck p-1 shadow-lg"
+                  {t("habitsDashboard.colHabit")}
+                </div>
+                {days.map((date) => {
+                  const isToday = date === todayYmd;
+                  return (
+                    <div
+                      key={date}
+                      ref={isToday ? todayRef : undefined}
+                      role="columnheader"
+                      aria-label={dayLabelEs(date)}
+                      aria-current={isToday ? "date" : undefined}
+                      className={
+                        isToday
+                          ? "flex h-8 items-center justify-center rounded-md bg-sky-500 font-mono text-[11px] font-bold tabular-nums text-slate-950 shadow-[0_0_10px_rgba(56,189,248,0.5)]"
+                          : "flex h-8 items-center justify-center font-mono text-[11px] tabular-nums text-slate-500"
+                      }
                     >
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuFor(null);
-                          onArchive(habit.id);
-                        }}
-                        className="block w-full rounded-md px-3 py-1.5 text-left text-xs text-instrument transition-colors hover:bg-hull/60 hover:text-signal"
-                      >
-                        {t("habitsDashboard.archive")}
-                      </button>
-                    </span>
-                  ) : null}
-                </span>
+                      {date.slice(8)}
+                    </div>
+                  );
+                })}
+                <div
+                  role="columnheader"
+                  className="flex h-8 items-center justify-center font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500"
+                >
+                  {t("habitsDashboard.colStreak")}
+                </div>
+                <div
+                  role="columnheader"
+                  className="flex h-8 items-center justify-center font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500"
+                >
+                  {t("habitsDashboard.colSuccess")}
+                </div>
               </div>
-              {days.map((date) => {
-                const inRange =
-                  (!habit.startDate || date >= habit.startDate) && (!habit.endDate || date <= habit.endDate);
-                const scheduled = inRange && isExpected(habit, date, todayYmd);
-                const done = scheduled && isDone(habit.id, date);
-                const isToday = date === todayYmd;
-                const status = !inRange
-                  ? t("habitsDashboard.cellFuture")
-                  : !scheduled
-                    ? date > todayYmd
-                      ? t("habitsDashboard.cellFuture")
-                      : t("habitsDashboard.cellUnscheduled")
-                    : done
-                      ? t("habitsDashboard.cellDone")
-                      : t("habitsDashboard.cellPending");
-                const label = t("habitsDashboard.cellLabel", {
-                  name: habit.name,
-                  date: dayLabelEs(date),
-                  status,
-                });
-                const stateClass = done
-                  ? "bg-signal text-white hover:bg-signal/90"
-                  : scheduled
-                    ? `bg-hull/60 text-instrument/60 hover:bg-hull ${isToday ? "ring-1 ring-signal" : ""}`
-                    : "bg-black/40 text-instrument/20";
+
+              {rows.map((row) => {
+                const habit = row.habit;
+                const badge = tint(row.color);
                 return (
-                  <span key={date} role="gridcell" className="flex h-[30px] w-[30px] items-center justify-center">
-                    <button
-                      type="button"
-                      aria-label={label}
-                      aria-pressed={done}
-                      title={label}
-                      disabled={!scheduled}
-                      onClick={() => onToggle(habit.id, date)}
-                      className={`${cellBase} ${stateClass} ${scheduled ? "cursor-pointer" : "cursor-default"}`}
+                  <div key={habit.id} role="row" aria-label={habit.name} className="contents">
+                    <div
+                      role="rowheader"
+                      className="group sticky left-0 z-10 flex h-11 items-center gap-3 bg-card pr-2"
                     >
-                      {done ? (
-                        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-3.5 w-3.5">
-                          <path
-                            d="M5 10.4l3 3 7-7.4"
-                            stroke="currentColor"
-                            strokeWidth="2.2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      ) : null}
-                    </button>
-                  </span>
+                      <span
+                        aria-hidden="true"
+                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${badge.className}`}
+                        style={badge.style}
+                      >
+                        <HabitIcon name={row.icon} className="h-5 w-5" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold text-instrument">{habit.name}</span>
+                        {row.subtitle ? (
+                          <span className="block truncate text-[11px] text-slate-500">{row.subtitle}</span>
+                        ) : null}
+                      </span>
+                      <span className="relative shrink-0">
+                        <button
+                          type="button"
+                          aria-label={t("habitsDashboard.rowMenu", { name: habit.name })}
+                          aria-haspopup="menu"
+                          aria-expanded={menuFor === habit.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setMenuFor((prev) => (prev === habit.id ? null : habit.id));
+                          }}
+                          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-slate-500 opacity-0 transition-opacity hover:text-signal focus-visible:opacity-100 group-hover:opacity-100"
+                        >
+                          ⋯
+                        </button>
+                        {menuFor === habit.id ? (
+                          <span
+                            role="menu"
+                            className="absolute right-0 top-8 z-30 w-36 rounded-lg border border-hair bg-card p-1 shadow-lg"
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setMenuFor(null);
+                                onArchive(habit.id);
+                              }}
+                              className="block w-full rounded-md px-3 py-1.5 text-left text-xs text-instrument transition-colors hover:bg-card-hover hover:text-signal"
+                            >
+                              {t("habitsDashboard.archive")}
+                            </button>
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
+
+                    {days.map((date) => {
+                      const { scheduled, done, status } = cellView(habit, date, todayYmd, isDone);
+                      const isToday = date === todayYmd;
+                      // Owner decision: only today writes the real log.
+                      const clickable = scheduled && isToday;
+                      const label = t("habitsDashboard.cellLabel", {
+                        name: habit.name,
+                        date: dayLabelEs(date),
+                        status,
+                      });
+                      const stateClass = done
+                        ? deck.matrixCellDone
+                        : scheduled
+                          ? deck.matrixCellPending
+                          : deck.matrixCellFuture;
+                      return (
+                        <span key={date} role="gridcell" className="flex items-center justify-center">
+                          <button
+                            type="button"
+                            aria-label={label}
+                            aria-pressed={done}
+                            title={label}
+                            disabled={!clickable}
+                            onClick={() => onToggle(habit.id, date)}
+                            className={`${deck.matrixCell} ${stateClass} ${
+                              isToday ? deck.matrixCellToday : ""
+                            } ${clickable ? "cursor-pointer" : "cursor-default"}`}
+                          >
+                            {done ? <CheckMark /> : null}
+                          </button>
+                        </span>
+                      );
+                    })}
+
+                    <div role="gridcell" className={deck.matrixRowStreak}>
+                      <HabitIcon name="flame" className="h-3.5 w-3.5" />
+                      {t("habitsDashboard.matrixStreak", { n: row.streakDays })}
+                    </div>
+                    <div role="gridcell" className={deck.matrixRowPct}>{`${row.successPct}%`}</div>
+                  </div>
                 );
               })}
             </div>
-          );
-        })}
+          </div>
+        </div>
       </div>
-    </div>
+
+      <div className="flex flex-col gap-3 lg:hidden">
+        <div className="flex items-center justify-between gap-2">
+          <span className="min-w-0 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500">
+            {t("habitsDashboard.mobileMatrixTitle", { n: days.length })}
+          </span>
+          <span className="shrink-0 whitespace-nowrap font-mono text-[11px] text-slate-500">
+            {t("habitsDashboard.mobileSwipeHint")}
+          </span>
+        </div>
+        {rows.map((row) => (
+          <HabitMobileCard
+            key={row.habit.id}
+            row={row}
+            days={days}
+            monthKey={monthKey}
+            todayYmd={todayYmd}
+            isDone={isDone}
+            onToggle={onToggle}
+          />
+        ))}
+      </div>
+    </section>
   );
 }

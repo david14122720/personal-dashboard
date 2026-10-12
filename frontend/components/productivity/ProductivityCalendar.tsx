@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { useSWRConfig } from "swr";
 import DashboardDisclosure from "@/components/dashboard/DashboardDisclosure";
 import EmptyState from "@/components/ui/EmptyState";
+import { deck } from "@/components/ui/deckStyles";
 import { formatMonth, t, type EsKey } from "@/lib/i18n";
 import {
   TASKS_KEY,
@@ -28,18 +29,66 @@ import {
 const CALENDAR_PANEL_ID = "productivity-calendar-panel";
 const DAY_PANEL_ID = "productivity-calendar-day-panel";
 
-const navButtonClass =
-  "inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-hull px-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+/**
+ * Monthly productivity calendar: the prototype's collapsible telemetry block
+ * (`productividad-desktop-v2.html:46`). It keeps the real 42-cell Monday-first
+ * month grid, the real reads (`GET /tasks` + `GET /events` over the visible
+ * range) and the one-day detail region, and restyles the title block, the
+ * legend and the day cells to the prototype's language.
+ *
+ * The module header owns the toggle when the component is controlled
+ * (`open` + `onToggle`); standalone usage (tests, other surfaces) keeps the
+ * internal `DashboardDisclosure` trigger and its `Calendario` heading.
+ *
+ * The prototype's `Hábitos` legend dot is deliberately not rendered: this
+ * surface reads no habit data (Hábitos has its own module), so claiming a
+ * habit series here would be an invented indicator.
+ */
 
-// Cells flex to the column width: `min-w-0` lets seven columns plus six gaps
-// fit a 375px viewport, while `min-h-[44px]` keeps the thumb target (design.md
-// "Mobile geometry").
-const cellClass =
-  "flex min-h-[44px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal";
+export interface ProductivityCalendarProps {
+  /** Controlled disclosure state; only honored together with `onToggle`. */
+  open?: boolean;
+  onToggle?: () => void;
+}
 
 interface DayEntryRows {
   tasks: TaskWire[];
   events: EventWire[];
+}
+
+function CalendarIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+    >
+      <rect height="18" rx="2" ry="2" width="18" x="3" y="4" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ direction, className }: { direction: "left" | "right"; className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+    >
+      {direction === "left" ? <path d="M15 18l-6-6 6-6" /> : <path d="M9 6l6 6-6 6" />}
+    </svg>
+  );
 }
 
 function taskStatusText(status: string): string {
@@ -84,21 +133,55 @@ function cellSummary(date: string, taskCount: number, eventCount: number): strin
 }
 
 /**
- * Monthly productivity calendar: a collapsed-by-default `DashboardDisclosure`
- * whose panel holds a Monday-first 42-cell grid (tasks by `due_date`, events
- * by day overlap), prev/next/«Hoy» navigation and a one-day detail region.
- * Only the CalendarBody is mounted while the disclosure is open, so the
- * collapsed block issues no reads.
+ * ISO-8601 week number (1-53) of a local `YYYY-MM-DD`; null when the date is
+ * invalid. Used for the title-block subline (`Semana 41 · Telemetría
+ * semanal`), always from a real date of the visible month — never fabricated.
  */
-export default function ProductivityCalendar() {
-  const [open, setOpen] = useState(false);
+export function isoWeekNumber(date: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return null;
+  const target = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (Number.isNaN(target)) return null;
+  const DAY_MS = 86_400_000;
+  const mondayOffset = (new Date(target).getUTCDay() + 6) % 7; // Monday = 0
+  const thursday = target + (3 - mondayOffset) * DAY_MS;
+  const yearStart = Date.UTC(new Date(thursday).getUTCFullYear(), 0, 4);
+  const yearStartOffset = (new Date(yearStart).getUTCDay() + 6) % 7;
+  const firstThursday = yearStart + (3 - yearStartOffset) * DAY_MS;
+  return Math.round((thursday - firstThursday) / (7 * DAY_MS)) + 1;
+}
+
+export default function ProductivityCalendar({
+  open: controlledOpen,
+  onToggle: controlledToggle,
+}: ProductivityCalendarProps = {}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const controlled = controlledOpen !== undefined && controlledToggle !== undefined;
+  const open = controlled ? controlledOpen : uncontrolledOpen;
+  const toggle = controlled ? (controlledToggle as () => void) : () => setUncontrolledOpen((value) => !value);
+
+  if (controlled) {
+    // The header owns both the toggle and the visual shell: while collapsed the
+    // block renders nothing but the hidden panel target its `aria-controls`
+    // points at, so the page shows no empty calendar box.
+    return (
+      <div id={CALENDAR_PANEL_ID} hidden={!open}>
+        {open ? (
+          <section className={deck.calendarPanel}>
+            <ProductivityCalendarBody />
+          </section>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="col-span-12">
       <DashboardDisclosure
         title={t("productivity.calendarTitle")}
         hint={t("productivity.calendarHint")}
         open={open}
-        onToggle={() => setOpen((value) => !value)}
+        onToggle={toggle}
         panelId={CALENDAR_PANEL_ID}
       >
         <ProductivityCalendarBody />
@@ -146,6 +229,16 @@ function ProductivityCalendarBody() {
   }, [cells]);
   const weekdays = useMemo(() => t("productivity.calendarWeekdays").split(","), []);
 
+  // Real week of the title block: the selected day when there is one, today
+  // when the visible month holds it, and otherwise the month's first day.
+  const weekReference = useMemo(() => {
+    const today = todayYmdLocal();
+    if (selectedDate) return selectedDate;
+    if (today.slice(0, 7) === monthKey) return today;
+    return cells.find((cell) => cell.inMonth)?.date ?? "";
+  }, [cells, monthKey, selectedDate]);
+  const weekNumber = useMemo(() => isoWeekNumber(weekReference), [weekReference]);
+
   useEffect(() => {
     if (selectedDate) panelRef.current?.focus({ preventScroll: true });
   }, [selectedDate]);
@@ -176,35 +269,64 @@ function ProductivityCalendarBody() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p aria-live="polite" className="font-display text-sm font-semibold text-instrument">
-          {formatMonth(monthKey)}
-        </p>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            aria-label={t("productivity.calendarPrev")}
-            onClick={() => goToMonth(-1)}
-            className={navButtonClass}
-          >
-            <span aria-hidden="true">‹</span>
-          </button>
-          <button
-            type="button"
-            aria-label={t("productivity.calendarNext")}
-            onClick={() => goToMonth(1)}
-            className={navButtonClass}
-          >
-            <span aria-hidden="true">›</span>
-          </button>
-          <button type="button" onClick={goToToday} className={`${navButtonClass} px-3 text-xs`}>
-            {t("productivity.calendarToday")}
-          </button>
+      <div className={deck.calendarHeader}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={deck.calendarIconTile}>
+            <CalendarIcon className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p aria-live="polite" className={deck.calendarTitle}>
+              {formatMonth(monthKey)}
+            </p>
+            <span className={deck.calendarTelemetry}>
+              {weekNumber === null
+                ? t("productivity.calendarTelemetryOnly")
+                : t("productivity.calendarWeekTelemetry", { n: weekNumber })}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <ul aria-label={t("productivity.calendarLegendLabel")} className={deck.calendarLegend}>
+            <li className="flex items-center gap-1.5">
+              <span aria-hidden="true" className={deck.calendarLegendDotTask} />
+              {t("productivity.tasks")}
+            </li>
+            <li className="flex items-center gap-1.5">
+              <span aria-hidden="true" className={deck.calendarLegendDotEvent} />
+              {t("productivity.events")}
+            </li>
+          </ul>
+          <div className={deck.calendarNavGroup}>
+            <button
+              type="button"
+              aria-label={t("productivity.calendarPrev")}
+              onClick={() => goToMonth(-1)}
+              className={deck.calendarNavButton}
+            >
+              <ChevronIcon direction="left" className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={goToToday}
+              className={`${deck.calendarNavButton} px-3 text-xs`}
+            >
+              {t("productivity.calendarToday")}
+            </button>
+            <button
+              type="button"
+              aria-label={t("productivity.calendarNext")}
+              onClick={() => goToMonth(1)}
+              className={deck.calendarNavButton}
+            >
+              <ChevronIcon direction="right" className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
 
       {isLoading ? (
-        <p role="status" className="text-xs text-instrument/60">
+        <p role="status" className="text-xs text-muted">
           {t("common.loading")}
         </p>
       ) : null}
@@ -214,7 +336,7 @@ function ProductivityCalendarBody() {
           <button
             type="button"
             onClick={retry}
-            className="mt-2 min-h-[44px] rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+            className="mt-2 min-h-[44px] rounded-lg border border-hair px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
           >
             {t("common.retry")}
           </button>
@@ -237,7 +359,7 @@ function ProductivityCalendarBody() {
               key={weekday}
               role="columnheader"
               aria-label={weekday}
-              className="flex min-h-[24px] items-center justify-center font-display text-[11px] font-semibold uppercase tracking-wide text-instrument/50"
+              className="flex min-h-[24px] items-center justify-center whitespace-nowrap font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint"
             >
               {weekday}
             </span>
@@ -260,26 +382,27 @@ function ProductivityCalendarBody() {
                   type="button"
                   role="gridcell"
                   aria-label={cellSummary(cell.date, taskCount, eventCount)}
+                  aria-current={cell.isToday ? "date" : undefined}
                   aria-expanded={selected}
                   aria-controls={DAY_PANEL_ID}
                   onClick={() => setSelectedDate((current) => (current === cell.date ? null : cell.date))}
-                  className={`${cellClass} ${cell.inMonth ? "text-instrument" : "text-instrument/40"} ${
-                    selected ? "border-signal bg-signal/10" : "border-hull/60 hover:border-hull"
-                  } ${cell.isToday ? "ring-2 ring-signal" : ""}`}
+                  className={`${deck.calendarCell} ${cell.inMonth ? "text-instrument" : "text-instrument/40"} ${
+                    selected ? "border-signal bg-signal/10" : "border-hair hover:border-hair-strong hover:bg-card-hover"
+                  } ${cell.isToday ? deck.calendarCellToday : ""}`}
                 >
                   <span className="font-mono text-xs tabular-nums sm:text-sm">{Number(cell.date.slice(8))}</span>
                   {taskCount > 0 || eventCount > 0 ? (
-                    <span className="flex flex-wrap items-center justify-center gap-1 leading-none">
+                    <span className={deck.calendarCellMarkers}>
                       {taskCount > 0 ? (
-                        <span data-marker="task" className="inline-flex items-center gap-0.5 text-flow">
-                          <span aria-hidden="true" className="h-2 w-2 bg-flow" />
-                          <span className="font-mono text-[11px] tabular-nums">{taskCount}</span>
+                        <span data-marker="task" className={`${deck.calendarMarker} text-signal`}>
+                          <span aria-hidden="true" className={deck.calendarLegendDotTask} />
+                          <span className={deck.calendarMarkerCount}>{taskCount}</span>
                         </span>
                       ) : null}
                       {eventCount > 0 ? (
-                        <span data-marker="event" className="inline-flex items-center gap-0.5 text-signal">
-                          <span aria-hidden="true" className="h-2 w-2 rounded-full bg-signal" />
-                          <span className="font-mono text-[11px] tabular-nums">{eventCount}</span>
+                        <span data-marker="event" className={`${deck.calendarMarker} text-signal-soft`}>
+                          <span aria-hidden="true" className={deck.calendarLegendDotEvent} />
+                          <span className={deck.calendarMarkerCount}>{eventCount}</span>
                         </span>
                       ) : null}
                     </span>
@@ -303,7 +426,7 @@ function ProductivityCalendarBody() {
             : undefined
         }
         onKeyDown={handlePanelKeyDown}
-        className="animate-fade-in rounded-lg border border-hull bg-deck/60 p-4 transition-opacity motion-reduce:animate-none motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+        className="animate-fade-in rounded-xl border border-hair bg-card/60 p-4 transition-opacity motion-reduce:animate-none motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
       >
         {selectedDate && selectedEntries ? (
           <DayDetail entries={selectedEntries} />
@@ -321,14 +444,14 @@ function DayDetail({ entries }: { entries: DayEntryRows }) {
     <div className="flex flex-col gap-4">
       {entries.tasks.length > 0 ? (
         <div>
-          <h4 className="font-display text-xs font-semibold uppercase tracking-widest text-instrument/50">
+          <h4 className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint">
             {t("productivity.tasks")}
           </h4>
           <ul className="mt-2 flex flex-col gap-2">
             {entries.tasks.map((task) => (
-              <li key={task.id} className="rounded-md border border-hull px-3 py-2">
+              <li key={task.id} className="rounded-lg border border-hair bg-panel/60 px-3 py-2">
                 <p className="text-sm">{task.title}</p>
-                <p className="text-xs text-instrument/60">
+                <p className="text-xs text-muted">
                   {`${taskPriorityText(task.priority)} · ${taskStatusText(task.status)}`}
                 </p>
               </li>
@@ -338,14 +461,14 @@ function DayDetail({ entries }: { entries: DayEntryRows }) {
       ) : null}
       {entries.events.length > 0 ? (
         <div>
-          <h4 className="font-display text-xs font-semibold uppercase tracking-widest text-instrument/50">
+          <h4 className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint">
             {t("productivity.events")}
           </h4>
           <ul className="mt-2 flex flex-col gap-2">
             {entries.events.map((event) => (
-              <li key={event.id} className="rounded-md border border-hull px-3 py-2">
+              <li key={event.id} className="rounded-lg border border-hair bg-panel/60 px-3 py-2">
                 <p className="text-sm">{event.title}</p>
-                <p className="text-xs text-instrument/60">
+                <p className="text-xs text-muted">
                   {`${eventKindText(event.kind)} · ${eventWhenLabel(event.starts_at, event.all_day)}`}
                 </p>
               </li>

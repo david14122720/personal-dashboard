@@ -7,6 +7,7 @@ import AppShell from "@/components/layout/AppShell";
 import BankAccountsSection from "@/components/settings/BankAccountsSection";
 import SubscriptionsSection from "@/components/settings/SubscriptionsSection";
 import CustomCategoriesSection from "@/components/settings/CustomCategoriesSection";
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 
@@ -24,18 +25,35 @@ export default function AjustesPage() {
     <AppShell>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
         <header>
-          <h1 className="font-display text-2xl font-semibold tracking-wide">{t("settings.title")}</h1>
-          <p className="mt-1 text-sm text-slate-400">{t("settings.subtitle")}</p>
+          <h1 className={deck.pageTitle}>{t("settings.title")}</h1>
+          <p className="mt-1 text-sm text-muted">{t("settings.subtitle")}</p>
         </header>
-        <Link
-          href="/dashboard/ajustes/sesiones/"
-          className="block rounded-xl border border-hull bg-panel/90 p-4 transition-colors hover:border-signal/50 sm:p-5"
-        >
-          <h2 className="font-display text-base font-medium tracking-wide">
-            {t("settings.sessionsTitle")}
-          </h2>
-          <p className="mt-1 text-sm text-slate-400">{t("settings.sessionsHint")}</p>
-        </Link>
+        {/* Reachability for the two destinations that leave the 5-item mobile tab
+            bar: both stay one tap away from this hub. */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Link
+            href="/dashboard/ajustes/tokens/"
+            className={deck.quickCard}
+          >
+            <div className="min-w-0">
+              <h2 className={deck.quickCardTitle}>
+                {t("settings.apiTokensTitle")}
+              </h2>
+              <p className={deck.sectionSubtitle}>{t("settings.apiTokensHint")}</p>
+            </div>
+          </Link>
+          <Link
+            href="/dashboard/ajustes/sesiones/"
+            className={deck.quickCard}
+          >
+            <div className="min-w-0">
+              <h2 className={deck.quickCardTitle}>
+                {t("settings.sessionsTitle")}
+              </h2>
+              <p className={deck.sectionSubtitle}>{t("settings.sessionsHint")}</p>
+            </div>
+          </Link>
+        </div>
         <BankAccountsSection />
         <SubscriptionsSection />
         <CustomCategoriesSection />

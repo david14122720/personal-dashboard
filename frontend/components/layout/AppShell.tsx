@@ -5,11 +5,12 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import NotificationBell from "@/components/notifications/NotificationBell";
 import { logout } from "@/lib/api/client";
+import { useHabitsToday, usePreferences } from "@/lib/api/dashboard";
 import { t, type EsKey } from "@/lib/i18n";
 
 type IconProps = { className?: string };
 
-// Minimal inline nav icons (stroke = currentColor, decorative only).
+// Minimal inline nav icons (stroke = currentColor, decorative only, D3).
 function GridIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
@@ -60,6 +61,17 @@ function CheckCircleIcon({ className }: IconProps) {
   );
 }
 
+/** Sliders ("tune"): the Ajustes hub glyph in the design. */
+function SlidersIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <path d="M3 6h14M3 13h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="7.5" cy="6" r="2" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="12.5" cy="13" r="2" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
 function KeyIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
@@ -103,13 +115,65 @@ function SearchIcon({ className }: IconProps) {
   );
 }
 
-function DeckGlyph({ className }: IconProps) {
+/** Brand cube: the design's package glyph, drawn in the repo icon style. */
+function CubeIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      <rect x="3.5" y="3.5" width="7" height="7" rx="1.8" fill="currentColor" opacity="0.95" />
-      <rect x="13.5" y="3.5" width="7" height="7" rx="1.8" fill="currentColor" opacity="0.65" />
-      <rect x="3.5" y="13.5" width="7" height="7" rx="1.8" fill="currentColor" opacity="0.65" />
-      <rect x="13.5" y="13.5" width="7" height="7" rx="3.5" fill="currentColor" opacity="0.95" />
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M10 2.6l6 3.3v7.9l-6 3.3-6-3.3V5.9l6-3.3z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 6l6 3.3L16 6M10 9.3V17"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CalendarIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <rect x="3" y="4.5" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M3 8.5h14M7 3v3M13 3v3"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M7.5 4.5L13 10l-5.5 5.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Fallback avatar while the real identity read is pending or failed. */
+function UserIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <circle cx="10" cy="6.5" r="3" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M4.6 16.5c.6-2.6 2.8-4.2 5.4-4.2s4.8 1.6 5.4 4.2"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -128,24 +192,81 @@ type NavItem = {
   href: string;
   labelKey: EsKey;
   Icon: (props: IconProps) => React.JSX.Element;
+  /** Rail-only badge whose number comes from real data, never a constant. */
+  chip?: "activeHabits";
 };
 
-// Primary destinations keep the Stitch "Principal" group; settings owns its own caption.
+// D11: the design's group headers, the app's real labels.
 const PRIMARY_NAV: NavItem[] = [
   { href: "/dashboard/", labelKey: "nav.overview", Icon: GridIcon },
   { href: "/dashboard/finance/", labelKey: "nav.finance", Icon: WalletIcon },
   { href: "/dashboard/productivity/", labelKey: "nav.productivity", Icon: BoardIcon },
-  { href: "/dashboard/habitos/", labelKey: "nav.habits", Icon: CheckCircleIcon },
+  { href: "/dashboard/habitos/", labelKey: "nav.habits", Icon: CheckCircleIcon, chip: "activeHabits" },
 ];
 
 const SETTINGS_NAV: NavItem[] = [
-  { href: "/dashboard/ajustes/", labelKey: "nav.general", Icon: GridIcon },
+  { href: "/dashboard/ajustes/", labelKey: "nav.general", Icon: SlidersIcon },
   { href: "/dashboard/ajustes/tokens/", labelKey: "nav.tokens", Icon: KeyIcon },
   { href: "/dashboard/ajustes/sesiones/", labelKey: "nav.sessions", Icon: DeviceIcon },
 ];
 
-// Mobile bottom tabs stay flat and keep the original five destinations.
-const NAV_ITEMS: NavItem[] = [...PRIMARY_NAV, ...SETTINGS_NAV];
+/**
+ * Mobile bottom bar: exactly the design's five destinations. `Tokens de API`
+ * and `Sesiones` leave the bar and stay reachable from the Ajustes hub
+ * (DESIGN-SPEC IA: five tabs, the settings children live under Ajustes).
+ */
+const TAB_NAV: NavItem[] = [...PRIMARY_NAV, SETTINGS_NAV[0]];
+
+/* Shell chrome recipes (canonical: dashboard-desktop.html L72-232). They live
+ * here because the shell is their only consumer; cross-surface recipes are
+ * shared through `frontend/components/ui/deckStyles.ts` (`ghostButton`,
+ * `notificationCountPill`, ...). */
+const RAIL_GROUP_FIRST = "px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-muted";
+const RAIL_GROUP = `${RAIL_GROUP_FIRST} pt-4`;
+const RAIL_ITEM_BASE =
+  "relative flex items-center gap-3 rounded-lg border px-3.5 py-2.5 text-sm transition-colors";
+const RAIL_ITEM_ACTIVE = "border-sky-500/30 bg-sky-500/10 font-medium text-instrument";
+const RAIL_ITEM_IDLE =
+  "border-transparent font-medium text-slate-400 hover:bg-card hover:text-instrument";
+const RAIL_ACTIVE_DOT = "h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400 shadow-[0_0_8px_#38bdf8]";
+const RAIL_HABITS_CHIP =
+  "ml-auto shrink-0 rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-400";
+const TAB_ITEM_BASE =
+  "flex min-h-[44px] min-w-[56px] flex-col items-center justify-center gap-0.5 px-1 py-1 transition-colors";
+const TAB_ITEM_ACTIVE = "font-semibold text-signal";
+const TAB_ITEM_IDLE = "text-instrument/70 hover:text-instrument";
+const BRAND_VERSION_BADGE =
+  "shrink-0 rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-sky-400";
+const IDENTITY_AVATAR =
+  "flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-sky-500 to-indigo-600 text-xs font-bold text-white shadow-inner";
+const IDENTITY_LOGOUT =
+  "shrink-0 rounded p-1.5 text-slate-400 transition-colors hover:bg-hair hover:text-rose-400 focus-visible:outline-2 focus-visible:outline-signal";
+
+/** Real initials only: from the display name when present, else the email
+ * local part. `null` when neither exists, so the card keeps the honest
+ * fallback instead of inventing letters (D10). */
+function identityInitials(displayName: string, email: string): string | null {
+  if (displayName) {
+    const parts = displayName.split(/\s+/).filter(Boolean);
+    if (parts.length > 1) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  if (email) return email.slice(0, 2).toUpperCase();
+  return null;
+}
+
+/** Real identity behind `GET /me`: the display name when present, else the
+ * email, else nothing. Shared by the sidebar footer card and by the mobile
+ * avatar link so both name the same person (never an invented one, D10). */
+function useIdentity(): { displayName: string; email: string; initials: string | null; primary: string } {
+  const prefs = usePreferences();
+  const me = prefs.data as
+    | { email?: string | null; display_name?: string | null }
+    | undefined;
+  const displayName = me?.display_name?.trim() ?? "";
+  const email = me?.email?.trim() ?? "";
+  return { displayName, email, initials: identityInitials(displayName, email), primary: displayName || email };
+}
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/dashboard/") return pathname === "/dashboard" || pathname === "/dashboard/";
@@ -157,80 +278,193 @@ function isActive(pathname: string, href: string): boolean {
   return current === target || current.startsWith(`${target}/`);
 }
 
+/** Bogotá date in the app's single locale (`es-CO`, short month). */
 function formatToday(date: Date): string {
   return new Intl.DateTimeFormat("es-CO", {
     day: "numeric",
     month: "short",
     year: "numeric",
+    timeZone: "America/Bogota",
   }).format(date);
 }
 
-function RailLink({ item, pathname }: { item: NavItem; pathname: string }) {
+function RailLink({
+  item,
+  pathname,
+  activeHabits,
+}: {
+  item: NavItem;
+  pathname: string;
+  activeHabits: number | null;
+}) {
   const active = isActive(pathname, item.href);
   const Icon = item.Icon;
+  // Honest chip: only when the real count is known and non-zero.
+  const showChip = item.chip === "activeHabits" && activeHabits !== null && activeHabits > 0;
   return (
     <Link
       href={item.href}
       aria-current={active ? "page" : undefined}
-      className={`relative flex items-center gap-3 rounded-lg border px-3 py-2.5 font-display text-sm tracking-wide transition-colors ${
-        active
-          ? "glow-cyan-soft border-signal/30 bg-signal/15 font-semibold text-signal"
-          : "border-transparent font-medium text-slate-400 hover:bg-slate-800/50 hover:text-slate-100"
-      }`}
+      className={`${RAIL_ITEM_BASE} ${active ? RAIL_ITEM_ACTIVE : RAIL_ITEM_IDLE}`}
     >
-      {active ? (
-        <span
-          aria-hidden="true"
-          className="absolute bottom-1.5 left-0 top-1.5 w-1 rounded-r-full bg-signal"
-        />
+      <Icon className={`h-4 w-4 shrink-0 ${active ? "text-sky-400" : "text-slate-500"}`} />
+      <span className={active ? "text-sky-300" : undefined}>{t(item.labelKey)}</span>
+      {showChip ? (
+        <span className={RAIL_HABITS_CHIP}>
+          {t("nav.activeHabitsChip", { n: activeHabits })}
+        </span>
       ) : null}
-      <Icon className="h-4 w-4 shrink-0" />
-      {t(item.labelKey)}
+      {active ? (
+        <span aria-hidden="true" className={`${RAIL_ACTIVE_DOT} ${showChip ? "" : "ml-auto"}`} />
+      ) : null}
     </Link>
   );
 }
 
-function NavLinks({ orientation }: { orientation: "rail" | "tabs" }) {
-  const pathname = usePathname();
-  if (orientation === "tabs") {
-    return (
-      <nav
-        aria-label={t("nav.primary")}
-        className="flex flex-wrap justify-center gap-y-0.5 border-t border-hull bg-panel px-2 pb-[env(safe-area-inset-bottom)] pt-1"
-      >
-        {NAV_ITEMS.map((item) => {
-          const active = isActive(pathname ?? "", item.href);
+function RailNav() {
+  const pathname = usePathname() ?? "";
+  const habits = useHabitsToday();
+  const habitsData = habits.data;
+  const activeHabits = habits.error || !habitsData ? null : habitsData.length;
+  return (
+    <nav aria-label={t("nav.primary")} className="space-y-1.5 p-4">
+      <p className={RAIL_GROUP_FIRST}>{t("nav.sectionMain")}</p>
+      {PRIMARY_NAV.map((item) => (
+        <RailLink key={item.href} item={item} pathname={pathname} activeHabits={activeHabits} />
+      ))}
+      <p className={RAIL_GROUP}>{t("nav.sectionSystem")}</p>
+      {SETTINGS_NAV.map((item) => (
+        <RailLink key={item.href} item={item} pathname={pathname} activeHabits={activeHabits} />
+      ))}
+    </nav>
+  );
+}
+
+/** Sidebar footer card (`dashboard-desktop.html:157-170`): the real signed-in
+ * identity when `GET /me` answered, initials avatar, name + email and the
+ * logout control. The shared wire type only declares `preferences` — read the
+ * identity fields structurally instead of widening a lib outside this task.
+ * While the read is loading or failed the card states the honest local
+ * session, exactly as before, and never invents a name or an email. */
+function SessionCard() {
+  const { displayName, email, initials, primary } = useIdentity();
+  const secondary = displayName ? email : "";
+  return (
+    <div className="border-t border-hair p-4">
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-hair bg-card p-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <span aria-hidden="true" className={IDENTITY_AVATAR}>
+            {initials ?? <UserIcon className="h-4 w-4" />}
+          </span>
+          {/* Fixed light slate: the identity card keeps a dark surface in both
+              themes, so it must not inherit the theme-flipped token (D9). */}
+          {primary ? (
+            <div className="flex min-w-0 flex-col">
+              <p className="truncate text-xs font-semibold text-slate-100" title={primary}>
+                {primary}
+              </p>
+              {secondary ? (
+                <p className="truncate text-[11px] text-slate-400" title={secondary}>
+                  {secondary}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="truncate text-xs font-semibold text-slate-100">
+              {t("nav.localSession")}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => void logout()}
+          aria-label={t("nav.signOut")}
+          title={t("nav.signOut")}
+          className={IDENTITY_LOGOUT}
+        >
+          <LogoutIcon className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MobileTabBar() {
+  const pathname = usePathname() ?? "";
+  return (
+    <nav
+      aria-label={t("nav.primary")}
+      className="pb-safe fixed inset-x-0 bottom-0 z-40 bg-panel/85 backdrop-blur-xl md:hidden"
+    >
+      <div className="flex h-16 items-center justify-around px-1">
+        {TAB_NAV.map((item) => {
+          const active = isActive(pathname, item.href);
           const Icon = item.Icon;
           return (
             <Link
               key={item.href}
               href={item.href}
               aria-current={active ? "page" : undefined}
-              className={`basis-1/4 flex min-h-11 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md px-1 py-1 font-display text-[11px] leading-tight tracking-wide transition-colors ${
-                active
-                  ? "bg-signal/10 font-semibold text-signal"
-                  : "text-instrument/70 hover:bg-panel-soft hover:text-instrument"
-              }`}
+              className={`${TAB_ITEM_BASE} ${active ? TAB_ITEM_ACTIVE : TAB_ITEM_IDLE}`}
             >
-              <Icon className="h-4 w-4 shrink-0" />
-              {t(item.labelKey)}
+              <Icon className="h-[22px] w-[22px] shrink-0" />
+              <span className="text-label-caps">{t(item.labelKey)}</span>
             </Link>
           );
         })}
-      </nav>
-    );
-  }
-  return (
-    <nav aria-label={t("nav.primary")} className="flex flex-col gap-1 p-3">
-      <p className="label-caps px-3 pb-1 pt-3 text-slate-500">{t("nav.sectionMain")}</p>
-      {PRIMARY_NAV.map((item) => (
-        <RailLink key={item.href} item={item} pathname={pathname ?? ""} />
-      ))}
-      <p className="label-caps px-3 pb-1 pt-5 text-slate-500">{t("nav.settings")}</p>
-      {SETTINGS_NAV.map((item) => (
-        <RailLink key={item.href} item={item} pathname={pathname ?? ""} />
-      ))}
+      </div>
     </nav>
+  );
+}
+
+/** Fixed mobile chrome: brand chip, notification surface, session affordances. */
+function MobileChrome() {
+  const { primary } = useIdentity();
+  // The avatar link is icon-only, so its accessible name carries both the real
+  // identity (when known) and the destination it leads to (JD item 7); it used
+  // to claim "Sesión local" without saying where it goes.
+  const sessionLabel = primary
+    ? t("nav.sessionSettingsFor", { identity: primary })
+    : t("nav.sessionSettings");
+  return (
+    <>
+      <header className="pt-safe fixed inset-x-0 top-0 z-40 border-b border-hair bg-deck/80 backdrop-blur-md md:hidden">
+        <div className="flex h-14 items-center justify-between gap-2 px-4">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-sky-500/30 bg-sky-500/10 text-signal">
+              <CubeIcon className="h-4 w-4" />
+            </span>
+            <span className="flex min-w-0 items-baseline gap-1.5">
+              <span className="truncate text-headline-md tracking-tight">
+                Control <span className="text-signal">Deck</span>
+              </span>
+              <span className={BRAND_VERSION_BADGE}>{t("nav.brandVersion")}</span>
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <NotificationBell variant="compact" />
+            <Link
+              href="/dashboard/ajustes/"
+              aria-label={sessionLabel}
+              title={sessionLabel}
+              className="flex h-11 w-11 items-center justify-center rounded-full text-instrument/70 transition-colors hover:text-instrument focus-visible:outline-2 focus-visible:outline-signal"
+            >
+              <UserIcon className="h-5 w-5" />
+            </Link>
+            <button
+              type="button"
+              onClick={() => void logout()}
+              aria-label={t("nav.signOutShort")}
+              title={t("nav.signOut")}
+              className="flex h-11 w-11 items-center justify-center rounded-full text-instrument/70 transition-colors hover:text-alert focus-visible:outline-2 focus-visible:outline-signal"
+            >
+              <LogoutIcon className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+      </header>
+      <MobileTabBar />
+    </>
   );
 }
 
@@ -241,29 +475,24 @@ function TopBar() {
   useEffect(() => {
     setToday(formatToday(new Date()));
   }, []);
-  const section = NAV_ITEMS.find((item) => isActive(pathname, item.href));
-  // DashboardHome already renders the NotificationBell next to its title; skip the topbar
-  // instance on that route so the bell is never duplicated (one bell per screen).
-  const showBell = !isActive(pathname, "/dashboard/");
+  const section = [...PRIMARY_NAV, ...SETTINGS_NAV].find((item) => isActive(pathname, item.href));
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-hull bg-panel/90 px-4 backdrop-blur-md md:px-6 xl:px-8">
+    <header className="sticky top-0 z-20 hidden h-16 items-center justify-between gap-4 border-b border-hair bg-deck/80 px-6 backdrop-blur-md md:flex">
       <nav
         aria-label={t("dashboard.breadcrumbNav")}
-        className="flex min-w-0 items-center gap-2 text-xs"
+        className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-400"
       >
-        <span className="shrink-0 text-slate-400">{t("dashboard.panel")}</span>
+        <span className="shrink-0">{t("dashboard.panel")}</span>
         {section ? (
           <>
-            <span aria-hidden="true" className="text-slate-600">
-              /
-            </span>
-            <span className="truncate font-semibold text-signal">{t(section.labelKey)}</span>
+            <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-muted" />
+            <span className="truncate font-semibold text-sky-400">{t(section.labelKey)}</span>
           </>
         ) : null}
       </nav>
       {/* Decorative search: global search is not implemented; the field stays inert on purpose. */}
-      <div className="hidden min-w-0 flex-1 justify-center px-6 md:flex">
-        <div className="relative w-full max-w-md">
+      <div className="hidden min-w-0 max-w-md flex-1 sm:block">
+        <div className="relative">
           <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
           <input
             type="text"
@@ -271,63 +500,61 @@ function TopBar() {
             aria-disabled="true"
             placeholder={t("nav.searchPlaceholder")}
             title={t("nav.searchUnavailable")}
-            className="w-full cursor-not-allowed rounded-lg border border-hull bg-panel-soft py-1.5 pl-9 pr-3 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none"
+            className="w-full cursor-not-allowed rounded-lg border border-hair bg-panel py-1.5 pl-9 pr-3 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none"
           />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-3">
-        <p className="hidden rounded-lg border border-hull bg-panel-soft px-3 py-1.5 text-xs font-medium text-slate-400 md:block">
+        <p className="hidden items-center gap-2 rounded-lg border border-hair bg-panel px-3 py-1.5 font-mono text-xs text-slate-300 lg:flex">
+          <CalendarIcon className="h-3.5 w-3.5 text-sky-400" />
           {today}
         </p>
-        {showBell ? <NotificationBell /> : null}
+        <NotificationBell />
       </div>
     </header>
   );
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
+  // The shell owns the single notification surface on every route (the
+  // prototype puts it in the topbar, `dashboard-desktop.html:210-219`): one
+  // desktop branch and one mobile branch, exactly one visible at a time.
   return (
-    <div className="min-h-screen bg-abyss text-instrument">
+    <div className="min-h-screen bg-deck text-instrument">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-signal focus:px-3 focus:py-2 focus:text-deck"
       >
         {t("nav.skipToContent")}
       </a>
+      <MobileChrome />
       <div className="flex min-h-screen">
-        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col justify-between border-r border-hull bg-panel md:flex">
+        <aside className="sticky top-0 z-30 hidden h-screen w-64 shrink-0 flex-col justify-between border-r border-hair bg-panel md:flex">
           <div className="flex flex-col">
-            <div className="flex h-16 items-center gap-3 border-b border-slate-800/60 px-6">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#006edc] to-[#38bdf8] ring-1 ring-white/20">
-                <DeckGlyph className="h-4 w-4 text-white" />
+            <div className="flex h-16 items-center gap-3 border-b border-hair px-6">
+              <span className="glow-cyan-sm flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10 text-sky-400">
+                <CubeIcon className="h-5 w-5" />
               </span>
-              <p className="font-display text-lg font-semibold tracking-wide">
-                Control <span className="text-signal">Deck</span>
-              </p>
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-base font-bold tracking-tight">
+                  Control <span className="text-signal">Deck</span>
+                  <span className={BRAND_VERSION_BADGE}>{t("nav.brandVersion")}</span>
+                </p>
+                <p className="text-[11px] text-muted">{t("nav.brandSubline")}</p>
+              </div>
             </div>
-            <NavLinks orientation="rail" />
+            <RailNav />
           </div>
-          {/* No user profile exists in the app: the footer only states the local session and signs out. */}
-          <div className="border-t border-hull bg-abyss p-3">
-            <p className="label-caps px-3 pb-2 pt-1 text-slate-500">{t("nav.localSession")}</p>
-            <button
-              type="button"
-              onClick={logout}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent px-3 py-2 font-display text-sm text-slate-400 transition-colors hover:border-alert/50 hover:text-alert"
-            >
-              <LogoutIcon className="h-4 w-4 shrink-0" />
-              {t("nav.signOut")}
-            </button>
-          </div>
+          <SessionCard />
         </aside>
-        <div className="flex min-w-0 flex-1 flex-col bg-abyss">
+        <div className="flex min-w-0 flex-1 flex-col bg-deck">
           <TopBar />
-          <main id="main-content" className="flex-1 px-4 pb-32 pt-6 md:px-6 md:pb-10 xl:px-8">
+          <main
+            id="main-content"
+            className="flex-1 px-4 pb-32 pt-[calc(3.5rem+env(safe-area-inset-top,0px))] md:px-6 md:pb-10 md:pt-6 xl:px-8"
+          >
             {children}
           </main>
-          <div className="fixed inset-x-0 bottom-0 z-40 md:hidden">
-            <NavLinks orientation="tabs" />
-          </div>
         </div>
       </div>
     </div>

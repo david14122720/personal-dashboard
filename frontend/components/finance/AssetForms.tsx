@@ -10,11 +10,11 @@ import { normalizeManualAmount, type NamedOption } from "@/lib/finance/finance";
 // Canonical field/primary/ghost strings from the UI-polish contract
 // (`design.md`, "Canonical visual contract"): one role, one look.
 const inputClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
+  "min-h-11 w-full rounded-md border border-hair bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 const btnClass =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft disabled:cursor-not-allowed disabled:opacity-50";
 const ghostBtnClass =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal";
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hair px-3 font-display text-sm text-instrument-dim transition-colors hover:border-signal hover:text-signal";
 
 const ASSET_CATEGORIES = ["cash", "account", "investment", "equipment", "vehicle", "property", "other"];
 

@@ -1,19 +1,17 @@
 "use client";
 
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import { toPeriodRange, type PeriodSel } from "@/lib/finance/finance";
-
-const pillClass =
-  "inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center gap-2 rounded-full border border-hull px-3 py-1.5 text-xs text-instrument transition-colors hover:border-signal hover:text-signal focus-within:border-signal has-checked:border-signal has-checked:text-signal";
-
-// Canonical field string from the UI-polish contract (`design.md`).
-const fieldClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 
 /**
  * Selector de período S6: 5 radio-pills + 2 date inputs solo en custom.
  * Default `{kind:"month"}` lo pone el padre. Valida custom (`from<=to` +
  * formato) vía `toPeriodRange` y muestra error inline ES.
+ *
+ * T8c coherence pass: los pills y los campos usan el vocabulario compartido
+ * del Control Deck (`deck.periodPill`, `deck.fieldInput`), sin cambiar
+ * estado, nombres accesibles ni validación.
  */
 export default function PeriodSelector({
   value,
@@ -43,10 +41,10 @@ export default function PeriodSelector({
   ];
   return (
     <fieldset>
-      <legend className="font-display text-sm font-medium">{t("charts.periodLabel")}</legend>
-      <div className="mt-2 flex flex-wrap gap-2">
+      <legend className={deck.monoMicroLabel}>{t("charts.periodLabel")}</legend>
+      <div className="flex flex-wrap gap-2">
         {pills.map((pill) => (
-          <label key={pill.kind} className={pillClass}>
+          <label key={pill.kind} className={deck.periodPill}>
             <input
               type="radio"
               name="period"
@@ -67,24 +65,24 @@ export default function PeriodSelector({
       </div>
       {value.kind === "custom" ? (
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label className="flex flex-col gap-1 text-xs text-instrument/60">
-            {t("charts.periodFrom")}
+          <label className="flex flex-col gap-1.5">
+            <span className={deck.fieldLabel}>{t("charts.periodFrom")}</span>
             <input
               aria-label={t("charts.periodFrom")}
               type="date"
               value={value.from ?? ""}
               onChange={(e) => onChange({ kind: "custom", from: e.target.value, to: value.to ?? "" })}
-              className={fieldClass}
+              className={deck.fieldInput}
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-instrument/60">
-            {t("charts.periodTo")}
+          <label className="flex flex-col gap-1.5">
+            <span className={deck.fieldLabel}>{t("charts.periodTo")}</span>
             <input
               aria-label={t("charts.periodTo")}
               type="date"
               value={value.to ?? ""}
               onChange={(e) => onChange({ kind: "custom", from: value.from ?? "", to: e.target.value })}
-              className={fieldClass}
+              className={deck.fieldInput}
             />
           </label>
         </div>

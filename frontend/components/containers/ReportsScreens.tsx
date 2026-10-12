@@ -5,8 +5,10 @@ import { useSWRConfig } from "swr";
 import AppShell from "@/components/layout/AppShell";
 import { t } from "@/lib/i18n";
 import PeriodSelector from "@/components/finance/PeriodSelector";
-import { SectionShell } from "@/components/finance/FinanceSections";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { BalanceIcon, SubscriptionsIcon } from "@/components/dashboard/icons";
+import KpiTile from "@/components/ui/KpiTile";
+import { deck } from "@/components/ui/deckStyles";
 import { toEventRange, toPeriodRange, type PeriodSel } from "@/lib/finance/finance";
 import {
   eventsKey,
@@ -34,6 +36,13 @@ import {
  * mensual de suscripciones) sin ventana de período.
  * Cero endpoints nuevos y sin exportar archivos. Cada bloque aísla
  * loading/error/empty con retry que revalida solo sus keys.
+ *
+ * T8c coherence pass (no design source for this route): chrome only, ported to
+ * the Control Deck language of `dashboard-desktop.html` — `DeckCard` panels with
+ * the hairlined section header, `KpiTile` figures, mono micro-labels, deck rows
+ * and the prototype empty state. Same hooks, same numbers, same copy. The period
+ * control keeps its own pre-existing markup (`finance/PeriodSelector` is outside
+ * this task's edit surface).
  */
 
 type Range = { from: string; to: string } | null;
@@ -41,24 +50,43 @@ type Range = { from: string; to: string } | null;
 function BlockLoading() {
   return (
     <div role="status" aria-label={t("reports.loadingBlock")} className="py-6 text-center">
-      <p className="text-sm text-instrument/50">{t("common.loading")}</p>
+      <p className="text-sm text-faint">{t("common.loading")}</p>
     </div>
   );
 }
 
 function BlockError({ onRetry }: { onRetry: () => void }) {
   return (
-    <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
-      <h3 className="font-display text-base font-semibold">{t("reports.loadFailed")}</h3>
+    <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-4 sm:p-5">
+      <h3 className="font-display text-sm font-semibold text-alert-soft">{t("reports.loadFailed")}</h3>
       <p className="mt-1 text-sm text-instrument/70">{t("reports.loadFailedHint")}</p>
       <button
         type="button"
         onClick={onRetry}
-        className="mt-3 rounded-md border border-hull px-4 py-2 font-display text-sm transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+        className={`mt-3 ${deck.cardAction}`}
       >
         {t("common.retry")}
       </button>
     </div>
+  );
+}
+
+/** Decorative glyph of the shared empty state (D3: inline SVG, never an icon font). */
+function EmptyGlyph() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 12h7" />
+    </svg>
   );
 }
 
@@ -107,7 +135,7 @@ function FinanceBlock() {
       loading={loading}
       error={error}
       empty={!loading && !error && !hasData}
-      emptyNode={<EmptyState title={t("reports.emptyFinance")} hint={t("reports.emptyFinanceHint")} />}
+      emptyNode={<DeckEmptyState icon={<EmptyGlyph />} title={t("reports.emptyFinance")} hint={t("reports.emptyFinanceHint")} />}
       onRetry={() =>
         void mutate(
           (key) =>
@@ -117,18 +145,23 @@ function FinanceBlock() {
         )
       }
     >
-      <p className="mb-3 text-xs text-instrument/60">{t("reports.financeCurrent")}</p>
-      <dl className="grid grid-cols-2 gap-3">
-        {[
-          [t("dashboard.netWorth"), snapshot.netWorth],
-          [t("finance.subscriptions"), snapshot.monthlySubsCost],
-        ].map(([label, value]) => (
-          <div key={label as string} className="rounded-lg border border-hull p-3">
-            <dt className="text-xs text-instrument/60">{label as string}</dt>
-            <dd className="font-display text-base font-semibold">{formatMoney(value as number)}</dd>
-          </div>
-        ))}
-      </dl>
+      <p className={deck.monoMicroLabel}>{t("reports.financeCurrent")}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <KpiTile
+          label={t("dashboard.netWorth")}
+          icon={<BalanceIcon className="h-3.5 w-3.5" />}
+          signal
+          glow="hairline"
+          value={formatMoney(snapshot.netWorth)}
+          valueClass={deck.kpiValue}
+        />
+        <KpiTile
+          label={t("finance.subscriptions")}
+          icon={<SubscriptionsIcon className="h-3.5 w-3.5" />}
+          value={formatMoney(snapshot.monthlySubsCost)}
+          valueClass={deck.kpiValue}
+        />
+      </div>
     </BlockShell>
   );
 }
@@ -144,7 +177,7 @@ function HabitsBlock({ range }: { range: Range }) {
       loading={!!range && ((!today.data && !today.error) || (!history.data && !history.error))}
       error={!!range && (!!today.error || !!history.error)}
       empty={!range || (!!today.data && !!history.data && (habits.length === 0 || logs.length === 0))}
-      emptyNode={<EmptyState title={t("reports.emptyHabits")} hint={t("reports.emptyHabitsHint")} />}
+      emptyNode={<DeckEmptyState icon={<EmptyGlyph />} title={t("reports.emptyHabits")} hint={t("reports.emptyHabitsHint")} />}
       onRetry={() => {
         void mutate(HABITS_TODAY_KEY);
         void mutate(habitsHistoryKey(range?.from ?? null, range?.to ?? null));
@@ -161,10 +194,10 @@ function HabitsBlock({ range }: { range: Range }) {
               )
             : { complianceRate: 0, done: 0, missed: 0, unlogged: 0 };
           return (
-            <li key={habit.habit_id} className="flex items-center justify-between rounded-lg border border-hull p-3 text-sm">
-              <span>{habit.name}</span>
-              <span className="font-display">
-                {stats.complianceRate} % · {stats.done}/{stats.done + stats.missed + stats.unlogged}
+            <li key={habit.habit_id} className={deck.listRow}>
+              <span className="min-w-0 truncate text-sm font-semibold text-instrument">{habit.name}</span>
+              <span className={deck.cardMetric}>
+                {`${stats.complianceRate} % · ${stats.done}/${stats.done + stats.missed + stats.unlogged}`}
               </span>
             </li>
           );
@@ -183,24 +216,26 @@ function GoalsBlock({ range }: { range: Range }) {
       loading={!!range && !goals.data && !goals.error}
       error={!!range && !!goals.error}
       empty={!range || (!!goals.data && items.length === 0)}
-      emptyNode={<EmptyState title={t("reports.emptyGoals")} hint={t("reports.emptyGoalsHint")} />}
+      emptyNode={<DeckEmptyState icon={<EmptyGlyph />} title={t("reports.emptyGoals")} hint={t("reports.emptyGoalsHint")} />}
       onRetry={() => void mutate(GOALS_KEY)}
     >
       <ul className="space-y-2">
         {items.map((goal) => (
-          <li key={goal.id} className="rounded-lg border border-hull p-3 text-sm">
-            <div className="flex items-center justify-between">
-              <span>{goal.name}</span>
-              <span className="font-display">{goal.progress ?? 0} %</span>
+          <li key={goal.id} className={deck.cardRow}>
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <span className="min-w-0 truncate text-sm font-semibold text-instrument">{goal.name}</span>
+              <span className={deck.cardMetric}>{`${goal.progress ?? 0} %`}</span>
             </div>
-            <div
-              className="mt-2 h-2 overflow-hidden rounded-full bg-hull"
-              role="progressbar"
-              aria-valuenow={goal.progress ?? 0}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div className="h-full rounded-full bg-[var(--color-signal)]" style={{ width: `${goal.progress ?? 0}%` }} />
+            <div className="mt-3">
+              <div
+                className={deck.cardProgressTrack}
+                role="progressbar"
+                aria-valuenow={goal.progress ?? 0}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div className={deck.kpiProgressFillSignal} style={{ width: `${goal.progress ?? 0}%` }} />
+              </div>
             </div>
           </li>
         ))}
@@ -249,26 +284,26 @@ function ActivityBlock({ range }: { range: Range }) {
       loading={!!range && ((!tasks.data && !tasks.error) || (!events.data && !events.error))}
       error={!!range && (!!tasks.error || !!events.error)}
       empty={!range || (!!tasks.data && !!events.data && doneTasks.length === 0 && periodEvents.length === 0)}
-      emptyNode={<EmptyState title={t("reports.emptyActivity")} hint={t("reports.emptyActivityHint")} />}
+      emptyNode={<DeckEmptyState icon={<EmptyGlyph />} title={t("reports.emptyActivity")} hint={t("reports.emptyActivityHint")} />}
       onRetry={() => void mutate((key) => typeof key === "string" && (key === tasksKeyStr || key === eventsKeyStr))}
     >
       <div className="space-y-4">
         <div>
-          <h3 className="font-display text-sm font-medium">{t("reports.completedTasks")}</h3>
-          <ul className="mt-2 space-y-1">
+          <h3 className={deck.monoMicroLabel}>{t("reports.completedTasks")}</h3>
+          <ul className="space-y-2">
             {doneTasks.map((task) => (
-              <li key={task.id} className="text-sm">
-                <span>{task.title}</span>
+              <li key={task.id} className={deck.statTile}>
+                <span className="text-sm text-instrument">{task.title}</span>
               </li>
             ))}
           </ul>
         </div>
         <div>
-          <h3 className="font-display text-sm font-medium">{t("reports.periodEvents")}</h3>
-          <ul className="mt-2 space-y-1">
+          <h3 className={deck.monoMicroLabel}>{t("reports.periodEvents")}</h3>
+          <ul className="space-y-2">
             {periodEvents.map((event) => (
-              <li key={event.id} className="text-sm">
-                <span>{event.title}</span>
+              <li key={event.id} className={deck.statTile}>
+                <span className="text-sm text-instrument">{event.title}</span>
               </li>
             ))}
           </ul>
@@ -289,24 +324,24 @@ export default function ReportsScreens({ now }: { now?: Date }) {
   }
   return (
     <div>
-      <h1 className="font-display text-2xl font-semibold tracking-wide">{t("reports.title")}</h1>
-      <p className="mt-1 text-sm text-instrument/60">{t("reports.subtitle")}</p>
-      <section aria-label={t("reports.period")} className="mt-6 rounded-xl border border-hull bg-hull/40 p-5">
+      <h1 className={deck.pageTitle}>{t("reports.title")}</h1>
+      <p className="mt-1 text-sm text-muted">{t("reports.subtitle")}</p>
+      <section aria-label={t("reports.period")} className={`mt-6 ${deck.panel}`}>
         <PeriodSelector value={period} onChange={setPeriod} now={ref} />
       </section>
       <div className="mt-4 grid grid-cols-12 gap-4">
-        <SectionShell title={t("reports.finance")} hint={t("reports.financeHint")} span="col-span-12 xl:col-span-6">
+        <DeckCard title={t("reports.finance")} hint={t("reports.financeHint")} className="col-span-12 xl:col-span-6">
           <FinanceBlock />
-        </SectionShell>
-        <SectionShell title={t("reports.habits")} hint={t("reports.habitsHint")} span="col-span-12 xl:col-span-6">
+        </DeckCard>
+        <DeckCard title={t("reports.habits")} hint={t("reports.habitsHint")} className="col-span-12 xl:col-span-6">
           <HabitsBlock range={range} />
-        </SectionShell>
-        <SectionShell title={t("reports.goals")} hint={t("reports.goalsHint")} span="col-span-12 xl:col-span-6">
+        </DeckCard>
+        <DeckCard title={t("reports.goals")} hint={t("reports.goalsHint")} className="col-span-12 xl:col-span-6">
           <GoalsBlock range={range} />
-        </SectionShell>
-        <SectionShell title={t("reports.activity")} hint={t("reports.activityHint")} span="col-span-12 xl:col-span-6">
+        </DeckCard>
+        <DeckCard title={t("reports.activity")} hint={t("reports.activityHint")} className="col-span-12 xl:col-span-6">
           <ActivityBlock range={range} />
-        </SectionShell>
+        </DeckCard>
       </div>
     </div>
   );

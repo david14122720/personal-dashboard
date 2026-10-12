@@ -83,7 +83,9 @@ describe("SubscriptionRow pay flow", () => {
       />,
     );
     expect(screen.getByText("Streaming")).toBeDefined();
-    expect(screen.getByText(/2026-09-24|2099-01-15/)).toBeDefined();
+    expect(screen.getByText(/15 de ene de 2099/)).toBeDefined();
+    // The raw ISO date is not what the user reads (Bogotá format instead).
+    expect(screen.queryByText(/2099-01-15/)).toBeNull();
     expect(screen.getByText("Pagado este ciclo")).toBeDefined();
     // Paid rows offer no Pay control.
     expect(screen.queryByRole("button", { name: "Pagar" })).toBeNull();
