@@ -2,13 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
-import EmptyState from "@/components/ui/EmptyState";
+import DeckCard, { DeckEmptyState } from "@/components/dashboard/DeckCard";
+import { ExpenseRowIcon } from "@/components/dashboard/icons";
+import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import { ApiError, serverMessage } from "@/lib/api/client";
 import {
   createCategory,
   deleteCategory,
-  useCategories,
+  useFinanceCategories,
 } from "@/lib/api/finance";
 import {
   CUSTOM_CATEGORIES_KEY,
@@ -16,19 +18,27 @@ import {
   type CustomCategory,
 } from "@/lib/settings/customCategories";
 
-const inputClass =
-  "min-h-11 w-full rounded-md border border-hull bg-deck px-3 text-sm text-instrument transition-colors placeholder:text-slate-500 focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
-const primaryBtnClass =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-signal px-4 font-display text-sm font-semibold text-deck transition-colors hover:bg-signal-soft disabled:cursor-not-allowed disabled:opacity-50";
-const dangerBtnClass =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hull px-3 font-display text-sm text-instrument-dim transition-colors hover:border-alert hover:text-alert disabled:cursor-not-allowed disabled:opacity-50";
+type MutateFn = ReturnType<typeof useSWRConfig>["mutate"];
+
+/** Both sources must be revalidated: this section reads the finance-filtered
+ * key while the Finanzas pickers/charts read the kind-free one. */
+function revalidateCategorySources(mutate: MutateFn): void {
+  void mutate("finance/categories-finance");
+  void mutate("finance/categories");
+}
 
 /**
- * Custom categories manager (Configuración), backend-backed.
+ * Custom categories manager (Configuración), backend-backed and finance-only.
  *
- * Categories are name-only `finance` rows (`POST /categories`,
- * `DELETE /categories/{id}`) read through the shared `finance/categories`
- * SWR key, so the movement selects list them with no modal change.
+ * Reads `GET /categories?kind=finance` through the `finance/categories-finance`
+ * SWR key; a row whose `kind` is not `finance` is never rendered, so the
+ * Eliminar button can never target another module's category. Writes are
+ * name-only `finance` rows (`POST /categories`, `DELETE /categories/{id}`).
+ *
+ * After create, delete and the legacy migration loop, both
+ * `finance/categories-finance` (this section) and `finance/categories` (the
+ * kind-free source of the Finanzas pickers/charts) are revalidated, so a
+ * category created here still appears in the movement selects.
  *
  * One-time migration, resolved per row: rows left in the legacy
  * `pd-custom-categories` localStorage key are POSTed as `finance`. A row
@@ -38,7 +48,7 @@ const dangerBtnClass =
  * resolved row is never POSTed twice.
  */
 export default function CustomCategoriesSection() {
-  const { data, error: listError, isLoading } = useCategories();
+  const { data, error: listError, isLoading } = useFinanceCategories();
   const { mutate } = useSWRConfig();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +98,7 @@ export default function CustomCategoriesSection() {
       if (skipped > 0) {
         setError(t("settings.categoriesMigrationSkipped", { count: skipped }));
       }
-      void mutate("finance/categories");
+      revalidateCategorySources(mutate);
     })();
   }, [mutate]);
 
@@ -103,7 +113,7 @@ export default function CustomCategoriesSection() {
     try {
       await createCategory(name.trim());
       setName("");
-      void mutate("finance/categories");
+      revalidateCategorySources(mutate);
     } catch (err) {
       setError(serverMessage(err, t("finance.saveFailed")));
     } finally {
@@ -117,7 +127,7 @@ export default function CustomCategoriesSection() {
     setDeletingId(id);
     try {
       await deleteCategory(id);
-      void mutate("finance/categories");
+      revalidateCategorySources(mutate);
     } catch (err) {
       setError(serverMessage(err, t("finance.deleteFailed")));
     } finally {
@@ -125,29 +135,26 @@ export default function CustomCategoriesSection() {
     }
   }
 
-  const rows = data ?? [];
+  // Defense in depth: even if a response slipped a non-finance row through,
+  // its Eliminar button must never exist.
+  const rows = (data ?? []).filter((row) => row.kind === "finance");
   const listFailed = listError
     ? serverMessage(listError, t("finance.loadFailed"))
     : null;
 
   return (
-    <section
-      aria-label={t("settings.categoriesTitle")}
-      className="rounded-xl border border-hull bg-panel/90 p-4 sm:p-5"
-    >
-      <h2 className="font-display text-base font-medium tracking-wide">{t("settings.categoriesTitle")}</h2>
-      <p className="mt-1 text-xs text-slate-400">{t("settings.categoriesHint")}</p>
-      <form onSubmit={(e) => void handleCreate(e)} className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-        <label className="flex flex-col gap-1 text-xs text-instrument/60">
-          {t("settings.categoryName")}
+    <DeckCard title={t("settings.categoriesTitle")} hint={t("settings.categoriesHint")}>
+      <form onSubmit={(e) => void handleCreate(e)} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+        <label className="flex flex-col gap-1.5">
+          <span className={deck.fieldLabel}>{t("settings.categoryName")}</span>
           <input
             aria-label={t("settings.categoryName")}
-            className={inputClass}
+            className={deck.fieldInput}
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
         </label>
-        <button type="submit" disabled={creating} className={primaryBtnClass}>
+        <button type="submit" disabled={creating} className={deck.signalAction}>
           {creating ? t("finance.saving") : t("settings.createCategory")}
         </button>
       </form>
@@ -162,24 +169,28 @@ export default function CustomCategoriesSection() {
             {listFailed}
           </p>
         ) : isLoading ? (
-          <p className="text-xs text-slate-400">{t("common.loading")}</p>
+          <p className="text-xs text-faint">{t("common.loading")}</p>
         ) : rows.length === 0 ? (
-          <EmptyState title={t("settings.noCategories")} hint={t("settings.noCategoriesHint")} />
+          <DeckEmptyState
+            icon={<ExpenseRowIcon className="h-5 w-5" />}
+            title={t("settings.noCategories")}
+            hint={t("settings.noCategoriesHint")}
+          />
         ) : (
           <ul className="flex flex-col gap-2">
             {rows.map((row) => (
               <li
                 key={row.id}
-                className="flex flex-col gap-3 rounded-lg border border-hull px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                className={deck.listRow}
               >
-                <p className="truncate text-sm">{row.name}</p>
+                <p className="truncate text-sm text-instrument">{row.name}</p>
                 <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">
                   <button
                     type="button"
                     onClick={() => void handleDelete(row.id)}
                     disabled={deletingId === row.id}
                     aria-label={`${t("settings.delete")}: ${row.name}`}
-                    className={dangerBtnClass}
+                    className={deck.dangerAction}
                   >
                     {t("settings.delete")}
                   </button>
@@ -189,6 +200,6 @@ export default function CustomCategoriesSection() {
           </ul>
         )}
       </div>
-    </section>
+    </DeckCard>
   );
 }
