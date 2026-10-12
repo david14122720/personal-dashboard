@@ -1,0 +1,1925 @@
+diff --git a/backend/Cargo.lock b/backend/Cargo.lock
+index 4be915d..337c123 100644
+--- a/backend/Cargo.lock
++++ b/backend/Cargo.lock
+@@ -2,6 +2,12 @@
+ # It is not intended for manual editing.
+ version = 4
+ 
++[[package]]
++name = "adler2"
++version = "2.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
++
+ [[package]]
+ name = "aho-corasick"
+ version = "1.1.5"
+@@ -11,6 +17,21 @@ dependencies = [
+  "memchr",
+ ]
+ 
++[[package]]
++name = "alloc-no-stdlib"
++version = "3.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
++
++[[package]]
++name = "alloc-stdlib"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
++dependencies = [
++ "alloc-no-stdlib",
++]
++
+ [[package]]
+ name = "allocator-api2"
+ version = "0.2.21"
+@@ -44,6 +65,18 @@ version = "0.7.8"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+ 
++[[package]]
++name = "async-compression"
++version = "0.4.50"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ee19bd99b43e3691acbad4e840420a4881cea6c0b66a208125a824f8fd53f5a1"
++dependencies = [
++ "compression-codecs",
++ "compression-core",
++ "pin-project-lite",
++ "tokio",
++]
++
+ [[package]]
+ name = "atoi"
+ version = "2.0.0"
+@@ -195,6 +228,27 @@ dependencies = [
+  "syn 3.0.6",
+ ]
+ 
++[[package]]
++name = "brotli"
++version = "9.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f8b851b75c23ca7873623d612fe49bd1989aeb03d08fb9432187eb253d3d4c6b"
++dependencies = [
++ "alloc-no-stdlib",
++ "alloc-stdlib",
++ "brotli-decompressor",
++]
++
++[[package]]
++name = "brotli-decompressor"
++version = "6.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "941cd9bd4ddab83cb46fa5a2d428f1c857b24ac78cb876cf7beb710840934bd7"
++dependencies = [
++ "alloc-no-stdlib",
++ "alloc-stdlib",
++]
++
+ [[package]]
+ name = "bumpalo"
+ version = "3.20.3"
+@@ -266,6 +320,24 @@ version = "0.5.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
+ 
++[[package]]
++name = "compression-codecs"
++version = "0.4.45"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "98fc98460ba0ad5317075d3632b8dfc45d0be8c4a49347c2a38272019717614a"
++dependencies = [
++ "brotli",
++ "compression-core",
++ "flate2",
++ "memchr",
++]
++
++[[package]]
++name = "compression-core"
++version = "0.4.33"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
++
+ [[package]]
+ name = "const-oid"
+ version = "0.10.2"
+@@ -311,6 +383,15 @@ version = "2.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+ 
++[[package]]
++name = "crc32fast"
++version = "1.5.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
++dependencies = [
++ "cfg-if",
++]
++
+ [[package]]
+ name = "crossbeam-queue"
+ version = "0.3.14"
+@@ -444,6 +525,17 @@ version = "0.1.13"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
+ 
++[[package]]
++name = "flate2"
++version = "1.1.10"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
++dependencies = [
++ "crc32fast",
++ "miniz_oxide",
++ "zlib-rs",
++]
++
+ [[package]]
+ name = "flume"
+ version = "0.12.0"
+@@ -982,6 +1074,16 @@ dependencies = [
+  "unicase",
+ ]
+ 
++[[package]]
++name = "miniz_oxide"
++version = "0.9.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
++dependencies = [
++ "adler2",
++ "simd-adler32",
++]
++
+ [[package]]
+ name = "mio"
+ version = "1.2.3"
+@@ -1476,6 +1578,12 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "simd-adler32"
++version = "0.3.10"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
++
+ [[package]]
+ name = "slab"
+ version = "0.4.12"
+@@ -1905,6 +2013,7 @@ version = "0.7.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
+ dependencies = [
++ "async-compression",
+  "bitflags",
+  "bytes",
+  "futures-core",
+@@ -2434,6 +2543,12 @@ dependencies = [
+  "syn 3.0.6",
+ ]
+ 
++[[package]]
++name = "zlib-rs"
++version = "0.6.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
++
+ [[package]]
+ name = "zmij"
+ version = "1.0.23"
+diff --git a/backend/Cargo.toml b/backend/Cargo.toml
+index 6f341c0..b176dcf 100644
+--- a/backend/Cargo.toml
++++ b/backend/Cargo.toml
+@@ -7,7 +7,11 @@ edition = "2021"
+ axum = { version = "0.8", features = ["json"] }
+ tokio = { version = "1", features = ["full"] }
+ sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "rust_decimal"] }
+-tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs", "timeout", "set-header"] }
++# `compression-gzip` / `compression-br` are features of the tower-http dep
++# that is already here (not a new dependency): they back the `CompressionLayer`
++# added for the dashboard load path. Measured before: 729.7 KB transferred on a
++# cold `/dashboard/` load with the server sending every asset uncompressed.
++tower-http = { version = "0.7", features = ["trace", "request-id", "cors", "fs", "timeout", "set-header", "compression-gzip", "compression-br"] }
+ tower = "0.5"
+ thiserror = "2"
+ serde = { version = "1", features = ["derive"] }
+diff --git a/backend/src/main.rs b/backend/src/main.rs
+index 5e6204e..c5c642c 100644
+--- a/backend/src/main.rs
++++ b/backend/src/main.rs
+@@ -15,6 +15,7 @@ use axum::{
+ };
+ use serde_json::json;
+ use tower_http::{
++    compression::CompressionLayer,
+     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+     services::{ServeDir, ServeFile},
+     set_header::SetResponseHeaderLayer,
+@@ -303,6 +304,16 @@ fn assemble(
+         HeaderName::from_static("content-security-policy"),
+         HeaderValue::from_static("frame-ancestors 'none'"),
+     ))
++    // PERF: negotiate gzip/brotli from the client's `Accept-Encoding` for every
++    // compressible response — the exported frontend's JS/CSS/HTML, the SPA
++    // fallback and the API JSON — instead of shipping them raw. Measured on a
++    // cold `/dashboard/` load before this layer existed: 729.7 KB transferred
++    // (680.7 KB of it JavaScript, 64 requests) with **no** `content-encoding`,
++    // i.e. the server ignored `Accept-Encoding: gzip, br` entirely. `tower-http`
++    // skips formats that do not benefit (images, fonts, archives) via its
++    // default predicate. It is applied outermost in `assemble`, after the
++    // security headers, so a compressed body never loses a response header.
++    .layer(CompressionLayer::new())
+ }
+ 
+ /// Root router: health probes stay at `/`, the API nests under `/api`, and
+diff --git a/backend/src/routes/habits.rs b/backend/src/routes/habits.rs
+index f007acf..b363353 100644
+--- a/backend/src/routes/habits.rs
++++ b/backend/src/routes/habits.rs
+@@ -62,7 +62,10 @@ use uuid::Uuid;
+ use crate::{
+     auth::helper::require_user_id,
+     error::AppError,
+-    finance::money::{parse_money_amount, parse_money_amount_nonneg},
++    finance::{
++        dates::today_bogota,
++        money::{parse_money_amount, parse_money_amount_nonneg},
++    },
+     state::AppState,
+ };
+ 
+@@ -877,8 +880,10 @@ pub async fn get_streak_handler(
+ }
+ 
+ /// Today read: every caller habit with today's log state and its streak in
+-/// ONE statement. `today_status` comes from a `LEFT JOIN habit_logs ON
+-/// log_date = CURRENT_DATE` (`done`/`missed`/`skipped` when logged,
++/// ONE statement. The day is the Bogota calendar day bound at `$2`
++/// ([`today_bogota`]), so the read never follows the DB session timezone.
++/// `today_status` comes from a `LEFT JOIN habit_logs ON
++/// log_date = $2` (`done`/`missed`/`skipped` when logged,
+ /// `pending` when scheduled today with no log, `skipped` on non-scheduled
+ /// days). `current_streak` reuses the [`STREAK_SQL`] gaps-and-islands shape
+ /// via `CROSS JOIN LATERAL` (per-habit evaluation, no loop, no N+1); the
+@@ -886,7 +891,7 @@ pub async fn get_streak_handler(
+ /// `h.days_of_week`), keeping the `::int` cast and the `skipped` bridge.
+ /// Archived habits are excluded (`NOT h.is_archived`); the list read keeps
+ /// them on purpose so the UI can offer Desarchivar.
+-const TODAY_SQL: &str = "SELECT h.id, h.name, h.frequency::text, h.days_of_week, s.current_streak, COALESCE(l.status::text, CASE WHEN (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM CURRENT_DATE)::int = ANY(h.days_of_week)) THEN 'pending' ELSE 'skipped' END) AS today_status FROM habits h LEFT JOIN habit_logs l ON l.habit_id=h.id AND l.user_id=h.user_id AND l.log_date=CURRENT_DATE CROSS JOIN LATERAL (WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=h.id AND user_id=h.user_id AND (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY(h.days_of_week))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs skipped_bridge WHERE skipped_bridge.status='skipped' AND skipped_bridge.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak) s WHERE h.user_id=$1 AND NOT h.is_archived ORDER BY h.created_at ASC";
++const TODAY_SQL: &str = "SELECT h.id, h.name, h.frequency::text, h.days_of_week, s.current_streak, COALESCE(l.status::text, CASE WHEN (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM $2)::int = ANY(h.days_of_week)) THEN 'pending' ELSE 'skipped' END) AS today_status FROM habits h LEFT JOIN habit_logs l ON l.habit_id=h.id AND l.user_id=h.user_id AND l.log_date=$2 CROSS JOIN LATERAL (WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=h.id AND user_id=h.user_id AND (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY(h.days_of_week))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs skipped_bridge WHERE skipped_bridge.status='skipped' AND skipped_bridge.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak) s WHERE h.user_id=$1 AND NOT h.is_archived ORDER BY h.created_at ASC";
+ 
+ type HabitTodayRow = (Uuid, String, String, Vec<i16>, i64, String);
+ 
+@@ -908,6 +913,7 @@ pub async fn today_habits_handler(
+     let user_id = require_user_id(&headers, &state.pool).await?;
+     let rows = sqlx::query_as::<_, HabitTodayRow>(TODAY_SQL)
+         .bind(user_id)
++        .bind(today_bogota())
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+@@ -1115,14 +1121,23 @@ mod today_read_tests {
+     #[test]
+     fn today_sql_resolves_status_and_streak_in_one_statement() {
+         assert_eq!(TODAY_SQL.matches(';').count(), 0);
+-        for fragment in [
+-            "LATERAL",
+-            "CURRENT_DATE",
+-            "'pending'",
+-            "CARDINALITY",
+-            "user_id",
+-            "AND NOT h.is_archived",
+-        ] {
++        assert!(
++            !TODAY_SQL.contains("CURRENT_DATE"),
++            "today SQL must take the day from the bound parameter, never the DB session clock"
++        );
++        assert!(
++            TODAY_SQL.contains("l.log_date=$2"),
++            "the today log join must filter on the day bound at $2"
++        );
++        assert!(
++            TODAY_SQL.contains("EXTRACT(DOW FROM $2)::int"),
++            "the scheduled-today branch must derive the weekday from the day bound at $2"
++        );
++        assert!(
++            TODAY_SQL.contains("h.user_id=$1"),
++            "the user filter must stay the first bound parameter"
++        );
++        for fragment in ["LATERAL", "'pending'", "CARDINALITY", "AND NOT h.is_archived"] {
+             assert!(
+                 TODAY_SQL.contains(fragment),
+                 "today SQL must contain {fragment}"
+@@ -1168,7 +1183,7 @@ mod today_read_tests {
+             return;
+         };
+         let (state, headers, user_id) = db_state(&pool).await;
+-        let today = Utc::now().date_naive();
++        let today = today_bogota();
+         let yesterday = today - chrono::Duration::days(1);
+         // A: done yesterday + done today → streak 2, done.
+         let habit_a = seed_habit(&pool, user_id, "habit-a", None).await;
+@@ -1231,7 +1246,7 @@ mod today_read_tests {
+             return;
+         };
+         let (state, headers, user_id) = db_state(&pool).await;
+-        let today = Utc::now().date_naive();
++        let today = today_bogota();
+         let habit = seed_habit(&pool, user_id, "habit-gap", None).await;
+         seed_log(&pool, user_id, habit, today - chrono::Duration::days(2), "done").await;
+         seed_log(&pool, user_id, habit, today - chrono::Duration::days(1), "missed").await;
+@@ -1256,7 +1271,7 @@ mod today_read_tests {
+         };
+         use chrono::Datelike;
+         let (state, headers, user_id) = db_state(&pool).await;
+-        let today_dow = Utc::now().date_naive().weekday().num_days_from_sunday() as i16;
++        let today_dow = today_bogota().weekday().num_days_from_sunday() as i16;
+         let other_dow = (today_dow + 1) % 7;
+         let habit = seed_habit(&pool, user_id, "habit-custom", Some(&[other_dow])).await;
+         let body = today_habits_handler(State(state), headers)
+@@ -1268,6 +1283,53 @@ mod today_read_tests {
+         let _ = habit;
+         cleanup_user(&pool, user_id).await;
+     }
++
++    /// The today read must resolve `today_status` from the day bound at `$2`
++    /// (the Bogota calendar day), not from the DB session clock: with the
++    /// same habit and a `done` log on fixed day D, the statement reports
++    /// `done` for D and `pending` for D+1. The handler itself binds
++    /// [`today_bogota`], so a log on that day reads `done`.
++    #[tokio::test]
++    async fn today_status_follows_the_bound_day_not_the_db_clock() {
++        let Some(pool) = test_pool() else {
++            eprintln!("SKIP today_status_follows_the_bound_day_not_the_db_clock: no DATABASE_URL");
++            return;
++        };
++        let (state, headers, user_id) = db_state(&pool).await;
++        let day = NaiveDate::from_ymd_opt(2026, 1, 15).expect("fixed day D");
++        let neighbour = day + chrono::Duration::days(1);
++        let habit = seed_habit(&pool, user_id, "habit-fixed-day", None).await;
++        seed_log(&pool, user_id, habit, day, "done").await;
++
++        // Same row, same DB clock; only the bound day changes.
++        let status_for_day = |bound: NaiveDate| {
++            let pool = pool.clone();
++            async move {
++                sqlx::query_as::<_, HabitTodayRow>(TODAY_SQL)
++                    .bind(user_id)
++                    .bind(bound)
++                    .fetch_one(&pool)
++                    .await
++                    .expect("today SQL with bound day")
++                    .5
++            }
++        };
++        assert_eq!(status_for_day(day).await, "done");
++        assert_eq!(status_for_day(neighbour).await, "pending");
++
++        // Production path: the handler binds today_bogota().
++        let live = seed_habit(&pool, user_id, "habit-live-day", None).await;
++        seed_log(&pool, user_id, live, today_bogota(), "done").await;
++        let body = today_habits_handler(State(state), headers)
++            .await
++            .expect("today is 200")
++            .0;
++        let entry = |id: Uuid| body.iter().find(|h| h.habit_id == id).expect("habit present");
++        assert_eq!(entry(live).today_status, "done");
++        assert_eq!(entry(habit).today_status, "pending");
++
++        cleanup_user(&pool, user_id).await;
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/backend/src/routes/tasks.rs b/backend/src/routes/tasks.rs
+index d15f445..b9fb61c 100644
+--- a/backend/src/routes/tasks.rs
++++ b/backend/src/routes/tasks.rs
+@@ -20,10 +20,12 @@
+ //! contract). `category_id` must be an owned `task`-kind category (else 422
+ //! per the P3 category contract).
+ //!
+-//! Views (`GET /tasks?view=`): `today` (`due_date = CURRENT_DATE AND
+-//! `completed_at IS NULL`), `upcoming` (`due_date > CURRENT_DATE AND
+-//! `completed_at IS NULL`), `overdue` (`due_date < CURRENT_DATE AND
+-//! `completed_at IS NULL`), `done` (`completed_at IS NOT NULL`). No `view`
++//! Views (`GET /tasks?view=`): `today` (`due_date = $2 AND
++//! `completed_at IS NULL`), `upcoming` (`due_date > $2 AND
++//! `completed_at IS NULL`), `overdue` (`due_date < $2 AND
++//! `completed_at IS NULL`), `done` (`completed_at IS NOT NULL`). `$2` is the
++//! current Bogota day (`finance::dates::today_bogota()`), bound instead of
++//! `CURRENT_DATE` so the views never follow the DB session timezone. No `view`
+ //! (or empty) returns every owned task. An unknown `view` is 422.
+ //!
+ //! Registered in `routes/mod.rs`; tasks routes are wired in `main.rs` so the
+@@ -39,7 +41,12 @@ use chrono::{DateTime, NaiveDate, Utc};
+ use serde::{Deserialize, Serialize};
+ use uuid::Uuid;
+ 
+-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
++use crate::{
++    auth::helper::require_user_id,
++    error::AppError,
++    finance::dates::today_bogota,
++    state::AppState,
++};
+ 
+ const MAX_TITLE_LEN: usize = 200;
+ const MAX_TEXT_LEN: usize = 2000;
+@@ -56,9 +63,9 @@ const TASK_VIEWS: &[&str] = &["today", "upcoming", "overdue", "done"];
+ 
+ const CREATE_TASK_SQL: &str = "INSERT INTO tasks (user_id, title, description, priority, status, due_date, goal_id, category_id, sort_order) VALUES ($1,$2,$3,$4::task_priority,$5::task_status,$6,$7,$8,COALESCE($9,0)) RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
+ const LIST_TASKS_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 ORDER BY sort_order ASC, created_at ASC";
+-const LIST_TASKS_TODAY_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date = CURRENT_DATE AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+-const LIST_TASKS_UPCOMING_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date > CURRENT_DATE AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+-const LIST_TASKS_OVERDUE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date < CURRENT_DATE AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
++const LIST_TASKS_TODAY_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date = $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
++const LIST_TASKS_UPCOMING_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date > $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
++const LIST_TASKS_OVERDUE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date < $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+ const LIST_TASKS_DONE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND completed_at IS NOT NULL ORDER BY sort_order ASC, created_at ASC";
+ const GET_TASK_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE id=$1 AND user_id=$2";
+ const PATCH_TASK_SQL: &str = "UPDATE tasks SET title=COALESCE($3,title), description=COALESCE($4,description), priority=COALESCE($5::task_priority,priority), status=COALESCE($6::task_status,status), due_date=COALESCE($7,due_date), goal_id=COALESCE($8,goal_id), category_id=COALESCE($9,category_id), sort_order=COALESCE($10,sort_order), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
+@@ -431,15 +438,18 @@ pub async fn list_tasks_handler(
+ ) -> Result<Json<Vec<TaskResponse>>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
+     let view = validate_task_view(query.view.as_deref())?;
+-    let sql = match view.as_deref() {
+-        Some("today") => LIST_TASKS_TODAY_SQL,
+-        Some("upcoming") => LIST_TASKS_UPCOMING_SQL,
+-        Some("overdue") => LIST_TASKS_OVERDUE_SQL,
+-        Some("done") => LIST_TASKS_DONE_SQL,
+-        _ => LIST_TASKS_SQL,
++    let (sql, needs_day) = match view.as_deref() {
++        Some("today") => (LIST_TASKS_TODAY_SQL, true),
++        Some("upcoming") => (LIST_TASKS_UPCOMING_SQL, true),
++        Some("overdue") => (LIST_TASKS_OVERDUE_SQL, true),
++        Some("done") => (LIST_TASKS_DONE_SQL, false),
++        _ => (LIST_TASKS_SQL, false),
+     };
+-    let rows = sqlx::query_as::<_, TaskRow>(sql)
+-        .bind(user_id)
++    let mut query = sqlx::query_as::<_, TaskRow>(sql).bind(user_id);
++    if needs_day {
++        query = query.bind(today_bogota());
++    }
++    let rows = query
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+@@ -693,21 +703,21 @@ mod tests {
+ 
+     #[test]
+     fn view_sql_encodes_the_read_model_contract() {
+-        // Each view filters on the spec/design contract: today/overdue on
+-        // `due_date` vs `CURRENT_DATE` with `completed_at IS NULL`, done on
+-        // `completed_at IS NOT NULL`.
++        // Each view filters on the spec/design contract: today/upcoming/
++        // overdue on `due_date` vs the Bogota day bound at `$2` with
++        // `completed_at IS NULL`, done on `completed_at IS NOT NULL`.
+         for (sql, markers) in [
+             (
+                 LIST_TASKS_TODAY_SQL,
+-                vec!["due_date = CURRENT_DATE", "completed_at IS NULL"],
++                vec!["due_date = $2", "completed_at IS NULL"],
+             ),
+             (
+                 LIST_TASKS_UPCOMING_SQL,
+-                vec!["due_date > CURRENT_DATE", "completed_at IS NULL"],
++                vec!["due_date > $2", "completed_at IS NULL"],
+             ),
+             (
+                 LIST_TASKS_OVERDUE_SQL,
+-                vec!["due_date < CURRENT_DATE", "completed_at IS NULL"],
++                vec!["due_date < $2", "completed_at IS NULL"],
+             ),
+             (LIST_TASKS_DONE_SQL, vec!["completed_at IS NOT NULL"]),
+         ] {
+@@ -718,6 +728,29 @@ mod tests {
+                 );
+             }
+         }
++        // The three day views take the day from the bind; the DB session
++        // clock (UTC in production) must never decide what "today" is.
++        for sql in [
++            LIST_TASKS_TODAY_SQL,
++            LIST_TASKS_UPCOMING_SQL,
++            LIST_TASKS_OVERDUE_SQL,
++        ] {
++            assert!(
++                !sql.contains("CURRENT_DATE"),
++                "day view must not read the DB session clock, got: {sql}"
++            );
++            assert!(
++                sql.contains("$2"),
++                "day view must bind the Bogota day at $2, got: {sql}"
++            );
++        }
++        // The unfiltered list and the done view stay day-free.
++        for sql in [LIST_TASKS_SQL, LIST_TASKS_DONE_SQL] {
++            assert!(
++                !sql.contains("$2") && !sql.contains("CURRENT_DATE"),
++                "day-free view must not take a bound day, got: {sql}"
++            );
++        }
+         // The done view filters on the stamp alone: check the WHERE clause
+         // (the SELECT column list legitimately names `due_date`).
+         let done_where = LIST_TASKS_DONE_SQL.split("WHERE").nth(1).unwrap_or("");
+@@ -1060,7 +1093,7 @@ mod tests {
+             return;
+         };
+         let (state, headers, user_id) = db_state(&pool).await;
+-        let today = Utc::now().date_naive();
++        let today = today_bogota();
+         let past = today - chrono::Duration::days(2);
+         let future = today + chrono::Duration::days(2);
+         let seed = |title: &str, due: Option<NaiveDate>, status: &str| {
+diff --git a/frontend/app/dashboard/habitos/page.test.tsx b/frontend/app/dashboard/habitos/page.test.tsx
+index 3043a6f..91d1d64 100644
+--- a/frontend/app/dashboard/habitos/page.test.tsx
++++ b/frontend/app/dashboard/habitos/page.test.tsx
+@@ -29,7 +29,6 @@ import HabitosPage from "./page";
+ process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
+ 
+ const TODAY = "2026-09-15";
+-const MONTH = "2026-09";
+ const DAYS_IN_MONTH = 30;
+ 
+ interface WireHabit {
+diff --git a/frontend/app/layout.tsx b/frontend/app/layout.tsx
+index d007ff5..b250c51 100644
+--- a/frontend/app/layout.tsx
++++ b/frontend/app/layout.tsx
+@@ -24,10 +24,19 @@ const mono = IBM_Plex_Mono({
+ // Stitch display face (Control Deck login + habits only). Loaded via
+ // next/font so it is self-hosted; `--font-deck-display` in globals.css
+ // carries the fallback stack when the font files are unavailable.
++// `preload: false` is deliberate: the class `font-deck-display` is applied
++// ONLY on `/login/` and the habits surfaces, but a font declared in the ROOT
++// layout with the default `preload: true` emits a `<link rel="preload">` on
++// every route, so the browser downloaded Plus Jakarta Sans on pages that never
++// render it. Measured on a cold `/dashboard/` load: that was 27.6 KB of the
++// 538.9 KB transferred (6 preloaded woff2 files, one of them unused). With
++// preload off the @font-face stays in the CSS and the file is fetched on demand
++// wherever the class is actually used, so login/habits keep the real face.
+ const deckDisplay = Plus_Jakarta_Sans({
+   subsets: ["latin"],
+   variable: "--font-deck-display",
+   display: "swap",
++  preload: false,
+ });
+ 
+ export const metadata: Metadata = {
+diff --git a/frontend/components/containers/DashboardHome.tsx b/frontend/components/containers/DashboardHome.tsx
+index 3306f51..3579a8d 100644
+--- a/frontend/components/containers/DashboardHome.tsx
++++ b/frontend/components/containers/DashboardHome.tsx
+@@ -17,13 +17,11 @@ import TodayHabits from "@/components/dashboard/widgets/TodayHabits";
+ import UpcomingEvents from "@/components/dashboard/widgets/UpcomingEvents";
+ import UpcomingPayments from "@/components/dashboard/widgets/UpcomingPayments";
+ import UpcomingSubs from "@/components/dashboard/widgets/UpcomingSubs";
+-import { deck } from "@/components/ui/deckStyles";
+ import {
+   buildNextLayout,
+   isWidgetVisible,
+   resolveDashboardLayout,
+   useAccounts,
+-  useHabitsToday,
+   usePreferences,
+   useUpdateLayout,
+   type DashboardLayout,
+@@ -70,7 +68,6 @@ export default function DashboardHome() {
+   }, []);
+ 
+   const accounts = useAccounts();
+-  const habits = useHabitsToday();
+   const prefs = usePreferences();
+   // KPI-only finance reads (same SWR keys as the chart sections below).
+   const financeSubs = useFinanceSubscriptions();
+diff --git a/frontend/components/dashboard/widgets/TodayHabits.tsx b/frontend/components/dashboard/widgets/TodayHabits.tsx
+index 8850776..89df864 100644
+--- a/frontend/components/dashboard/widgets/TodayHabits.tsx
++++ b/frontend/components/dashboard/widgets/TodayHabits.tsx
+@@ -72,14 +72,11 @@ interface DayLogsState {
+ /**
+  * The card's own read of the Bogotá day's logs.
+  *
+- * The shared `useHabitDayLogs` (lib/api/dashboard.ts) collapses "still
+- * unanswered" and "failed" into the same `undefined`, and this card must tell
+- * them apart: a failed read rendered as "unregistered" claims a state the data
+- * does not support, and it must be retryable. Same day-scoped semantics as the
+- * shared hook (a new day drops the previous day's logs before the request
+- * answers) plus the failure flag and a `reload()` that re-issues the request.
+- * Kept local to the card because `lib/api/dashboard.ts` is outside this fix's
+- * edit surfaces.
++ * This card must tell "still unanswered" and "failed" apart: a failed read
++ * rendered as "unregistered" claims a state the data does not support, and it
++ * must be retryable. Day-scoped semantics (a new day drops the previous day's
++ * logs before the request answers) plus the failure flag and a `reload()`
++ * that re-issues the request. Kept local to the card.
+  */
+ function useDayLogs(day: string) {
+   const [state, setState] = useState<DayLogsState>({ day });
+diff --git a/frontend/components/layout/AppShell.tsx b/frontend/components/layout/AppShell.tsx
+index b05125c..6b3ed64 100644
+--- a/frontend/components/layout/AppShell.tsx
++++ b/frontend/components/layout/AppShell.tsx
+@@ -7,6 +7,7 @@ import NotificationBell from "@/components/notifications/NotificationBell";
+ import { logout } from "@/lib/api/client";
+ import { useHabitsToday, usePreferences } from "@/lib/api/dashboard";
+ import { t, type EsKey } from "@/lib/i18n";
++import { BOGOTA_TZ } from "@/lib/time/bogota";
+ 
+ type IconProps = { className?: string };
+ 
+@@ -284,7 +285,7 @@ function formatToday(date: Date): string {
+     day: "numeric",
+     month: "short",
+     year: "numeric",
+-    timeZone: "America/Bogota",
++    timeZone: BOGOTA_TZ,
+   }).format(date);
+ }
+ 
+diff --git a/frontend/components/productivity/HabitHistorySection.test.tsx b/frontend/components/productivity/HabitHistorySection.test.tsx
+deleted file mode 100644
+index 1df1047..0000000
+--- a/frontend/components/productivity/HabitHistorySection.test.tsx
++++ /dev/null
+@@ -1,189 +0,0 @@
+-"use client";
+-
+-import { fireEvent, render, screen, within } from "@testing-library/react";
+-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+-import { http, HttpResponse } from "msw";
+-import { setupServer } from "msw/node";
+-import { SWRConfig } from "swr";
+-import HabitHistorySection from "@/components/productivity/HabitHistorySection";
+-
+-process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
+-
+-const habits = [
+-  { habit_id: "h1", name: "Correr" },
+-  { habit_id: "h2", name: "Leer" },
+-];
+-
+-const logs = [
+-  { habit_id: "h1", log_date: "2026-09-01", status: "done" },
+-  { habit_id: "h1", log_date: "2026-09-02", status: "missed" },
+-  { habit_id: "h1", log_date: "2026-09-04", status: "skipped" },
+-  { habit_id: "h2", log_date: "2026-09-01", status: "done" },
+-  { habit_id: "h2", log_date: "2026-09-02", status: "done" },
+-];
+-
+-const seen: string[] = [];
+-
+-const server = setupServer(
+-  http.get("http://test.local/api/habits/logs", ({ request }) => {
+-    seen.push(request.url);
+-    return HttpResponse.json(logs);
+-  }),
+-);
+-
+-beforeAll(() => server.listen());
+-afterEach(() => {
+-  server.resetHandlers();
+-  seen.length = 0;
+-});
+-afterAll(() => server.close());
+-
+-function renderSection() {
+-  return render(
+-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+-      <HabitHistorySection habits={habits} monthKey="2026-09" />
+-    </SWRConfig>,
+-  );
+-}
+-
+-function wrap(node: React.ReactNode, extra: Record<string, unknown> = {}) {
+-  return (
+-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, ...extra }}>{node}</SWRConfig>
+-  );
+-}
+-
+-describe("HabitHistorySection (S2b RED)", () => {
+-  it("renders a 42-cell real-log calendar with a name-only selector and base stats", async () => {
+-    renderSection();
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    expect(within(section).getByRole("combobox", { name: "Hábito" })).toHaveTextContent("Correr");
+-    expect(section.textContent).not.toContain("h1");
+-    const grid = within(section).getByRole("grid", { name: "Correr" });
+-    expect(within(grid).getAllByRole("gridcell")).toHaveLength(42);
+-    expect(within(section).getByText("Mejor racha")).toBeInTheDocument();
+-    expect(within(section).getByText("Cumplimiento")).toBeInTheDocument();
+-  });
+-
+-  it("shows a Spanish EmptyState when the month has no logs", async () => {
+-    server.use(http.get("http://test.local/api/habits/logs", () => HttpResponse.json([])));
+-    renderSection();
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    // W-02: el vacío del calendario y el de evolución tienen copy propia (getByText
+-    // exige unicidad): compartirla duplicaba el texto y volvía intermitente el query.
+-    expect(await within(section).findByText("Sin datos de evolución en este período")).toBeInTheDocument();
+-    expect(within(section).getByText("Sin registros en este período")).toBeInTheDocument();
+-  });
+-
+-  it("compares two habits by name and aggregates S/M/A without errors", async () => {
+-    renderSection();
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    fireEvent.click(within(section).getByRole("checkbox", { name: "Leer" }));
+-    for (const view of ["Semana", "Mes", "Año"] as const) {
+-      fireEvent.click(within(section).getByRole("button", { name: view }));
+-      expect(await within(section).findByRole("img", { name: "Evolución" })).toBeInTheDocument();
+-    }
+-    const legend = within(section).getByRole("list", { name: "Comparar" });
+-    expect(within(legend).getByText("Correr")).toBeInTheDocument();
+-    expect(within(legend).getByText("Leer")).toBeInTheDocument();
+-  });
+-
+-  it("shows a per-widget Spanish error with retry when history fails", async () => {
+-    server.use(http.get("http://test.local/api/habits/logs", () => HttpResponse.error()));
+-    render(
+-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
+-        <HabitHistorySection habits={habits} monthKey="2026-09" />
+-      </SWRConfig>,
+-    );
+-    expect(await screen.findByText("No se pudo cargar el historial")).toBeInTheDocument();
+-    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+-  });
+-});
+-
+-describe("HabitHistorySection deck restyle (T6b)", () => {
+-  it("wraps the history in deck panels and keeps every real control at 44px", async () => {
+-    renderSection();
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    // Three deck panels: calendar+stats, evolution, compare.
+-    expect(section.querySelectorAll("div.bg-card.border.border-hair").length).toBeGreaterThanOrEqual(3);
+-    // Real controls: the S/M/A pills and the compare chips that wrap a checkbox.
+-    const controls = [
+-      ...within(section).getAllByRole("button"),
+-      ...within(section).getAllByRole("checkbox").map((input) => input.closest("label") as HTMLElement),
+-    ];
+-    expect(controls.length).toBeGreaterThan(0);
+-    for (const control of controls) {
+-      expect(control.className, control.textContent ?? "").toContain("min-h-11");
+-    }
+-    expect(within(section).getByRole("combobox", { name: "Hábito" }).className).toContain("min-h-11");
+-  });
+-
+-  it("applies the Control Deck chart frame to the evolution plot (D8)", async () => {
+-    renderSection();
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    const plot = await within(section).findByRole("img", { name: "Evolución" });
+-    expect(plot.className).toContain("[&_.recharts-cartesian-grid-vertical]:hidden");
+-    expect(plot.className).toContain("[&_.recharts-cartesian-axis-line]:hidden");
+-    // The phone keeps the plot inside its own horizontal strip, not the page.
+-    expect(plot.className).toContain("overflow-x-auto");
+-  });
+-});
+-
+-describe("HabitHistorySection JD-1 fixes", () => {
+-  it("H-01: siembra el comparador cuando los hábitos llegan después del primer render", async () => {
+-    const { rerender } = render(wrap(<HabitHistorySection habits={[]} monthKey="2026-09" />));
+-    rerender(wrap(<HabitHistorySection habits={habits} monthKey="2026-09" />));
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    const legend = await within(section).findByRole("list", { name: "Comparar" });
+-    expect(within(legend).getByText("Correr")).toBeInTheDocument();
+-  });
+-
+-  it("H-02: deriva el mes por defecto del reloj local y no de UTC", async () => {
+-    // El runner está en America/Bogota (UTC-5): el 31 de diciembre de 2029 a las
+-    // 23:00 locales ya es 1 de enero de 2030 en UTC, así que `toISOString()`
+-    // pediría 2030-01 en vez del mes local 2029-12.
+-    render(wrap(<HabitHistorySection habits={habits} now={new Date(2029, 11, 31, 23, 0, 0)} />));
+-    await screen.findByRole("region", { name: "Historial" });
+-    const url = decodeURIComponent(seen.find((entry) => entry.includes("/habits/logs")) ?? "");
+-    expect(url).toContain("from=2029-12-01");
+-    expect(url).toContain("to=2029-12-31");
+-  });
+-
+-  it("W-03: etiqueta el heatmap en español, sin literales en inglés", async () => {
+-    renderSection();
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    const heatmap = within(section).getByRole("img", { name: "Correr: cumplimientos recientes" });
+-    expect(heatmap.getAttribute("aria-label")).not.toMatch(/recent completions/i);
+-    expect(within(section).getByTitle("2026-09-01: cumplido")).toBeInTheDocument();
+-    expect(within(section).getByTitle("2026-09-02: no cumplido")).toBeInTheDocument();
+-    expect(section.innerHTML).not.toMatch(/recent completions|day \d/i);
+-  });
+-
+-  it("W-04: grid con 6 filas y un solo tab stop (celdas no enfocables)", async () => {
+-    renderSection();
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    const grid = within(section).getByRole("grid", { name: "Correr" });
+-    expect(within(grid).getAllByRole("row")).toHaveLength(6);
+-    const cells = within(grid).getAllByRole("gridcell");
+-    expect(cells).toHaveLength(42);
+-    expect(cells.every((cell) => !cell.hasAttribute("tabindex"))).toBe(true);
+-    expect(grid).toHaveAttribute("tabindex", "0");
+-  });
+-
+-  it("W-07: muestra la racha actual del API y no la del mes", async () => {
+-    server.use(
+-      http.get("http://test.local/api/habits/logs", () =>
+-        HttpResponse.json([
+-          { habit_id: "h1", log_date: "2026-09-01", status: "done" },
+-          { habit_id: "h1", log_date: "2026-09-02", status: "done" },
+-          { habit_id: "h1", log_date: "2026-09-03", status: "done" },
+-        ]),
+-      ),
+-    );
+-    render(
+-      wrap(<HabitHistorySection habits={[{ habit_id: "h1", name: "Correr", current_streak: 7 }]} monthKey="2026-09" />),
+-    );
+-    const section = await screen.findByRole("region", { name: "Historial" });
+-    expect(within(section).getByText("7 días")).toBeInTheDocument();
+-    expect(within(section).getByText("3 días")).toBeInTheDocument();
+-  });
+-});
+diff --git a/frontend/components/productivity/HabitHistorySection.tsx b/frontend/components/productivity/HabitHistorySection.tsx
+deleted file mode 100644
+index dcdda7c..0000000
+--- a/frontend/components/productivity/HabitHistorySection.tsx
++++ /dev/null
+@@ -1,308 +0,0 @@
+-"use client";
+-
+-import dynamic from "next/dynamic";
+-import { useEffect, useMemo, useRef, useState } from "react";
+-import { useSWRConfig } from "swr";
+-import EmptyState from "@/components/ui/EmptyState";
+-import HabitsHeatmap from "@/components/ui/HabitsHeatmap";
+-import { t } from "@/lib/i18n";
+-import { deck } from "@/components/ui/deckStyles";
+-import { habitsHistoryKey, useHabitsHistory } from "@/lib/api/productivity";
+-import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
+-import {
+-  aggregateEvolution,
+-  calendarStateToHeat,
+-  habitStats,
+-  logsToCalendarCells,
+-  type CalendarState,
+-  type EvolutionGranularity,
+-} from "@/lib/productivity/habitStats";
+-import { todayYmdLocal } from "@/lib/productivity/productivity";
+-import { EVOLUTION_SERIES_TOKENS } from "@/components/ui/chartTheme";
+-import type { EvolutionRow } from "@/components/ui/HabitEvolutionChart";
+-
+-const HabitEvolutionChart = dynamic(() => import("@/components/ui/HabitEvolutionChart"), {
+-  ssr: false,
+-  loading: () => <p role="status" className="text-sm text-instrument/60">{t("common.loading")}</p>,
+-});
+-
+-export interface HistoryHabit { habit_id: string; name: string; days_of_week?: number[]; current_streak?: number | null; }
+-
+-const COMPARE_MAX = 4;
+-const CELLS_PER_ROW = 7;
+-
+-/** Mes `YYYY-MM` del reloj local (UTC daría el mes equivocado en husos negativos). */
+-export function defaultMonthKey(now: Date = new Date()): string {
+-  return todayYmdLocal(now).slice(0, 7);
+-}
+-
+-const stateClass: Record<CalendarState, string> = {
+-  "cumplido": "bg-flow text-deck",
+-  "no-cumplido": "bg-alert text-deck",
+-  "omitido": "bg-hull text-slate-300",
+-  "sin-registro": "bg-signal/30 text-slate-200",
+-};
+-
+-function stateText(state: CalendarState): string {
+-  if (state === "cumplido") return t("productivity.habitStatusDone");
+-  if (state === "no-cumplido") return t("productivity.habitStatusMissed");
+-  if (state === "omitido") return t("productivity.habitStatusSkipped");
+-  return t("productivity.habitStatusPending");
+-}
+-
+-function monthRange(monthKey: string): { from: string; to: string } {
+-  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+-  const year = Number(match?.[1]);
+-  const month = Number(match?.[2]);
+-  const last = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+-  return { from: `${monthKey}-01`, to: last };
+-}
+-
+-/** Merge per-habit bucketed series into Recharts rows keyed by bucket. */
+-export function toEvolutionRows(
+-  logs: Array<{ habit_id: string; log_date: string; status: string }>,
+-  picked: HistoryHabit[],
+-  granularity: EvolutionGranularity,
+-): { rows: EvolutionRow[]; series: string[] } {
+-  const series = aggregateEvolution(
+-    logs,
+-    picked.map((h) => ({ id: h.habit_id, name: h.name })),
+-    granularity,
+-  );
+-  const buckets = [...new Set(series.flatMap((s) => s.points.map((p) => p.bucket)))].sort();
+-  const byName = new Map(series.map((s) => [s.name, new Map(s.points.map((p) => [p.bucket, p.done]))]));
+-  const rows = buckets.map((bucket) => ({
+-    bucket,
+-    ...Object.fromEntries(series.map((s) => [s.name, byName.get(s.name)?.get(bucket) ?? 0])),
+-  }));
+-  return { rows, series: series.map((s) => s.name) };
+-}
+-
+-/** Tiny inline trend glyph for the evolution panel header (D3: no icon font). */
+-function TrendIcon({ className }: { className?: string }) {
+-  return (
+-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+-      <path
+-        d="M3.5 13.5l4-4.2 3 2.6 5.5-6.1"
+-        stroke="currentColor"
+-        strokeWidth="1.6"
+-        strokeLinecap="round"
+-        strokeLinejoin="round"
+-      />
+-      <path d="M13 5.5h3.5V9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+-    </svg>
+-  );
+-}
+-
+-/** Habit history for `#calendario-habitos`: name-only selector, 42-cell real-log calendar, base stats, S/M/A evolution, max-4 compare. */
+-export default function HabitHistorySection({
+-  habits,
+-  monthKey,
+-  now,
+-}: {
+-  habits: HistoryHabit[];
+-  monthKey?: string;
+-  now?: Date;
+-}) {
+-  const { mutate } = useSWRConfig();
+-  const reduced = usePrefersReducedMotion();
+-  const [selectedId, setSelectedId] = useState(habits[0]?.habit_id ?? "");
+-  const [granularity, setGranularity] = useState<EvolutionGranularity>("month");
+-  const [compareIds, setCompareIds] = useState<string[]>(habits[0] ? [habits[0].habit_id] : []);
+-  const seeded = useRef(false);
+-  const month = monthKey ?? defaultMonthKey(now);
+-
+-  // El primer render ve `habits=[]` (SWR aún sin resolver) y el estado inicial queda
+-  // vacío; al llegar los hábitos hay que sembrar selección y comparador una sola vez.
+-  useEffect(() => {
+-    const first = habits[0];
+-    if (seeded.current || !first) return;
+-    seeded.current = true;
+-    setSelectedId((current) => current || first.habit_id);
+-    setCompareIds((current) => (current.length > 0 ? current : [first.habit_id]));
+-  }, [habits]);
+-
+-  const { from, to } = useMemo(() => monthRange(month), [month]);
+-  const history = useHabitsHistory(from, to);
+-  const logs = useMemo(() => history.data ?? [], [history.data]);
+-
+-  const selected = habits.find((h) => h.habit_id === selectedId) ?? habits[0];
+-  const cells = useMemo(
+-    () => (selected ? logsToCalendarCells(logs, selected.habit_id, month) : []),
+-    [logs, selected, month],
+-  );
+-  const rows = useMemo(
+-    () => Array.from({ length: cells.length / CELLS_PER_ROW }, (_, row) => cells.slice(row * CELLS_PER_ROW, (row + 1) * CELLS_PER_ROW)),
+-    [cells],
+-  );
+-  const stats = useMemo(
+-    () => habitStats(logs.filter((l) => l.habit_id === selected?.habit_id), from, to, selected?.days_of_week),
+-    [logs, selected, from, to],
+-  );
+-  const heats = useMemo(() => cells.map((c) => calendarStateToHeat(c.state)), [cells]);
+-  // Racha actual del API (`GET /habits/today`); la del mes solo como fallback.
+-  const currentStreak = selected?.current_streak ?? stats.currentStreak;
+-  const picked = useMemo(() => habits.filter((h) => compareIds.includes(h.habit_id)).slice(0, COMPARE_MAX), [habits, compareIds]);
+-  const evolution = useMemo(() => toEvolutionRows(logs, picked, granularity), [logs, picked, granularity]);
+-
+-  function toggleCompare(habitId: string): void {
+-    setCompareIds((prev) =>
+-      prev.includes(habitId) ? prev.filter((id) => id !== habitId) : prev.length >= COMPARE_MAX ? prev : [...prev, habitId],
+-    );
+-  }
+-
+-  if (history.error) {
+-    return (
+-      <div role="alert" className="rounded-xl border border-alert/50 bg-alert/10 p-5">
+-        <h3 className="text-sm font-semibold text-instrument">{t("productivity.history.loadFailed")}</h3>
+-        <button
+-          type="button"
+-          onClick={() => void mutate(habitsHistoryKey(from, to))}
+-          className={`${deck.headerAction} mt-3`}
+-        >
+-          {t("common.retry")}
+-        </button>
+-      </div>
+-    );
+-  }
+-  if (history.isLoading) {
+-    return <p role="status" aria-busy="true" className="text-sm text-muted">{t("common.loading")}</p>;
+-  }
+-  if (!selected) {
+-    return <EmptyState title={t("productivity.noHabits")} hint={t("productivity.noHabitsHint")} />;
+-  }
+-  return (
+-    <section aria-label={t("productivity.history.title")} className="flex flex-col gap-4">
+-      <div className={deck.panel}>
+-        <div className={deck.sectionHeaderWrap}>
+-          <div className="flex items-center gap-2">
+-            <span className={deck.calendarIconTile}>
+-              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="h-4 w-4">
+-                <rect x="3" y="4.5" width="14" height="12" rx="2" />
+-                <path d="M3 8h14M6.5 2.8v3M13.5 2.8v3" />
+-              </svg>
+-            </span>
+-            <div>
+-              <h2 className={deck.sectionTitle}>{t("productivity.history.title")}</h2>
+-              <p className={deck.sectionSubtitle}>{t("productivity.history.hint")}</p>
+-            </div>
+-          </div>
+-          <label className="block w-full max-w-xs">
+-            <span className={deck.filterLabel}>{t("productivity.history.selectHabit")}</span>
+-            <select
+-              aria-label={t("productivity.history.selectHabit")}
+-              value={selected.habit_id}
+-              onChange={(event) => setSelectedId(event.target.value)}
+-              className={deck.filterField}
+-            >
+-              {habits.map((habit) => (
+-                <option key={habit.habit_id} value={habit.habit_id}>{habit.name}</option>
+-              ))}
+-            </select>
+-          </label>
+-        </div>
+-        {logs.length === 0 ? (
+-          <EmptyState title={t("productivity.history.empty")} hint={t("productivity.history.emptyHint")} />
+-        ) : (
+-          <>
+-            <div
+-              role="grid"
+-              aria-label={selected.name}
+-              tabIndex={0}
+-              className="mt-4 grid grid-cols-7 gap-1 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal"
+-            >
+-              {rows.map((row, rowIndex) => (
+-                <div key={`row-${rowIndex}`} role="row" className="contents">
+-                  {row.map((cell) => (
+-                    <span
+-                      key={cell.date}
+-                      role="gridcell"
+-                      title={`${cell.date}, ${stateText(cell.state)}`}
+-                      aria-label={`${cell.date}, ${stateText(cell.state)}`}
+-                      className={`${deck.historyCell} ${stateClass[cell.state]}`}
+-                    >
+-                      {Number(cell.date.slice(8))}
+-                    </span>
+-                  ))}
+-                </div>
+-              ))}
+-            </div>
+-            <div className="mt-4 rounded-lg border border-hair bg-panel/50 p-3">
+-              <HabitsHeatmap cells={heats} label={selected.name} dates={cells.map((c) => c.date)} />
+-            </div>
+-            <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+-              {[
+-                [t("productivity.stats.bestStreak"), t("productivity.stats.daysUnit", { n: stats.bestStreak })],
+-                [t("productivity.stats.currentStreak"), t("productivity.stats.daysUnit", { n: currentStreak })],
+-                [t("productivity.stats.compliance"), `${stats.complianceRate}%`],
+-                [`${t("productivity.stats.done")} · ${t("productivity.stats.missed")} · ${t("productivity.stats.skipped")} · ${t("productivity.stats.unlogged")}`, `${stats.done} · ${stats.missed} · ${stats.skipped} · ${stats.unlogged}`],
+-              ].map(([term, value]) => (
+-                <div key={term} className={deck.statTile}>
+-                  <dt className="text-[11px] leading-snug text-faint">{term}</dt>
+-                  <dd className="mt-1 font-mono text-sm tabular-nums text-instrument">{value}</dd>
+-                </div>
+-              ))}
+-            </dl>
+-          </>
+-        )}
+-      </div>
+-      <div className={deck.panel}>
+-        <div className={deck.sectionHeaderWrap}>
+-          <div className="flex items-center gap-2">
+-            <span className={deck.calendarIconTile}>
+-              <TrendIcon className="h-4 w-4" />
+-            </span>
+-            <div>
+-              <h3 className={deck.sectionTitle}>{t("productivity.evolution.title")}</h3>
+-            </div>
+-          </div>
+-          <div role="group" aria-label={t("productivity.evolution.title")} className="flex flex-wrap gap-2">
+-            {(["week", "month", "year"] as const).map((value) => (
+-              <button
+-                key={value}
+-                type="button"
+-                aria-pressed={granularity === value}
+-                onClick={() => setGranularity(value)}
+-                className={granularity === value ? deck.cardPillActive : deck.cardPillIdle}
+-              >
+-                {t(`productivity.evolution.${value}`)}
+-              </button>
+-            ))}
+-          </div>
+-        </div>
+-        <HabitEvolutionChart data={evolution.rows} series={evolution.series} animate={!reduced} />
+-        {evolution.series.length > 0 ? (
+-          <ul aria-label={t("productivity.compare.title")} className="mt-3 flex flex-wrap gap-3">
+-            {evolution.series.map((name, index) => (
+-              <li key={name} className="flex items-center gap-1.5 text-xs text-muted">
+-                <span aria-hidden="true" className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: `var(${EVOLUTION_SERIES_TOKENS[index % EVOLUTION_SERIES_TOKENS.length]})` }} />
+-                {name}
+-              </li>
+-            ))}
+-          </ul>
+-        ) : null}
+-      </div>
+-      <div className={deck.panel}>
+-        <h3 className={deck.sectionTitle}>{t("productivity.compare.title")}</h3>
+-        <p className={deck.sectionSubtitle}>{t("productivity.compare.hint", { max: COMPARE_MAX })}</p>
+-        {compareIds.length >= COMPARE_MAX ? (
+-          <p className="mt-1 text-xs text-signal">{t("productivity.compare.maxReached", { max: COMPARE_MAX })}</p>
+-        ) : null}
+-        <div className="mt-3 flex flex-wrap gap-2">
+-          {habits.map((habit) => (
+-            <label key={habit.habit_id} className={deck.compareChip}>
+-              <input
+-                type="checkbox"
+-                checked={compareIds.includes(habit.habit_id)}
+-                disabled={!compareIds.includes(habit.habit_id) && compareIds.length >= COMPARE_MAX}
+-                onChange={() => toggleCompare(habit.habit_id)}
+-                className="accent-signal focus-visible:outline-none"
+-              />
+-              {habit.name}
+-            </label>
+-          ))}
+-        </div>
+-      </div>
+-    </section>
+-  );
+-}
+diff --git a/frontend/components/productivity/ProductivitySections.tsx b/frontend/components/productivity/ProductivitySections.tsx
+index d8e23b7..3dad740 100644
+--- a/frontend/components/productivity/ProductivitySections.tsx
++++ b/frontend/components/productivity/ProductivitySections.tsx
+@@ -10,6 +10,7 @@ import {
+   noteExcerpt,
+   type TaskDateView,
+ } from "@/lib/productivity/productivity";
++import { BOGOTA_TZ } from "@/lib/time/bogota";
+ 
+ /**
+  * Pure presentational sections for the productivity screens. The container
+@@ -25,8 +26,8 @@ import {
+  * computed from the wire (D10); the prototype's fabricated figures are gone.
+  */
+ 
+-/** Bogotá calendar for the event date block and the note timestamps. */
+-const BOGOTA_TZ = "America/Bogota";
++/** Bogotá calendar for the event date block and the note timestamps (the
++ * zone itself is the app-wide `BOGOTA_TZ` constant). */
+ const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+ 
+ /** `10 sept` for a real `YYYY-MM-DD` calendar date (prototype `Vence 20 oct`). */
+diff --git a/frontend/components/productivity/s2-crud.test.tsx b/frontend/components/productivity/s2-crud.test.tsx
+index 8a0d389..d3932fa 100644
+--- a/frontend/components/productivity/s2-crud.test.tsx
++++ b/frontend/components/productivity/s2-crud.test.tsx
+@@ -16,9 +16,7 @@ import {
+   type TaskWire,
+ } from "@/lib/api/productivity";
+ import {
+-  countEventsByTimeView,
+   countTasksByDateView,
+-  filterEventsByTimeView,
+   filterTasksByDateView,
+   todayYmdLocal,
+ } from "@/lib/productivity/productivity";
+@@ -272,27 +270,6 @@ describe("S2 eventos: crear por tipo y vistas próximos/vencidos", () => {
+     expect(seenPosts[0].body).toMatchObject({ title: "Dentista", kind: "appointment" });
+     expect(seenPosts[0].body).toHaveProperty("starts_at");
+   });
+-
+-  it("separa próximos de vencidos por hora de fin", () => {
+-    const now = Date.parse("2026-09-09T12:00:00Z");
+-    const upcoming = { starts_at: "2026-09-10T10:00:00Z", ends_at: null };
+-    const overdue = { starts_at: "2026-09-01T10:00:00Z", ends_at: null };
+-    const finished = {
+-      starts_at: "2026-09-09T10:00:00Z",
+-      ends_at: "2026-09-09T11:00:00Z",
+-    };
+-    expect(filterEventsByTimeView([upcoming, overdue, finished], "upcoming", now)).toEqual([
+-      upcoming,
+-    ]);
+-    expect(
+-      filterEventsByTimeView([upcoming, overdue, finished], "overdue", now).length,
+-    ).toBe(2);
+-    expect(countEventsByTimeView([upcoming, overdue, finished], now)).toMatchObject({
+-      all: 3,
+-      upcoming: 1,
+-      overdue: 2,
+-    });
+-  });
+ });
+ 
+ describe("S2 notas: crear, fijar y eliminar", () => {
+diff --git a/frontend/components/ui/FlowChart.tsx b/frontend/components/ui/FlowChart.tsx
+deleted file mode 100644
+index 8a7e1b1..0000000
+--- a/frontend/components/ui/FlowChart.tsx
++++ /dev/null
+@@ -1,78 +0,0 @@
+-"use client";
+-
+-import { Area, AreaChart, CartesianGrid, LabelList, Tooltip, XAxis, YAxis } from "recharts";
+-import { formatMoney } from "@/lib/api/money";
+-
+-/** Local point shape (S3b: the shared `FlowPoint` transform was deleted with the ledger). */
+-export interface FlowPoint {
+-  month: string;
+-  income: number;
+-  expense: number;
+-  balance: number;
+-}
+-import { chartToken, formatMonth, t } from "@/lib/i18n";
+-import { useContainerWidth } from "@/components/ui/useContainerWidth";
+-import EmptyState from "@/components/ui/EmptyState";
+-
+-/**
+- * Monthly income-vs-expense area chart. Renders the shared EmptyState
+- * (no error) when the aggregate response has no data points.
+- */
+-export default function FlowChart({ data, animate = true }: { data: FlowPoint[]; animate?: boolean }) {
+-  const { ref: chartRef, width } = useContainerWidth(560);
+-  if (!data || data.length === 0) {
+-    return <EmptyState title={t("dashboard.noFlowData")} hint={t("dashboard.noFlowHint")} />;
+-  }
+-  const tok = (prop: `--color-${string}`): string => chartToken(prop) || `var(${prop})`;
+-  const income = tok("--color-flow");
+-  const expense = tok("--color-signal");
+-  return (
+-    <div ref={chartRef} className="w-full overflow-x-auto">
+-      <AreaChart
+-        width={width}
+-        height={260}
+-        data={data}
+-        accessibilityLayer
+-        margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+-      >
+-        <CartesianGrid stroke={tok("--color-hull")} strokeDasharray="3 3" />
+-        <XAxis dataKey="month" tickFormatter={(value: string) => formatMonth(value)} tick={{ fill: tok("--color-instrument"), fontSize: 12 }} tickLine={false} axisLine={{ stroke: tok("--color-hull") }} />
+-        <YAxis tick={{ fill: tok("--color-instrument"), fontSize: 12 }} tickLine={false} axisLine={false} width={64} />
+-        <Tooltip
+-          contentStyle={{
+-            backgroundColor: tok("--color-hull"),
+-            border: `1px solid ${tok("--color-hull")}`,
+-            borderRadius: 8,
+-            color: tok("--color-instrument"),
+-            fontSize: 12,
+-          }}
+-          formatter={(value, name) => [formatMoney(typeof value === "number" ? value : 0), name]}
+-        />
+-        <Area
+-          type="monotone"
+-          dataKey="income"
+-          name="Income"
+-          stroke={income}
+-          fill={income}
+-          fillOpacity={0.25}
+-          strokeWidth={2}
+-          isAnimationActive={animate}
+-        >
+-          <LabelList dataKey="income" position="top" formatter={(label) => formatMoney(typeof label === "number" ? label : 0)} />
+-        </Area>
+-        <Area
+-          type="monotone"
+-          dataKey="expense"
+-          name="Expense"
+-          stroke={expense}
+-          fill={expense}
+-          fillOpacity={0.2}
+-          strokeWidth={2}
+-          isAnimationActive={animate}
+-        >
+-          <LabelList dataKey="expense" position="top" formatter={(label) => formatMoney(typeof label === "number" ? label : 0)} />
+-        </Area>
+-      </AreaChart>
+-    </div>
+-  );
+-}
+diff --git a/frontend/components/ui/HabitEvolutionChart.tsx b/frontend/components/ui/HabitEvolutionChart.tsx
+deleted file mode 100644
+index 0dc8ecc..0000000
+--- a/frontend/components/ui/HabitEvolutionChart.tsx
++++ /dev/null
+@@ -1,73 +0,0 @@
+-"use client";
+-
+-import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
+-import { t } from "@/lib/i18n";
+-import {
+-  chartDeckFrameClass,
+-  chartTick,
+-  chartTok,
+-  chartTooltipStyle,
+-  EVOLUTION_SERIES_TOKENS,
+-} from "@/components/ui/chartTheme";
+-import { useContainerWidth } from "@/components/ui/useContainerWidth";
+-import EmptyState from "@/components/ui/EmptyState";
+-
+-export interface EvolutionRow { bucket: string; [series: string]: string | number; }
+-
+-/**
+- * Multi-series habit evolution (done-counts per bucket, one Line per habit
+- * labelled by name, max 4). Pure presentational; the section merges
+- * `aggregateEvolution` series into rows before rendering.
+- *
+- * Control Deck frame (D8): horizontal dashed hairlines only, no axis lines,
+- * card-colored tooltip and the sky glow on the primary series; every axis
+- * still comes from the real bucket range.
+- */
+-export default function HabitEvolutionChart({
+-  data,
+-  series,
+-  animate = true,
+-}: {
+-  data: EvolutionRow[];
+-  series: string[];
+-  animate?: boolean;
+-}) {
+-  const { ref: chartRef, width } = useContainerWidth(560);
+-  if (!data || data.length === 0 || series.length === 0) {
+-    return <EmptyState title={t("productivity.evolution.empty")} hint={t("productivity.evolution.emptyHint")} />;
+-  }
+-  return (
+-    <div
+-      ref={chartRef}
+-      className={`w-full overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-signal ${chartDeckFrameClass}`}
+-      tabIndex={0}
+-      role="img"
+-      aria-label={t("productivity.evolution.title")}
+-    >
+-      <LineChart
+-        width={width}
+-        height={260}
+-        data={data}
+-        accessibilityLayer
+-        margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+-      >
+-        <CartesianGrid stroke={chartTok("--color-hair")} strokeDasharray="3 3" vertical={false} />
+-        <XAxis dataKey="bucket" tick={chartTick()} tickLine={false} axisLine={false} />
+-        <YAxis tick={chartTick()} tickLine={false} axisLine={false} width={40} allowDecimals={false} />
+-        <Tooltip contentStyle={chartTooltipStyle()} />
+-        {series.map((name, index) => (
+-          <Line
+-            key={name}
+-            type="monotone"
+-            dataKey={name}
+-            name={name}
+-            stroke={chartTok(EVOLUTION_SERIES_TOKENS[index % EVOLUTION_SERIES_TOKENS.length])}
+-            strokeWidth={2}
+-            dot={false}
+-            isAnimationActive={animate}
+-          />
+-        ))}
+-      </LineChart>
+-    </div>
+-  );
+-}
+diff --git a/frontend/components/ui/HabitsHeatmap.tsx b/frontend/components/ui/HabitsHeatmap.tsx
+deleted file mode 100644
+index 564070c..0000000
+--- a/frontend/components/ui/HabitsHeatmap.tsx
++++ /dev/null
+@@ -1,48 +0,0 @@
+-import type { HeatCell } from "@/lib/productivity/productivity";
+-import { t } from "@/lib/i18n";
+-
+-const cellClass: Record<HeatCell, string> = {
+-  done: "bg-flow",
+-  missed: "bg-alert",
+-  pending: "bg-signal",
+-  empty: "bg-hull",
+-};
+-
+-/** Copy ES de cada celda (el heatmap es un derivado del calendario, no una racha). */
+-const cellKey = {
+-  done: "productivity.heatmap.done",
+-  missed: "productivity.heatmap.missed",
+-  pending: "productivity.heatmap.pending",
+-  empty: "productivity.heatmap.empty",
+-} as const;
+-
+-/**
+- * Pure CSS-grid heatmap fed ONLY by real range logs: callers map the
+- * 4-state calendar (`logsToCalendarCells` + `calendarStateToHeat`) into
+- * `cells`. Streak-derived strips were removed in S2b (single source: logs).
+- * All copy comes from typed ES keys — no hardcoded English.
+- */
+-export default function HabitsHeatmap({ cells, label, dates }: { cells: HeatCell[]; label: string; dates?: string[] }) {
+-  return (
+-    <div
+-      role="img"
+-      aria-label={t("productivity.heatmap.label", { habit: label })}
+-      className="grid grid-cols-7 justify-start gap-1"
+-    >
+-      {cells.map((cell, index) => {
+-        const date = dates?.[index];
+-        const state = t(cellKey[cell]);
+-        const hint = date
+-          ? `${date}: ${state}`
+-          : `${t("productivity.heatmap.day", { n: index + 1 })}: ${state}`;
+-        return (
+-          <span
+-            key={date ?? `${label}-${index}`}
+-            title={hint}
+-            className={`h-3 w-3 rounded-sm ${cellClass[cell]}`}
+-          />
+-        );
+-      })}
+-    </div>
+-  );
+-}
+diff --git a/frontend/components/ui/MetricCard.tsx b/frontend/components/ui/MetricCard.tsx
+deleted file mode 100644
+index dfcb725..0000000
+--- a/frontend/components/ui/MetricCard.tsx
++++ /dev/null
+@@ -1,59 +0,0 @@
+-import { ledDotClass } from "@/lib/dashboard/transforms";
+-
+-/**
+- * Stitch KPI card: caps label row with the 1:1 backend LED, big tabular
+- * value, optional sub-line, progress track, footer and the bottom gradient
+- * hairline. Data stays numeric/strings from the container boundary.
+- */
+-
+-export interface MetricCardProps {
+-  label: string;
+-  display: string;
+-  hint?: string;
+-  /** Backend enum (ok|warn|high|over). Absent means "no alert applies". */
+-  status?: string | null;
+-  /** Progress fill in percent (clamped to 0-100). Null/absent hides the track. */
+-  bar?: number | null;
+-  /** Small line rendered under the progress track. */
+-  footer?: string;
+-}
+-
+-export default function MetricCard({ label, display, hint, status, bar, footer }: MetricCardProps) {
+-  const fill =
+-    bar === null || bar === undefined || !Number.isFinite(bar)
+-      ? null
+-      : Math.min(100, Math.max(0, bar));
+-
+-  return (
+-    <article className="relative overflow-hidden rounded-xl border border-slate-800/80 bg-[#0f131d]/90 p-5 transition-colors hover:border-slate-700">
+-      <div className="flex items-center gap-2">
+-        {status ? (
+-          <span
+-            role="img"
+-            aria-label={`${label} status ${status}`}
+-            title={status}
+-            className={`inline-block h-2 w-2 shrink-0 rounded-full ${ledDotClass(status)}`}
+-          />
+-        ) : null}
+-        <span className="label-caps text-slate-400">{label}</span>
+-      </div>
+-      <p className="mt-3 font-mono text-2xl font-semibold tabular-nums tracking-tight text-white">
+-        {display}
+-      </p>
+-      {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
+-      {fill === null ? null : (
+-        <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-slate-800">
+-          <div
+-            className="h-full rounded-full bg-gradient-to-r from-flow to-signal"
+-            style={{ width: `${fill}%` }}
+-          />
+-        </div>
+-      )}
+-      {footer ? <p className="mt-2 text-xs text-slate-400">{footer}</p> : null}
+-      <span
+-        aria-hidden="true"
+-        className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-gradient-to-r from-transparent via-sky-500/40 to-transparent"
+-      />
+-    </article>
+-  );
+-}
+diff --git a/frontend/components/ui/TelemetryStrip.test.tsx b/frontend/components/ui/TelemetryStrip.test.tsx
+deleted file mode 100644
+index 0f67210..0000000
+--- a/frontend/components/ui/TelemetryStrip.test.tsx
++++ /dev/null
+@@ -1,49 +0,0 @@
+-import { render, screen } from "@testing-library/react";
+-import { describe, expect, it } from "vitest";
+-import TelemetryStrip from "./TelemetryStrip";
+-
+-describe("TelemetryStrip enum mapping", () => {
+-  it("announces the strip region in Spanish", () => {
+-    render(<TelemetryStrip items={[{ id: "worth", label: "Patrimonio", display: "$ 5" }]} />);
+-    expect(screen.getByRole("region", { name: "Telemetría" })).toBeInTheDocument();
+-  });
+-
+-  it("renders warn and over LEDs with their visual states", () => {
+-    render(
+-      <TelemetryStrip
+-        items={[
+-          { id: "card", label: "Cards", display: "warn", status: "warn" },
+-          { id: "debts", label: "Debts", display: "over", status: "over" },
+-          { id: "worth", label: "Net worth", display: "$ 1.500.000" },
+-        ]}
+-      />,
+-    );
+-
+-    const warnLed = screen.getByRole("img", { name: "Cards, estado warn" });
+-    const overLed = screen.getByRole("img", { name: "Debts, estado over" });
+-    expect(warnLed.className).toContain("bg-signal");
+-    expect(overLed.className).toContain("bg-alert");
+-  });
+-
+-  it("maps high to the alert state and ok to the flow state", () => {
+-    render(
+-      <TelemetryStrip
+-        items={[
+-          { id: "card", label: "Cards", display: "high", status: "high" },
+-          { id: "month", label: "Month balance", display: "$ 100", status: "ok" },
+-        ]}
+-      />,
+-    );
+-
+-    expect(screen.getByRole("img", { name: "Cards, estado high" }).className).toContain("bg-alert");
+-    expect(screen.getByRole("img", { name: "Month balance, estado ok" }).className).toContain(
+-      "bg-flow",
+-    );
+-  });
+-
+-  it("omits the LED when no status applies", () => {
+-    render(<TelemetryStrip items={[{ id: "worth", label: "Net worth", display: "$ 5" }]} />);
+-    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+-    expect(screen.getByText("$ 5")).toBeInTheDocument();
+-  });
+-});
+diff --git a/frontend/components/ui/TelemetryStrip.tsx b/frontend/components/ui/TelemetryStrip.tsx
+deleted file mode 100644
+index 8a0d7f2..0000000
+--- a/frontend/components/ui/TelemetryStrip.tsx
++++ /dev/null
+@@ -1,49 +0,0 @@
+-import { t } from "@/lib/i18n";
+-import { ledDotClass } from "@/lib/dashboard/transforms";
+-
+-/**
+- * Full-width telemetry strip: labelled KPIs with optional status LEDs.
+- * Every LED maps its status value 1:1 (ok|warn|high|over) to the documented
+- * visual state. (Slice S2 removed the budget status LED; no budget item may
+- * be passed.)
+- */
+-
+-export interface TelemetryItem {
+-  id: string;
+-  label: string;
+-  display: string;
+-  /** Backend enum (ok|warn|high|over). Absent means "no alert applies". */
+-  status?: string | null;
+-}
+-
+-export default function TelemetryStrip({ items }: { items: TelemetryItem[] }) {
+-  return (
+-    <section
+-      aria-label={t("dashboard.telemetryStrip")}
+-      className="rounded-xl border border-hair bg-panel/60 p-4"
+-    >
+-      <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+-        {items.map((item) => (
+-          <li key={item.id} className="flex min-w-0 items-start gap-2.5">
+-            {item.status ? (
+-              <span
+-                role="img"
+-                aria-label={t("dashboard.telemetryStatus", { label: item.label, status: item.status })}
+-                title={item.status}
+-                className={`mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${ledDotClass(item.status)}`}
+-              />
+-            ) : (
+-              <span aria-hidden="true" className="mt-1.5 inline-block h-2.5 w-2.5 shrink-0" />
+-            )}
+-            <div className="min-w-0">
+-              <p className="label-caps text-slate-400">{item.label}</p>
+-              <p className="truncate font-mono text-base font-semibold tabular-nums text-white">
+-                {item.display}
+-              </p>
+-            </div>
+-          </li>
+-        ))}
+-      </ul>
+-    </section>
+-  );
+-}
+diff --git a/frontend/components/ui/charts.test.tsx b/frontend/components/ui/charts.test.tsx
+index c1ddea6..5e5c6ca 100644
+--- a/frontend/components/ui/charts.test.tsx
++++ b/frontend/components/ui/charts.test.tsx
+@@ -1,36 +1,17 @@
+ import { render, screen } from "@testing-library/react";
+ import { describe, expect, it } from "vitest";
+ import EmptyState from "./EmptyState";
+-import FlowChart from "./FlowChart";
+ 
+ // S3b: CategoryDonut/BalanceChart/SavingsChart/MonthlyExpensesChart/
+-// MonthCompareChart were deleted with the ledger (dangling-reference fix:
+-// this file keeps only the surviving FlowChart + EmptyState cases).
++// MonthCompareChart were deleted with the ledger; the surviving FlowChart was
++// removed with the dead-code sweep (S2/T2), so this file keeps the live
++// EmptyState coverage only.
+ 
+ describe("Recharts wrappers", () => {
+-  it("FlowChart renders an empty state without errors on empty aggregates", () => {
+-    render(<FlowChart data={[]} />);
+-    expect(screen.getByRole("status")).toHaveTextContent("Sin datos de flujo aún");
+-  });
+-
+-  it("FlowChart plots coerced income and expense series", () => {
+-    const { container } = render(
+-      <FlowChart data={[{ month: "2026-09", income: 1000, expense: 400, balance: 600 }]} />,
+-    );
+-    expect(container.querySelector("svg")).not.toBeNull();
+-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+-  });
+-
+   it("EmptyState announces itself as a live status", () => {
+     render(<EmptyState title="Nothing pending" hint="All clear." />);
+     const status = screen.getByRole("status");
+     expect(status).toHaveTextContent("Nothing pending");
+     expect(status).toHaveTextContent("All clear.");
+   });
+-
+-  it("FlowChart renders Spanish month ticks instead of raw YYYY-MM", () => {
+-    const { container } = render(<FlowChart data={[{ month: "2026-09", income: 1000, expense: 400, balance: 600 }]} />);
+-    expect(screen.queryByText("2026-09")).not.toBeInTheDocument();
+-    expect(container.textContent).toMatch(/2026/);
+-  });
+ });
+diff --git a/frontend/e2e/notifications.spec.ts b/frontend/e2e/notifications.spec.ts
+index 6c0a2b1..f2451d5 100644
+--- a/frontend/e2e/notifications.spec.ts
++++ b/frontend/e2e/notifications.spec.ts
+@@ -35,6 +35,17 @@ test("ocultar widget excluye categoria del badge", async ({ page }) => {
+   // Both the widget header and the «Personalizar» panel render an «upcoming-payments»
+   // switch, so the hide click is scoped to the widget region itself.
+   const widget = page.getByRole("region", { name: "Próximos pagos" });
++  // Precondition, never leftover state: the chosen layout is persisted per user
++  // server-side, so a previous run (or spec) may have left this widget hidden —
++  // and a hidden widget is UNMOUNTED, so its own switch does not exist. Bring it
++  // back from «Personalizar» before asserting anything about hiding it.
++  if (!(await widget.isVisible())) {
++    await page
++      .getByRole("region", { name: "Personalizar" })
++      .getByRole("switch", { name: /upcoming-payments/ })
++      .click();
++    await expect(widget).toBeVisible();
++  }
+   await widget.getByRole("switch", { name: /upcoming-payments/ }).click();
+   await expect(page.getByRole("button", { name: /avisos pendientes/ })).toBeVisible();
+   // The widget region is unmounted while hidden: re-enable it from «Personalizar».
+diff --git a/frontend/lib/api/dashboard.ts b/frontend/lib/api/dashboard.ts
+index 0b92899..439a19f 100644
+--- a/frontend/lib/api/dashboard.ts
++++ b/frontend/lib/api/dashboard.ts
+@@ -6,10 +6,8 @@
+  * and never inside UI components.
+  */
+ 
+-import { useEffect, useState } from "react";
+ import useSWR, { useSWRConfig, type SWRConfiguration } from "swr";
+ import { apiGet, apiPatch } from "@/lib/api/client";
+-import type { HabitLogWire } from "@/lib/api/productivity";
+ 
+ export type { NotificationItem } from "@/lib/dashboard/transforms";
+ 
+@@ -100,39 +98,6 @@ export function useHabitsToday() {
+   );
+ }
+ 
+-/**
+- * One-day `GET /habits/logs` read scoped to the «Hoy» widget.
+- *
+- * The widget derives its day from `todayInBogota()`, while `/habits/today`
+- * anchors `today_status` to the database's UTC `CURRENT_DATE`: between 19:00
+- * and midnight Bogotá that is already the next day and every habit reads
+- * `pending` on a day whose real log is `done`. That day's own logs are the
+- * only honest source for the checkbox, so this read stays scoped to the card
+- * as a mount/day effect instead of joining the shared SWR graph: it resolves
+- * on mount and on day change, and `undefined` means the day is still
+- * unanswered (the widget then renders no count and no `pending`).
+- */
+-export function useHabitDayLogs(day: string): HabitLogWire[] | undefined {
+-  const [state, setState] = useState<{ day: string; data?: HabitLogWire[] }>({ day });
+-  useEffect(() => {
+-    let active = true;
+-    // A new day drops the previous day's logs before the request answers.
+-    setState((current) => (current.day === day ? current : { day }));
+-    apiGet<HabitLogWire[]>(
+-      `/habits/logs?from=${encodeURIComponent(day)}&to=${encodeURIComponent(day)}`,
+-    )
+-      .then((data) => {
+-        if (active) setState({ day, data });
+-      })
+-      .catch(() => {
+-        if (active) setState({ day });
+-      });
+-    return () => {
+-      active = false;
+-    };
+-  }, [day]);
+-  return state.day === day ? state.data : undefined;
+-}
+ // NOTE: range history (`habits-history`) lives in lib/api/productivity.ts
+ // (`useHabitsHistory`); do not duplicate the hook here.
+ 
+@@ -210,7 +175,7 @@ export function useUpdateLayout() {
+   return async (next: DashboardLayout): Promise<void> => {
+     const key = "dashboard/me";
+     await mutate(key,
+-      async (cur: MeWire | undefined) => {
++      async () => {
+         const patched = await apiPatch<PreferencesWire>("/me/preferences", { dashboard_layout: next } satisfies PatchPreferencesBody);
+         return { preferences: patched } as MeWire;
+       },
+diff --git a/frontend/lib/finance/finance.ts b/frontend/lib/finance/finance.ts
+index 2216a92..99f4d78 100644
+--- a/frontend/lib/finance/finance.ts
++++ b/frontend/lib/finance/finance.ts
+@@ -9,6 +9,7 @@
+  */
+ 
+ import { toNumber } from "@/lib/api/money";
++import { BOGOTA_TZ } from "@/lib/time/bogota";
+ import type {
+   CategoryWire,
+   MovementDirection,
+@@ -399,7 +400,7 @@ export function toTotalBalance(
+  * the boundary exact without a date library. */
+ export function todayInBogota(now: Date = new Date()): string {
+   return new Intl.DateTimeFormat("en-CA", {
+-    timeZone: "America/Bogota",
++    timeZone: BOGOTA_TZ,
+     year: "numeric",
+     month: "2-digit",
+     day: "2-digit",
+diff --git a/frontend/lib/productivity/habitStats.ts b/frontend/lib/productivity/habitStats.ts
+index 8fc1cfb..fdc028d 100644
+--- a/frontend/lib/productivity/habitStats.ts
++++ b/frontend/lib/productivity/habitStats.ts
+@@ -23,7 +23,6 @@ const toMs = (date: string): number => Date.parse(`${date}T00:00:00Z`);
+ const dow = (ms: number): number => new Date(ms).getUTCDay();
+ const isDone = (s: string): boolean => s === "done";
+ const isSkip = (s: string): boolean => s === "skipped";
+-const isBreak = (s: string): boolean => s === "missed" || s === "not_done";
+ 
+ /** done / denom as 0..100 with 1 decimal; zero denom maps to 0. */
+ export function complianceRate(done: number, denom: number): number {
+diff --git a/frontend/lib/productivity/productivity.ts b/frontend/lib/productivity/productivity.ts
+index c053932..1fe3c62 100644
+--- a/frontend/lib/productivity/productivity.ts
++++ b/frontend/lib/productivity/productivity.ts
+@@ -168,8 +168,6 @@ export function countTasksByDateView<T extends TaskDateViewInput>(
+ /** Time-based event views: próximos (incl. hoy) / vencidos (+ todos). */
+ export type EventTimeView = "all" | "upcoming" | "overdue";
+ 
+-export const EVENT_TIME_VIEWS: EventTimeView[] = ["all", "upcoming", "overdue"];
+-
+ export interface EventTimeViewInput {
+   starts_at: string;
+   ends_at: string | null;
+@@ -188,31 +186,6 @@ export function eventTimeView(event: EventTimeViewInput, nowMs: number): Exclude
+   return ref < nowMs ? "overdue" : "upcoming";
+ }
+ 
+-/** Filter events to one time view (`all` returns a copy of the input). */
+-export function filterEventsByTimeView<T extends EventTimeViewInput>(
+-  events: T[] | null | undefined,
+-  view: EventTimeView,
+-  nowMs: number,
+-): T[] {
+-  if (!events) return [];
+-  if (view === "all") return [...events];
+-  return events.filter((event) => eventTimeView(event, nowMs) === view);
+-}
+-
+-/** Count events per time view (including `all` = total). */
+-export function countEventsByTimeView<T extends EventTimeViewInput>(
+-  events: T[] | null | undefined,
+-  nowMs: number,
+-): Record<EventTimeView, number> {
+-  const counts: Record<EventTimeView, number> = { all: 0, upcoming: 0, overdue: 0 };
+-  if (!events) return counts;
+-  counts.all = events.length;
+-  for (const event of events) {
+-    counts[eventTimeView(event, nowMs)] += 1;
+-  }
+-  return counts;
+-}
+-
+ /* -- W4: monthly calendar (42-cell Monday-first grid, tasks + events per day) -- */
+ 
+ const MONTH_KEY_RE = /^(\d{4})-(\d{2})$/;
+diff --git a/frontend/tsconfig.json b/frontend/tsconfig.json
+index 803331c..b390f81 100644
+--- a/frontend/tsconfig.json
++++ b/frontend/tsconfig.json
+@@ -9,6 +9,8 @@
+     "allowJs": true,
+     "skipLibCheck": true,
+     "strict": true,
++    "noUnusedLocals": true,
++    "noUnusedParameters": true,
+     "noEmit": true,
+     "esModuleInterop": true,
+     "module": "esnext",
+diff --git a/frontend/lib/time/bogota.ts b/frontend/lib/time/bogota.ts
+new file mode 100644
+index 0000000..26d1a22
+--- /dev/null
++++ b/frontend/lib/time/bogota.ts
+@@ -0,0 +1,14 @@
++/**
++ * The application's single business timezone.
++ *
++ * Every "today", date block and wall-clock timestamp the UI derives is
++ * expressed in America/Bogota, never in the viewer's zone: the owner reads the
++ * dashboard from Bogotá, the backend binds the same calendar day into its
++ * queries (`finance::dates::today_bogota()`), and habit logs are stored per
++ * Bogotá day. Colombia has had no DST since 1993, so this is a fixed UTC-05:00
++ * offset, but the zone NAME is what keeps `Intl` exact at the day boundary.
++ *
++ * One constant, one place: a bare `"America/Bogota"` string repeated per module
++ * is exactly how a formatter drifts out of sync with the rest of the app.
++ */
++export const BOGOTA_TZ = "America/Bogota";
+diff --git a/backend/migrations/0018_tasks_read_model_indexes.sql b/backend/migrations/0018_tasks_read_model_indexes.sql
+new file mode 100644
+index 0000000..a1455f7
+--- /dev/null
++++ b/backend/migrations/0018_tasks_read_model_indexes.sql
+@@ -0,0 +1,62 @@
++-- Migration 0018: dashboard index alignment (task read model).
++--
++-- ADDITIVE ONLY: three `CREATE INDEX` statements. No data change, no column or
++-- constraint change, no behavior change; every statement is idempotent
++-- (`IF NOT EXISTS`) so a re-run is a no-op.
++--
++-- WHY
++-- ---
++-- The dashboard's task read model is `WHERE user_id=$1 ... ORDER BY sort_order,
++-- created_at` and, per view, `AND due_date = $2 AND completed_at IS NULL`
++-- (today/upcoming/overdue) or `AND completed_at IS NOT NULL` (done). The
++-- pre-existing indexes cannot serve those shapes:
++--   * `idx_tasks_user_due` is partial on `status IN ('pending','in_progress')`,
++--     a predicate those queries do not carry, so the planner can never use it;
++--   * `idx_tasks_user_status (user_id, status)` gives no ordering, so the
++--     unfiltered list sorted the whole table with a quicksort.
++--
++-- MEASURED (synthetic scale database: postgres:18-alpine, all migrations, 3
++-- users with 30.000 tasks / 60.000 movements / 9.000 habit_logs, `ANALYZE`d;
++-- `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF)`, single run each):
++--
++--   unfiltered list  (LIST_TASKS, what the dashboard widget calls)
++--     before: Sort 3672 kB + Seq Scan 30.000 rows .......... 17.46 ms
++--     after : Index Scan using idx_tasks_user_order .........  6.48 ms  (-63%)
++--   view=today  (due_date = $2 AND completed_at IS NULL)
++--     before: Sort + Seq Scan ................................  2.18 ms
++--     after : Index Scan using idx_tasks_open_due ............  0.96 ms  (-56%)
++--   view=done   (completed_at IS NOT NULL, same ORDER BY)
++--     before: Sort 1228 kB + Seq Scan 12.000 rows ............  6.32 ms
++--     after : Index Scan using idx_tasks_done_order ..........  4.39 ms  (-31%)
++--
++-- REJECTED on the same evidence (kept out on purpose — an index that does not
++-- pay for its write cost is a regression):
++--   * covering index on habit_logs `(habit_id, log_date DESC) INCLUDE (status,
++--     user_id)`: it IS picked (Index Only Scan) and still measured 9.008 ms
++--     against 7.846 ms without it — the streak CTE re-sorts ~1558 rows per
++--     habit, so the cost is the sort, not the heap fetches. Fixing that needs a
++--     semantic change (a bounded streak window), not an index.
++--   * `(user_id, due_date) WHERE completed_at IS NULL` for `view=upcoming`:
++--     measured 5.415 ms against 5.197 ms before; the 8850-row sort dominates.
++--
++-- SCOPE NOTE (honest): production holds 1 user and 0 tasks today, so the win
++-- above is scale insurance, not a number the owner can see on the live app.
++-- The statements are additive, so the cost of applying them is index
++-- maintenance on a table with 0 rows.
++--
++-- APPLY PATH NOTE: production never applies a new migration automatically. The
++-- compose `docker-entrypoint-initdb.d` mount only runs on an EMPTY data volume
++-- and the backend does not call `sqlx::migrate!`, so this file keeps CI and
++-- fresh volumes in sync while the production apply stays a manual, explicitly
++-- owner-authorized step (`psql -f`, no `_sqlx_migrations` bookkeeping exists).
++
++CREATE INDEX IF NOT EXISTS idx_tasks_user_order
++    ON tasks (user_id, sort_order, created_at);
++
++CREATE INDEX IF NOT EXISTS idx_tasks_open_due
++    ON tasks (user_id, due_date)
++    WHERE completed_at IS NULL;
++
++CREATE INDEX IF NOT EXISTS idx_tasks_done_order
++    ON tasks (user_id, sort_order, created_at)
++    WHERE completed_at IS NOT NULL;
