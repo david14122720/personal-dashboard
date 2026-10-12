@@ -1,7 +1,8 @@
 # Solidificación, optimización y limpieza del Dashboard
 
 Feature branch-less by owner order: **no git operations** (no commit, no push) — the
-work-unit-commit rule of ODD is explicitly suspended for this feature (L2). Every task
+work-unit-commit rule of ODD is explicitly suspended for this feature (L2), until the owner
+lifted it at the end (L14, which maps every task to its commit). Every task
 closes with its own runtime evidence instead of a commit sha.
 
 Working database: **production** (`192.168.50.120:5434/pdbname`), throwaway user only.
@@ -89,13 +90,13 @@ decisión del dueño; ver Hallazgos). No se agregan dependencias nuevas sin avis
 
 | ID | Spec | Tarea | Ruta | Cierre |
 |----|------|-------|------|--------|
-| T1 | S10, S5 | Día de Bogotá en el backend: helper inyectable + `/habits/today` y `/tasks?view=` parametrizados por día, con tests RED→GREEN | worker `gentle-ai-worker` (backend/**, tests) | ✅ cerrada (L7 gates + L10 runtime); sin commit (L2) |
-| T2 | S2, S9 | Borrado de código muerto del frontend + guard `noUnusedLocals`/`noUnusedParameters` | worker `gentle-ai-worker` (frontend/components/**, frontend/lib/**, tsconfig.json) | ✅ cerrada (0 referencias a cada símbolo borrado, revisión propia en L13); sin commit (L2) |
-| T3 | S4, S9 | Medir la consola real en las 13 rutas (playwright-cli, 3 anchos) y corregir lo que aparezca | orquestador (medición) + worker (fix) | ✅ cerrada: 39/39 sin mensajes ni overflow (L6 + L10); sin commit (L2) |
-| T4 | S3, S9 | Peso y carga: baseline de build, directrices context7, lazy loading/bundles, remedición | orquestador (context7 + medición) + worker | ✅ cerrada (L7 + L10 + L11: `optimizePackageImports` medido y descartado); sin commit (L2) |
-| T5 | S5, S6, S9 | Auditoría de queries del dashboard contra prod (EXPLAIN), over-fetching y migración de índices | orquestador | ✅ cerrada: 0018 **aplicada en prod** con OK del dueño (L9) y verificada por plan (L12); sin commit (L2) |
-| T6 | S10 | Residuales: `e2e/notifications.spec.ts` habilita su propio widget; unificar el helper del día de Bogotá | worker | ✅ cerrada (L7 + smoke 15/15 en L10); sin commit (L2) |
-| T7 | S8, S9 | Día del Juicio (dual a ciegas) + verificación final: vitest, tsc, build, playwright consola/overflow, e2e live | orquestador + `jd-judge-a` (+ `jd-judge-b` cancelado por el dueño) | ✅ cerrada con salvedad: judge A limpio, sin doble corroboración por orden del dueño (L13); sin commit (L2) |
+| T1 | S10, S5 | Día de Bogotá en el backend: helper inyectable + `/habits/today` y `/tasks?view=` parametrizados por día, con tests RED→GREEN | worker `gentle-ai-worker` (backend/**, tests) | ✅ cerrada (L7 gates + L10 runtime); commit `627a158` (L14) |
+| T2 | S2, S9 | Borrado de código muerto del frontend + guard `noUnusedLocals`/`noUnusedParameters` | worker `gentle-ai-worker` (frontend/components/**, frontend/lib/**, tsconfig.json) | ✅ cerrada (0 referencias a cada símbolo borrado, revisión propia en L13); commit `236d168` (L14) |
+| T3 | S4, S9 | Medir la consola real en las 13 rutas (playwright-cli, 3 anchos) y corregir lo que aparezca | orquestador (medición) + worker (fix) | ✅ cerrada: 39/39 sin mensajes ni overflow (L6 + L10); commit `46ff3d4 (carga) + 8654f25 (remociones)` (L14) |
+| T4 | S3, S9 | Peso y carga: baseline de build, directrices context7, lazy loading/bundles, remedición | orquestador (context7 + medición) + worker | ✅ cerrada (L7 + L10 + L11: `optimizePackageImports` medido y descartado); commit `c2e85cc + 46ff3d4` (L14) |
+| T5 | S5, S6, S9 | Auditoría de queries del dashboard contra prod (EXPLAIN), over-fetching y migración de índices | orquestador | ✅ cerrada: 0018 **aplicada en prod** con OK del dueño (L9) y verificada por plan (L12); commit `063e02b` (L14) |
+| T6 | S10 | Residuales: `e2e/notifications.spec.ts` habilita su propio widget; unificar el helper del día de Bogotá | worker | ✅ cerrada (L7 + smoke 15/15 en L10); commit `d86e30f + 627a158` (L14) |
+| T7 | S8, S9 | Día del Juicio (dual a ciegas) + verificación final: vitest, tsc, build, playwright consola/overflow, e2e live | orquestador + `jd-judge-a` (+ `jd-judge-b` cancelado por el dueño) | ✅ cerrada con salvedad: judge A limpio, sin doble corroboración por orden del dueño (L13); commit `52c07aa (registro) — veredicto propio, sin commit dual: L13` (L14) |
 
 Dependencias: T2 → T4 (mismo árbol del frontend). T1 y T2 son disjuntos y corren en paralelo.
 T5 puede pedir una decisión del dueño antes de aplicar DDL.
@@ -420,3 +421,37 @@ en la base de escala, pero el único consumidor filtra los períodos en el clien
 ("cuando haya paginación"); (b) el `UPDATE api_tokens SET last_used_at = now()` por request
 (`backend/src/auth/middleware.rs:30-31`) es la única escritura evitable del camino caliente y
 es superficie de seguridad: no se toca a las apuradas.
+
+**L14 (commits y push, 2026-10-12).** Cambio de regla del dueño, verbatim: "bien has comit y push a
+main y terminamos por ahora gracias". Se levanta la suspensión de L2 y la feature se entrega en
+**8 commits por unidad de trabajo**, empujados a `main` (`f962654..8654f25`, fast-forward, sin
+divergencia: el remoto estaba exactamente en el HEAD previo).
+
+| Commit | Unidad | Qué entra |
+|--------|--------|-----------|
+| `627a158` | `fix(time)` | día de Bogotá en `/habits/today` y `/tasks?view=`, `BOGOTA_TZ` compartido, retiro del workaround `useHabitDayLogs` (T1, T6) |
+| `236d168` | `refactor(frontend)` | borrado del código muerto + guard `noUnusedLocals`/`noUnusedParameters` (T2) |
+| `c2e85cc` | `perf(backend)` | `CompressionLayer` gzip/brotli (T4) |
+| `46ff3d4` | `perf(frontend)` | `preload: false` en la fuente del deck (T4) |
+| `063e02b` | `perf(db)` | migración 0018: tres índices del read model + el rechazado documentado (T5) |
+| `d86e30f` | `test(e2e)` | precondición propia del widget en `notifications.spec.ts` (T6) |
+| `52c07aa` | `docs(tasks)` | este registro (doc, seed efímero y target de revisión congelado) |
+| `8654f25` | `refactor(ui)` | remoción del buscador inerte y de los chips decorativos (orden posterior del dueño, L13/L14) |
+
+Dos archivos tenían cambios de dos unidades (`AppShell.tsx`: constante de zona + buscador;
+`habitos/page.test.tsx`: constante muerta + pill de hábitos) y se repartieron con staging parcial
+por hunks (`git apply --cached`), verificado commit por commit con `git show`: cada commit queda
+coherente y compila por sí solo.
+
+**Verificación sobre el árbol ya commiteado** (no sobre el de trabajo): `tsc --noEmit` = 0 ·
+`pnpm test` = **52 archivos / 654 tests** · `pnpm build` = 14/14 páginas. Working tree limpio,
+`main` local y `origin/main` en el mismo commit.
+
+**Nota de seguridad para el dueño (no bloqueante, no actuada).** La credencial de la base de
+producción (`postgres://pdbuser:pdbpass123@…`) ya está en archivos **trackeados** de este repo
+(`CLAUDE.md`, `odd/design/.../DESIGN-SPEC.md`, `odd/design/.../VERIFY-RECIPE.md`,
+`odd/tasks/accounts-transfers-login-calendar*.md|patch`, `odd/tasks/finance-panel-consolidation-delta.patch`,
+`odd/tasks/rediseno-integral-responsivo.md`), o sea que está en el historial desde antes de esta
+feature. Los archivos nuevos de esta entrega **no** la contienen (verificado con grep: 0
+apariciones en el doc, el seed y el patch). Rotarla y sacarla del `.md` es una decisión del dueño,
+no se tomó acá.
