@@ -72,14 +72,11 @@ interface DayLogsState {
 /**
  * The card's own read of the Bogotá day's logs.
  *
- * The shared `useHabitDayLogs` (lib/api/dashboard.ts) collapses "still
- * unanswered" and "failed" into the same `undefined`, and this card must tell
- * them apart: a failed read rendered as "unregistered" claims a state the data
- * does not support, and it must be retryable. Same day-scoped semantics as the
- * shared hook (a new day drops the previous day's logs before the request
- * answers) plus the failure flag and a `reload()` that re-issues the request.
- * Kept local to the card because `lib/api/dashboard.ts` is outside this fix's
- * edit surfaces.
+ * This card must tell "still unanswered" and "failed" apart: a failed read
+ * rendered as "unregistered" claims a state the data does not support, and it
+ * must be retryable. Day-scoped semantics (a new day drops the previous day's
+ * logs before the request answers) plus the failure flag and a `reload()`
+ * that re-issues the request. Kept local to the card.
  */
 function useDayLogs(day: string) {
   const [state, setState] = useState<DayLogsState>({ day });

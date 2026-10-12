@@ -7,6 +7,7 @@ import NotificationBell from "@/components/notifications/NotificationBell";
 import { logout } from "@/lib/api/client";
 import { useHabitsToday, usePreferences } from "@/lib/api/dashboard";
 import { t, type EsKey } from "@/lib/i18n";
+import { BOGOTA_TZ } from "@/lib/time/bogota";
 
 type IconProps = { className?: string };
 
@@ -284,7 +285,7 @@ function formatToday(date: Date): string {
     day: "numeric",
     month: "short",
     year: "numeric",
-    timeZone: "America/Bogota",
+    timeZone: BOGOTA_TZ,
   }).format(date);
 }
 

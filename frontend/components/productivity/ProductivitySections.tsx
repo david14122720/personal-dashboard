@@ -10,6 +10,7 @@ import {
   noteExcerpt,
   type TaskDateView,
 } from "@/lib/productivity/productivity";
+import { BOGOTA_TZ } from "@/lib/time/bogota";
 
 /**
  * Pure presentational sections for the productivity screens. The container
@@ -25,8 +26,8 @@ import {
  * computed from the wire (D10); the prototype's fabricated figures are gone.
  */
 
-/** Bogotá calendar for the event date block and the note timestamps. */
-const BOGOTA_TZ = "America/Bogota";
+/** Bogotá calendar for the event date block and the note timestamps (the
+ * zone itself is the app-wide `BOGOTA_TZ` constant). */
 const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** `10 sept` for a real `YYYY-MM-DD` calendar date (prototype `Vence 20 oct`). */

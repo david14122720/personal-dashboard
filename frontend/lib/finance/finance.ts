@@ -9,6 +9,7 @@
  */
 
 import { toNumber } from "@/lib/api/money";
+import { BOGOTA_TZ } from "@/lib/time/bogota";
 import type {
   CategoryWire,
   MovementDirection,
@@ -399,7 +400,7 @@ export function toTotalBalance(
  * the boundary exact without a date library. */
 export function todayInBogota(now: Date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Bogota",
+    timeZone: BOGOTA_TZ,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

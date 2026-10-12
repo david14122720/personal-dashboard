@@ -20,10 +20,12 @@
 //! contract). `category_id` must be an owned `task`-kind category (else 422
 //! per the P3 category contract).
 //!
-//! Views (`GET /tasks?view=`): `today` (`due_date = CURRENT_DATE AND
-//! `completed_at IS NULL`), `upcoming` (`due_date > CURRENT_DATE AND
-//! `completed_at IS NULL`), `overdue` (`due_date < CURRENT_DATE AND
-//! `completed_at IS NULL`), `done` (`completed_at IS NOT NULL`). No `view`
+//! Views (`GET /tasks?view=`): `today` (`due_date = $2 AND
+//! `completed_at IS NULL`), `upcoming` (`due_date > $2 AND
+//! `completed_at IS NULL`), `overdue` (`due_date < $2 AND
+//! `completed_at IS NULL`), `done` (`completed_at IS NOT NULL`). `$2` is the
+//! current Bogota day (`finance::dates::today_bogota()`), bound instead of
+//! `CURRENT_DATE` so the views never follow the DB session timezone. No `view`
 //! (or empty) returns every owned task. An unknown `view` is 422.
 //!
 //! Registered in `routes/mod.rs`; tasks routes are wired in `main.rs` so the
@@ -39,7 +41,12 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
+use crate::{
+    auth::helper::require_user_id,
+    error::AppError,
+    finance::dates::today_bogota,
+    state::AppState,
+};
 
 const MAX_TITLE_LEN: usize = 200;
 const MAX_TEXT_LEN: usize = 2000;
@@ -56,9 +63,9 @@ const TASK_VIEWS: &[&str] = &["today", "upcoming", "overdue", "done"];
 
 const CREATE_TASK_SQL: &str = "INSERT INTO tasks (user_id, title, description, priority, status, due_date, goal_id, category_id, sort_order) VALUES ($1,$2,$3,$4::task_priority,$5::task_status,$6,$7,$8,COALESCE($9,0)) RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
 const LIST_TASKS_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 ORDER BY sort_order ASC, created_at ASC";
-const LIST_TASKS_TODAY_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date = CURRENT_DATE AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
-const LIST_TASKS_UPCOMING_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date > CURRENT_DATE AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
-const LIST_TASKS_OVERDUE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date < CURRENT_DATE AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+const LIST_TASKS_TODAY_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date = $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+const LIST_TASKS_UPCOMING_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date > $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+const LIST_TASKS_OVERDUE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date < $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
 const LIST_TASKS_DONE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND completed_at IS NOT NULL ORDER BY sort_order ASC, created_at ASC";
 const GET_TASK_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE id=$1 AND user_id=$2";
 const PATCH_TASK_SQL: &str = "UPDATE tasks SET title=COALESCE($3,title), description=COALESCE($4,description), priority=COALESCE($5::task_priority,priority), status=COALESCE($6::task_status,status), due_date=COALESCE($7,due_date), goal_id=COALESCE($8,goal_id), category_id=COALESCE($9,category_id), sort_order=COALESCE($10,sort_order), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
@@ -431,15 +438,18 @@ pub async fn list_tasks_handler(
 ) -> Result<Json<Vec<TaskResponse>>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     let view = validate_task_view(query.view.as_deref())?;
-    let sql = match view.as_deref() {
-        Some("today") => LIST_TASKS_TODAY_SQL,
-        Some("upcoming") => LIST_TASKS_UPCOMING_SQL,
-        Some("overdue") => LIST_TASKS_OVERDUE_SQL,
-        Some("done") => LIST_TASKS_DONE_SQL,
-        _ => LIST_TASKS_SQL,
+    let (sql, needs_day) = match view.as_deref() {
+        Some("today") => (LIST_TASKS_TODAY_SQL, true),
+        Some("upcoming") => (LIST_TASKS_UPCOMING_SQL, true),
+        Some("overdue") => (LIST_TASKS_OVERDUE_SQL, true),
+        Some("done") => (LIST_TASKS_DONE_SQL, false),
+        _ => (LIST_TASKS_SQL, false),
     };
-    let rows = sqlx::query_as::<_, TaskRow>(sql)
-        .bind(user_id)
+    let mut query = sqlx::query_as::<_, TaskRow>(sql).bind(user_id);
+    if needs_day {
+        query = query.bind(today_bogota());
+    }
+    let rows = query
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
@@ -693,21 +703,21 @@ mod tests {
 
     #[test]
     fn view_sql_encodes_the_read_model_contract() {
-        // Each view filters on the spec/design contract: today/overdue on
-        // `due_date` vs `CURRENT_DATE` with `completed_at IS NULL`, done on
-        // `completed_at IS NOT NULL`.
+        // Each view filters on the spec/design contract: today/upcoming/
+        // overdue on `due_date` vs the Bogota day bound at `$2` with
+        // `completed_at IS NULL`, done on `completed_at IS NOT NULL`.
         for (sql, markers) in [
             (
                 LIST_TASKS_TODAY_SQL,
-                vec!["due_date = CURRENT_DATE", "completed_at IS NULL"],
+                vec!["due_date = $2", "completed_at IS NULL"],
             ),
             (
                 LIST_TASKS_UPCOMING_SQL,
-                vec!["due_date > CURRENT_DATE", "completed_at IS NULL"],
+                vec!["due_date > $2", "completed_at IS NULL"],
             ),
             (
                 LIST_TASKS_OVERDUE_SQL,
-                vec!["due_date < CURRENT_DATE", "completed_at IS NULL"],
+                vec!["due_date < $2", "completed_at IS NULL"],
             ),
             (LIST_TASKS_DONE_SQL, vec!["completed_at IS NOT NULL"]),
         ] {
@@ -717,6 +727,29 @@ mod tests {
                     "view SQL must encode {marker}, got: {sql}"
                 );
             }
+        }
+        // The three day views take the day from the bind; the DB session
+        // clock (UTC in production) must never decide what "today" is.
+        for sql in [
+            LIST_TASKS_TODAY_SQL,
+            LIST_TASKS_UPCOMING_SQL,
+            LIST_TASKS_OVERDUE_SQL,
+        ] {
+            assert!(
+                !sql.contains("CURRENT_DATE"),
+                "day view must not read the DB session clock, got: {sql}"
+            );
+            assert!(
+                sql.contains("$2"),
+                "day view must bind the Bogota day at $2, got: {sql}"
+            );
+        }
+        // The unfiltered list and the done view stay day-free.
+        for sql in [LIST_TASKS_SQL, LIST_TASKS_DONE_SQL] {
+            assert!(
+                !sql.contains("$2") && !sql.contains("CURRENT_DATE"),
+                "day-free view must not take a bound day, got: {sql}"
+            );
         }
         // The done view filters on the stamp alone: check the WHERE clause
         // (the SELECT column list legitimately names `due_date`).
@@ -1060,7 +1093,7 @@ mod tests {
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
-        let today = Utc::now().date_naive();
+        let today = today_bogota();
         let past = today - chrono::Duration::days(2);
         let future = today + chrono::Duration::days(2);
         let seed = |title: &str, due: Option<NaiveDate>, status: &str| {

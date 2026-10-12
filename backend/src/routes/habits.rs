@@ -62,7 +62,10 @@ use uuid::Uuid;
 use crate::{
     auth::helper::require_user_id,
     error::AppError,
-    finance::money::{parse_money_amount, parse_money_amount_nonneg},
+    finance::{
+        dates::today_bogota,
+        money::{parse_money_amount, parse_money_amount_nonneg},
+    },
     state::AppState,
 };
 
@@ -877,8 +880,10 @@ pub async fn get_streak_handler(
 }
 
 /// Today read: every caller habit with today's log state and its streak in
-/// ONE statement. `today_status` comes from a `LEFT JOIN habit_logs ON
-/// log_date = CURRENT_DATE` (`done`/`missed`/`skipped` when logged,
+/// ONE statement. The day is the Bogota calendar day bound at `$2`
+/// ([`today_bogota`]), so the read never follows the DB session timezone.
+/// `today_status` comes from a `LEFT JOIN habit_logs ON
+/// log_date = $2` (`done`/`missed`/`skipped` when logged,
 /// `pending` when scheduled today with no log, `skipped` on non-scheduled
 /// days). `current_streak` reuses the [`STREAK_SQL`] gaps-and-islands shape
 /// via `CROSS JOIN LATERAL` (per-habit evaluation, no loop, no N+1); the
@@ -886,7 +891,7 @@ pub async fn get_streak_handler(
 /// `h.days_of_week`), keeping the `::int` cast and the `skipped` bridge.
 /// Archived habits are excluded (`NOT h.is_archived`); the list read keeps
 /// them on purpose so the UI can offer Desarchivar.
-const TODAY_SQL: &str = "SELECT h.id, h.name, h.frequency::text, h.days_of_week, s.current_streak, COALESCE(l.status::text, CASE WHEN (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM CURRENT_DATE)::int = ANY(h.days_of_week)) THEN 'pending' ELSE 'skipped' END) AS today_status FROM habits h LEFT JOIN habit_logs l ON l.habit_id=h.id AND l.user_id=h.user_id AND l.log_date=CURRENT_DATE CROSS JOIN LATERAL (WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=h.id AND user_id=h.user_id AND (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY(h.days_of_week))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs skipped_bridge WHERE skipped_bridge.status='skipped' AND skipped_bridge.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak) s WHERE h.user_id=$1 AND NOT h.is_archived ORDER BY h.created_at ASC";
+const TODAY_SQL: &str = "SELECT h.id, h.name, h.frequency::text, h.days_of_week, s.current_streak, COALESCE(l.status::text, CASE WHEN (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM $2)::int = ANY(h.days_of_week)) THEN 'pending' ELSE 'skipped' END) AS today_status FROM habits h LEFT JOIN habit_logs l ON l.habit_id=h.id AND l.user_id=h.user_id AND l.log_date=$2 CROSS JOIN LATERAL (WITH logs AS (SELECT log_date, status FROM habit_logs WHERE habit_id=h.id AND user_id=h.user_id AND (COALESCE(CARDINALITY(h.days_of_week),0)=0 OR EXTRACT(DOW FROM log_date)::int = ANY(h.days_of_week))), nonskip AS (SELECT log_date, status FROM logs WHERE status <> 'skipped'), ordered AS (SELECT log_date, status, ROW_NUMBER() OVER (ORDER BY log_date DESC) AS rn, (SELECT MAX(log_date) FROM logs) AS anchor, (SELECT COUNT(*) FROM logs skipped_bridge WHERE skipped_bridge.status='skipped' AND skipped_bridge.log_date > nonskip.log_date) AS skipped_after FROM nonskip), cut AS (SELECT MIN(rn) AS cut_rn FROM ordered WHERE status IN ('missed','not_done') OR log_date <> anchor - ((rn - 1 + skipped_after)::int)) SELECT COALESCE((SELECT cut_rn FROM cut), (SELECT COUNT(*)+1 FROM ordered)) - 1 AS current_streak) s WHERE h.user_id=$1 AND NOT h.is_archived ORDER BY h.created_at ASC";
 
 type HabitTodayRow = (Uuid, String, String, Vec<i16>, i64, String);
 
@@ -908,6 +913,7 @@ pub async fn today_habits_handler(
     let user_id = require_user_id(&headers, &state.pool).await?;
     let rows = sqlx::query_as::<_, HabitTodayRow>(TODAY_SQL)
         .bind(user_id)
+        .bind(today_bogota())
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
@@ -1115,14 +1121,23 @@ mod today_read_tests {
     #[test]
     fn today_sql_resolves_status_and_streak_in_one_statement() {
         assert_eq!(TODAY_SQL.matches(';').count(), 0);
-        for fragment in [
-            "LATERAL",
-            "CURRENT_DATE",
-            "'pending'",
-            "CARDINALITY",
-            "user_id",
-            "AND NOT h.is_archived",
-        ] {
+        assert!(
+            !TODAY_SQL.contains("CURRENT_DATE"),
+            "today SQL must take the day from the bound parameter, never the DB session clock"
+        );
+        assert!(
+            TODAY_SQL.contains("l.log_date=$2"),
+            "the today log join must filter on the day bound at $2"
+        );
+        assert!(
+            TODAY_SQL.contains("EXTRACT(DOW FROM $2)::int"),
+            "the scheduled-today branch must derive the weekday from the day bound at $2"
+        );
+        assert!(
+            TODAY_SQL.contains("h.user_id=$1"),
+            "the user filter must stay the first bound parameter"
+        );
+        for fragment in ["LATERAL", "'pending'", "CARDINALITY", "AND NOT h.is_archived"] {
             assert!(
                 TODAY_SQL.contains(fragment),
                 "today SQL must contain {fragment}"
@@ -1168,7 +1183,7 @@ mod today_read_tests {
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
-        let today = Utc::now().date_naive();
+        let today = today_bogota();
         let yesterday = today - chrono::Duration::days(1);
         // A: done yesterday + done today → streak 2, done.
         let habit_a = seed_habit(&pool, user_id, "habit-a", None).await;
@@ -1231,7 +1246,7 @@ mod today_read_tests {
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
-        let today = Utc::now().date_naive();
+        let today = today_bogota();
         let habit = seed_habit(&pool, user_id, "habit-gap", None).await;
         seed_log(&pool, user_id, habit, today - chrono::Duration::days(2), "done").await;
         seed_log(&pool, user_id, habit, today - chrono::Duration::days(1), "missed").await;
@@ -1256,7 +1271,7 @@ mod today_read_tests {
         };
         use chrono::Datelike;
         let (state, headers, user_id) = db_state(&pool).await;
-        let today_dow = Utc::now().date_naive().weekday().num_days_from_sunday() as i16;
+        let today_dow = today_bogota().weekday().num_days_from_sunday() as i16;
         let other_dow = (today_dow + 1) % 7;
         let habit = seed_habit(&pool, user_id, "habit-custom", Some(&[other_dow])).await;
         let body = today_habits_handler(State(state), headers)
@@ -1266,6 +1281,53 @@ mod today_read_tests {
         assert_eq!(body.len(), 1);
         assert_eq!(body[0].today_status, "skipped");
         let _ = habit;
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// The today read must resolve `today_status` from the day bound at `$2`
+    /// (the Bogota calendar day), not from the DB session clock: with the
+    /// same habit and a `done` log on fixed day D, the statement reports
+    /// `done` for D and `pending` for D+1. The handler itself binds
+    /// [`today_bogota`], so a log on that day reads `done`.
+    #[tokio::test]
+    async fn today_status_follows_the_bound_day_not_the_db_clock() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP today_status_follows_the_bound_day_not_the_db_clock: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let day = NaiveDate::from_ymd_opt(2026, 1, 15).expect("fixed day D");
+        let neighbour = day + chrono::Duration::days(1);
+        let habit = seed_habit(&pool, user_id, "habit-fixed-day", None).await;
+        seed_log(&pool, user_id, habit, day, "done").await;
+
+        // Same row, same DB clock; only the bound day changes.
+        let status_for_day = |bound: NaiveDate| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, HabitTodayRow>(TODAY_SQL)
+                    .bind(user_id)
+                    .bind(bound)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("today SQL with bound day")
+                    .5
+            }
+        };
+        assert_eq!(status_for_day(day).await, "done");
+        assert_eq!(status_for_day(neighbour).await, "pending");
+
+        // Production path: the handler binds today_bogota().
+        let live = seed_habit(&pool, user_id, "habit-live-day", None).await;
+        seed_log(&pool, user_id, live, today_bogota(), "done").await;
+        let body = today_habits_handler(State(state), headers)
+            .await
+            .expect("today is 200")
+            .0;
+        let entry = |id: Uuid| body.iter().find(|h| h.habit_id == id).expect("habit present");
+        assert_eq!(entry(live).today_status, "done");
+        assert_eq!(entry(habit).today_status, "pending");
+
         cleanup_user(&pool, user_id).await;
     }
 }
