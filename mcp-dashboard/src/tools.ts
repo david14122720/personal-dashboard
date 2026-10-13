@@ -169,6 +169,10 @@ const ListTasksSchema = z.object({
 
 const GetTaskSchema = z.object({ id: uuid });
 
+// Tasks: `category_id` is dropped by `TaskWire` (no reader anywhere). The two
+// fields that stay both have a real effect — `goal_id` is rendered under the
+// task and feeds the goal/linked-task KPIs, and `sort_order` is the list's own
+// ORDER BY (`ORDER BY sort_order ASC, created_at ASC`).
 const CreateTaskSchema = z.object({
   title: z.string().min(1).max(200),
   description: optionalText,
@@ -176,7 +180,6 @@ const CreateTaskSchema = z.object({
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
   due_date: z.string().optional(),
   goal_id: optionalUuid,
-  category_id: optionalUuid,
   sort_order: z.number().int().optional(),
 });
 
@@ -188,7 +191,6 @@ const UpdateTaskSchema = z.object({
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
   due_date: z.string().optional(),
   goal_id: optionalUuid,
-  category_id: optionalUuid,
   sort_order: z.number().int().optional(),
 });
 
@@ -202,12 +204,13 @@ const ListGoalsSchema = z.object({});
 
 const GetGoalSchema = z.object({ id: uuid });
 
+// Goals: `category_id` is dropped by `GoalWire` and rendered nowhere, and
+// `start_date` is never written by the form nor rendered (the card shows
+// `due_date` only). Both are omitted here.
 const CreateGoalSchema = z.object({
   name: z.string().min(1).max(200),
   area: z.string().min(1).max(100),
   description: optionalText,
-  category_id: optionalUuid,
-  start_date: z.string().optional(),
   due_date: z.string().optional(),
   status: z.enum(["active", "completed", "paused", "cancelled"]).optional(),
   color: optionalText,
@@ -218,8 +221,6 @@ const UpdateGoalSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: optionalText,
   area: z.string().min(1).max(100).optional(),
-  category_id: optionalUuid,
-  start_date: z.string().optional(),
   due_date: z.string().optional(),
   status: z.enum(["active", "completed", "paused", "cancelled"]).optional(),
   color: optionalText,
@@ -232,6 +233,13 @@ const ListEventsSchema = z.object({
 
 const GetEventSchema = z.object({ id: uuid });
 
+// Events carry no link fields here. Every UUID link the backend DTO still
+// accepts (`habit_id`, `goal_id`, `task_id`, `subscription_id`,
+// `category_id`) is dropped by the frontend wire type
+// (`frontend/lib/api/productivity.ts` `EventWire`) and rendered nowhere, so
+// an agent could only write a link nobody can see. `debt_id` is worse than
+// invisible: migration 0013 dropped the column, so the backend rejects the
+// key outright (422) — advertising it was a guaranteed failure.
 const CreateEventSchema = z.object({
   title: z.string().min(1).max(200),
   starts_at: z.string().min(1),
@@ -240,12 +248,6 @@ const CreateEventSchema = z.object({
   ends_at: z.string().optional(),
   all_day: z.boolean().optional(),
   location: optionalText,
-  habit_id: optionalUuid,
-  goal_id: optionalUuid,
-  task_id: optionalUuid,
-  debt_id: optionalUuid,
-  subscription_id: optionalUuid,
-  category_id: optionalUuid,
 });
 
 const UpdateEventSchema = z.object({
@@ -257,33 +259,27 @@ const UpdateEventSchema = z.object({
   ends_at: z.string().optional(),
   all_day: z.boolean().optional(),
   location: optionalText,
-  habit_id: optionalUuid,
-  goal_id: optionalUuid,
-  task_id: optionalUuid,
-  debt_id: optionalUuid,
-  subscription_id: optionalUuid,
-  category_id: optionalUuid,
 });
 
 const ListNotesSchema = z.object({});
 
 const GetNoteSchema = z.object({ id: uuid });
 
+// A note is title + body + pin. `category_id` and `is_markdown` are gone:
+// the dashboard never writes or renders either (`NoteWire` drops the first
+// and no component reads the second), so exposing them let an agent record
+// a classification and a format that produce no visible effect.
 const CreateNoteSchema = z.object({
   title: z.string().min(1).max(200),
   body: z.string().optional(),
-  is_markdown: z.boolean().optional(),
   is_pinned: z.boolean().optional(),
-  category_id: optionalUuid,
 });
 
 const UpdateNoteSchema = z.object({
   id: uuid,
   title: z.string().min(1).max(200).optional(),
   body: z.string().optional(),
-  is_markdown: z.boolean().optional(),
   is_pinned: z.boolean().optional(),
-  category_id: optionalUuid,
 });
 
 const SearchNotesSchema = z.object({ q: z.string().min(1) });
@@ -596,7 +592,7 @@ const entries: ToolEntry[] = [
     def: {
       name: "create_task",
       description:
-        "POST /api/tasks. Creates a task. Only title is required; priority defaults server-side, status defaults to pending. Dates are YYYY-MM-DD. Linked IDs (goal_id, category_id) must be owned UUIDs. Example: {\"title\":\"Pay rent\",\"priority\":\"high\",\"due_date\":\"2026-10-10\"}.",
+        "POST /api/tasks. Creates a task. Only title is required; priority defaults server-side, status defaults to pending. Dates are YYYY-MM-DD; goal_id must be an owned goal UUID (the task card shows the goal name). No category: the dashboard never renders one. sort_order drives the list order. Example: {\"title\":\"Pay rent\",\"priority\":\"high\",\"due_date\":\"2026-10-10\"}.",
       inputSchema: {
         type: "object",
         properties: {
@@ -616,8 +612,7 @@ const entries: ToolEntry[] = [
           ]),
           due_date: optStrProp("Due date as YYYY-MM-DD"),
           goal_id: optStrProp("Owned goal UUID"),
-          category_id: optStrProp("Owned task-kind category UUID"),
-          sort_order: intProp("Ordering within the list"),
+          sort_order: intProp("Ordering within the list (the list's own ORDER BY)"),
         },
         required: ["title"],
       },
@@ -629,7 +624,7 @@ const entries: ToolEntry[] = [
     def: {
       name: "update_task",
       description:
-        "PATCH /api/tasks/{id}. Partial update: only supplied fields change (title, description, priority, status, due_date YYYY-MM-DD, goal_id/category_id UUIDs, sort_order). Requires the task UUID.",
+        "PATCH /api/tasks/{id}. Partial update: only supplied fields change (title, description, priority, status, due_date YYYY-MM-DD, goal_id UUID, sort_order). Requires the task UUID. No category: the dashboard never renders one.",
       inputSchema: {
         type: "object",
         properties: {
@@ -650,8 +645,7 @@ const entries: ToolEntry[] = [
           ]),
           due_date: optStrProp("Due date as YYYY-MM-DD"),
           goal_id: optStrProp("Owned goal UUID"),
-          category_id: optStrProp("Category UUID"),
-          sort_order: intProp("Sort order"),
+          sort_order: intProp("Sort order (the list's own ORDER BY)"),
         },
         required: ["id"],
       },
@@ -742,15 +736,13 @@ const entries: ToolEntry[] = [
     def: {
       name: "create_goal",
       description:
-        "POST /api/goals. Creates a goal. Requires name (1-200 chars) and area (free-form label, 1-100 chars); progress is trigger-owned (read-only). Dates are YYYY-MM-DD. Example: {\"name\":\"Run 10k\",\"area\":\"health\"}.",
+        "POST /api/goals. Creates a goal. Requires name (1-200 chars) and area (free-form label, 1-100 chars); progress is trigger-owned (read-only). due_date is YYYY-MM-DD. No category and no start_date: the goal card renders neither (only due_date). Example: {\"name\":\"Run 10k\",\"area\":\"health\"}.",
       inputSchema: {
         type: "object",
         properties: {
           name: strProp("Goal name (1-200 chars, required)"),
           area: strProp("Free-form area label (1-100 chars, required)"),
           description: optStrProp("Description"),
-          category_id: optStrProp("Owned goal-kind category UUID"),
-          start_date: optStrProp("Start date as YYYY-MM-DD"),
           due_date: optStrProp("Due date as YYYY-MM-DD"),
           status: enumProp("Status: active|completed|paused|cancelled", [
             "active",
@@ -778,8 +770,6 @@ const entries: ToolEntry[] = [
           name: optStrProp("Name (1-200 chars)"),
           description: optStrProp("Description"),
           area: optStrProp("Area label (1-100 chars)"),
-          category_id: optStrProp("Category UUID"),
-          start_date: optStrProp("Start date as YYYY-MM-DD"),
           due_date: optStrProp("Due date as YYYY-MM-DD"),
           status: enumProp("Status: active|completed|paused|cancelled", [
             "active",
@@ -841,7 +831,7 @@ const entries: ToolEntry[] = [
     def: {
       name: "create_event",
       description:
-        "POST /api/events. Creates a calendar event. Requires title (1-200 chars) and starts_at (RFC3339 datetime, e.g. 2026-10-10T09:00:00Z). Optional ends_at must be > starts_at; linked IDs must be owned UUIDs. Example: {\"title\":\"Dentist\",\"starts_at\":\"2026-10-10T09:00:00Z\"}.",
+        "POST /api/events. Creates a calendar event. Requires title (1-200 chars) and starts_at (RFC3339 datetime, e.g. 2026-10-10T09:00:00Z). Optional ends_at must be > starts_at. The dashboard renders events standalone: no UUID link field is accepted here (see the event schema note). Example: {\"title\":\"Dentist\",\"starts_at\":\"2026-10-10T09:00:00Z\"}.",
       inputSchema: {
         type: "object",
         properties: {
@@ -852,12 +842,6 @@ const entries: ToolEntry[] = [
           ends_at: optStrProp("End as RFC3339 datetime, must be > starts_at"),
           all_day: boolProp("All-day flag"),
           location: optStrProp("Location"),
-          habit_id: optStrProp("Habit UUID link"),
-          goal_id: optStrProp("Goal UUID link"),
-          task_id: optStrProp("Task UUID link"),
-          debt_id: optStrProp("Debt UUID link"),
-          subscription_id: optStrProp("Subscription UUID link"),
-          category_id: optStrProp("Category UUID link"),
         },
         required: ["title", "starts_at"],
       },
@@ -881,12 +865,6 @@ const entries: ToolEntry[] = [
           ends_at: optStrProp("End as RFC3339 datetime"),
           all_day: boolProp("All-day flag"),
           location: optStrProp("Location"),
-          habit_id: optStrProp("Habit UUID"),
-          goal_id: optStrProp("Goal UUID"),
-          task_id: optStrProp("Task UUID"),
-          debt_id: optStrProp("Debt UUID"),
-          subscription_id: optStrProp("Subscription UUID"),
-          category_id: optStrProp("Category UUID"),
         },
         required: ["id"],
       },
@@ -932,15 +910,14 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "create_note",
-      description: "POST /api/notes.",
+      description:
+        "POST /api/notes. Creates a note from title plus optional body (max 1MiB) and optional pin. A note has no category and no format flag here: the dashboard never writes or renders either, so the backend defaults them (body \"\", markdown true).",
       inputSchema: {
         type: "object",
         properties: {
-          title: strProp("Title"),
+          title: strProp("Title (1-200 chars, trimmed)"),
           body: optStrProp("Body (max 1MiB)"),
-          is_markdown: boolProp("Markdown flag"),
-          is_pinned: boolProp("Pin flag"),
-          category_id: optStrProp("Owned category UUID"),
+          is_pinned: boolProp("Pin flag (default false)"),
         },
         required: ["title"],
       },
@@ -951,16 +928,15 @@ const entries: ToolEntry[] = [
   {
     def: {
       name: "update_note",
-      description: "PATCH /api/notes/{id}. Pin toggle via {is_pinned:true}.",
+      description:
+        "PATCH /api/notes/{id}. Partial update of title/body. Pin toggle via {is_pinned:true}. No category and no format flag (see create_note).",
       inputSchema: {
         type: "object",
         properties: {
           id: strProp("Note UUID"),
-          title: optStrProp("Title"),
-          body: optStrProp("Body"),
-          is_markdown: boolProp("Markdown flag"),
+          title: optStrProp("Title (1-200 chars, trimmed)"),
+          body: optStrProp("Body (max 1MiB)"),
           is_pinned: boolProp("Pin flag"),
-          category_id: optStrProp("Category UUID"),
         },
         required: ["id"],
       },

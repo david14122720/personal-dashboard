@@ -152,8 +152,25 @@ Events: `list_events`, `get_event`, `create_event`, `update_event`,
 Notes: `list_notes`, `get_note`, `create_note`, `update_note`,
 `delete_note`, `search_notes`.
 
-Catalogs: `list_categories` (read-only: the backend exposes only
-GET /api/categories, no create/delete — see gap G1 in
+> Narrowed 2026-10-13 (owner decision, after auditing every productivity
+> field against its real readers): these tools no longer accept fields the
+> dashboard neither writes nor renders. `create_note`/`update_note`
+> dropped `category_id` and `is_markdown`; `create_goal`/`update_goal`
+> dropped `category_id` and `start_date`; `create_task`/`update_task`
+> dropped `category_id`; `create_event`/`update_event` dropped `habit_id`,
+> `goal_id`, `task_id`, `subscription_id`, `category_id` and `debt_id`.
+> `debt_id` was worse than unused: migration 0013 drops the column, so the
+> backend answered 422 every single time it was sent. Kept on purpose:
+> `tasks.goal_id` (the task card renders the goal name and the goal KPIs
+> count it) and `tasks.sort_order` (the list's own
+> `ORDER BY sort_order ASC, created_at ASC`). The backend endpoints still
+> accept every one of these keys — only this server stops advertising and
+> forwarding them, and a client that still sends one is ignored rather
+> than failed (these schemas strip unknown keys).
+
+Catalogs: `list_categories` (read-only here: the backend does expose
+`POST /api/categories` and `DELETE /api/categories/{id}`, but no MCP tool
+wires them yet — the gap moved to the MCP side; see gap G1 in
 `odd/tasks/mcp-review-tokens.md`),
 `list_subscriptions`, `get_subscription`, `list_assets`, `get_net_worth`.
 

@@ -110,6 +110,7 @@ Total tasks: 10.
 - 2026-10-05 Fix J-01 (Judgment Day) DONE: race check-then-record del mint de tokens cerrado con reserva atómica (`reserve_token_mint` + `TokenMintReservation::commit`/`Drop`, rollback solo si el insert falla); tests de burst concurrente verdes (unit 24 hilos vs cap 3; handler 12 creates vs cap 3, ≤ cap filas); `cargo test` 417 unit + 43 integración, 0 fallos, usuarios efímeros sin restos. Detalle en `openspec/changes/2026-10-05-mcp-review-tokens/t6-token-security.md`.
 - 2026-10-05 T7 DONE: audit log mínimo mostrable sin migración prod (buffer en memoria + `list_audit_log` read-only en MCP; tabla durable solo diseñada en `0017_mcp_audit_log.sql`, NO aplicada). Decisión pendiente del dueño: efímero vs durable.
 - Commits: ninguno (prohibido en esta tarea).
+- 2026-10-13: **G1 cambió de lado.** El backend YA expone `POST /api/categories` y `DELETE /api/categories/{id}` (`backend/src/main.rs`), así que el gap dejó de ser backend y pasó a ser MCP: ninguna tool los cablea y `list_categories` sigue siendo la única de categorías. Además, auditoría de los campos de Productividad contra sus lectores reales: `debt_id` de eventos era un parámetro imposible (migración 0013 borró la columna → el backend respondía 422 siempre) y se quitaron 9 campos de escritura sin lector en notas/metas/tareas/eventos; `tasks.goal_id` y `tasks.sort_order` se conservan porque sí tienen efecto visible. Detalle en `mcp-dashboard/README.md`.
 
 ## Next step
 T1 spec → T4/T2 (hábitos-read-only + finanzas) por riesgo, luego T6 tokens, T8 e2e, T9 UI, T10 juicio.
