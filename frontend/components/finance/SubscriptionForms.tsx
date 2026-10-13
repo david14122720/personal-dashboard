@@ -54,7 +54,9 @@ export function SubscriptionRow({ sub }: { sub: SubscriptionWire }) {
     await mutate("finance/subscriptions");
     await mutate("dashboard/subscriptions");
     await mutate("dashboard/accounts");
-    await mutate("finance/movements");
+    // Paying mints a movement, so the unfiltered ledger and the ranged period
+    // reads are stale too (F1).
+    await mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
   }
 
   async function toggle(): Promise<void> {

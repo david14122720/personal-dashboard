@@ -107,7 +107,9 @@ export function MovementHistory({
     try {
       await deleteMovement(id);
       setConfirmingDeleteId(null);
-      await mutate("finance/movements");
+      // Every movements read, not just the unfiltered one: the four period
+      // panels read `finance/movements:<from>:<to>` (F1).
+      await mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
       await mutate("dashboard/accounts");
     } catch {
       setActionError(t("finance.deleteFailed"));

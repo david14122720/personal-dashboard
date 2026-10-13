@@ -6,7 +6,7 @@ import { SWRConfig } from "swr";
 import { useRef, useState } from "react";
 import { MovementModal, TransferModal } from "@/components/finance/MovementForms";
 import { useAccounts } from "@/lib/api/dashboard";
-import { useMovements } from "@/lib/api/finance";
+import { useMovements, useMovementsRange } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
@@ -17,10 +17,16 @@ const posted: unknown[] = [];
 const transfers: unknown[] = [];
 let movementsGets = 0;
 let accountGets = 0;
+/** Query strings of the ranged reads (`?from=…&to=…`): the four period panels
+ * read `finance/movements:<from>:<to>`, so a write that revalidates only the
+ * unfiltered key leaves them stale (verifier finding F1). */
+const rangedGets: string[] = [];
 
 const server = setupServer(
-  http.get("http://test.local/api/movements", () => {
+  http.get("http://test.local/api/movements", ({ request }) => {
     movementsGets += 1;
+    const url = new URL(request.url);
+    if (url.searchParams.has("from")) rangedGets.push(url.search);
     return HttpResponse.json([]);
   }),
   http.post("http://test.local/api/movements", async ({ request }) => {
@@ -44,12 +50,19 @@ afterEach(() => {
   transfers.length = 0;
   movementsGets = 0;
   accountGets = 0;
+  rangedGets.length = 0;
 });
 afterAll(() => server.close());
 
 function MovementsProbe() {
   const { data } = useMovements();
   return <p data-testid="probe">{`movements:${data?.length ?? "?"}`}</p>;
+}
+
+/** Ranged read probe: stands in for the period panels' `finance/movements:<from>:<to>` key. */
+function RangedMovementsProbe() {
+  const { data } = useMovementsRange({ from: "2026-10-01", to: "2026-10-31" });
+  return <p data-testid="ranged-probe">{`ranged:${data?.length ?? "?"}`}</p>;
 }
 
 function AccountsProbe() {
@@ -111,6 +124,47 @@ function Harness({
   );
 }
 
+/** The movement modal plus a ranged read in the cache: the write path must
+ * revalidate `finance/movements` **and** every `finance/movements:<from>:<to>`
+ * key (verifier finding F1). */
+function RangedHarness() {
+  const opener = useRef<HTMLButtonElement>(null);
+  return (
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <MovementModal
+        mode={{ kind: "create", direction: "expense" }}
+        accounts={accounts}
+        categories={categories}
+        openerRef={opener}
+        onClose={() => undefined}
+      />
+      <button ref={opener} type="button">
+        opener
+      </button>
+      <RangedMovementsProbe />
+    </SWRConfig>
+  );
+}
+
+/** The transfer modal plus a ranged read in the cache (its own `revalidate`). */
+function RangedTransferHarness() {
+  const opener = useRef<HTMLButtonElement>(null);
+  return (
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <TransferModal
+        accounts={transferAccounts}
+        initialFromAccountId="a1"
+        openerRef={opener}
+        onClose={() => undefined}
+      />
+      <button ref={opener} type="button">
+        opener
+      </button>
+      <RangedMovementsProbe />
+    </SWRConfig>
+  );
+}
+
 describe("MovementModal", () => {
   async function submitAmount(value: string): Promise<string> {
     render(<Harness />);
@@ -156,6 +210,23 @@ describe("MovementModal", () => {
     expect(typeof body.amount).toBe("string");
     // Initial read plus the post-save revalidation of the same SWR key.
     await waitFor(() => expect(movementsGets).toBeGreaterThanOrEqual(2));
+  });
+
+  it("tras guardar, revalida también la lectura con rango (F1)", async () => {
+    render(<RangedHarness />);
+    // The ranged key is already in the cache before the write.
+    await waitFor(() => expect(rangedGets).toHaveLength(1));
+
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.change(screen.getByLabelText("Cuenta"), { target: { value: "a1" } });
+    fireEvent.change(screen.getByLabelText("Categoría"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+
+    // An exact-key mutate leaves the four period panels showing stale numbers;
+    // the ranged read must be refetched too.
+    await waitFor(() => expect(rangedGets).toHaveLength(2));
+    expect(rangedGets[0]).toBe("?from=2026-10-01&to=2026-10-31");
   });
 
   it("surfaces the server Spanish message when the API rejects with 422", async () => {
@@ -434,6 +505,18 @@ describe("TransferModal", () => {
     expect(body.occurred_on).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     await waitFor(() => expect(movementsGets).toBeGreaterThanOrEqual(2));
     await waitFor(() => expect(accountGets).toBeGreaterThanOrEqual(2));
+  });
+
+  it("tras transferir, revalida también la lectura con rango (F1)", async () => {
+    render(<RangedTransferHarness />);
+    await waitFor(() => expect(rangedGets).toHaveLength(1));
+
+    fireEvent.change(screen.getByLabelText("Cuenta destino"), { target: { value: "a2" } });
+    fireEvent.change(screen.getByLabelText("Monto (COP)"), { target: { value: "25000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(transfers).toHaveLength(1));
+
+    await waitFor(() => expect(rangedGets).toHaveLength(2));
   });
 
   it("contains Tab and Shift+Tab inside the transfer dialog", () => {

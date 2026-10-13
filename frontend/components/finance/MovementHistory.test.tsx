@@ -5,7 +5,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import { MovementHistory } from "@/components/finance/MovementHistory";
-import type { MovementWire } from "@/lib/api/finance";
+import { useMovementsRange, type MovementWire } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
@@ -43,10 +43,16 @@ function dated(n: number, overrides: Partial<MovementWire> = {}): MovementWire {
 
 let movements: MovementWire[] = [];
 let movementsGets = 0;
+/** Query strings of the ranged reads: the period panels read
+ * `finance/movements:<from>:<to>`, so a write that revalidates only the
+ * unfiltered key leaves them stale (verifier finding F1). */
+const rangedGets: string[] = [];
 
 const server = setupServer(
-  http.get("http://test.local/api/movements", () => {
+  http.get("http://test.local/api/movements", ({ request }) => {
     movementsGets += 1;
+    const url = new URL(request.url);
+    if (url.searchParams.has("from")) rangedGets.push(url.search);
     return HttpResponse.json(movements);
   }),
   http.delete("http://test.local/api/movements/:id", () => {
@@ -59,6 +65,7 @@ afterEach(() => {
   server.resetHandlers();
   movements = [];
   movementsGets = 0;
+  rangedGets.length = 0;
 });
 afterAll(() => server.close());
 
@@ -76,6 +83,21 @@ function renderHistory(props: Partial<typeof baseProps> = {}) {
   return render(
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
       <MovementHistory {...baseProps} {...props} />
+    </SWRConfig>,
+  );
+}
+
+/** Ranged read probe: stands in for the period panels' `finance/movements:<from>:<to>` key. */
+function RangedProbe() {
+  const { data } = useMovementsRange({ from: "2026-10-01", to: "2026-10-31" });
+  return <p data-testid="ranged-probe">{`ranged:${data?.length ?? "?"}`}</p>;
+}
+
+function renderHistoryWithRanged(props: Partial<typeof baseProps> = {}) {
+  return render(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <MovementHistory {...baseProps} {...props} />
+      <RangedProbe />
     </SWRConfig>,
   );
 }
@@ -384,6 +406,20 @@ describe("MovementHistory", () => {
     fireEvent.click(within(row).getByRole("button", { name: /Eliminar/ }));
     fireEvent.click(within(row).getByRole("button", { name: "Eliminar" }));
     await waitFor(() => expect(deleted).toBe(1));
+  });
+
+  it("tras eliminar, revalida también la lectura con rango (F1)", async () => {
+    movements = [wire("e1", { direction: "expense" })];
+    renderHistoryWithRanged();
+    // The ranged key is already in the cache before the delete.
+    await waitFor(() => expect(rangedGets).toHaveLength(1));
+
+    const row = (await screen.findByText(/desc-e1/)).closest("li") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /Eliminar/ }));
+    fireEvent.click(within(row).getByRole("button", { name: "Eliminar" }));
+
+    // An exact-key mutate leaves the four period panels showing stale numbers.
+    await waitFor(() => expect(rangedGets).toHaveLength(2));
   });
 
   it("widens the direction filter with the transfer option", async () => {

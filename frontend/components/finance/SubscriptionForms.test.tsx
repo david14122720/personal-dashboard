@@ -4,7 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import { SubscriptionRow } from "@/components/finance/SubscriptionForms";
-import type { SubscriptionWire } from "@/lib/api/finance";
+import { useMovementsRange, type SubscriptionWire } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
@@ -28,6 +28,10 @@ const payBodies: unknown[] = [];
 const patched: { id: string; body: unknown }[] = [];
 let deleted: string[] = [];
 let payStatus = 200;
+/** Query strings of the ranged reads: paying a subscription mints a movement, so
+ * the period panels' `finance/movements:<from>:<to>` keys must be revalidated
+ * too (verifier finding F1). */
+const rangedGets: string[] = [];
 
 const server = setupServer(
   http.get("http://test.local/api/accounts", () =>
@@ -35,6 +39,11 @@ const server = setupServer(
       { id: "a1", name: "Cuenta principal", type: "bank", currency: "COP", balance: "100000.00" },
     ]),
   ),
+  http.get("http://test.local/api/movements", ({ request }) => {
+    const url = new URL(request.url);
+    if (url.searchParams.has("from")) rangedGets.push(url.search);
+    return HttpResponse.json([]);
+  }),
   http.get("http://test.local/api/subscriptions", () => HttpResponse.json([])),
   http.post("http://test.local/api/subscriptions/:id/pay", async ({ request }) => {
     payBodies.push(await request.json());
@@ -63,6 +72,7 @@ afterEach(() => {
   patched.length = 0;
   deleted = [];
   payStatus = 200;
+  rangedGets.length = 0;
   vi.restoreAllMocks();
 });
 afterAll(() => server.close());
@@ -71,6 +81,21 @@ function Harness({ row }: { row: SubscriptionWire }) {
   return (
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
       <SubscriptionRow sub={row} />
+    </SWRConfig>
+  );
+}
+
+/** Ranged read probe: stands in for the period panels' `finance/movements:<from>:<to>` key. */
+function RangedProbe() {
+  const { data } = useMovementsRange({ from: "2026-10-01", to: "2026-10-31" });
+  return <p data-testid="ranged-probe">{`ranged:${data?.length ?? "?"}`}</p>;
+}
+
+function RangedHarness({ row }: { row: SubscriptionWire }) {
+  return (
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <SubscriptionRow sub={row} />
+      <RangedProbe />
     </SWRConfig>
   );
 }
@@ -104,6 +129,24 @@ describe("SubscriptionRow pay flow", () => {
 
     await waitFor(() => expect(payBodies).toHaveLength(1));
     expect(payBodies[0]).toEqual({ account_id: "a1" });
+  });
+
+  it("tras pagar, revalida también la lectura con rango (F1)", async () => {
+    render(<RangedHarness row={sub("s1", { name: "Streaming" })} />);
+    // The ranged key is already in the cache before the payment.
+    await waitFor(() => expect(rangedGets).toHaveLength(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pagar" }));
+    await screen.findByRole("dialog", { name: "Pagar suscripción" });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Elige una cuenta").querySelector("option[value=a1]")).not.toBeNull(),
+    );
+    fireEvent.change(screen.getByLabelText("Elige una cuenta"), { target: { value: "a1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pago" }));
+    await waitFor(() => expect(payBodies).toHaveLength(1));
+
+    // Paying mints a movement: an exact-key mutate leaves the period panels stale.
+    await waitFor(() => expect(rangedGets).toHaveLength(2));
   });
 
   it("surfaces the Spanish double-pay message on 409", async () => {

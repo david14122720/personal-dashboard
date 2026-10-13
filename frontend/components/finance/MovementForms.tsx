@@ -139,7 +139,10 @@ export function MovementModal({
   }, []);
 
   async function revalidate(): Promise<void> {
-    await mutate("finance/movements");
+    // Every movements read, not just the unfiltered key: the four period panels
+    // read `finance/movements:<from>:<to>`, so an exact-key mutate would leave
+    // them showing stale numbers after a write (verifier finding F1).
+    await mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
     await mutate("dashboard/accounts");
   }
 
@@ -455,7 +458,9 @@ export function TransferModal({
   }, []);
 
   async function revalidate(): Promise<void> {
-    await mutate("finance/movements");
+    // Same rule as the movement modal above: a transfer moves money, so every
+    // movements read (unfiltered and ranged) is stale afterwards (F1).
+    await mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
     await mutate("dashboard/accounts");
   }
 
