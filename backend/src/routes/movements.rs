@@ -53,6 +53,7 @@ use crate::{
         money::{parse_money_amount, MAX_MONEY_AMOUNT},
         validation::{ensure_owned_account, ensure_owned_category, validate_occurred_on},
     },
+    routes::habits::ValidatedQuery,
     state::AppState,
 };
 
@@ -76,6 +77,13 @@ const UPDATE_MOVEMENT_SQL: &str = "UPDATE movements SET account_id=$3, category_
 /// destination; `transfer_account_id` is NULL for expense/income.
 const DELETE_MOVEMENT_SQL: &str = "DELETE FROM movements WHERE id=$1 AND user_id=$2 RETURNING account_id, transfer_account_id, direction::text, amount";
 const LIST_MOVEMENTS_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE user_id=$1 ORDER BY occurred_on DESC, created_at DESC, id DESC";
+/// Ranged list: same 11-column projection in the same order and the full API
+/// order as [`LIST_MOVEMENTS_SQL`], bounded inclusively on both edges over
+/// `occurred_on` (`from <= occurred_on <= to`, the same semantics
+/// `GET /habits/logs` uses). Served only when both bounds parse; with
+/// neither parameter the handler keeps serving [`LIST_MOVEMENTS_SQL`].
+/// No `limit` (S3a): no consumer in this delivery needs pagination.
+const LIST_MOVEMENTS_RANGE_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE user_id=$1 AND occurred_on >= $2 AND occurred_on <= $3 ORDER BY occurred_on DESC, created_at DESC, id DESC";
 const GET_MOVEMENT_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE id=$1 AND user_id=$2";
 /// Authoritative PATCH re-read: inside the transaction, under the account
 /// lock, the stored money terms (account, destination, direction, amount)
@@ -150,6 +158,44 @@ pub struct PatchMovementRequest {
     pub category_id: Option<Uuid>,
     pub occurred_on: Option<String>,
     pub description: Option<String>,
+}
+
+/// `GET /movements` range filter: both bounds optional calendar dates
+/// (`YYYY-MM-DD`, inclusive on both edges over `occurred_on`). Unknown query
+/// fields are rejected (422) via `deny_unknown_fields` (see
+/// `ValidatedQuery`, which remaps axum's 400); malformed or half-specified
+/// bounds are 422 in [`parse_movement_range`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MovementRangeQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// Parse the `GET /movements?from&to` range bounds (strict `YYYY-MM-DD` via
+/// the shared [`validate_occurred_on`], else 422): with neither bound there
+/// is no range (`Ok(None)` — the handler serves [`LIST_MOVEMENTS_SQL`]);
+/// with both bounds the inclusive window (`from <= to`, else 422); a single
+/// bound is 422 — `from` and `to` travel together or not at all. Pure: no
+/// I/O, no `PgPool`.
+pub fn parse_movement_range(
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Option<(NaiveDate, NaiveDate)>, AppError> {
+    match (from, to) {
+        (None, None) => Ok(None),
+        (Some(raw_from), Some(raw_to)) => {
+            let from = validate_occurred_on(raw_from)?;
+            let to = validate_occurred_on(raw_to)?;
+            if from > to {
+                return Err(AppError::Validation("to must be after from".into()));
+            }
+            Ok(Some((from, to)))
+        }
+        _ => Err(AppError::Validation(
+            "from and to must be provided together".into(),
+        )),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -448,16 +494,34 @@ pub async fn create_transfer_handler(
 pub async fn list_movements_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
+    ValidatedQuery(query): ValidatedQuery<MovementRangeQuery>,
 ) -> Result<Json<Vec<MovementResponse>>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
-    let rows = sqlx::query_as::<_, MovementRow>(LIST_MOVEMENTS_SQL)
-        .bind(user_id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("list_movements failed: {e:?}");
-            AppError::Internal
-        })?;
+    let range = parse_movement_range(query.from.as_deref(), query.to.as_deref())?;
+    let rows = match range {
+        Some((from, to)) => {
+            sqlx::query_as::<_, MovementRow>(LIST_MOVEMENTS_RANGE_SQL)
+                .bind(user_id)
+                .bind(from)
+                .bind(to)
+                .fetch_all(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("list_movements range failed: {e:?}");
+                    AppError::Internal
+                })?
+        }
+        None => {
+            sqlx::query_as::<_, MovementRow>(LIST_MOVEMENTS_SQL)
+                .bind(user_id)
+                .fetch_all(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("list_movements failed: {e:?}");
+                    AppError::Internal
+                })?
+        }
+    };
     Ok(Json(rows.into_iter().map(MovementResponse::from).collect()))
 }
 
@@ -1150,6 +1214,133 @@ mod tests {
             !insert_columns.contains("updated_at"),
             "insert column list relies on the created_at/updated_at column defaults, got: {insert_columns}"
         );
+        assert!(
+            LIST_MOVEMENTS_SQL == "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE user_id=$1 ORDER BY occurred_on DESC, created_at DESC, id DESC",
+            "LIST_MOVEMENTS_SQL must stay byte-identical: the no-params path keeps today's statement"
+        );
+        assert!(
+            LIST_MOVEMENTS_RANGE_SQL.contains(MOVEMENT_COLUMNS),
+            "ranged statement must select the 11 movement columns in order, got: {LIST_MOVEMENTS_RANGE_SQL}"
+        );
+        assert!(
+            LIST_MOVEMENTS_RANGE_SQL
+                .contains("ORDER BY occurred_on DESC, created_at DESC, id DESC"),
+            "ranged statement must carry the full API order, got: {LIST_MOVEMENTS_RANGE_SQL}"
+        );
+        assert!(
+            LIST_MOVEMENTS_RANGE_SQL.contains("occurred_on >= $2")
+                && LIST_MOVEMENTS_RANGE_SQL.contains("occurred_on <= $3"),
+            "ranged statement must bound occurred_on inclusively on both edges, got: {LIST_MOVEMENTS_RANGE_SQL}"
+        );
+        assert!(
+            LIST_MOVEMENTS_RANGE_SQL.contains("user_id=$1"),
+            "ranged statement must scope by user_id, got: {LIST_MOVEMENTS_RANGE_SQL}"
+        );
+        assert!(
+            !LIST_MOVEMENTS_RANGE_SQL.contains("LIMIT")
+                && !LIST_MOVEMENTS_RANGE_SQL.to_lowercase().contains("limit"),
+            "ranged statement must not add a limit (S3a), got: {LIST_MOVEMENTS_RANGE_SQL}"
+        );
+        // The no-params path resolves to no range, so the handler keeps
+        // serving LIST_MOVEMENTS_SQL byte-identical to today.
+        assert!(
+            parse_movement_range(None, None).unwrap().is_none(),
+            "no query parameters must resolve to the unfiltered statement"
+        );
+    }
+
+    #[test]
+    fn range_query_accepts_optional_bounds_but_rejects_unknown_fields() {
+        let ok: MovementRangeQuery = serde_json::from_value(json!({
+            "from": "2026-10-01", "to": "2026-10-31"
+        }))
+        .expect("from+to must deserialize");
+        assert_eq!(ok.from.as_deref(), Some("2026-10-01"));
+        assert_eq!(ok.to.as_deref(), Some("2026-10-31"));
+        let empty: MovementRangeQuery = serde_json::from_value(json!({})).unwrap();
+        assert!(empty.from.is_none() && empty.to.is_none());
+        // Unknown query fields are rejected (422), never silently ignored.
+        for bad in [
+            json!({"from": "2026-10-01", "to": "2026-10-31", "limit": 500}),
+            json!({"view": "month"}),
+            json!({"from": "2026-10-01", "to": "2026-10-31", "order": "asc"}),
+        ] {
+            assert!(
+                serde_json::from_value::<MovementRangeQuery>(bad.clone()).is_err(),
+                "range query must reject unknown field: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_rejects_malformed_and_half_specified_dates_as_422() {
+        // Malformed dates are 422.
+        for (from, to) in [
+            (Some("not-a-date"), Some("2026-10-31")),
+            (Some("2026-10-01"), Some("nope")),
+            (Some("2026-13-01"), Some("2026-10-31")),
+            (Some("2026-10-01"), Some("2026-02-30")),
+            (Some("01/10/2026"), Some("2026-10-31")),
+            (Some("2026-10-01T00:00:00Z"), Some("2026-10-31")),
+            (Some("2026-10-01"), Some("2026-10-31T00:00:00Z")),
+        ] {
+            let err = parse_movement_range(from, to).unwrap_err();
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "malformed range ({from:?}, {to:?}) must be 422"
+            );
+        }
+        // Half-specified bounds are 422: from and to travel together or not at all.
+        for (from, to) in [
+            (Some("2026-10-01"), None),
+            (None, Some("2026-10-31")),
+        ] {
+            let err = parse_movement_range(from, to).unwrap_err();
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "half-specified range ({from:?}, {to:?}) must be 422"
+            );
+        }
+        // An inverted window is 422 as well.
+        let err = parse_movement_range(Some("2026-10-31"), Some("2026-10-01"))
+            .unwrap_err();
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Sanity: a well-formed window parses to the inclusive bounds.
+        let (from, to) =
+            parse_movement_range(Some("2026-10-01"), Some("2026-10-31"))
+                .expect("valid window parses")
+                .expect("valid window is Some");
+        assert_eq!(from.to_string(), "2026-10-01");
+        assert_eq!(to.to_string(), "2026-10-31");
+    }
+
+    #[tokio::test]
+    async fn range_query_extraction_rejects_unknown_fields_as_422() {
+        use axum::extract::FromRequestParts;
+        let req = axum::http::Request::builder()
+            .uri("/movements?from=2026-10-01&to=2026-10-31&limit=500")
+            .body(())
+            .expect("request builds");
+        let mut parts = req.into_parts().0;
+        let err =
+            crate::routes::habits::ValidatedQuery::<MovementRangeQuery>::from_request_parts(
+                &mut parts,
+                &(),
+            )
+            .await
+            .expect_err("unknown query field must be rejected");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let body = axum::body::to_bytes(resp.into_body(), 8192)
+            .await
+            .expect("body readable");
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(v["error"]["code"], serde_json::Value::String("VALIDATION_ERROR".into()));
     }
 
     // -- DB-gated tests (skip without DATABASE_URL) --------------------------
@@ -2312,7 +2503,7 @@ mod tests {
             err.into_response().status(),
             axum::http::StatusCode::UNAUTHORIZED
         );
-        let err = list_movements_handler(State(state.clone()), empty)
+        let err = list_movements_handler(State(state.clone()), empty, range_query(None, None))
             .await
             .expect_err("list without token must be 401");
         assert_eq!(
@@ -2341,15 +2532,84 @@ mod tests {
             .await
             .expect("seed movement");
         }
-        let listed = list_movements_handler(State(state.clone()), headers.clone())
-            .await
-            .expect("list is 200");
+        let listed = list_movements_handler(
+            State(state.clone()),
+            headers.clone(),
+            range_query(None, None),
+        )
+        .await
+        .expect("list is 200");
         let dates: Vec<String> = listed
             .0
             .iter()
             .map(|m| m.occurred_on.to_string())
             .collect();
         assert_eq!(dates, vec!["2026-09-24", "2026-09-22", "2026-09-20"]);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    fn range_query(from: Option<&str>, to: Option<&str>) -> ValidatedQuery<MovementRangeQuery> {
+        use crate::routes::habits::ValidatedQuery;
+        ValidatedQuery(MovementRangeQuery {
+            from: from.map(str::to_string),
+            to: to.map(str::to_string),
+        })
+    }
+
+    #[tokio::test]
+    async fn range_returns_rows_inclusive_on_both_edges() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP range_returns_rows_inclusive_on_both_edges: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let account_id = seed_account(&pool, user_id, "Cash", "1000000.00").await;
+        let category_id = seed_category(&pool, user_id, "finance", "Mercado").await;
+        // Rows exactly on `from` and on `to` are included; one day outside
+        // on either side is excluded.
+        for date in [
+            "2026-09-30",
+            "2026-10-01",
+            "2026-10-15",
+            "2026-10-31",
+            "2026-11-01",
+        ] {
+            let _ = create_movement_handler(
+                State(state.clone()),
+                headers.clone(),
+                create_body(account_id, category_id, json!({"occurred_on": date})),
+            )
+            .await
+            .expect("seed movement");
+        }
+        let listed = list_movements_handler(
+            State(state.clone()),
+            headers.clone(),
+            range_query(Some("2026-10-01"), Some("2026-10-31")),
+        )
+        .await
+        .expect("ranged list is 200");
+        let mut dates: Vec<String> = listed
+            .0
+            .iter()
+            .map(|m| m.occurred_on.to_string())
+            .collect();
+        dates.sort();
+        assert_eq!(dates, vec!["2026-10-01", "2026-10-15", "2026-10-31"]);
+        // Malformed and half-specified bounds are 422 through the handler.
+        for query in [
+            range_query(Some("not-a-date"), Some("2026-10-31")),
+            range_query(Some("2026-10-01"), None),
+            range_query(None, Some("2026-10-31")),
+        ] {
+            let err = list_movements_handler(State(state.clone()), headers.clone(), query)
+                .await
+                .expect_err("bad range must be 422");
+            assert_eq!(
+                err.into_response().status(),
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
         cleanup_user(&pool, user_id).await;
     }
 }
