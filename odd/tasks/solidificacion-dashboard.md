@@ -448,7 +448,7 @@ coherente y compila por sí solo.
 `main` local y `origin/main` en el mismo commit.
 
 **Nota de seguridad para el dueño (no bloqueante, no actuada).** La credencial de la base de
-producción (`postgres://pdbuser:pdbpass123@…`) ya está en archivos **trackeados** de este repo
+producción (`postgres://pdbuser:<DB_PASSWORD>@…`) ya está en archivos **trackeados** de este repo
 (`CLAUDE.md`, `odd/design/.../DESIGN-SPEC.md`, `odd/design/.../VERIFY-RECIPE.md`,
 `odd/tasks/accounts-transfers-login-calendar*.md|patch`, `odd/tasks/finance-panel-consolidation-delta.patch`,
 `odd/tasks/rediseno-integral-responsivo.md`), o sea que está en el historial desde antes de esta
