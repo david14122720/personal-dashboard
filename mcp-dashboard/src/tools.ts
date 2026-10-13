@@ -204,13 +204,15 @@ const ListGoalsSchema = z.object({});
 
 const GetGoalSchema = z.object({ id: uuid });
 
-// Goals: `category_id` is dropped by `GoalWire` and rendered nowhere, and
-// `start_date` is never written by the form nor rendered (the card shows
-// `due_date` only). Both are omitted here.
+// Goals: `category_id` is dropped by `GoalWire` and rendered nowhere. 
+// `start_date` stays even though no component renders it: it is load-bearing.
+// The backend validates `due_date >= start_date` and defaults `start_date` to
+// today, so without it an agent cannot create a goal dated in the past.
 const CreateGoalSchema = z.object({
   name: z.string().min(1).max(200),
   area: z.string().min(1).max(100),
   description: optionalText,
+  start_date: z.string().optional(),
   due_date: z.string().optional(),
   status: z.enum(["active", "completed", "paused", "cancelled"]).optional(),
   color: optionalText,
@@ -221,6 +223,7 @@ const UpdateGoalSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: optionalText,
   area: z.string().min(1).max(100).optional(),
+  start_date: z.string().optional(),
   due_date: z.string().optional(),
   status: z.enum(["active", "completed", "paused", "cancelled"]).optional(),
   color: optionalText,
@@ -736,13 +739,14 @@ const entries: ToolEntry[] = [
     def: {
       name: "create_goal",
       description:
-        "POST /api/goals. Creates a goal. Requires name (1-200 chars) and area (free-form label, 1-100 chars); progress is trigger-owned (read-only). due_date is YYYY-MM-DD. No category and no start_date: the goal card renders neither (only due_date). Example: {\"name\":\"Run 10k\",\"area\":\"health\"}.",
+        "POST /api/goals. Creates a goal. Requires name (1-200 chars) and area (free-form label, 1-100 chars); progress is trigger-owned (read-only). Dates are YYYY-MM-DD. No category: the goal card renders none. start_date is accepted and matters — the backend requires due_date >= start_date and defaults start_date to today, so set it to create a goal dated in the past. Example: {\"name\":\"Run 10k\",\"area\":\"health\"}.",
       inputSchema: {
         type: "object",
         properties: {
           name: strProp("Goal name (1-200 chars, required)"),
           area: strProp("Free-form area label (1-100 chars, required)"),
           description: optStrProp("Description"),
+          start_date: optStrProp("Start date YYYY-MM-DD (must be <= due_date; needed for past-dated goals)"),
           due_date: optStrProp("Due date as YYYY-MM-DD"),
           status: enumProp("Status: active|completed|paused|cancelled", [
             "active",
@@ -770,6 +774,7 @@ const entries: ToolEntry[] = [
           name: optStrProp("Name (1-200 chars)"),
           description: optStrProp("Description"),
           area: optStrProp("Area label (1-100 chars)"),
+          start_date: optStrProp("Start date YYYY-MM-DD (must be <= due_date)"),
           due_date: optStrProp("Due date as YYYY-MM-DD"),
           status: enumProp("Status: active|completed|paused|cancelled", [
             "active",
