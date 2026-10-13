@@ -366,6 +366,14 @@ mod tokens_tests {
             .expect("cleanup user");
     }
 
+    async fn read_last_used(pool: &sqlx::PgPool, hash: &str) -> Option<DateTime<Utc>> {
+        sqlx::query_scalar("SELECT last_used_at FROM api_tokens WHERE token_hash=$1")
+            .bind(hash)
+            .fetch_one(pool)
+            .await
+            .expect("read last_used_at")
+    }
+
     // -- Pure unit tests (no DB) --
 
     #[test]
@@ -664,6 +672,106 @@ mod tokens_tests {
             .expect("list with api token is 200")
             .0;
         assert_eq!(listed.len(), 1);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S5: `last_used_at` is display-only, so a token used more often than the
+    /// touch window must not turn every authenticated request into a write. The
+    /// first use stamps; a use inside the window leaves the stored value
+    /// exactly as it was.
+    #[tokio::test]
+    async fn api_token_touch_is_throttled_inside_the_window() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP api_token_touch_is_throttled_inside_the_window: no DATABASE_URL");
+            return;
+        };
+        let (state, _, user_id) = db_user_with_session(&pool).await;
+        let raw = mint_raw_token();
+        let hash = token_crypto::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix) VALUES ($1,'throttle',$2,'pd_thr')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .expect("seed api token");
+
+        // The first use always stamps.
+        let got = middleware::resolve_token_user_id(&state.pool, &raw)
+            .await
+            .expect("first use resolves");
+        assert_eq!(got, user_id);
+        let stamped = read_last_used(&pool, &hash).await;
+        assert!(
+            stamped.is_some(),
+            "the first use must stamp last_used_at"
+        );
+
+        // A second use right after must not rewrite the row.
+        let got = middleware::resolve_token_user_id(&state.pool, &raw)
+            .await
+            .expect("second use resolves");
+        assert_eq!(got, user_id);
+        assert_eq!(
+            read_last_used(&pool, &hash).await,
+            stamped,
+            "a use inside the window must not rewrite last_used_at"
+        );
+
+        // A stamp four minutes old is still inside the five-minute window.
+        sqlx::query(
+            "UPDATE api_tokens SET last_used_at = now() - interval '4 minutes' WHERE token_hash=$1",
+        )
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .expect("age the stamp inside the window");
+        let inside = read_last_used(&pool, &hash).await;
+        let got = middleware::resolve_token_user_id(&state.pool, &raw)
+            .await
+            .expect("use inside the window resolves");
+        assert_eq!(got, user_id);
+        assert_eq!(
+            read_last_used(&pool, &hash).await,
+            inside,
+            "a stamp younger than the window must not be rewritten"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S5: a stamp older than the window is refreshed, so the tokens UI keeps
+    /// reporting a real "last used".
+    #[tokio::test]
+    async fn api_token_touch_refreshes_a_stale_stamp() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP api_token_touch_refreshes_a_stale_stamp: no DATABASE_URL");
+            return;
+        };
+        let (state, _, user_id) = db_user_with_session(&pool).await;
+        let raw = mint_raw_token();
+        let hash = token_crypto::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, last_used_at) VALUES ($1,'stale',$2,'pd_stl', now() - interval '6 minutes')",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .expect("seed stale api token");
+        let stale = read_last_used(&pool, &hash).await.expect("stale stamp");
+
+        let got = middleware::resolve_token_user_id(&state.pool, &raw)
+            .await
+            .expect("stale token resolves");
+        assert_eq!(got, user_id);
+        let refreshed = read_last_used(&pool, &hash).await.expect("refreshed stamp");
+        assert!(
+            refreshed > stale,
+            "a stamp older than the window must be refreshed: {refreshed:?} !> {stale:?}"
+        );
+
         cleanup_user(&pool, user_id).await;
     }
 

@@ -27,14 +27,21 @@ const SESSION_LOOKUP_SQL: &str = "SELECT s.user_id FROM sessions s JOIN users u 
 const API_TOKEN_LOOKUP_SQL: &str = "SELECT t.user_id FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now()) AND u.is_active";
 /// Touch an API token on successful use (never leaks whether the token
 /// existed: a miss simply yields 401 without writing anything).
+///
+/// S5: `last_used_at` is display-only (the tokens UI lists it), so the touch is
+/// throttled to one write per token per window instead of one write per
+/// authenticated request — it was the only avoidable write on the hot path.
+/// The first use always stamps (NULL); a stamp older than the window is
+/// refreshed, so the UI still reports a real "last used".
 const API_TOKEN_TOUCH_SQL: &str =
-    "UPDATE api_tokens SET last_used_at = now() WHERE token_hash = $1";
+    "UPDATE api_tokens SET last_used_at = now() WHERE token_hash = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '5 minutes')";
 
 /// Resolve the authenticated user id from a raw Bearer token.
 ///
 /// Sessions take priority over API tokens: the session table is checked
 /// first, and only a session miss falls through to `api_tokens`. A matched
-/// API token gets `last_used_at = now()` before its `user_id` is returned.
+/// API token gets `last_used_at = now()` before its `user_id` is returned, at
+/// most once per 5-minute window (S5).
 /// Unknown, expired, and revoked tokens all map to `AppError::Auth` (401)
 /// so callers never learn whether a token ever existed; database failures
 /// map to `AppError::Internal`.
@@ -134,5 +141,24 @@ mod tests {
                 "lookup must require an active user, got: {sql}"
             );
         }
+    }
+
+    #[test]
+    fn api_token_touch_is_throttled_by_a_staleness_window() {
+        // S5: this UPDATE is the only avoidable write on the authenticated hot
+        // path, so the window predicate lives in the statement itself: one
+        // write per token per window, first use always, stale always refreshed.
+        assert!(
+            API_TOKEN_TOUCH_SQL.contains("token_hash = $1"),
+            "the touch must stay scoped to the presented token, got: {API_TOKEN_TOUCH_SQL}"
+        );
+        assert!(
+            API_TOKEN_TOUCH_SQL.contains("last_used_at IS NULL"),
+            "the first use must always stamp, got: {API_TOKEN_TOUCH_SQL}"
+        );
+        assert!(
+            API_TOKEN_TOUCH_SQL.contains("last_used_at < now() - interval '5 minutes'"),
+            "a stamp older than the window must be refreshed, got: {API_TOKEN_TOUCH_SQL}"
+        );
     }
 }
