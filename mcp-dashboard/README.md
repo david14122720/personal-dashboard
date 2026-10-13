@@ -270,14 +270,21 @@ Image env defaults (each overridable in the Dokploy env field):
 | `PERSONAL_DASHBOARD_TOKEN` | (unset) | No baked token: auth stays per-request `Authorization: Bearer ...` |
 
 The `/mcp` host guard strips the `:port` suffix before matching, so
-`MCP_ALLOWED_HOSTS=192.168.50.120` accepts `Host: 192.168.50.120:3002` from
+`MCP_ALLOWED_HOSTS=192.168.50.120` accepts `Host: 192.168.50.120:8056` from
 the LAN while `localhost`/`127.0.0.1`/`::1` stay allowed for probes; any
 other `Host` gets `403`. `/healthz` is exempt from the guard so the image
 `HEALTHCHECK` can probe both `:80/health` and `:3002/healthz`.
 
-The owner publishes host port 3002 manually in the Dokploy UI (container
-`3002` → LAN `http://192.168.50.120:3002`); nothing in this repo touches the
-deploy.
+The owner publishes the host ports in the Dokploy UI; the application record
+holds `8055 → 80` (site) and `8056 → 3002` (this MCP), so the LAN endpoint is
+`http://192.168.50.120:8056/mcp`. `3002` is the container port only: it is not
+published on the host, and probing it from the LAN is refused. Nothing in this
+repo touches the deploy.
+
+Post-deploy check (no credentials needed): `:8055/health` and `:8056/healthz`
+are liveness only — the backend pool is `connect_lazy`, so both answer 200 even
+with a broken database URL. The cheapest real proof is `:8055/ready`, which runs
+`SELECT 1` and returns 200 only when the query succeeds.
 
 ## Notes
 
