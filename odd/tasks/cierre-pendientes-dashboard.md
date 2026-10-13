@@ -202,3 +202,31 @@ The verifier also confirmed, from source, the four claims it could check: the un
 ranged statement keeps the projection, the API order and the `user_id` scope with no `limit`, the rejection contract
 holds for unknown fields, malformed, half-specified and inverted windows, and **no authorization decision reads
 `last_used_at`** — so the throttle cannot turn a valid token into a 401.
+
+**L13 — the rotation, executed and verified by hash (the secret never entered this document, a commit, a response or
+the session log).** The L6 order was honoured. (1) The scrub, committed as `cbc3ad8`. (2) The new `DATABASE_URL` written
+into the Dokploy app env: `POST /application.saveEnvironment` demands `buildArgs`, `buildSecrets` and `createEnvFile`
+even though the MCP tool schema calls them optional, so the first attempt answered `Input validation failed` — and the
+read-back proved nothing had changed, which is why the failure was safe. (3) `ALTER USER pdbuser WITH PASSWORD …`,
+executed as `pdbuser` itself (a role can change its own password). Evidence: the new credential connects and reads
+`users` (1 row), and the old one is now rejected with `FATAL: password authentication failed for user "pdbuser"`. The
+value travelled from `/tmp/pd-newpw.txt` (mode 600) into the Dokploy payload and into the `ALTER USER`, and the
+verification compares sha256 prefixes (`fa84d425ed12…`) instead of printing it. The local dev server on `:3400` was
+stopped and the temp files that carried session tokens were deleted.
+
+**L14 — cleanup, and the lesson that cost a leftover row.** Prod ends with **1 user** (the owner's) and **0 orphan rows**:
+4 throwaway users deleted, including `apitoken-d639815c-…@example.com`, which **my own T3 RED left behind** — the failing
+assertion panicked before `cleanup_user`, and a panicking test does not run its cleanup. The DB-gated helpers clean up on
+the happy path only; a red run must be checked for leftovers. `/tmp/pd-newpw.txt` stays (mode 600) as the owner's copy of
+the new credential.
+
+**L15 — state at hand-off.** Gates on the frozen artifact: `cargo test --locked` without `DATABASE_URL` → 433 unit +
+43 integration, 0 failed; `tsc --noEmit` → 0; `vitest run` → **52 files / 669 tests, 0 failed**; `pnpm build` → 14/14
+routes; live smoke → **15/15**; real-browser request check → S4 exactly. Delivered in six work-unit commits pushed to
+`main` (`896e9c4` feat, `79a0be6` perf frontend, `2aa1205` fix, `b780100` perf backend, `cbc3ad8` docs security,
+`50bf4a4` docs tasks), `origin/main` at the same commit, working tree clean, no added line in the pushed range carries a
+secret. **One step remains and it is the owner's**: redeploy the Dokploy application (`autoDeploy: false`, so the push did
+not trigger it) — that deploy is also the moment production can reach the database again, since the running container
+still holds the old password. Declared residuals, none of them this change's to fix: the notifications spec's layout race
+(L11), the frozen patch's copy of a now-dead credential (L4/F5), and the two measured-but-unapplied recommendations from
+`solidificacion-dashboard` (movements pagination and the `last_used_at` write, the latter now closed by S5).
