@@ -160,6 +160,38 @@ export function useMovements() {
   );
 }
 
+/** Bounds of a ranged movements read (`YYYY-MM-DD`, inclusive on both edges
+over `occurred_on`, the same semantics the trend buckets already filter by). */
+export interface MovementRange {
+  from: string;
+  to: string;
+}
+
+/** SWR key for a range (`finance/movements:<from>:<to>`, the `habitsHistoryKey`
+ * style); null when the range is missing or inverted so SWR stays idle. */
+export function movementsRangeKey(range: MovementRange | null | undefined): string | null {
+  if (!range?.from || !range?.to || range.from > range.to) return null;
+  return `finance/movements:${range.from}:${range.to}`;
+}
+
+/** Ranged movements read (`GET /movements?from&to`). With neither bound the
+ * backend answers byte-identical to the unfiltered read; unknown fields and
+ * malformed dates are 422. `useMovements()` and its `"finance/movements"`
+ * key stay untouched for the consumers without one bounded window. */
+export function useMovementsRange(range: MovementRange | null | undefined) {
+  const key = movementsRangeKey(range);
+  return useSWR<MovementWire[]>(
+    key,
+    () => {
+      const params = new URLSearchParams();
+      params.set("from", (range as MovementRange).from);
+      params.set("to", (range as MovementRange).to);
+      return apiGet<MovementWire[]>(`/movements?${params.toString()}`);
+    },
+    financeConfig,
+  );
+}
+
 /** Create a movement (amount travels as a decimal string, never a number). */
 export function createMovement(input: CreateMovementInput): Promise<MovementWire> {
   return apiPost<MovementWire>("/movements", input);

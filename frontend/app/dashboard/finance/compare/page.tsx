@@ -14,15 +14,16 @@ import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 import { useAccounts, usePreferences } from "@/lib/api/dashboard";
-import { useCategories, useMovements } from "@/lib/api/finance";
-import { toCategoryOptions, toCategoryTrend, type TrendPeriod } from "@/lib/finance/finance";
+import { useCategories, useMovementsRange } from "@/lib/api/finance";
+import { toCategoryOptions, toCategoryTrend, trendRange, type TrendPeriod } from "@/lib/finance/finance";
 
 /** Canonical deck field recipe (same class string as the Finanzas filters). */
 const selectClass = deck.filterField;
 
 /**
- * Standalone two-category comparison sourced from `GET /movements` (same
- * `finance/movements` SWR key as Finance, no new endpoint). Both categories
+ * Standalone two-category comparison sourced from the ranged `GET /movements`
+ * read (`useMovementsRange(trendRange(period))`: exactly the window the
+ * shared buckets render). Both categories
  * are bucketed over the same period (`toCategoryTrend`) and merged by bucket
  * index into one four-line trend: expense and income per category, never
  * netted, never currency-mixed (single-currency guard in `toCategoryTrend`).
@@ -44,7 +45,8 @@ export default function ComparePage() {
 
   const prefs = usePreferences();
   const categories = useCategories();
-  const movements = useMovements();
+  const range = useMemo(() => trendRange(period), [period]);
+  const movements = useMovementsRange(range);
   const accounts = useAccounts();
 
   const locale = prefs.data?.preferences.locale ?? "es-CO";

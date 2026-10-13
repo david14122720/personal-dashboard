@@ -2,10 +2,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MovementWire } from "@/lib/api/finance";
 import { chartDeckFrameClass } from "@/components/ui/chartTheme";
+import { trendRange } from "@/lib/finance/finance";
 import TotalTrendSection from "./TotalTrendSection";
 
 const mock = vi.hoisted(() => ({
   movements: vi.fn(),
+  movementsRange: vi.fn(),
   accounts: vi.fn(),
   prefs: vi.fn(),
   mutate: vi.fn(),
@@ -24,6 +26,7 @@ vi.mock("swr", () => ({ useSWRConfig: () => ({ mutate: mock.mutate }) }));
 vi.mock("@/lib/api/finance", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api/finance")>()),
   useMovements: () => mock.movements(),
+  useMovementsRange: (range: unknown) => mock.movementsRange(range),
 }));
 
 vi.mock("@/lib/api/dashboard", async (importOriginal) => ({
@@ -54,6 +57,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mock.chart.current = null;
   mock.movements.mockReturnValue({ data: [movement()], error: undefined, isLoading: false });
+  // El panel lee el rango; useMovements queda para los consumidores sin filtrar.
+  mock.movementsRange.mockReturnValue({ data: [movement()], error: undefined, isLoading: false });
   mock.accounts.mockReturnValue({ data: [account], error: undefined, isLoading: false });
   mock.prefs.mockReturnValue({
     data: { preferences: { currency_code: "COP", locale: "es-CO" } },
@@ -73,7 +78,8 @@ describe("TotalTrendSection", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("group", { name: "Periodo de la tendencia" })).toBeInTheDocument();
     expect(screen.getByTestId("total-trend-chart")).toBeInTheDocument();
-    expect(mock.movements).toHaveBeenCalledTimes(1);
+    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
+    expect(mock.movements).not.toHaveBeenCalled();
     expect(mock.accounts).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
   });
@@ -85,7 +91,8 @@ describe("TotalTrendSection", () => {
       "true",
     );
     expect(screen.getByRole("radio", { name: "Mes" })).toBeChecked();
-    expect(mock.movements).toHaveBeenCalledTimes(1);
+    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
+    expect(mock.movements).not.toHaveBeenCalled();
     expect(mock.accounts).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
     expect(mock.chart.current?.data).toHaveLength(12);
@@ -125,7 +132,7 @@ describe("TotalTrendSection", () => {
   });
 
   it("muestra la nota en cero nombrando la moneda del usuario en el periodo", () => {
-    mock.movements.mockReturnValue({ data: [], error: undefined, isLoading: false });
+    mock.movementsRange.mockReturnValue({ data: [], error: undefined, isLoading: false });
     renderOpen();
     expect(screen.getByText("Sin movimientos en COP en este periodo")).toBeInTheDocument();
     expect(screen.queryByText("Sin movimientos en este periodo")).not.toBeInTheDocument();
@@ -141,7 +148,7 @@ describe("TotalTrendSection", () => {
       error: undefined,
       isLoading: false,
     });
-    mock.movements.mockReturnValue({
+    mock.movementsRange.mockReturnValue({
       data: [movement({ id: "m-usd", account_id: "a2", amount: "50.00" })],
       error: undefined,
       isLoading: false,
@@ -152,7 +159,7 @@ describe("TotalTrendSection", () => {
   });
 
   it("nombra la moneda del usuario cuando no es COP", () => {
-    mock.movements.mockReturnValue({ data: [], error: undefined, isLoading: false });
+    mock.movementsRange.mockReturnValue({ data: [], error: undefined, isLoading: false });
     mock.prefs.mockReturnValue({
       data: { preferences: { currency_code: "USD", locale: "es-CO" } },
       error: undefined,
@@ -163,17 +170,27 @@ describe("TotalTrendSection", () => {
   });
 
   it("muestra el estado de carga en español", () => {
-    mock.movements.mockReturnValue({ data: undefined, error: undefined, isLoading: true });
+    mock.movementsRange.mockReturnValue({ data: undefined, error: undefined, isLoading: true });
     renderOpen();
     expect(screen.getByRole("status")).toHaveTextContent("Cargando…");
   });
 
   it("muestra el error en español y reintenta las tres lecturas SWR", () => {
-    mock.movements.mockReturnValue({ data: undefined, error: new Error("boom"), isLoading: false });
+    mock.movementsRange.mockReturnValue({ data: undefined, error: new Error("boom"), isLoading: false });
     renderOpen();
     expect(screen.getByRole("alert")).toHaveTextContent("No se pudieron cargar los movimientos");
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
-    expect(mock.mutate).toHaveBeenCalledWith("finance/movements");
+    // El reintento revalida la clave de rango por prefijo (SWR 2.5.1), no el
+    // string exacto "finance/movements", que ya no coincide con la clave.
+    expect(mock.mutate).toHaveBeenCalledWith(expect.any(Function));
+    const predicates = mock.mutate.mock.calls
+      .map(([arg]) => arg)
+      .filter((arg): arg is (key: unknown) => boolean => typeof arg === "function");
+    expect(predicates).toHaveLength(1);
+    const revalidateMovements = predicates[0];
+    expect(revalidateMovements("finance/movements:2026-01-01:2026-12-31")).toBe(true);
+    expect(revalidateMovements("finance/movements")).toBe(true);
+    expect(revalidateMovements("dashboard/accounts")).toBe(false);
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/accounts");
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/me");
   });
@@ -181,7 +198,7 @@ describe("TotalTrendSection", () => {
   it("al colapsar desmonta el panel sin volver a montar sus hooks y deja el destino de aria-controls", () => {
     renderOpen();
     expect(mock.chart.current).not.toBeNull();
-    mock.movements.mockClear();
+    mock.movementsRange.mockClear();
     mock.accounts.mockClear();
     mock.prefs.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
@@ -190,7 +207,7 @@ describe("TotalTrendSection", () => {
     expect(panel).not.toBeNull();
     expect(panel).toHaveAttribute("hidden");
     // El panel desmontado no vuelve a leer (montaje perezoso al reabrir).
-    expect(mock.movements).not.toHaveBeenCalled();
+    expect(mock.movementsRange).not.toHaveBeenCalled();
     expect(mock.accounts).not.toHaveBeenCalled();
     expect(mock.prefs).not.toHaveBeenCalled();
   });
@@ -222,5 +239,14 @@ describe("TotalTrendSection", () => {
     renderOpen();
     expect(mock.chart.current?.animate).toBe(false);
     vi.unstubAllGlobals();
+  });
+
+  it("pide su propia ventana trendRange(period) al hook de rango (T2)", () => {
+    renderOpen();
+    // Mes por defecto: la ventana exacta de los 12 buckets que dibuja.
+    expect(mock.movementsRange).toHaveBeenCalledWith(trendRange("month"));
+
+    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
+    expect(mock.movementsRange).toHaveBeenCalledWith(trendRange("day"));
   });
 });

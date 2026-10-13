@@ -4,7 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { SWRConfig } from "swr";
 import { CategoryChartSection } from "@/components/finance/CategoryCharts";
-import { trendBuckets } from "@/lib/finance/finance";
+import { trendBuckets, trendRange } from "@/lib/finance/finance";
 import type { MovementWire } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
@@ -32,8 +32,13 @@ const movements: MovementWire[] = [
   movement("m4", { category_id: "c2", amount: "50.00", direction: "expense", account_id: "a1" }),
 ];
 
+const movementUrls: string[] = [];
+
 const server = setupServer(
-  http.get("http://test.local/api/movements", () => HttpResponse.json(movements)),
+  http.get("http://test.local/api/movements", ({ request }) => {
+    movementUrls.push(request.url);
+    return HttpResponse.json(movements);
+  }),
   http.get("http://test.local/api/accounts", () =>
     HttpResponse.json([
       { id: "a1", name: "Principal", type: "bank", currency: "COP", balance: "100000.00" },
@@ -43,7 +48,10 @@ const server = setupServer(
 );
 
 beforeAll(() => server.listen());
-afterEach(() => server.resetHandlers());
+afterEach(() => {
+  server.resetHandlers();
+  movementUrls.length = 0;
+});
 afterAll(() => server.close());
 
 const categories = [
@@ -129,5 +137,16 @@ describe("CategoryChartSection (movement source)", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Sin movimientos en este periodo")).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("pide su propia ventana trendRange(period) con from/to codificados (T2)", async () => {
+    renderSection();
+    fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    expect(movementUrls.length).toBeGreaterThan(0);
+    const expected = trendRange("month");
+    const urls = movementUrls.map((u) => new URL(u));
+    expect(urls.map((u) => u.searchParams.get("from"))).toContain(expected.from);
+    expect(urls.map((u) => u.searchParams.get("to"))).toContain(expected.to);
   });
 });

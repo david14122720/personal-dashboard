@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
 import { useAccounts, usePreferences } from "@/lib/api/dashboard";
-import { useCategories, useMovements } from "@/lib/api/finance";
+import { useCategories, useMovementsRange } from "@/lib/api/finance";
 import {
   currentPeriodRange,
   toExpenseByCategory,
@@ -30,7 +30,8 @@ const ExpenseCategoryPieChart = dynamic(
  * from the API-backed `finance/categories` read; local-only ids never render.
  * Currency comes from the existing preference fallback and is never converted. */
 function ExpensePiePanel({ period }: { period: TrendPeriod }) {
-  const movements = useMovements();
+  const range = useMemo(() => currentPeriodRange(period), [period]);
+  const movements = useMovementsRange(range);
   const accounts = useAccounts();
   const categories = useCategories();
   const prefs = usePreferences();
@@ -46,12 +47,12 @@ function ExpensePiePanel({ period }: { period: TrendPeriod }) {
   const slices = useMemo(
     () =>
       toExpenseByCategory(movements.data, {
-        range: currentPeriodRange(period),
+        range,
         categories: categories.data,
         currencyByAccountId,
         userCurrency,
       }),
-    [movements.data, categories.data, currencyByAccountId, userCurrency, period],
+    [movements.data, categories.data, currencyByAccountId, userCurrency, range],
   );
 
   if (movements.isLoading || accounts.isLoading || categories.isLoading || prefs.isLoading) {
@@ -64,7 +65,7 @@ function ExpensePiePanel({ period }: { period: TrendPeriod }) {
         <button
           type="button"
           onClick={() => {
-            void mutate("finance/movements");
+            void mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
             void mutate("dashboard/accounts");
             void mutate("finance/categories");
             void mutate("dashboard/me");

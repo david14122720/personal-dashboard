@@ -5,9 +5,9 @@ import { useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
 import { useAccounts, usePreferences } from "@/lib/api/dashboard";
-import { useMovements } from "@/lib/api/finance";
+import { useMovementsRange } from "@/lib/api/finance";
 import { formatMoney } from "@/lib/api/money";
-import { toTotalTrend, type TrendPeriod } from "@/lib/finance/finance";
+import { toTotalTrend, trendRange, type TrendPeriod } from "@/lib/finance/finance";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 import DashboardDisclosure from "@/components/dashboard/DashboardDisclosure";
 import DeckPeriodPills from "@/components/dashboard/DeckPeriodPills";
@@ -26,7 +26,8 @@ const CategoryTrendChart = dynamic(() => import("@/components/finance/CategoryTr
  * fetches or mounts until the disclosure is open. Currency comes from the
  * existing preference fallback and no conversion happens anywhere. */
 function TotalTrendPanel({ period }: { period: TrendPeriod }) {
-  const movements = useMovements();
+  const range = useMemo(() => trendRange(period), [period]);
+  const movements = useMovementsRange(range);
   const accounts = useAccounts();
   const prefs = usePreferences();
   const reduced = usePrefersReducedMotion();
@@ -67,7 +68,7 @@ function TotalTrendPanel({ period }: { period: TrendPeriod }) {
         <button
           type="button"
           onClick={() => {
-            void mutate("finance/movements");
+            void mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
             void mutate("dashboard/accounts");
             void mutate("dashboard/me");
           }}

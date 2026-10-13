@@ -4,10 +4,11 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { t } from "@/lib/i18n";
 import { useAccounts } from "@/lib/api/dashboard";
-import { useMovements } from "@/lib/api/finance";
+import { useMovementsRange } from "@/lib/api/finance";
 import {
   toCategoryTrend,
   trendBuckets,
+  trendRange,
   type NamedOption,
   type TrendPeriod,
 } from "@/lib/finance/finance";
@@ -53,8 +54,9 @@ function trendRangeLabel(
 }
 
 /**
- * Per-category gasto/ingreso trend sourced from `GET /movements` (same
- * `finance/movements` SWR key as the history list, no new endpoint).
+ * Per-category gasto/ingreso trend sourced from the ranged `GET /movements`
+ * read (`useMovementsRange(trendRange(period))`: exactly the window the
+ * buckets render, so the server already discards everything outside it).
  * `toCategoryTrend` splits the category into a fixed number of consecutive
  * time buckets (14 days / 8 weeks / 12 months / 5 years) ordered oldest to
  * newest, keeps empty buckets at zero and never nets the two directions.
@@ -73,7 +75,8 @@ export function CategoryChartSection({
 }) {
   const [selected, setSelected] = useState("");
   const [period, setPeriod] = useState<TrendPeriod>("month");
-  const movements = useMovements();
+  const range = useMemo(() => trendRange(period), [period]);
+  const movements = useMovementsRange(range);
   const accounts = useAccounts();
   const currencyByAccountId = useMemo(
     () => new Map((accounts.data ?? []).map((a) => [a.id, a.currency])),

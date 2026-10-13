@@ -95,16 +95,25 @@ vi.mock("@/lib/api/dashboard", async (importOriginal) => {
   };
 });
 
+/** Both movements hooks answer the same fixture: `useMovements` feeds the
+ * unfiltered consumers and `useMovementsRange` the two period panels, which
+ * filter client-side over the window they request. Called lazily inside each
+ * hook: a `vi.mock` factory is hoisted, so touching this const while the
+ * factory builds its object hits the TDZ (`Cannot access before
+ * initialization`) the first time a module imports the mock. */
+const movementsResult = () => {
+  const custom = (globalThis as Record<string, unknown>).__MOVS__;
+  if (custom) return q(custom);
+  return (globalThis as Record<string, unknown>).__MOV__ === "error" ? err() : loadedData.movements;
+};
+
 vi.mock("@/lib/api/finance", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/api/finance")>();
   return {
     ...mod,
     useSubscriptions: () => (globalThis as Record<string, unknown>).__SUBS__ ?? loadedData.financeSubs,
-    useMovements: () => {
-      const custom = (globalThis as Record<string, unknown>).__MOVS__;
-      if (custom) return q(custom);
-      return (globalThis as Record<string, unknown>).__MOV__ === "error" ? err() : loadedData.movements;
-    },
+    useMovements: () => movementsResult(),
+    useMovementsRange: () => movementsResult(),
     useCategories: () => loadedData.categories,
     // S-F: the removed debt/savings ledgers have no hooks left to mock —
     // any regression reintroducing a /debts or /savings-goals read fails

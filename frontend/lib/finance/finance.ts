@@ -548,6 +548,22 @@ export function trendBuckets(
   return windows;
 }
 
+/** Ventana que cubre exactamente los buckets que `trendBuckets(period, now,
+ * buckets)` dibuja: desde el `from` del primer bucket hasta el `to` del último.
+ * Pura, sin fetch, sin JSX; reutiliza `trendBuckets` (y con él los helpers
+ * locales de fecha del archivo), así que las cotas son strings `YYYY-MM-DD`
+ * locales y nunca se parsea una fecha del wire (`new Date(wire)`). */
+export function trendRange(
+  period: TrendPeriod,
+  now: Date = new Date(),
+  buckets?: number,
+): { from: string; to: string } {
+  const windows = trendBuckets(period, now, buckets);
+  const first = windows[0];
+  const last = windows[windows.length - 1];
+  return { from: first.from, to: last.to };
+}
+
 /** One category's movements split into the N period buckets. Applies the
  * single-currency rule of `toCategoryMovementTotals` (accounts missing from
  * the map are excluded, never converted), keeps expense and income separate

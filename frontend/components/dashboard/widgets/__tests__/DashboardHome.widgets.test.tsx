@@ -40,6 +40,10 @@ vi.mock("@/lib/api/finance", async (importOriginal) => {
     ...mod,
     useSubscriptions: () => q(subs),
     useMovements: () => q(movements),
+    // T2 (cierre-pendientes-dashboard): the two period panels read the ranged
+    // hook; they filter client-side over the window they request, so the same
+    // fixture feeds both.
+    useMovementsRange: () => q(movements),
     useCategories: () => q(categories),
   };
 });

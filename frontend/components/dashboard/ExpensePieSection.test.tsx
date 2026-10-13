@@ -1,11 +1,14 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CategoryWire, MovementWire } from "@/lib/api/finance";
+import { currentPeriodRange } from "@/lib/finance/finance";
+import MovementsSnapshot from "@/components/dashboard/widgets/MovementsSnapshot";
 import ExpensePieSection from "./ExpensePieSection";
 import TotalTrendSection from "./TotalTrendSection";
 
 const mock = vi.hoisted(() => ({
   movements: vi.fn(),
+  movementsRange: vi.fn(),
   accounts: vi.fn(),
   categories: vi.fn(),
   prefs: vi.fn(),
@@ -25,6 +28,7 @@ vi.mock("swr", () => ({ useSWRConfig: () => ({ mutate: mock.mutate }) }));
 vi.mock("@/lib/api/finance", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api/finance")>()),
   useMovements: () => mock.movements(),
+  useMovementsRange: (range: unknown) => mock.movementsRange(range),
   useCategories: () => mock.categories(),
 }));
 
@@ -79,6 +83,16 @@ beforeEach(() => {
     error: undefined,
     isLoading: false,
   });
+  // El panel lee el rango; el snapshot sin filtrar sigue en useMovements.
+  mock.movementsRange.mockImplementation((range: unknown) => ({
+    data: [
+      movement({ id: "m1", category_id: "c1", amount: "100.00", occurred_on: "2026-10-15" }),
+      movement({ id: "m2", category_id: "c2", amount: "50.00", occurred_on: "2026-10-02" }),
+    ],
+    error: undefined,
+    isLoading: false,
+    range,
+  }));
   mock.accounts.mockReturnValue({ data: [account], error: undefined, isLoading: false });
   mock.categories.mockReturnValue({
     data: [category("c1", "Comida"), category("c2", "Transporte")],
@@ -107,7 +121,8 @@ describe("ExpensePieSection", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("group", { name: "Periodo del pastel" })).toBeInTheDocument();
     expect(screen.getByTestId("dynamic-chart")).toBeInTheDocument();
-    expect(mock.movements).toHaveBeenCalledTimes(1);
+    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
+    expect(mock.movements).not.toHaveBeenCalled();
     expect(mock.accounts).toHaveBeenCalledTimes(1);
     expect(mock.categories).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
@@ -120,7 +135,8 @@ describe("ExpensePieSection", () => {
       "true",
     );
     expect(screen.getByRole("radio", { name: "Mes" })).toBeChecked();
-    expect(mock.movements).toHaveBeenCalledTimes(1);
+    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
+    expect(mock.movements).not.toHaveBeenCalled();
     expect(mock.accounts).toHaveBeenCalledTimes(1);
     expect(mock.categories).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
@@ -159,7 +175,7 @@ describe("ExpensePieSection", () => {
   });
 
   it("excluye categorías que no vienen de la API persistida", () => {
-    mock.movements.mockReturnValue({
+    mock.movementsRange.mockReturnValue({
       data: [
         movement({ id: "local", category_id: "local-only", amount: "999.00" }),
         movement({ id: "m1", category_id: "c1", amount: "100.00" }),
@@ -194,7 +210,17 @@ describe("ExpensePieSection", () => {
     renderOpen();
     expect(screen.getByRole("alert")).toHaveTextContent("No se pudieron cargar los movimientos");
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
-    expect(mock.mutate).toHaveBeenCalledWith("finance/movements");
+    // El reintento revalida la clave de rango por prefijo (SWR 2.5.1), no el
+    // string exacto "finance/movements", que ya no coincide con la clave.
+    expect(mock.mutate).toHaveBeenCalledWith(expect.any(Function));
+    const predicates = mock.mutate.mock.calls
+      .map(([arg]) => arg)
+      .filter((arg): arg is (key: unknown) => boolean => typeof arg === "function");
+    expect(predicates).toHaveLength(1);
+    const revalidateMovements = predicates[0];
+    expect(revalidateMovements("finance/movements:2026-10-01:2026-10-31")).toBe(true);
+    expect(revalidateMovements("finance/movements")).toBe(true);
+    expect(revalidateMovements("dashboard/accounts")).toBe(false);
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/accounts");
     expect(mock.mutate).toHaveBeenCalledWith("finance/categories");
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/me");
@@ -203,7 +229,7 @@ describe("ExpensePieSection", () => {
   it("al colapsar desmonta el panel sin volver a montar sus hooks y deja el destino de aria-controls", () => {
     renderOpen();
     expect(mock.chart.current).not.toBeNull();
-    mock.movements.mockClear();
+    mock.movementsRange.mockClear();
     mock.accounts.mockClear();
     mock.categories.mockClear();
     mock.prefs.mockClear();
@@ -213,7 +239,7 @@ describe("ExpensePieSection", () => {
     expect(panel).not.toBeNull();
     expect(panel).toHaveAttribute("hidden");
     // El panel desmontado no vuelve a leer (montaje perezoso al reabrir).
-    expect(mock.movements).not.toHaveBeenCalled();
+    expect(mock.movementsRange).not.toHaveBeenCalled();
     expect(mock.accounts).not.toHaveBeenCalled();
     expect(mock.categories).not.toHaveBeenCalled();
     expect(mock.prefs).not.toHaveBeenCalled();
@@ -281,5 +307,23 @@ describe("ExpensePieSection", () => {
     expect(pieDay.checked).toBe(true);
     expect(pieMonth?.checked).toBe(false);
     expect(trendMonth?.checked).toBe(true);
+  });
+
+  it("pide su propia ventana currentPeriodRange(period) al hook de rango (T2)", () => {
+    renderOpen();
+    // Mes por defecto sobre el reloj falso (jueves 15 de octubre de 2026).
+    expect(mock.movementsRange).toHaveBeenCalledWith(currentPeriodRange("month", NOW));
+    expect(mock.movementsRange).toHaveBeenCalledWith({ from: "2026-10-01", to: "2026-10-31" });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
+    expect(mock.movementsRange).toHaveBeenCalledWith(currentPeriodRange("day", NOW));
+  });
+
+  it("MovementsSnapshot sigue en la lectura sin filtrar useMovements() (T2)", () => {
+    mock.movements.mockClear();
+    mock.movementsRange.mockClear();
+    render(<MovementsSnapshot />);
+    expect(mock.movements).toHaveBeenCalled();
+    expect(mock.movementsRange).not.toHaveBeenCalled();
   });
 });

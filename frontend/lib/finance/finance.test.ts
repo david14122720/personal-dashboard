@@ -1,4 +1,8 @@
+import { createElement as h } from "react";
 import { describe, expect, it } from "vitest";
+import { renderHook } from "@testing-library/react";
+import { SWRConfig } from "swr";
+import { movementsRangeKey, useMovementsRange } from "@/lib/api/finance";
 import {
   currentPeriodRange,
   normalizeManualAmount,
@@ -14,6 +18,7 @@ import {
   TREND_BUCKETS,
   TREND_PERIODS,
   trendBuckets,
+  trendRange,
 } from "./finance";
 import type { CategoryWire, MovementWire } from "@/lib/api/finance";
 
@@ -692,5 +697,57 @@ describe("transferencias excluidas de los agregados", () => {
       }).every((b) => b.expense === 0 && b.income === 0),
     ).toBe(true);
     expect(toExpenseByCategory([usdTransfer], pieBase)).toEqual([]);
+  });
+});
+
+// -- T2 RED: trendRange cubre exactamente los buckets que trendBuckets dibuja --
+describe("trendRange (T2)", () => {
+  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
+
+  it("devuelve la ventana exacta primer-from/último-to para los cuatro periodos", () => {
+    expect(trendRange("day", now)).toEqual({ from: "2026-09-20", to: "2026-10-03" });
+    expect(trendRange("week", now)).toEqual({ from: "2026-08-10", to: "2026-10-04" });
+    expect(trendRange("month", now)).toEqual({ from: "2025-11-01", to: "2026-10-31" });
+    expect(trendRange("year", now)).toEqual({ from: "2022-01-01", to: "2026-12-31" });
+  });
+
+  it("se mantiene consistente con trendBuckets (ningún bucket fuera del rango)", () => {
+    for (const period of TREND_PERIODS) {
+      const range = trendRange(period, now);
+      const buckets = trendBuckets(period, now);
+      expect(range.from).toBe(buckets[0].from);
+      expect(range.to).toBe(buckets[buckets.length - 1].to);
+      for (const bucket of buckets) {
+        expect(bucket.from >= range.from && bucket.to <= range.to).toBe(true);
+      }
+    }
+  });
+
+  it("respeta el override de buckets", () => {
+    expect(trendRange("day", now, 3)).toEqual({ from: "2026-10-01", to: "2026-10-03" });
+  });
+});
+
+// -- T2 RED: clave de rango + hook inactivo con rango null --
+describe("movementsRangeKey (T2)", () => {
+  it("construye una clave string con ambas cotas", () => {
+    expect(movementsRangeKey({ from: "2026-10-01", to: "2026-10-31" })).toBe(
+      "finance/movements:2026-10-01:2026-10-31",
+    );
+  });
+
+  it("es null cuando el rango es null o está invertido", () => {
+    expect(movementsRangeKey(null)).toBeNull();
+    expect(movementsRangeKey(undefined)).toBeNull();
+    expect(movementsRangeKey({ from: "2026-10-31", to: "2026-10-01" })).toBeNull();
+  });
+
+  it("useMovementsRange queda inactivo cuando el rango es null", async () => {
+    const { result } = renderHook(() => useMovementsRange(null), {
+      wrapper: ({ children }) =>
+        h(SWRConfig, { value: { provider: () => new Map(), dedupingInterval: 0 } }, children),
+    });
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(false);
   });
 });

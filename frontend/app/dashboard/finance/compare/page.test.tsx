@@ -16,7 +16,7 @@ vi.mock("next/link", () => ({
 }));
 
 import ComparePage from "./page";
-import { trendBuckets } from "@/lib/finance/finance";
+import { trendBuckets, trendRange } from "@/lib/finance/finance";
 import type { MovementWire } from "@/lib/api/finance";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
@@ -38,6 +38,7 @@ function movement(id: string, overrides: Partial<MovementWire> = {}): MovementWi
 }
 
 const categoryUrls: string[] = [];
+const movementUrls: string[] = [];
 
 const server = setupServer(
   http.get("http://test.local/api/me", () => {
@@ -52,7 +53,8 @@ const server = setupServer(
       { id: "c4", kind: "habit", name: "Ejercicio", color: null, icon: null, is_archived: false, created_at: "2026-09-01T00:00:00Z" },
     ]);
   }),
-  http.get("http://test.local/api/movements", () => {
+  http.get("http://test.local/api/movements", ({ request }) => {
+    movementUrls.push(request.url);
     return HttpResponse.json([
       movement("m1", { category_id: "c1", direction: "expense", amount: "100.00", account_id: "a1" }),
       movement("m2", { category_id: "c1", direction: "income", amount: "20.00", account_id: "a1" }),
@@ -72,6 +74,7 @@ beforeAll(() => server.listen());
 afterEach(() => {
   server.resetHandlers();
   categoryUrls.length = 0;
+  movementUrls.length = 0;
 });
 afterAll(() => server.close());
 
@@ -142,5 +145,23 @@ describe("compare page (movement split)", () => {
     for (const url of categoryUrls) {
       expect(new URL(url).searchParams.has("kind")).toBe(false);
     }
+  });
+
+  it("pide su propia ventana trendRange(period) con from/to codificados (T2)", async () => {
+    renderPage();
+    await pickCategories();
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    expect(movementUrls.length).toBeGreaterThan(0);
+    const expectedMonth = trendRange("month");
+    const urls = movementUrls.map((u) => new URL(u));
+    expect(urls.map((u) => u.searchParams.get("from"))).toContain(expectedMonth.from);
+    expect(urls.map((u) => u.searchParams.get("to"))).toContain(expectedMonth.to);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    const expectedDay = trendRange("day");
+    const urlsAfter = movementUrls.map((u) => new URL(u));
+    expect(urlsAfter.map((u) => u.searchParams.get("from"))).toContain(expectedDay.from);
+    expect(urlsAfter.map((u) => u.searchParams.get("to"))).toContain(expectedDay.to);
   });
 });
