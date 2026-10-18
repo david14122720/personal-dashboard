@@ -104,7 +104,7 @@ export function useHabitsToday() {
 export function useAccounts() {
   return useSWR<AccountWire[]>(
     "dashboard/accounts",
-    () => apiGet<AccountWire[]>("/accounts"),
+    () => apiGet<AccountWire[]>("/accounts?shape=brief"),
     config,
   );
 }
@@ -151,11 +151,11 @@ export function buildNextLayout(cur: DashboardLayout, id: string, visible: boole
 
 export function useSubscriptions(v = true) {
   const key = subscriptionsKey(v);
-  return useSWR<SubscriptionWire[]>(key, () => apiGet<SubscriptionWire[]>("/subscriptions"), config);
+  return useSWR<SubscriptionWire[]>(key, () => apiGet<SubscriptionWire[]>("/subscriptions?shape=brief"), config);
 }
 export function useTasks(view: string | null, v = true) {
   const key = tasksKey(view, v);
-  return useSWR<TaskWire[]>(key, () => apiGet<TaskWire[]>(view ? `/tasks?view=${view}` : "/tasks"), config);
+  return useSWR<TaskWire[]>(key, () => apiGet<TaskWire[]>(view ? `/tasks?view=${view}&shape=brief` : "/tasks?shape=brief"), config);
 }
 export function useEvents(from: string | null, to: string | null, v = true) {
   const key = eventsKey(from, to, v);
@@ -163,11 +163,11 @@ export function useEvents(from: string | null, to: string | null, v = true) {
   if (from) p.set("from", from);
   if (to) p.set("to", to);
   const qs = p.toString();
-  return useSWR<EventWire[]>(key, () => apiGet<EventWire[]>(qs ? `/events?${qs}` : "/events"), config);
+  return useSWR<EventWire[]>(key, () => apiGet<EventWire[]>(qs ? `/events?${qs}&shape=brief` : "/events?shape=brief"), config);
 }
 export function useGoals(v = true) {
   const key = goalsKey(v);
-  return useSWR<GoalWire[]>(key, () => apiGet<GoalWire[]>("/goals"), config);
+  return useSWR<GoalWire[]>(key, () => apiGet<GoalWire[]>("/goals?shape=brief"), config);
 }
 /** Optimistic `PATCH /me/preferences { dashboard_layout }` with rollback on 422. */
 export function useUpdateLayout() {

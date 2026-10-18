@@ -51,9 +51,6 @@ describe("JD-W2 una dirección desconocida nunca se cuenta como ingreso", () => 
     description: null,
     account_id: "a1",
     category_id: "c1",
-    subscription_id: null,
-    created_at: "2026-10-03T10:00:00Z",
-    updated_at: "2026-10-03T10:00:00Z",
   };
 
   it("toCategoryMovementTotals no la suma a ninguna serie", () => {
@@ -90,10 +87,6 @@ describe("JD-W2 una dirección desconocida nunca se cuenta como ingreso", () => 
             id: "c1",
             kind: "finance",
             name: "Comida",
-            color: null,
-            icon: null,
-            is_archived: false,
-            created_at: "2026-10-01T00:00:00Z",
           },
         ],
         currencyByAccountId: byAccount,

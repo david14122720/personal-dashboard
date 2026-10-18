@@ -32,10 +32,6 @@ function categoryRow(id: string, name: string, kind = "finance"): CategoryWire {
     id,
     kind,
     name,
-    color: null,
-    icon: null,
-    is_archived: false,
-    created_at: "2026-01-01",
   };
 }
 

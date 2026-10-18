@@ -145,13 +145,11 @@ function taskRow(overrides: Partial<TaskWire> = {}): TaskWire {
   return {
     id: "t1",
     title: "Buy shoes",
-    description: null,
     priority: "high",
     status: "pending",
     due_date: null,
     completed_at: null,
     goal_id: null,
-    sort_order: 0,
     ...overrides,
   };
 }
@@ -296,7 +294,6 @@ describe("S2 notas: crear, fijar y eliminar", () => {
             id: "n1",
             title: "Plan",
             body: "hoja de ruta",
-            is_markdown: true,
             is_pinned: false,
             updated_at: "2026-09-09T10:00:00Z",
           },

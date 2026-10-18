@@ -30,9 +30,6 @@ function movement(id: string, overrides: Partial<MovementWire> = {}): MovementWi
     description: null,
     account_id: "a1",
     category_id: "c1",
-    subscription_id: null,
-    created_at: "2026-09-24T10:00:00Z",
-    updated_at: "2026-09-24T10:00:00Z",
     ...overrides,
   };
 }

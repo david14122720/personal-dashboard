@@ -226,7 +226,7 @@ describe("MovementModal", () => {
     // An exact-key mutate leaves the four period panels showing stale numbers;
     // the ranged read must be refetched too.
     await waitFor(() => expect(rangedGets).toHaveLength(2));
-    expect(rangedGets[0]).toBe("?from=2026-10-01&to=2026-10-31");
+    expect(rangedGets[0]).toBe("?from=2026-10-01&to=2026-10-31&shape=brief");
   });
 
   it("surfaces the server Spanish message when the API rejects with 422", async () => {
@@ -384,9 +384,6 @@ describe("MovementModal", () => {
               description: null,
               account_id: "a1",
               category_id: "c1",
-              subscription_id: null,
-              created_at: "2026-09-24T10:00:00Z",
-              updated_at: "2026-09-24T10:00:00Z",
             },
           }}
           accounts={accounts}
@@ -418,9 +415,6 @@ describe("MovementModal", () => {
               account_id: "a1",
               transfer_account_id: "a2",
               category_id: null,
-              subscription_id: null,
-              created_at: "2026-10-03T10:00:00Z",
-              updated_at: "2026-10-03T10:00:00Z",
             },
           }}
           accounts={accounts}

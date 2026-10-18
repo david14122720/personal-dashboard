@@ -30,7 +30,6 @@ export interface GoalWire {
   name: string;
   description: string | null;
   area: string;
-  start_date: string;
   due_date: string | null;
   progress: number;
   status: string;
@@ -40,19 +39,16 @@ export interface GoalWire {
 export interface TaskWire {
   id: string;
   title: string;
-  description: string | null;
   priority: string;
   status: string;
   due_date: string | null;
   completed_at: string | null;
   goal_id: string | null;
-  sort_order: number;
 }
 
 export interface EventWire {
   id: string;
   title: string;
-  description: string | null;
   kind: string;
   starts_at: string;
   ends_at: string | null;
@@ -64,7 +60,6 @@ export interface NoteWire {
   id: string;
   title: string;
   body: string;
-  is_markdown: boolean;
   is_pinned: boolean;
   updated_at: string;
 }
@@ -83,7 +78,7 @@ export const HABITS_LIST_KEY = "productivity/habits-list";
 
 /** Full owned habit rows (`GET /habits`), including archived ones and metadata. */
 export function useHabitsList() {
-  return useSWR<HabitWire[]>(HABITS_LIST_KEY, () => apiGet<HabitWire[]>("/habits"), config);
+  return useSWR<HabitWire[]>(HABITS_LIST_KEY, () => apiGet<HabitWire[]>("/habits?shape=brief"), config);
 }
 
 /** One row of `GET /habits/logs?from&to` (multi-habit, single round-trip). */
@@ -108,11 +103,11 @@ export function useHabitsHistory(from: string | null, to: string | null, swrConf
 }
 
 export function useGoals() {
-  return useSWR<GoalWire[]>(GOALS_KEY, () => apiGet<GoalWire[]>("/goals"), config);
+  return useSWR<GoalWire[]>(GOALS_KEY, () => apiGet<GoalWire[]>("/goals?shape=brief"), config);
 }
 
 export function useTasks() {
-  return useSWR<TaskWire[]>(TASKS_KEY, () => apiGet<TaskWire[]>("/tasks"), config);
+  return useSWR<TaskWire[]>(TASKS_KEY, () => apiGet<TaskWire[]>("/tasks?shape=brief"), config);
 }
 
 /** `?from=…&to=…` for `GET /events`, encoded; empty when both bounds are null. */
@@ -121,7 +116,7 @@ function eventsQuery(from: string | null, to: string | null): string {
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   const qs = params.toString();
-  return qs ? `?${qs}` : "";
+  return qs ? `?${qs}&shape=brief` : "?shape=brief";
 }
 
 /** Two-bound SWR key for the events read (`productivity/events?from&to`). */
@@ -153,7 +148,7 @@ export function useNotesSearch(query: string) {
   const key = notesSearchKey(query);
   return useSWR<NoteWire[]>(
     key,
-    () => apiGet<NoteWire[]>(query ? `/notes/search?q=${encodeURIComponent(query)}` : "/notes/search"),
+    () => apiGet<NoteWire[]>(query ? `/notes/search?q=${encodeURIComponent(query)}&shape=brief` : "/notes/search?shape=brief"),
     config,
   );
 }
@@ -380,21 +375,16 @@ export interface CreateHabitInput {
 export interface HabitWire {
   id: string;
   name: string;
-  description: string | null;
   direction: string;
   frequency: string;
   days_of_week: number[];
-  target_per_period: string | number | null;
   start_date: string;
   end_date: string | null;
-  category_id: string | null;
   category: string | null;
   short_label: string | null;
   color: string | null;
   icon: string | null;
   is_archived: boolean;
-  created_at: string;
-  updated_at: string;
 }
 
 /**

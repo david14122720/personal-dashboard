@@ -17,8 +17,6 @@ function sub(id: string, overrides: Partial<SubscriptionWire> = {}): Subscriptio
     frequency: "monthly",
     next_billing_on: "2026-10-15",
     is_active: true,
-    payment_method: null,
-    category_id: null,
     last_paid_on: null,
     ...overrides,
   };

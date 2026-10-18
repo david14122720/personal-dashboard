@@ -218,9 +218,6 @@ function trendMovement(overrides: Partial<MovementWire> = {}): MovementWire {
     description: null,
     account_id: "a1",
     category_id: "c1",
-    subscription_id: null,
-    created_at: "2026-10-03T10:00:00Z",
-    updated_at: "2026-10-03T10:00:00Z",
     ...overrides,
   };
 }
@@ -450,10 +447,6 @@ function financeCategory(id: string, name: string): CategoryWire {
     id,
     kind: "finance",
     name,
-    color: null,
-    icon: null,
-    is_archived: false,
-    created_at: "2026-10-01T00:00:00Z",
   };
 }
 

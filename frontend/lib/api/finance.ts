@@ -21,8 +21,6 @@ export interface SubscriptionWire {
   frequency: string;
   next_billing_on: string | null;
   is_active: boolean;
-  payment_method?: string | null;
-  category_id?: string | null;
   /** Set by the pay action (`POST /subscriptions/{id}/pay`); absent on older rows. */
   last_paid_on?: string | null;
 }
@@ -30,7 +28,7 @@ export interface SubscriptionWire {
 export function useSubscriptions() {
   return useSWR<SubscriptionWire[]>(
     "finance/subscriptions",
-    () => apiGet<SubscriptionWire[]>("/subscriptions"),
+    () => apiGet<SubscriptionWire[]>("/subscriptions?shape=brief"),
     financeConfig,
   );
 }
@@ -45,15 +43,11 @@ export interface CategoryWire {
   id: string;
   kind: string;
   name: string;
-  color: string | null;
-  icon: string | null;
-  is_archived: boolean;
-  created_at: string;
 }
 
 /** Fetch finance categories ordered by name (GET /categories?kind=finance). */
 export function fetchFinanceCategories(): Promise<CategoryWire[]> {
-  return apiGet<CategoryWire[]>("/categories?kind=finance");
+  return apiGet<CategoryWire[]>("/categories?kind=finance&shape=brief");
 }
 
 export function useFinanceCategories() {
@@ -67,7 +61,7 @@ export function useFinanceCategories() {
 /** Fetch subscription categories ordered by name (GET /categories?kind=subscription).
  * Own SWR key so each classification select dedups/caches independently. */
 export function fetchSubscriptionCategories(): Promise<CategoryWire[]> {
-  return apiGet<CategoryWire[]>("/categories?kind=subscription");
+  return apiGet<CategoryWire[]>("/categories?kind=subscription&shape=brief");
 }
 
 export function useSubscriptionCategories() {
@@ -123,9 +117,6 @@ export interface MovementWire {
    * still type-check; the backend always serializes it. */
   transfer_account_id?: string | null;
   category_id: string | null;
-  subscription_id: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 /** `POST /movements` stays a two-direction contract: transfers are created
@@ -155,7 +146,7 @@ export interface PatchMovementInput {
 export function useMovements() {
   return useSWR<MovementWire[]>(
     "finance/movements",
-    () => apiGet<MovementWire[]>("/movements"),
+    () => apiGet<MovementWire[]>("/movements?shape=brief"),
     financeConfig,
   );
 }
@@ -186,7 +177,7 @@ export function useMovementsRange(range: MovementRange | null | undefined) {
       const params = new URLSearchParams();
       params.set("from", (range as MovementRange).from);
       params.set("to", (range as MovementRange).to);
-      return apiGet<MovementWire[]>(`/movements?${params.toString()}`);
+      return apiGet<MovementWire[]>(`/movements?${params.toString()}&shape=brief`);
     },
     financeConfig,
   );
@@ -231,7 +222,7 @@ export function deleteMovement(id: string): Promise<void> {
 /** Fetch every owned category in one unfiltered set (`GET /categories`,
  * no `kind` param), ordered by name. */
 export function fetchCategories(): Promise<CategoryWire[]> {
-  return apiGet<CategoryWire[]>("/categories");
+  return apiGet<CategoryWire[]>("/categories?shape=brief");
 }
 
 export function useCategories() {
@@ -262,7 +253,7 @@ export function createBankAccount(name: string) {
 }
 
 export interface AssetWire { id: string; name: string; category: string; account_id: string | null; currency: string; acquired_on: string | null; notes: string | null }
-export function fetchAssets(): Promise<AssetWire[]> { return apiGet<AssetWire[]>("/assets"); }
+export function fetchAssets(): Promise<AssetWire[]> { return apiGet<AssetWire[]>("/assets?shape=brief"); }
 export function useAssets() { return useSWR<AssetWire[]>("finance/assets", fetchAssets, financeConfig); }
 export function patchAsset(id: string, body: Record<string, unknown>) { return apiPatch(`/assets/${id}`, body); }
 export function createValuation(assetId: string, input: { value: string; recorded_on: string; notes?: string }) { return apiPost(`/assets/${assetId}/valuations`, input); }
