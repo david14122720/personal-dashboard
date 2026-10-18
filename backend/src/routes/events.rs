@@ -39,7 +39,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
+use crate::{auth::helper::require_user_id, error::AppError, routes::parse_read_shape, state::AppState};
 
 const MAX_TITLE_LEN: usize = 200;
 const MAX_TEXT_LEN: usize = 2000;
@@ -61,6 +61,14 @@ const LIST_EVENTS_SQL: &str = "SELECT id, title, description, kind::text, starts
 const LIST_EVENTS_FROM_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
 const LIST_EVENTS_TO_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $2 ORDER BY starts_at ASC";
 const LIST_EVENTS_RANGE_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $3 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
+/// Brief shape (`?shape=brief`): exactly the seven fields the calendar views read.
+const LIST_EVENTS_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 ORDER BY starts_at ASC";
+/// Brief shape of the `from`-only range: same seven columns, same WHERE/ORDER BY.
+const LIST_EVENTS_FROM_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
+/// Brief shape of the `to`-only range: same seven columns, same WHERE/ORDER BY.
+const LIST_EVENTS_TO_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 AND starts_at < $2 ORDER BY starts_at ASC";
+/// Brief shape of the bounded range: same seven columns, same WHERE/ORDER BY.
+const LIST_EVENTS_RANGE_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 AND starts_at < $3 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
 const GET_EVENT_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE id=$1 AND user_id=$2";
 const PATCH_EVENT_SQL: &str = "UPDATE events SET title=COALESCE($3,title), description=COALESCE($4,description), kind=COALESCE($5::event_kind,kind), starts_at=COALESCE($6,starts_at), ends_at=COALESCE($7,ends_at), all_day=COALESCE($8,all_day), location=COALESCE($9,location), habit_id=COALESCE($10,habit_id), goal_id=COALESCE($11,goal_id), task_id=COALESCE($12,task_id), subscription_id=COALESCE($13,subscription_id), category_id=COALESCE($14,category_id), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at";
 const DELETE_EVENT_SQL: &str = "DELETE FROM events WHERE id=$1 AND user_id=$2";
@@ -147,6 +155,7 @@ pub struct PatchEventRequest {
 pub struct EventRangeQuery {
     pub from: Option<String>,
     pub to: Option<String>,
+    pub shape: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,6 +237,62 @@ impl From<EventRow> for EventResponse {
             updated_at,
         }
     }
+}
+
+/// Brief event row: id, title, kind, starts_at, ends_at, all_day, location.
+type EventBriefRow = (
+    Uuid,
+    String,
+    String,
+    DateTime<Utc>,
+    Option<DateTime<Utc>>,
+    bool,
+    Option<String>,
+);
+
+#[derive(Debug, Serialize)]
+pub struct EventBriefResponse {
+    pub id: Uuid,
+    pub title: String,
+    pub kind: String,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: Option<DateTime<Utc>>,
+    pub all_day: bool,
+    pub location: Option<String>,
+}
+
+impl From<EventBriefRow> for EventBriefResponse {
+    fn from(
+        row: (
+            Uuid,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+            bool,
+            Option<String>,
+        ),
+    ) -> Self {
+        let (id, title, kind, starts_at, ends_at, all_day, location) = row;
+        Self {
+            id,
+            title,
+            kind,
+            starts_at,
+            ends_at,
+            all_day,
+            location,
+        }
+    }
+}
+
+/// `GET /api/events` body: the full row set, or the brief shape the SPA asks
+/// for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum EventsResponse {
+    Full(Vec<EventResponse>),
+    Brief(Vec<EventBriefResponse>),
 }
 
 /// Validate a required short text field: 1-`max` chars after trimming, no
@@ -519,8 +584,9 @@ pub async fn list_events_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<EventRangeQuery>,
-) -> Result<Json<Vec<EventResponse>>, AppError> {
+) -> Result<Json<EventsResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
     let from = match query.from.as_deref() {
         Some(raw) => Some(validate_event_datetime(raw, "from")?),
         None => None,
@@ -533,6 +599,42 @@ pub async fn list_events_handler(
         if to <= from {
             return Err(AppError::Validation("to must be after from".into()));
         }
+    }
+    if shape.is_brief() {
+        let rows = match (from, to) {
+            (Some(from), Some(to)) => {
+                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_RANGE_BRIEF_SQL)
+                    .bind(user_id)
+                    .bind(from)
+                    .bind(to)
+                    .fetch_all(&state.pool)
+                    .await
+            }
+            (Some(from), None) => {
+                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_FROM_BRIEF_SQL)
+                    .bind(user_id)
+                    .bind(from)
+                    .fetch_all(&state.pool)
+                    .await
+            }
+            (None, Some(to)) => {
+                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_TO_BRIEF_SQL)
+                    .bind(user_id)
+                    .bind(to)
+                    .fetch_all(&state.pool)
+                    .await
+            }
+            (None, None) => {
+                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_BRIEF_SQL)
+                    .bind(user_id)
+                    .fetch_all(&state.pool)
+                    .await
+            }
+        }
+        .map_err(|_| AppError::Internal)?;
+        return Ok(Json(EventsResponse::Brief(
+            rows.into_iter().map(EventBriefResponse::from).collect(),
+        )));
     }
     let rows = match (from, to) {
         (Some(from), Some(to)) => {
@@ -565,7 +667,9 @@ pub async fn list_events_handler(
         }
     }
     .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(EventResponse::from).collect()))
+    Ok(Json(EventsResponse::Full(
+        rows.into_iter().map(EventResponse::from).collect(),
+    )))
 }
 
 pub async fn get_event_handler(
@@ -889,6 +993,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn events_brief_sql_returns_only_frontend_fields() {
+        for sql in [
+            LIST_EVENTS_BRIEF_SQL,
+            LIST_EVENTS_FROM_BRIEF_SQL,
+            LIST_EVENTS_TO_BRIEF_SQL,
+            LIST_EVENTS_RANGE_BRIEF_SQL,
+        ] {
+            assert!(
+                sql.contains("user_id"),
+                "events brief SQL must scope by user_id, got: {sql}"
+            );
+            for kept in [
+                "id",
+                "title",
+                "kind",
+                "starts_at",
+                "ends_at",
+                "all_day",
+                "location",
+            ] {
+                assert!(
+                    sql.contains(kept),
+                    "events brief SQL must keep `{kept}`, got: {sql}"
+                );
+            }
+            for dropped in [
+                "description",
+                "habit_id",
+                "goal_id",
+                "task_id",
+                "subscription_id",
+                "category_id",
+                "reminder_id",
+                "created_at",
+                "updated_at",
+            ] {
+                assert!(
+                    !sql.contains(dropped),
+                    "events brief SQL must not contain dropped `{dropped}`, got: {sql}"
+                );
+            }
+        }
+    }
+
     fn lazy_pool() -> sqlx::PgPool {
         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
             .expect("lazy pool construction must succeed")
@@ -958,6 +1107,7 @@ mod tests {
         Query(EventRangeQuery {
             from: from.map(str::to_string),
             to: to.map(str::to_string),
+            shape: None,
         })
     }
 
@@ -1051,6 +1201,9 @@ mod tests {
         )
         .await
         .expect("list events");
+        let EventsResponse::Full(listed) = listed else {
+            panic!("unfiltered list without shape must be the full variant");
+        };
         assert!(listed.iter().any(|e| e.id == created.id));
 
         let Json(patched) = patch_event_handler(
@@ -1290,7 +1443,12 @@ mod tests {
         .await
         .expect("seed future event");
 
-        let ids = |events: Vec<EventResponse>| events.into_iter().map(|e| e.id).collect::<Vec<_>>();
+        let ids = |events: EventsResponse| {
+            let EventsResponse::Full(events) = events else {
+                panic!("range without shape must be the full variant");
+            };
+            events.into_iter().map(|e| e.id).collect::<Vec<_>>()
+        };
 
         // Bounded week window: spanning + open-ended overlap, past/future excluded.
         let Json(week) = list_events_handler(
@@ -1351,6 +1509,9 @@ mod tests {
         )
         .await
         .expect("unbounded list");
+        let EventsResponse::Full(all) = all else {
+            panic!("unbounded list without shape must be the full variant");
+        };
         assert_eq!(all.len(), 4);
 
         // Malformed bounds are 422.

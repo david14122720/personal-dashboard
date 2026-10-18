@@ -26,7 +26,7 @@
 //! land in their own slices).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -34,7 +34,12 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
+use crate::{
+    auth::helper::require_user_id,
+    error::AppError,
+    routes::{parse_read_shape, ShapeQuery},
+    state::AppState,
+};
 
 const MAX_NAME_LEN: usize = 200;
 const MAX_AREA_LEN: usize = 100;
@@ -46,6 +51,8 @@ const GOAL_STATUSES: &[&str] = &["active", "completed", "paused", "cancelled"];
 
 const CREATE_GOAL_SQL: &str = "INSERT INTO goals (user_id, name, description, area, category_id, start_date, due_date, status, color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::goal_status,$9) RETURNING id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at";
 const LIST_GOALS_SQL: &str = "SELECT id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at FROM goals WHERE user_id=$1 ORDER BY created_at ASC";
+/// Brief shape (`?shape=brief`): exactly the eight fields the goals views read.
+const LIST_GOALS_BRIEF_SQL: &str = "SELECT id, name, description, area, due_date, progress, status::text, color FROM goals WHERE user_id=$1 ORDER BY created_at ASC";
 const GET_GOAL_SQL: &str = "SELECT id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at FROM goals WHERE id=$1 AND user_id=$2";
 const PATCH_GOAL_SQL: &str = "UPDATE goals SET name=COALESCE($3,name), description=COALESCE($4,description), area=COALESCE($5,area), start_date=COALESCE($6,start_date), due_date=COALESCE($7,due_date), status=COALESCE($8::goal_status,status), category_id=COALESCE($9,category_id), color=COALESCE($10,color), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at";
 const DELETE_GOAL_SQL: &str = "DELETE FROM goals WHERE id=$1 AND user_id=$2";
@@ -170,6 +177,66 @@ impl From<GoalRow> for GoalResponse {
             updated_at,
         }
     }
+}
+
+/// Brief goal row: id, name, description, area, due_date, progress, status, color.
+type GoalBriefRow = (
+    Uuid,
+    String,
+    Option<String>,
+    String,
+    Option<NaiveDate>,
+    i16,
+    String,
+    Option<String>,
+);
+
+#[derive(Debug, Serialize)]
+pub struct GoalBriefResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub area: String,
+    pub due_date: Option<NaiveDate>,
+    pub progress: i16,
+    pub status: String,
+    pub color: Option<String>,
+}
+
+impl From<GoalBriefRow> for GoalBriefResponse {
+    fn from(
+        row: (
+            Uuid,
+            String,
+            Option<String>,
+            String,
+            Option<NaiveDate>,
+            i16,
+            String,
+            Option<String>,
+        ),
+    ) -> Self {
+        let (id, name, description, area, due_date, progress, status, color) = row;
+        Self {
+            id,
+            name,
+            description,
+            area,
+            due_date,
+            progress,
+            status,
+            color,
+        }
+    }
+}
+
+/// `GET /api/goals` body: the full row set, or the brief shape the SPA asks
+/// for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum GoalsResponse {
+    Full(Vec<GoalResponse>),
+    Brief(Vec<GoalBriefResponse>),
 }
 
 /// Validate a required short text field: 1-`max` chars after trimming, no
@@ -349,14 +416,28 @@ pub async fn create_goal_handler(
 pub async fn list_goals_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<GoalResponse>>, AppError> {
+    Query(query): Query<ShapeQuery>,
+) -> Result<Json<GoalsResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
+    if shape.is_brief() {
+        let rows = sqlx::query_as::<_, GoalBriefRow>(LIST_GOALS_BRIEF_SQL)
+            .bind(user_id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        return Ok(Json(GoalsResponse::Brief(
+            rows.into_iter().map(GoalBriefResponse::from).collect(),
+        )));
+    }
     let rows = sqlx::query_as::<_, GoalRow>(LIST_GOALS_SQL)
         .bind(user_id)
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(GoalResponse::from).collect()))
+    Ok(Json(GoalsResponse::Full(
+        rows.into_iter().map(GoalResponse::from).collect(),
+    )))
 }
 
 pub async fn get_goal_handler(
@@ -599,6 +680,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn goals_brief_sql_returns_only_frontend_fields() {
+        assert!(
+            LIST_GOALS_BRIEF_SQL.contains("user_id"),
+            "goals brief SQL must scope by user_id, got: {LIST_GOALS_BRIEF_SQL}"
+        );
+        for kept in [
+            "id",
+            "name",
+            "description",
+            "area",
+            "due_date",
+            "progress",
+            "status",
+            "color",
+        ] {
+            assert!(
+                LIST_GOALS_BRIEF_SQL.contains(kept),
+                "goals brief SQL must keep `{kept}`, got: {LIST_GOALS_BRIEF_SQL}"
+            );
+        }
+        // Check the SELECT column list only: the WHERE clause legitimately
+        // names `user_id`, and `reminder_id`/`category_id`/`created_at` could
+        // hide inside longer identifiers — split on SELECT..FROM first.
+        let brief_cols = LIST_GOALS_BRIEF_SQL
+            .split("SELECT")
+            .nth(1)
+            .unwrap_or("")
+            .split("FROM")
+            .next()
+            .unwrap_or("");
+        for dropped in [
+            "start_date",
+            "category_id",
+            "reminder_id",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                !brief_cols.contains(dropped),
+                "goals brief SQL must not contain dropped `{dropped}`, got: {LIST_GOALS_BRIEF_SQL}"
+            );
+        }
+    }
+
     fn lazy_pool() -> sqlx::PgPool {
         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
             .expect("lazy pool construction must succeed")
@@ -667,7 +793,7 @@ mod tests {
             session_ttl_hours: 24,
             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
         };
-        let err = list_goals_handler(State(state), HeaderMap::new())
+        let err = list_goals_handler(State(state), HeaderMap::new(), Query(ShapeQuery { shape: None }))
             .await
             .expect_err("missing session must be 401");
         assert_401(err);

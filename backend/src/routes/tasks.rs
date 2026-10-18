@@ -45,6 +45,7 @@ use crate::{
     auth::helper::require_user_id,
     error::AppError,
     finance::dates::today_bogota,
+    routes::parse_read_shape,
     state::AppState,
 };
 
@@ -67,6 +68,16 @@ const LIST_TASKS_TODAY_SQL: &str = "SELECT id, title, description, priority::tex
 const LIST_TASKS_UPCOMING_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date > $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
 const LIST_TASKS_OVERDUE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date < $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
 const LIST_TASKS_DONE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND completed_at IS NOT NULL ORDER BY sort_order ASC, created_at ASC";
+/// Brief shape (`?shape=brief`): exactly the seven fields the productivity views read.
+const LIST_TASKS_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 ORDER BY sort_order ASC, created_at ASC";
+/// Brief shape of the `today` view: same seven columns, same WHERE/ORDER BY.
+const LIST_TASKS_TODAY_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND due_date = $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+/// Brief shape of the `upcoming` view: same seven columns, same WHERE/ORDER BY.
+const LIST_TASKS_UPCOMING_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND due_date > $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+/// Brief shape of the `overdue` view: same seven columns, same WHERE/ORDER BY.
+const LIST_TASKS_OVERDUE_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND due_date < $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+/// Brief shape of the `done` view: same seven columns, same WHERE/ORDER BY.
+const LIST_TASKS_DONE_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND completed_at IS NOT NULL ORDER BY sort_order ASC, created_at ASC";
 const GET_TASK_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE id=$1 AND user_id=$2";
 const PATCH_TASK_SQL: &str = "UPDATE tasks SET title=COALESCE($3,title), description=COALESCE($4,description), priority=COALESCE($5::task_priority,priority), status=COALESCE($6::task_status,status), due_date=COALESCE($7,due_date), goal_id=COALESCE($8,goal_id), category_id=COALESCE($9,category_id), sort_order=COALESCE($10,sort_order), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
 const DELETE_TASK_SQL: &str = "DELETE FROM tasks WHERE id=$1 AND user_id=$2";
@@ -132,6 +143,7 @@ pub struct PatchTaskRequest {
 #[serde(deny_unknown_fields)]
 pub struct TaskViewQuery {
     pub view: Option<String>,
+    pub shape: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -202,6 +214,62 @@ impl From<TaskRow> for TaskResponse {
             updated_at,
         }
     }
+}
+
+/// Brief task row: id, title, priority, status, due_date, completed_at, goal_id.
+type TaskBriefRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    Option<NaiveDate>,
+    Option<DateTime<Utc>>,
+    Option<Uuid>,
+);
+
+#[derive(Debug, Serialize)]
+pub struct TaskBriefResponse {
+    pub id: Uuid,
+    pub title: String,
+    pub priority: String,
+    pub status: String,
+    pub due_date: Option<NaiveDate>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub goal_id: Option<Uuid>,
+}
+
+impl From<TaskBriefRow> for TaskBriefResponse {
+    fn from(
+        row: (
+            Uuid,
+            String,
+            String,
+            String,
+            Option<NaiveDate>,
+            Option<DateTime<Utc>>,
+            Option<Uuid>,
+        ),
+    ) -> Self {
+        let (id, title, priority, status, due_date, completed_at, goal_id) = row;
+        Self {
+            id,
+            title,
+            priority,
+            status,
+            due_date,
+            completed_at,
+            goal_id,
+        }
+    }
+}
+
+/// `GET /api/tasks` body: the full row set, or the brief shape the SPA asks
+/// for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum TasksResponse {
+    Full(Vec<TaskResponse>),
+    Brief(Vec<TaskBriefResponse>),
 }
 
 /// Validate a required short text field: 1-`max` chars after trimming, no
@@ -435,9 +503,28 @@ pub async fn list_tasks_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<TaskViewQuery>,
-) -> Result<Json<Vec<TaskResponse>>, AppError> {
+) -> Result<Json<TasksResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     let view = validate_task_view(query.view.as_deref())?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
+    if shape.is_brief() {
+        let sql = match view.as_deref() {
+            Some("today") => LIST_TASKS_TODAY_BRIEF_SQL,
+            Some("upcoming") => LIST_TASKS_UPCOMING_BRIEF_SQL,
+            Some("overdue") => LIST_TASKS_OVERDUE_BRIEF_SQL,
+            Some("done") => LIST_TASKS_DONE_BRIEF_SQL,
+            _ => LIST_TASKS_BRIEF_SQL,
+        };
+        let needs_day = matches!(view.as_deref(), Some("today" | "upcoming" | "overdue"));
+        let mut q = sqlx::query_as::<_, TaskBriefRow>(sql).bind(user_id);
+        if needs_day {
+            q = q.bind(today_bogota());
+        }
+        let rows = q.fetch_all(&state.pool).await.map_err(|_| AppError::Internal)?;
+        return Ok(Json(TasksResponse::Brief(
+            rows.into_iter().map(TaskBriefResponse::from).collect(),
+        )));
+    }
     let (sql, needs_day) = match view.as_deref() {
         Some("today") => (LIST_TASKS_TODAY_SQL, true),
         Some("upcoming") => (LIST_TASKS_UPCOMING_SQL, true),
@@ -453,7 +540,9 @@ pub async fn list_tasks_handler(
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(TaskResponse::from).collect()))
+    Ok(Json(TasksResponse::Full(
+        rows.into_iter().map(TaskResponse::from).collect(),
+    )))
 }
 
 pub async fn get_task_handler(
@@ -760,6 +849,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tasks_brief_sql_returns_only_frontend_fields() {
+        for sql in [
+            LIST_TASKS_BRIEF_SQL,
+            LIST_TASKS_TODAY_BRIEF_SQL,
+            LIST_TASKS_UPCOMING_BRIEF_SQL,
+            LIST_TASKS_OVERDUE_BRIEF_SQL,
+            LIST_TASKS_DONE_BRIEF_SQL,
+        ] {
+            assert!(
+                sql.contains("user_id"),
+                "tasks brief SQL must scope by user_id, got: {sql}"
+            );
+            for kept in [
+                "id",
+                "title",
+                "priority",
+                "status",
+                "due_date",
+                "completed_at",
+                "goal_id",
+            ] {
+                assert!(
+                    sql.contains(kept),
+                    "tasks brief SQL must keep `{kept}`, got: {sql}"
+                );
+            }
+            for dropped in [
+                "description",
+                "reminder_id",
+                "category_id",
+                "sort_order",
+                "created_at",
+                "updated_at",
+            ] {
+                // Check the SELECT column list only: the ORDER BY verbatim
+                // keeps `sort_order`/`created_at` even though they are not
+                // selected.
+                let cols = sql
+                    .split("SELECT")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split("FROM")
+                    .next()
+                    .unwrap_or("");
+                assert!(
+                    !cols.contains(dropped),
+                    "tasks brief SQL must not select dropped `{dropped}`, got: {sql}"
+                );
+            }
+        }
+    }
+
     fn lazy_pool() -> sqlx::PgPool {
         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
             .expect("lazy pool construction must succeed")
@@ -822,6 +964,7 @@ mod tests {
     fn view_query(view: Option<&str>) -> Query<TaskViewQuery> {
         Query(TaskViewQuery {
             view: view.map(str::to_string),
+            shape: None,
         })
     }
 
@@ -889,6 +1032,9 @@ mod tests {
             list_tasks_handler(State(state.clone()), headers.clone(), view_query(None))
                 .await
                 .expect("list tasks");
+        let TasksResponse::Full(listed) = listed else {
+            panic!("unfiltered list without shape must be the full variant");
+        };
         assert!(listed.iter().any(|t| t.id == created.id));
 
         let Json(patched) = patch_task_handler(
@@ -1120,7 +1266,12 @@ mod tests {
         let done_today_id = seed("done-today-task", Some(today), "completed").await;
         let undated_id = seed("undated-task", None, "pending").await;
 
-        let ids = |tasks: Vec<TaskResponse>| tasks.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        let ids = |tasks: TasksResponse| {
+            let TasksResponse::Full(tasks) = tasks else {
+                panic!("view without shape must be the full variant");
+            };
+            tasks.into_iter().map(|t| t.id).collect::<Vec<_>>()
+        };
 
         let Json(today_tasks) = list_tasks_handler(
             State(state.clone()),
@@ -1188,6 +1339,9 @@ mod tests {
         let Json(all) = list_tasks_handler(State(state.clone()), headers.clone(), view_query(None))
             .await
             .expect("unfiltered list");
+        let TasksResponse::Full(all) = all else {
+            panic!("unfiltered list without shape must be the full variant");
+        };
         assert_eq!(all.len(), 5);
 
         // Unknown view is 422.

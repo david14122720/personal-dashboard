@@ -37,7 +37,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
+use crate::{
+    auth::helper::require_user_id,
+    error::AppError,
+    routes::parse_read_shape,
+    state::AppState,
+};
 
 const MAX_TITLE_LEN: usize = 200;
 /// DOS guard: note bodies larger than 1 MiB (bytes) are rejected with 422
@@ -47,6 +52,10 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 const CREATE_NOTE_SQL: &str = "INSERT INTO notes (user_id, title, body, is_markdown, is_pinned, category_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at";
 const LIST_NOTES_SQL: &str = "SELECT id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at FROM notes WHERE user_id=$1 ORDER BY is_pinned DESC, updated_at DESC";
 const SEARCH_NOTES_SQL: &str = "SELECT id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at FROM notes WHERE user_id=$1 AND search_tsv @@ plainto_tsquery('simple', $2) ORDER BY is_pinned DESC, updated_at DESC";
+/// Brief shape (`?shape=brief`): exactly the five fields the notes views read.
+const LIST_NOTES_BRIEF_SQL: &str = "SELECT id, title, body, is_pinned, updated_at FROM notes WHERE user_id=$1 ORDER BY is_pinned DESC, updated_at DESC";
+/// Brief shape of the FTS search: same five columns, same WHERE/ORDER BY.
+const SEARCH_NOTES_BRIEF_SQL: &str = "SELECT id, title, body, is_pinned, updated_at FROM notes WHERE user_id=$1 AND search_tsv @@ plainto_tsquery('simple', $2) ORDER BY is_pinned DESC, updated_at DESC";
 const GET_NOTE_SQL: &str = "SELECT id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at FROM notes WHERE id=$1 AND user_id=$2";
 const PATCH_NOTE_SQL: &str = "UPDATE notes SET title=COALESCE($3,title), body=COALESCE($4,body), is_markdown=COALESCE($5,is_markdown), is_pinned=COALESCE($6,is_pinned), category_id=COALESCE($7,category_id), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at";
 const DELETE_NOTE_SQL: &str = "DELETE FROM notes WHERE id=$1 AND user_id=$2";
@@ -99,6 +108,7 @@ pub struct PatchNoteRequest {
 #[serde(deny_unknown_fields)]
 pub struct NoteSearchQuery {
     pub q: Option<String>,
+    pub shape: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,6 +148,40 @@ impl From<NoteRow> for NoteResponse {
             updated_at,
         }
     }
+}
+
+/// Brief note row: id, title, body, is_pinned, updated_at.
+type NoteBriefRow = (Uuid, String, String, bool, DateTime<Utc>);
+
+#[derive(Debug, Serialize)]
+pub struct NoteBriefResponse {
+    pub id: Uuid,
+    pub title: String,
+    pub body: String,
+    pub is_pinned: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<NoteBriefRow> for NoteBriefResponse {
+    fn from(row: (Uuid, String, String, bool, DateTime<Utc>)) -> Self {
+        let (id, title, body, is_pinned, updated_at) = row;
+        Self {
+            id,
+            title,
+            body,
+            is_pinned,
+            updated_at,
+        }
+    }
+}
+
+/// `GET /api/notes/search` body: the full row set, or the brief shape the SPA
+/// asks for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum NotesSearchResponse {
+    Full(Vec<NoteResponse>),
+    Brief(Vec<NoteBriefResponse>),
 }
 
 /// Validate a required short text field: 1-`max` chars after trimming, no
@@ -264,11 +308,30 @@ pub async fn search_notes_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<NoteSearchQuery>,
-) -> Result<Json<Vec<NoteResponse>>, AppError> {
+) -> Result<Json<NotesSearchResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
     // A missing/blank `q` skips the FTS predicate and returns every owned
     // note in the same pinned-first order (spec: Empty Query scenario).
     let trimmed = query.q.as_deref().map(str::trim).unwrap_or("");
+    if shape.is_brief() {
+        let rows = if trimmed.is_empty() {
+            sqlx::query_as::<_, NoteBriefRow>(LIST_NOTES_BRIEF_SQL)
+                .bind(user_id)
+                .fetch_all(&state.pool)
+                .await
+        } else {
+            sqlx::query_as::<_, NoteBriefRow>(SEARCH_NOTES_BRIEF_SQL)
+                .bind(user_id)
+                .bind(trimmed)
+                .fetch_all(&state.pool)
+                .await
+        }
+        .map_err(|_| AppError::Internal)?;
+        return Ok(Json(NotesSearchResponse::Brief(
+            rows.into_iter().map(NoteBriefResponse::from).collect(),
+        )));
+    }
     let rows = if trimmed.is_empty() {
         sqlx::query_as::<_, NoteRow>(LIST_NOTES_SQL)
             .bind(user_id)
@@ -282,7 +345,9 @@ pub async fn search_notes_handler(
             .await
     }
     .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(NoteResponse::from).collect()))
+    Ok(Json(NotesSearchResponse::Full(
+        rows.into_iter().map(NoteResponse::from).collect(),
+    )))
 }
 
 pub async fn get_note_handler(
@@ -496,6 +561,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn notes_brief_sql_returns_only_frontend_fields() {
+        for sql in [LIST_NOTES_BRIEF_SQL, SEARCH_NOTES_BRIEF_SQL] {
+            assert!(
+                sql.contains("user_id"),
+                "notes brief SQL must scope by user_id: {sql}"
+            );
+            for kept in ["id", "title", "body", "is_pinned", "updated_at"] {
+                assert!(
+                    sql.contains(kept),
+                    "notes brief SQL must keep `{kept}`: {sql}"
+                );
+            }
+            // Check the SELECT column list only: the ORDER BY verbatim keeps
+            // `updated_at` even though the FTS path also filters on it.
+            let brief_cols = sql
+                .split("SELECT")
+                .nth(1)
+                .unwrap_or("")
+                .split("FROM")
+                .next()
+                .unwrap_or("");
+            for dropped in ["is_markdown", "category_id", "created_at"] {
+                assert!(
+                    !brief_cols.contains(dropped),
+                    "notes brief SQL must not select dropped `{dropped}`: {sql}"
+                );
+            }
+        }
+        assert!(
+            SEARCH_NOTES_BRIEF_SQL.contains("search_tsv @@ plainto_tsquery('simple'"),
+            "brief search must keep the FTS predicate: {SEARCH_NOTES_BRIEF_SQL}"
+        );
+    }
+
     fn lazy_pool() -> sqlx::PgPool {
         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
             .expect("lazy pool construction must succeed")
@@ -564,6 +664,7 @@ mod tests {
     fn search_query(q: Option<&str>) -> Query<NoteSearchQuery> {
         Query(NoteSearchQuery {
             q: q.map(str::to_string),
+            shape: None,
         })
     }
 
@@ -719,6 +820,9 @@ mod tests {
         )
         .await
         .expect("foreign search");
+        let NotesSearchResponse::Full(results) = results else {
+            panic!("search without shape must be the full variant");
+        };
         assert!(results.is_empty());
         cleanup_user(&pool, user_a).await;
         cleanup_user(&pool, user_b).await;
@@ -789,6 +893,9 @@ mod tests {
         )
         .await
         .expect("search notes");
+        let NotesSearchResponse::Full(results) = results else {
+            panic!("search without shape must be the full variant");
+        };
         assert_eq!(results.len(), 2, "both notes match {token}");
         assert_eq!(results[0].id, older.id, "pinned older note ranks first");
         assert_eq!(results[1].id, newer.id, "unpinned newer note ranks second");
@@ -833,6 +940,9 @@ mod tests {
                 search_notes_handler(State(state.clone()), headers.clone(), search_query(q))
                     .await
                     .expect("blank search");
+            let NotesSearchResponse::Full(results) = results else {
+                panic!("blank search without shape must be the full variant");
+            };
             let ids: Vec<Uuid> = results.iter().map(|n| n.id).collect();
             assert!(ids.contains(&first.id) && ids.contains(&second.id));
             assert_eq!(results[0].id, first.id, "pinned note first for q={q:?}");
@@ -884,6 +994,9 @@ mod tests {
         )
         .await
         .expect("search notes");
+        let NotesSearchResponse::Full(results) = results else {
+            panic!("search without shape must be the full variant");
+        };
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, plan.id);
         cleanup_user(&pool, user_id).await;

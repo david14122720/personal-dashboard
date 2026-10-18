@@ -66,6 +66,7 @@ use crate::{
         dates::today_bogota,
         money::{parse_money_amount, parse_money_amount_nonneg},
     },
+    routes::{parse_read_shape, ShapeQuery},
     state::AppState,
 };
 
@@ -92,6 +93,8 @@ const CREATE_HABIT_SQL: &str = "INSERT INTO habits (user_id, name, description, 
 /// List read: archived rows are kept on purpose — the UI needs them for
 /// "Desarchivar" — unlike the today read, which filters them out.
 const LIST_HABITS_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE user_id=$1 ORDER BY created_at ASC";
+/// Brief shape (`?shape=brief`): exactly the twelve fields the habits views read.
+const LIST_HABITS_BRIEF_SQL: &str = "SELECT id, name, direction::text, frequency::text, days_of_week, start_date, end_date, category, color, icon, is_archived, short_label FROM habits WHERE user_id=$1 ORDER BY created_at ASC";
 const GET_HABIT_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE id=$1 AND user_id=$2";
 const PATCH_HABIT_SQL: &str = "UPDATE habits SET name=COALESCE($3,name), description=COALESCE($4,description), target_per_period=COALESCE($5,target_per_period), end_date=COALESCE($6,end_date), category_id=COALESCE($7,category_id), color=COALESCE($8,color), icon=COALESCE($9,icon), is_archived=COALESCE($10,is_archived), category=COALESCE($11,category), short_label=COALESCE($12,short_label), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label";
 const DELETE_HABIT_SQL: &str = "DELETE FROM habits WHERE id=$1 AND user_id=$2";
@@ -268,6 +271,111 @@ impl From<HabitRow> for HabitResponse {
             short_label: row.short_label,
         }
     }
+}
+
+/// Brief habit row: id, name, direction, frequency, days_of_week, start_date,
+/// end_date, category, color, icon, is_archived, short_label.
+type HabitBriefRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    Vec<i16>,
+    NaiveDate,
+    Option<NaiveDate>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    bool,
+    Option<String>,
+);
+
+#[derive(Debug, Serialize)]
+pub struct HabitBriefResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub direction: String,
+    pub frequency: String,
+    pub days_of_week: Vec<i16>,
+    pub start_date: NaiveDate,
+    pub end_date: Option<NaiveDate>,
+    pub category: Option<String>,
+    pub color: Option<String>,
+    pub icon: Option<String>,
+    pub is_archived: bool,
+    pub short_label: Option<String>,
+}
+
+impl
+    From<(
+        Uuid,
+        String,
+        String,
+        String,
+        Vec<i16>,
+        NaiveDate,
+        Option<NaiveDate>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+        Option<String>,
+    )> for HabitBriefResponse
+{
+    fn from(
+        row: (
+            Uuid,
+            String,
+            String,
+            String,
+            Vec<i16>,
+            NaiveDate,
+            Option<NaiveDate>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+            Option<String>,
+        ),
+    ) -> Self {
+        let (
+            id,
+            name,
+            direction,
+            frequency,
+            days_of_week,
+            start_date,
+            end_date,
+            category,
+            color,
+            icon,
+            is_archived,
+            short_label,
+        ) = row;
+        Self {
+            id,
+            name,
+            direction,
+            frequency,
+            days_of_week,
+            start_date,
+            end_date,
+            category,
+            color,
+            icon,
+            is_archived,
+            short_label,
+        }
+    }
+}
+
+/// `GET /api/habits` body: the full row set, or the brief shape the SPA asks
+/// for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum HabitsResponse {
+    Full(Vec<HabitResponse>),
+    Brief(Vec<HabitBriefResponse>),
 }
 
 #[derive(Debug, Serialize)]
@@ -664,14 +772,28 @@ pub async fn create_habit_handler(
 pub async fn list_habits_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<HabitResponse>>, AppError> {
+    Query(query): Query<ShapeQuery>,
+) -> Result<Json<HabitsResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
+    if shape.is_brief() {
+        let rows = sqlx::query_as::<_, HabitBriefRow>(LIST_HABITS_BRIEF_SQL)
+            .bind(user_id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        return Ok(Json(HabitsResponse::Brief(
+            rows.into_iter().map(HabitBriefResponse::from).collect(),
+        )));
+    }
     let rows = sqlx::query_as::<_, HabitRow>(LIST_HABITS_SQL)
         .bind(user_id)
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(HabitResponse::from).collect()))
+    Ok(Json(HabitsResponse::Full(
+        rows.into_iter().map(HabitResponse::from).collect(),
+    )))
 }
 
 pub async fn get_habit_handler(
@@ -1632,6 +1754,54 @@ mod tests {
     }
 
     #[test]
+    fn habits_brief_sql_returns_only_frontend_fields() {
+        assert!(
+            LIST_HABITS_BRIEF_SQL.contains("user_id"),
+            "habits brief SQL must scope by user_id, got: {LIST_HABITS_BRIEF_SQL}"
+        );
+        for kept in [
+            "id",
+            "name",
+            "direction",
+            "frequency",
+            "days_of_week",
+            "start_date",
+            "end_date",
+            "category",
+            "color",
+            "icon",
+            "is_archived",
+            "short_label",
+        ] {
+            assert!(
+                LIST_HABITS_BRIEF_SQL.contains(kept),
+                "habits brief SQL must keep `{kept}`, got: {LIST_HABITS_BRIEF_SQL}"
+            );
+        }
+        // Check the SELECT column list only: the WHERE clause legitimately
+        // names `user_id` and the ORDER BY keeps `created_at` verbatim.
+        let brief_cols = LIST_HABITS_BRIEF_SQL
+            .split("SELECT")
+            .nth(1)
+            .unwrap_or("")
+            .split("FROM")
+            .next()
+            .unwrap_or("");
+        for dropped in [
+            "description",
+            "target_per_period",
+            "category_id",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                !brief_cols.contains(dropped),
+                "habits brief SQL must not select dropped `{dropped}`, got: {LIST_HABITS_BRIEF_SQL}"
+            );
+        }
+    }
+
+    #[test]
     fn streak_sql_encodes_the_read_model_contract() {
         // Gaps-and-islands with a skipped bridge: both breaking values, the
         // neutral value, the mask gate, and the consecutive-day arithmetic.
@@ -1759,7 +1929,7 @@ mod tests {
             session_ttl_hours: 24,
             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
         };
-        let err = list_habits_handler(State(state), HeaderMap::new())
+        let err = list_habits_handler(State(state), HeaderMap::new(), Query(ShapeQuery { shape: None }))
             .await
             .expect_err("missing session must be 401");
         assert_401(err);
@@ -1788,9 +1958,16 @@ mod tests {
             .await
             .expect("get own habit is 200");
         assert_eq!(got.id, created.id);
-        let listed = list_habits_handler(State(state.clone()), headers.clone())
-            .await
-            .expect("list habits is 200");
+        let listed = list_habits_handler(
+            State(state.clone()),
+            headers.clone(),
+            Query(ShapeQuery { shape: None }),
+        )
+        .await
+        .expect("list habits is 200");
+        let HabitsResponse::Full(listed) = listed.0 else {
+            panic!("unfiltered list without shape must be the full variant");
+        };
         assert!(listed.iter().any(|h| h.id == created.id));
         let patched = patch_habit_handler(
             State(state.clone()),
