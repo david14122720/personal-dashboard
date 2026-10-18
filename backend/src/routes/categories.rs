@@ -25,7 +25,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
+use crate::{auth::helper::require_user_id, error::AppError, routes::parse_read_shape, state::AppState};
 
 /// Category kinds accepted at the API boundary (mirrors `category_kind` enum).
 pub const CATEGORY_KINDS: &[&str] = &["finance", "habit", "goal", "task", "subscription"];
@@ -35,6 +35,10 @@ pub const CATEGORY_KINDS: &[&str] = &["finance", "habit", "goal", "task", "subsc
 const MAX_CATEGORY_NAME_LEN: usize = 80;
 
 const LIST_CATEGORIES_SQL: &str = "SELECT id, kind::text, name, color, icon, is_archived, created_at FROM categories WHERE user_id=$1 AND ($2::category_kind IS NULL OR kind=$2::category_kind) AND NOT is_archived ORDER BY name ASC";
+/// Brief shape (`?shape=brief`): exactly the three fields the browser views
+/// read from a category. The full list stays available for the MCP.
+const LIST_CATEGORIES_BRIEF_SQL: &str =
+    "SELECT id, name, kind::text FROM categories WHERE user_id=$1 AND ($2::category_kind IS NULL OR kind=$2::category_kind) AND NOT is_archived ORDER BY name ASC";
 const CREATE_CATEGORY_SQL: &str = "INSERT INTO categories (user_id, kind, name) VALUES ($1,$2::category_kind,$3) RETURNING id, kind::text, name, color, icon, is_archived, created_at";
 const DELETE_CATEGORY_SQL: &str = "DELETE FROM categories WHERE id=$1 AND user_id=$2";
 
@@ -48,9 +52,13 @@ type CategoryRow = (
     DateTime<Utc>,
 );
 
+/// Brief category row: id, name, kind.
+type CategoryBriefRow = (Uuid, String, String);
+
 #[derive(Debug, Deserialize)]
 pub struct ListCategoriesQuery {
     pub kind: Option<String>,
+    pub shape: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,6 +97,29 @@ impl From<CategoryRow> for CategoryResponse {
     }
 }
 
+/// Brief category response (`?shape=brief`): id, name, kind.
+#[derive(Debug, Serialize)]
+pub struct CategoryBriefResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: String,
+}
+
+impl From<CategoryBriefRow> for CategoryBriefResponse {
+    fn from((id, name, kind): CategoryBriefRow) -> Self {
+        Self { id, name, kind }
+    }
+}
+
+/// `GET /api/categories` body: the full row set, or the brief shape the SPA
+/// asks for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum CategoriesResponse {
+    Full(Vec<CategoryResponse>),
+    Brief(Vec<CategoryBriefResponse>),
+}
+
 /// Validate the optional `kind` filter: `None` lists every kind, `Some`
 /// must be one of [`CATEGORY_KINDS`] (trimmed, case-sensitive like the DB
 /// enum), else 422.
@@ -110,16 +141,30 @@ pub async fn list_categories_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<ListCategoriesQuery>,
-) -> Result<Json<Vec<CategoryResponse>>, AppError> {
+) -> Result<Json<CategoriesResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     let kind = validate_category_kind(params.kind.as_deref())?;
+    let shape = parse_read_shape(params.shape.as_deref())?;
+    if shape.is_brief() {
+        let rows = sqlx::query_as::<_, CategoryBriefRow>(LIST_CATEGORIES_BRIEF_SQL)
+            .bind(user_id)
+            .bind(kind)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        return Ok(Json(CategoriesResponse::Brief(
+            rows.into_iter().map(CategoryBriefResponse::from).collect(),
+        )));
+    }
     let rows = sqlx::query_as::<_, CategoryRow>(LIST_CATEGORIES_SQL)
         .bind(user_id)
         .bind(kind)
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(CategoryResponse::from).collect()))
+    Ok(Json(CategoriesResponse::Full(
+        rows.into_iter().map(CategoryResponse::from).collect(),
+    )))
 }
 
 /// Create body: `name` plus the optional `kind` (defaults to `finance`
@@ -250,6 +295,37 @@ mod tests {
     }
 
     #[test]
+    fn brief_sql_selects_only_id_name_kind() {
+        assert!(
+            LIST_CATEGORIES_BRIEF_SQL.contains("user_id"),
+            "brief SQL must scope by user_id, got: {LIST_CATEGORIES_BRIEF_SQL}"
+        );
+        // The brief projection drops the browser-unread columns (S12);
+        // only the SELECT list is checked because the WHERE clause keeps
+        // `NOT is_archived` verbatim.
+        let select = LIST_CATEGORIES_BRIEF_SQL
+            .split("FROM")
+            .next()
+            .expect("brief SQL has a FROM clause");
+        for dropped in ["color", "icon", "is_archived", "created_at"] {
+            assert!(
+                !select.contains(dropped),
+                "brief SELECT must not carry `{dropped}`, got: {select}"
+            );
+        }
+        for kept in ["id", "name", "kind"] {
+            assert!(
+                select.contains(kept),
+                "brief SELECT must keep `{kept}`, got: {select}"
+            );
+        }
+        assert!(
+            LIST_CATEGORIES_BRIEF_SQL.contains("ORDER BY name ASC"),
+            "brief must keep the full list order verbatim, got: {LIST_CATEGORIES_BRIEF_SQL}"
+        );
+    }
+
+    #[test]
     fn list_sql_scopes_filters_and_orders() {
         assert!(
             LIST_CATEGORIES_SQL.contains("user_id=$1"),
@@ -361,11 +437,15 @@ mod tests {
         }
         let q = Query(ListCategoriesQuery {
             kind: Some("finance".into()),
+            shape: None,
         });
         let body = list_categories_handler(State(state.clone()), headers.clone(), q)
             .await
             .expect("list finance is 200")
             .0;
+        let CategoriesResponse::Full(body) = body else {
+            panic!("default list must serve the full shape");
+        };
         assert_eq!(body.len(), 2);
         assert_eq!(body[0].name, "Alimentación");
         assert_eq!(body[1].name, "Transporte");
@@ -382,6 +462,7 @@ mod tests {
         let (state, headers, user_id) = db_state(&pool).await;
         let q = Query(ListCategoriesQuery {
             kind: Some("money".into()),
+            shape: None,
         });
         let err = list_categories_handler(State(state.clone()), headers, q)
             .await
@@ -412,11 +493,15 @@ mod tests {
             .expect("seed foreign category");
         let q = Query(ListCategoriesQuery {
             kind: Some("finance".into()),
+            shape: None,
         });
         let body = list_categories_handler(State(state_b.clone()), headers_b, q)
             .await
             .expect("list is 200")
             .0;
+        let CategoriesResponse::Full(body) = body else {
+            panic!("default list must serve the full shape");
+        };
         assert!(
             body.iter().all(|c| c.name != "Privada" && c.name != "Privada2"),
             "foreign categories must not leak"

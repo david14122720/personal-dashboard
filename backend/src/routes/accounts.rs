@@ -14,7 +14,7 @@
 //! Registered in `main.rs` (PR4 wiring).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -27,6 +27,7 @@ use crate::{
     auth::helper::require_user_id,
     error::AppError,
     finance::money::parse_balance_amount,
+    routes::{parse_read_shape, ShapeQuery},
     state::AppState,
 };
 
@@ -40,6 +41,43 @@ const MAX_ICON_LEN: usize = 64;
 
 const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, currency, notes, color, icon) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at";
 const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
+/// Brief shape (`?shape=brief`): exactly the four fields the dashboard and the
+/// finance panel read from an account. Nothing else leaves the server for the
+/// browser — the full list stays available for the MCP and the per-id route.
+const LIST_ACCOUNTS_BRIEF_SQL: &str =
+    "SELECT id, name, currency, balance FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
+
+/// Brief account row: id, name, currency, balance.
+type AccountBriefRow = (Uuid, String, String, Decimal);
+
+#[derive(Debug, Serialize)]
+pub struct AccountBriefResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub currency: String,
+    /// Serialized as a decimal string, like the full response.
+    pub balance: Decimal,
+}
+
+impl From<AccountBriefRow> for AccountBriefResponse {
+    fn from((id, name, currency, balance): AccountBriefRow) -> Self {
+        Self {
+            id,
+            name,
+            currency,
+            balance,
+        }
+    }
+}
+
+/// `GET /api/accounts` body: the full row set, or the brief shape the SPA asks
+/// for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum AccountsResponse {
+    Full(Vec<AccountResponse>),
+    Brief(Vec<AccountBriefResponse>),
+}
 const GET_ACCOUNT_SQL: &str = "SELECT id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
 
 /// Account row: the 10 surviving account columns (sqlx 0.8 FromRow tuple cap
@@ -257,14 +295,28 @@ pub async fn create_account_handler(
 pub async fn list_accounts_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<AccountResponse>>, AppError> {
+    Query(query): Query<ShapeQuery>,
+) -> Result<Json<AccountsResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
+    if shape.is_brief() {
+        let rows = sqlx::query_as::<_, AccountBriefRow>(LIST_ACCOUNTS_BRIEF_SQL)
+            .bind(user_id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        return Ok(Json(AccountsResponse::Brief(
+            rows.into_iter().map(AccountBriefResponse::from).collect(),
+        )));
+    }
     let rows = sqlx::query_as::<_, AccountRow>(LIST_ACCOUNTS_SQL)
         .bind(user_id)
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(AccountResponse::from).collect()))
+    Ok(Json(AccountsResponse::Full(
+        rows.into_iter().map(AccountResponse::from).collect(),
+    )))
 }
 
 pub async fn get_account_handler(
@@ -426,6 +478,40 @@ mod tests {
     fn assert_422(err: AppError) {
         let resp = err.into_response();
         assert_eq!(resp.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// The brief shape is the four fields the dashboard and the finance panel
+    /// read; the full list keeps serving every column. Closing the gap the
+    /// independent verifier flagged for this module.
+    #[test]
+    fn brief_sql_selects_only_the_four_wire_fields() {
+        let select_list = LIST_ACCOUNTS_BRIEF_SQL
+            .split(" FROM ")
+            .next()
+            .unwrap_or(LIST_ACCOUNTS_BRIEF_SQL);
+        for kept in ["id", "name", "currency", "balance"] {
+            assert!(
+                select_list.contains(kept),
+                "brief SELECT must keep `{kept}`, got: {LIST_ACCOUNTS_BRIEF_SQL}"
+            );
+        }
+        for dropped in [
+            "notes",
+            "color",
+            "icon",
+            "is_archived",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                !select_list.contains(dropped),
+                "brief SELECT must not carry `{dropped}`, got: {LIST_ACCOUNTS_BRIEF_SQL}"
+            );
+        }
+        assert!(
+            LIST_ACCOUNTS_SQL.contains("notes") && LIST_ACCOUNTS_SQL.contains("created_at"),
+            "the default list must keep the full projection, got: {LIST_ACCOUNTS_SQL}"
+        );
     }
 
     #[test]
