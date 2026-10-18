@@ -575,14 +575,17 @@ function kpiTile(label: string): HTMLElement {
 describe("productivity KPI row (T5a, real data only)", () => {
   // This block pins the clock; without it the fixtures were anchored on the
   // current instant and the events list silently fell out of "today" on any
-  // run after ~21:00 local.
+  // run after ~21:00 local. The pinned instant is built from local components
+  // so it shares the runtime zone with the `atHour` fixtures below; a
+  // fixed-offset string ("…-05:00") made CI (TZ=UTC) read local 16:00 as
+  // already past and silently emptied the events rows.
   afterEach(() => {
     vi.useRealTimers();
   });
 
   it("recomputes every figure from the live reads", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-10-11T15:00:00-05:00"));
+    vi.setSystemTime(new Date(2026, 9, 11, 15, 0, 0)); // local 15:00 on Sun 2026-10-11
     const monday = startOfIsoWeek(todayYmdLocal());
     const wednesday = addDays(monday, 2);
     const lastWeekMonday = addDays(monday, -7);
