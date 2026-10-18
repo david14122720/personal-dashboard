@@ -34,7 +34,7 @@
 //! Registered in `routes/mod.rs` (pay wiring in `main.rs`, S-B slice).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -51,6 +51,7 @@ use crate::{
         money::{parse_money_amount_nonneg, MAX_MONEY_AMOUNT},
         validation::ensure_owned_category,
     },
+    routes::{parse_read_shape, ShapeQuery},
     state::AppState,
 };
 
@@ -74,12 +75,22 @@ pub fn validate_price(raw: &str) -> Result<Decimal, AppError> {
 }
 const CREATE_SUB_SQL: &str = "INSERT INTO subscriptions (user_id, name, price, currency, frequency, next_billing_on, category_id, payment_method, url, notes) VALUES ($1,$2,$3,$4,$5::subscription_frequency,$6,$7,$8,$9,$10) RETURNING id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on";
 const LIST_SUBS_SQL: &str = "SELECT id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on FROM subscriptions WHERE user_id=$1 ORDER BY created_at ASC";
+/// Brief shape (`?shape=brief`): exactly the eight fields the browser views
+/// read from a subscription. The WHERE scope and ORDER BY are the full
+/// list's verbatim; dropped for the browser are category_id,
+/// payment_method, url, notes, cancelled_at, created_at, updated_at (the
+/// MCP keeps the full projection).
+const LIST_SUBS_BRIEF_SQL: &str =
+    "SELECT id, name, price, currency, frequency::text, next_billing_on, is_active, last_paid_on FROM subscriptions WHERE user_id=$1 ORDER BY created_at ASC";
 const GET_SUB_SQL: &str = "SELECT id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on FROM subscriptions WHERE id=$1 AND user_id=$2";
 const PATCH_SUB_SQL: &str = "UPDATE subscriptions SET name=COALESCE($3, name), price=COALESCE($4, price), next_billing_on=COALESCE($5, next_billing_on), is_active=COALESCE($6, is_active), cancelled_at=CASE WHEN $6 IS NULL THEN cancelled_at WHEN $6 THEN NULL ELSE COALESCE(cancelled_at, now()) END, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on";
 const DELETE_SUB_SQL: &str = "DELETE FROM subscriptions WHERE id=$1 AND user_id=$2";
+/// Pay-time account lock. Carries the currency so the handler can enforce the
+/// same-currency rule against the subscription before any ledger row or debit
+/// is written (mirrors `LOCK_TRANSFER_ACCOUNTS_SQL` in `movements.rs`).
 const PAY_LOCK_ACCOUNT_SQL: &str =
-    "SELECT id FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
-const PAY_LOCK_SUB_SQL: &str = "SELECT id, price, is_active, next_billing_on, last_paid_on FROM subscriptions WHERE id=$1 AND user_id=$2 FOR UPDATE";
+    "SELECT id, currency FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
+const PAY_LOCK_SUB_SQL: &str = "SELECT id, price, is_active, next_billing_on, last_paid_on, currency FROM subscriptions WHERE id=$1 AND user_id=$2 FOR UPDATE";
 const SEED_CATEGORY_SQL: &str = "INSERT INTO categories (user_id, kind, name) VALUES ($1, 'finance'::category_kind, 'Suscripciones') ON CONFLICT (user_id, kind, name) DO UPDATE SET name = EXCLUDED.name RETURNING id";
 const PAY_INSERT_MOVEMENT_SQL: &str = "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on, description, subscription_id) VALUES ($1,$2,$3,'expense',$4,$5,NULL,$6)";
 const PAY_DEBIT_ACCOUNT_SQL: &str =
@@ -105,8 +116,15 @@ type SubscriptionRow = (
 );
 
 /// Pay-time locked subscription: id, price, is_active, next_billing_on,
-/// last_paid_on.
-type PayLockedRow = (Uuid, Decimal, bool, Option<NaiveDate>, Option<NaiveDate>);
+/// last_paid_on, currency.
+type PayLockedRow = (
+    Uuid,
+    Decimal,
+    bool,
+    Option<NaiveDate>,
+    Option<NaiveDate>,
+    String,
+);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -231,6 +249,83 @@ impl From<SubscriptionRow> for SubscriptionResponse {
             last_paid_on,
         }
     }
+}
+
+/// Brief subscription row: id, name, price, currency, frequency,
+/// next_billing_on, is_active, last_paid_on (S12 order).
+type SubscriptionBriefRow = (
+    Uuid,
+    String,
+    Decimal,
+    String,
+    String,
+    Option<NaiveDate>,
+    bool,
+    Option<NaiveDate>,
+);
+
+/// Brief subscription response (`?shape=brief`): id, name, price, currency,
+/// frequency, next_billing_on, is_active, last_paid_on.
+#[derive(Debug, Serialize)]
+pub struct SubscriptionBriefResponse {
+    pub id: Uuid,
+    pub name: String,
+    /// Serialized as a string (e.g. `"9.99"`); `rust_decimal`'s serde impl
+    /// renders decimals as strings, never floats.
+    pub price: Decimal,
+    pub currency: String,
+    pub frequency: String,
+    pub next_billing_on: Option<NaiveDate>,
+    /// Lifecycle flag; `true` at creation alongside `cancelled_at = NULL`.
+    pub is_active: bool,
+    /// Date of the last successful pay in `America/Bogota` (`NULL` = never
+    /// paid).
+    pub last_paid_on: Option<NaiveDate>,
+}
+
+impl From<SubscriptionBriefRow> for SubscriptionBriefResponse {
+    fn from(
+        row: (
+            Uuid,
+            String,
+            Decimal,
+            String,
+            String,
+            Option<NaiveDate>,
+            bool,
+            Option<NaiveDate>,
+        ),
+    ) -> Self {
+        let (
+            id,
+            name,
+            price,
+            currency,
+            frequency,
+            next_billing_on,
+            is_active,
+            last_paid_on,
+        ) = row;
+        Self {
+            id,
+            name,
+            price,
+            currency,
+            frequency,
+            next_billing_on,
+            is_active,
+            last_paid_on,
+        }
+    }
+}
+
+/// `GET /api/subscriptions` body: the full row set, or the brief shape the
+/// SPA asks for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum SubscriptionsResponse {
+    Full(Vec<SubscriptionResponse>),
+    Brief(Vec<SubscriptionBriefResponse>),
 }
 
 /// Validate a required short text field: 1-`max` chars after trimming, no
@@ -388,8 +483,25 @@ pub async fn create_subscription_handler(
 pub async fn list_subscriptions_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<SubscriptionResponse>>, AppError> {
+    Query(query): Query<ShapeQuery>,
+) -> Result<Json<SubscriptionsResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
+    if shape.is_brief() {
+        let rows = sqlx::query_as::<_, SubscriptionBriefRow>(LIST_SUBS_BRIEF_SQL)
+            .bind(user_id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("list_subscriptions failed: {e:?}");
+                AppError::Internal
+            })?;
+        return Ok(Json(SubscriptionsResponse::Brief(
+            rows.into_iter()
+                .map(SubscriptionBriefResponse::from)
+                .collect(),
+        )));
+    }
     let rows = sqlx::query_as::<_, SubscriptionRow>(LIST_SUBS_SQL)
         .bind(user_id)
         .fetch_all(&state.pool)
@@ -398,9 +510,9 @@ pub async fn list_subscriptions_handler(
             tracing::error!("list_subscriptions failed: {e:?}");
             AppError::Internal
         })?;
-    Ok(Json(
+    Ok(Json(SubscriptionsResponse::Full(
         rows.into_iter().map(SubscriptionResponse::from).collect(),
-    ))
+    )))
 }
 
 pub async fn get_subscription_handler(
@@ -490,15 +602,15 @@ pub async fn pay_subscription_handler(
     let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
     // Lock-first (movements discipline): the account row serializes
     // concurrent payers; a referenced foreign/missing account is 404.
-    let locked_account: Option<Uuid> = sqlx::query_scalar(PAY_LOCK_ACCOUNT_SQL)
+    let locked_account: Option<(Uuid, String)> = sqlx::query_as(PAY_LOCK_ACCOUNT_SQL)
         .bind(body.account_id)
         .bind(user_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|_| AppError::Internal)?;
-    if locked_account.is_none() {
+    let Some((_, account_currency)) = locked_account else {
         return Err(AppError::NotFound);
-    }
+    };
     // Then the subscription row: foreign/missing is 404, never 403.
     let locked: Option<PayLockedRow> = sqlx::query_as(PAY_LOCK_SUB_SQL)
         .bind(id)
@@ -506,9 +618,18 @@ pub async fn pay_subscription_handler(
         .fetch_optional(&mut *tx)
         .await
         .map_err(|_| AppError::Internal)?;
-    let Some((_, price, is_active, next_billing_on, last_paid_on)) = locked else {
+    let Some((_, price, is_active, next_billing_on, last_paid_on, sub_currency)) = locked else {
         return Err(AppError::NotFound);
     };
+    // Same-currency rule (money integrity, mirrors the transfer path): the
+    // subscription may only be paid from an account denominated in its own
+    // currency. Without this the ledger row and the debit mix scales and the
+    // account balance stops meaning what it says.
+    if account_currency != sub_currency {
+        return Err(AppError::Validation(
+            "la cuenta y la suscripción deben tener la misma moneda".into(),
+        ));
+    }
     if !is_active {
         return Err(AppError::Validation(
             "la suscripción está cancelada y no se puede pagar".into(),
@@ -885,6 +1006,50 @@ mod tests {
     }
 
     #[test]
+    fn brief_sql_selects_only_s12_columns_with_verbatim_scope_and_order() {
+        assert!(
+            LIST_SUBS_BRIEF_SQL.contains("user_id"),
+            "brief SQL must scope by user_id, got: {LIST_SUBS_BRIEF_SQL}"
+        );
+        // Only the SELECT list must be free of the dropped columns: the
+        // verbatim ORDER BY legitimately still mentions `created_at`.
+        let select_list = LIST_SUBS_BRIEF_SQL.split(" FROM ").next().unwrap_or(LIST_SUBS_BRIEF_SQL);
+        for dropped in [
+            "category_id",
+            "payment_method",
+            "url",
+            "notes",
+            "cancelled_at",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                !select_list.contains(dropped),
+                "brief SELECT must not carry `{dropped}`, got: {LIST_SUBS_BRIEF_SQL}"
+            );
+        }
+        for kept in [
+            "id",
+            "name",
+            "price",
+            "currency",
+            "frequency::text",
+            "next_billing_on",
+            "is_active",
+            "last_paid_on",
+        ] {
+            assert!(
+                LIST_SUBS_BRIEF_SQL.contains(kept),
+                "brief SQL must keep `{kept}`, got: {LIST_SUBS_BRIEF_SQL}"
+            );
+        }
+        assert!(
+            LIST_SUBS_BRIEF_SQL.contains("ORDER BY created_at ASC"),
+            "brief must keep the full list order verbatim, got: {LIST_SUBS_BRIEF_SQL}"
+        );
+    }
+
+    #[test]
     fn subscription_sql_scopes_every_query_by_user_id() {
         for sql in [
             CREATE_SUB_SQL,
@@ -942,6 +1107,10 @@ mod tests {
         assert!(
             PAY_LOCK_SUB_SQL.contains("FOR UPDATE") && PAY_LOCK_ACCOUNT_SQL.contains("FOR UPDATE"),
             "pay must lock account then subscription"
+        );
+        assert!(
+            PAY_LOCK_SUB_SQL.contains("currency") && PAY_LOCK_ACCOUNT_SQL.contains("currency"),
+            "pay must carry both currencies so the same-currency rule is enforceable"
         );
     }
 
@@ -1068,6 +1237,64 @@ mod tests {
         .await
     }
 
+    /// Behavioral regression test for the pay same-currency rule: the static
+    /// assertions below only prove the lock SQL carries `currency`, which stays
+    /// true even if the comparison itself is deleted. Transfers already had a
+    /// DB-backed cross-currency test; pay did not.
+    #[tokio::test]
+    async fn pay_rejects_a_cross_currency_account_and_writes_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP pay_rejects_a_cross_currency_account_and_writes_nothing: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cop: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, balance, currency) VALUES ($1,'acct-cop',$2::numeric,'COP') RETURNING id",
+        )
+        .bind(user_id)
+        .bind("1000.00")
+        .fetch_one(&pool)
+        .await
+        .expect("seed COP account");
+        let usd_account: Uuid = sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, balance, currency) VALUES ($1,'acct-usd',$2::numeric,'USD') RETURNING id",
+        )
+        .bind(user_id)
+        .bind("100.00")
+        .fetch_one(&pool)
+        .await
+        .expect("seed USD account");
+        let usd_sub: Uuid = sqlx::query_scalar(
+            "INSERT INTO subscriptions (user_id, name, price, currency, frequency, next_billing_on) VALUES ($1,'sub-usd',$2::numeric,'USD','monthly'::subscription_frequency, current_date + 7) RETURNING id",
+        )
+        .bind(user_id)
+        .bind("9.99")
+        .fetch_one(&pool)
+        .await
+        .expect("seed USD subscription");
+
+        let err = pay(state.clone(), headers.clone(), usd_sub, cop)
+            .await
+            .expect_err("a cross-currency pay must be rejected");
+        assert_422(err);
+        assert_eq!(balance_of(&pool, cop).await, Decimal::from(1000));
+        assert_eq!(movement_count(&pool, user_id).await, 0);
+
+        // The matching currency still pays: the rule blocks mismatches only.
+        let paid = pay(state, headers, usd_sub, usd_account)
+            .await
+            .expect("a same-currency pay succeeds");
+        assert_eq!(paid.id, usd_sub);
+        assert_eq!(
+            balance_of(&pool, usd_account).await,
+            Decimal::from(100) - "9.99".parse::<Decimal>().expect("decimal literal")
+        );
+        assert_eq!(movement_count(&pool, user_id).await, 1);
+        cleanup_user(&pool, user_id).await;
+    }
+
     #[tokio::test]
     async fn create_201_active_then_get_200_then_delete_204() {
         let Some(pool) = test_pool() else {
@@ -1096,9 +1323,16 @@ mod tests {
             .await
             .expect("get own subscription is 200");
         assert_eq!(got.name, "Netflix");
-        let listed = list_subscriptions_handler(State(state.clone()), headers.clone())
-            .await
-            .expect("list subscriptions is 200");
+        let listed = list_subscriptions_handler(
+            State(state.clone()),
+            headers.clone(),
+            Query(ShapeQuery { shape: None }),
+        )
+        .await
+        .expect("list subscriptions is 200");
+        let SubscriptionsResponse::Full(listed) = listed.0 else {
+            panic!("default list must serve the full shape");
+        };
         assert!(listed.iter().any(|s| s.id == created.id));
         let status =
             delete_subscription_handler(State(state.clone()), headers.clone(), Path(created.id))

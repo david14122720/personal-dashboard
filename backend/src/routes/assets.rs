@@ -37,7 +37,7 @@
 //! Registered in `routes/mod.rs` (wiring in `main.rs` lands in Phase 6).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -48,6 +48,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::helper::require_user_id, error::AppError, finance::money::parse_money_amount_nonneg,
+    routes::{parse_read_shape, ShapeQuery},
     state::AppState,
 };
 
@@ -80,6 +81,12 @@ pub fn validate_value(raw: &str) -> Result<Decimal, AppError> {
 
 const CREATE_ASSET_SQL: &str = "INSERT INTO assets (user_id, name, category, account_id, currency, acquired_on, notes) VALUES ($1,$2,$3::asset_category,$4,$5,$6,$7) RETURNING id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at";
 const LIST_ASSETS_SQL: &str = "SELECT id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at FROM assets WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
+/// Brief shape (`?shape=brief`): exactly the seven fields the browser views
+/// read from an asset. The WHERE scope and ORDER BY are the full list's
+/// verbatim; dropped for the browser are current_value, is_archived,
+/// created_at, updated_at (the MCP keeps the full projection).
+const LIST_ASSETS_BRIEF_SQL: &str =
+    "SELECT id, name, category::text, account_id, currency, acquired_on, notes FROM assets WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
 const GET_ASSET_SQL: &str = "SELECT id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived";
 const ARCHIVE_ASSET_SQL: &str =
     "UPDATE assets SET is_archived=TRUE, updated_at=now() WHERE id=$1 AND user_id=$2 AND NOT is_archived";
@@ -90,6 +97,14 @@ const ASSET_OWNERSHIP_SQL: &str =
 const ASSET_EXISTS_SQL: &str = "SELECT id FROM assets WHERE id=$1";
 const ACCOUNT_OWNERSHIP_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
 const MAX_VALUATION_SQL: &str = "SELECT max(recorded_on) FROM asset_valuations WHERE asset_id=$1";
+/// Valuation writes lock the owned asset row first (movements discipline). The
+/// ordering guard below is check-then-act, and without the lock two concurrent
+/// inserts both pass it: the `AFTER INSERT` trigger then overwrites
+/// `current_value` with whichever row commits last, older date included.
+/// `AND NOT is_archived` preserves the `ensure_asset_writable` contract
+/// (archived or foreign → 404, truly absent → 422).
+const LOCK_ASSET_SQL: &str =
+    "SELECT id FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived FOR UPDATE";
 const CREATE_VALUATION_SQL: &str = "INSERT INTO asset_valuations (user_id, asset_id, value, recorded_on, notes) VALUES ($1,$2,$3,$4,$5) RETURNING id, asset_id, value, recorded_on, notes, created_at";
 // Test-only probe: verifies trigger-synced current_value without going through HTTP.
 #[cfg(test)]
@@ -111,6 +126,65 @@ type AssetRow = (
     DateTime<Utc>,
     DateTime<Utc>,
 );
+
+/// Brief asset row: id, name, category, account_id, currency, acquired_on,
+/// notes (S12 order).
+type AssetBriefRow = (
+    Uuid,
+    String,
+    String,
+    Option<Uuid>,
+    String,
+    Option<NaiveDate>,
+    Option<String>,
+);
+
+/// Brief asset response (`?shape=brief`): id, name, category, account_id,
+/// currency, acquired_on, notes.
+#[derive(Debug, Serialize)]
+pub struct AssetBriefResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub category: String,
+    pub account_id: Option<Uuid>,
+    pub currency: String,
+    pub acquired_on: Option<NaiveDate>,
+    pub notes: Option<String>,
+}
+
+impl From<AssetBriefRow> for AssetBriefResponse {
+    fn from(
+        row: (
+            Uuid,
+            String,
+            String,
+            Option<Uuid>,
+            String,
+            Option<NaiveDate>,
+            Option<String>,
+        ),
+    ) -> Self {
+        let (id, name, category, account_id, currency, acquired_on, notes) = row;
+        Self {
+            id,
+            name,
+            category,
+            account_id,
+            currency,
+            acquired_on,
+            notes,
+        }
+    }
+}
+
+/// `GET /api/assets` body: the full row set, or the brief shape the SPA asks
+/// for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum AssetsResponse {
+    Full(Vec<AssetResponse>),
+    Brief(Vec<AssetBriefResponse>),
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -396,14 +470,28 @@ pub async fn create_asset_handler(
 pub async fn list_assets_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<AssetResponse>>, AppError> {
+    Query(query): Query<ShapeQuery>,
+) -> Result<Json<AssetsResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
+    if shape.is_brief() {
+        let rows = sqlx::query_as::<_, AssetBriefRow>(LIST_ASSETS_BRIEF_SQL)
+            .bind(user_id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        return Ok(Json(AssetsResponse::Brief(
+            rows.into_iter().map(AssetBriefResponse::from).collect(),
+        )));
+    }
     let rows = sqlx::query_as::<_, AssetRow>(LIST_ASSETS_SQL)
         .bind(user_id)
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::Internal)?;
-    Ok(Json(rows.into_iter().map(AssetResponse::from).collect()))
+    Ok(Json(AssetsResponse::Full(
+        rows.into_iter().map(AssetResponse::from).collect(),
+    )))
 }
 
 pub async fn get_asset_handler(
@@ -585,12 +673,32 @@ pub async fn create_valuation_handler(
     let value = validate_value(&body.value)?;
     let recorded_on = validate_calendar_date(&body.recorded_on, "recorded_on")?;
     validate_optional_text(body.notes.as_deref(), MAX_TEXT_LEN, "notes")?;
-    ensure_asset_writable(&state.pool, asset_id, user_id).await?;
+    // Lock-first: the asset row serializes concurrent valuation writers, so the
+    // ordering guard cannot be raced. Ownership contract unchanged.
+    let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
+    let owned: Option<Uuid> = sqlx::query_scalar(LOCK_ASSET_SQL)
+        .bind(asset_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if owned.is_none() {
+        let exists: Option<Uuid> = sqlx::query_scalar(ASSET_EXISTS_SQL)
+            .bind(asset_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        return Err(if exists.is_some() {
+            AppError::NotFound
+        } else {
+            AppError::Validation("asset does not exist".into())
+        });
+    }
     // Ordering guard: the trigger blindly overwrites `current_value`, so a
     // valuation at or before the latest recorded date is rejected here.
     let latest: Option<NaiveDate> = sqlx::query_scalar(MAX_VALUATION_SQL)
         .bind(asset_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|_| AppError::Internal)?
         .flatten();
@@ -607,9 +715,10 @@ pub async fn create_valuation_handler(
         .bind(value)
         .bind(recorded_on)
         .bind(body.notes.as_deref())
-        .fetch_one(&state.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(map_valuation_db_err)?;
+    tx.commit().await.map_err(|_| AppError::Internal)?;
     Ok((StatusCode::CREATED, Json(ValuationResponse::from(row))))
 }
 
@@ -664,6 +773,18 @@ mod tests {
     fn assert_409(err: AppError) {
         let resp = err.into_response();
         assert_eq!(resp.status(), axum::http::StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn valuation_write_locks_the_owned_asset_row_first() {
+        assert!(
+            LOCK_ASSET_SQL.contains("FOR UPDATE") && LOCK_ASSET_SQL.contains("user_id"),
+            "a valuation write must lock the owned asset row before the ordering guard, got: {LOCK_ASSET_SQL}"
+        );
+        assert!(
+            LOCK_ASSET_SQL.contains("NOT is_archived"),
+            "the lock must keep the ensure_asset_writable contract, got: {LOCK_ASSET_SQL}"
+        );
     }
 
     #[test]
@@ -865,6 +986,46 @@ mod tests {
     }
 
     #[test]
+    fn brief_sql_selects_only_s12_columns_with_verbatim_scope_and_order() {
+        assert!(
+            LIST_ASSETS_BRIEF_SQL.contains("user_id"),
+            "brief SQL must scope by user_id, got: {LIST_ASSETS_BRIEF_SQL}"
+        );
+        // The brief projection drops current_value, is_archived, created_at
+        // and updated_at (S12); only the SELECT list is checked because the
+        // WHERE clause keeps `NOT is_archived` verbatim.
+        let select = LIST_ASSETS_BRIEF_SQL
+            .split("FROM")
+            .next()
+            .expect("brief SQL has a FROM clause");
+        for dropped in ["current_value", "is_archived", "created_at", "updated_at"] {
+            assert!(
+                !select.contains(dropped),
+                "brief SELECT must not carry `{dropped}`, got: {select}"
+            );
+        }
+        for kept in [
+            "id",
+            "name",
+            "category::text",
+            "account_id",
+            "currency",
+            "acquired_on",
+            "notes",
+        ] {
+            assert!(
+                select.contains(kept),
+                "brief SELECT must keep `{kept}`, got: {select}"
+            );
+        }
+        assert!(
+            LIST_ASSETS_BRIEF_SQL.contains("NOT is_archived")
+                && LIST_ASSETS_BRIEF_SQL.contains("ORDER BY created_at ASC"),
+            "brief must keep the full list scope and order verbatim, got: {LIST_ASSETS_BRIEF_SQL}"
+        );
+    }
+
+    #[test]
     fn asset_sql_scopes_every_query_by_user_id() {
         for sql in [
             CREATE_ASSET_SQL,
@@ -1035,18 +1196,32 @@ mod tests {
             .await
             .expect("get own asset is 200");
         assert_eq!(got.name, "Stock A");
-        let listed = list_assets_handler(State(state.clone()), headers.clone())
-            .await
-            .expect("list assets is 200");
+        let listed = list_assets_handler(
+            State(state.clone()),
+            headers.clone(),
+            Query(ShapeQuery { shape: None }),
+        )
+        .await
+        .expect("list assets is 200");
+        let AssetsResponse::Full(listed) = listed.0 else {
+            panic!("default list must serve the full shape");
+        };
         assert!(listed.iter().any(|a| a.id == created.id));
         let status = delete_asset_handler(State(state.clone()), headers.clone(), Path(created.id))
             .await
             .expect("archive is 204");
         assert_eq!(status, StatusCode::NO_CONTENT);
         // Archived assets read as deleted: hidden from list and detail.
-        let listed = list_assets_handler(State(state.clone()), headers.clone())
-            .await
-            .expect("list after archive is 200");
+        let listed = list_assets_handler(
+            State(state.clone()),
+            headers.clone(),
+            Query(ShapeQuery { shape: None }),
+        )
+        .await
+        .expect("list after archive is 200");
+        let AssetsResponse::Full(listed) = listed.0 else {
+            panic!("default list must serve the full shape");
+        };
         assert!(!listed.iter().any(|a| a.id == created.id));
         let err = get_asset_handler(State(state.clone()), headers.clone(), Path(created.id))
             .await

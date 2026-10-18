@@ -159,8 +159,13 @@ export function PaySubscriptionModal({
   const selectRef = useRef<HTMLSelectElement>(null);
   const closedRef = useRef(false);
 
+  // Same-currency rule: the server answers 422 for a mismatched pay, so the
+  // picker only offers accounts the payment can actually succeed from
+  // (mirrors the transfer modal, which blocks cross-currency pairs).
   const options = toAccountOptions(
-    (accounts.data ?? []).map((row) => ({ id: row.id, name: row.name })),
+    (accounts.data ?? [])
+      .filter((row) => row.currency === sub.currency)
+      .map((row) => ({ id: row.id, name: row.name })),
   );
 
   function close(): void {
@@ -228,6 +233,11 @@ export function PaySubscriptionModal({
           {options.map((o) => (<option key={o.id} value={o.id}>{o.name}</option>))}
         </select>
       </label>
+      {options.length === 0 ? (
+        <p role="status" className="mt-1 text-xs text-instrument/60">
+          {t("finance.payNoAccountInCurrency", { currency: sub.currency ?? "COP" })}
+        </p>
+      ) : null}
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         <button
           type="button"

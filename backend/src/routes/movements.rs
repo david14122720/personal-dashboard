@@ -54,6 +54,7 @@ use crate::{
         validation::{ensure_owned_account, ensure_owned_category, validate_occurred_on},
     },
     routes::habits::ValidatedQuery,
+    routes::parse_read_shape,
     state::AppState,
 };
 
@@ -62,6 +63,12 @@ use crate::{
 const MAX_DESCRIPTION_LEN: usize = 2000;
 
 const LOCK_ACCOUNT_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
+/// Currency of an owned account, read inside the PATCH transaction: a movement
+/// may only be re-pointed to an account of its own currency, otherwise the
+/// stored delta is silently re-denominated (the pay path carries the same
+/// rule). An account's currency is immutable after creation — `PATCH
+/// /accounts` never accepts it — so the read needs no extra lock.
+const ACCOUNT_CURRENCY_SQL: &str = "SELECT currency FROM accounts WHERE id=$1 AND user_id=$2";
 /// Transfer-scoped account lock: unlike [`LOCK_ACCOUNT_SQL`] it also returns
 /// the currency, so the handler can enforce the same-currency rule on the
 /// locked rows (design D2.2).
@@ -84,6 +91,15 @@ const LIST_MOVEMENTS_SQL: &str = "SELECT id, account_id, transfer_account_id, ca
 /// neither parameter the handler keeps serving [`LIST_MOVEMENTS_SQL`].
 /// No `limit` (S3a): no consumer in this delivery needs pagination.
 const LIST_MOVEMENTS_RANGE_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE user_id=$1 AND occurred_on >= $2 AND occurred_on <= $3 ORDER BY occurred_on DESC, created_at DESC, id DESC";
+/// Brief shape (`?shape=brief`) of the unbounded list: the S12 fields the
+/// browser views read; the WHERE scope and ORDER BY are the full list's
+/// verbatim. Dropped for the browser: subscription_id, created_at,
+/// updated_at (the MCP keeps the full projection).
+const LIST_MOVEMENTS_BRIEF_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description FROM movements WHERE user_id=$1 ORDER BY occurred_on DESC, created_at DESC, id DESC";
+/// Brief shape of the ranged list: same S12 columns as
+/// [`LIST_MOVEMENTS_BRIEF_SQL`] with the range bounds and the full range
+/// order verbatim.
+const LIST_MOVEMENTS_RANGE_BRIEF_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description FROM movements WHERE user_id=$1 AND occurred_on >= $2 AND occurred_on <= $3 ORDER BY occurred_on DESC, created_at DESC, id DESC";
 const GET_MOVEMENT_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE id=$1 AND user_id=$2";
 /// Authoritative PATCH re-read: inside the transaction, under the account
 /// lock, the stored money terms (account, destination, direction, amount)
@@ -170,6 +186,7 @@ pub struct PatchMovementRequest {
 pub struct MovementRangeQuery {
     pub from: Option<String>,
     pub to: Option<String>,
+    pub shape: Option<String>,
 }
 
 /// Parse the `GET /movements?from&to` range bounds (strict `YYYY-MM-DD` via
@@ -260,6 +277,83 @@ impl From<MovementRow> for MovementResponse {
             updated_at,
         }
     }
+}
+
+/// Brief movement row: id, account_id, transfer_account_id, category_id,
+/// direction, amount, occurred_on, description (S12 order).
+type MovementBriefRow = (
+    Uuid,
+    Uuid,
+    Option<Uuid>,
+    Option<Uuid>,
+    String,
+    Decimal,
+    NaiveDate,
+    Option<String>,
+);
+
+/// Brief movement response (`?shape=brief`): id, account_id,
+/// transfer_account_id, category_id, direction, amount, occurred_on,
+/// description.
+#[derive(Debug, Serialize)]
+pub struct MovementBriefResponse {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    /// Destination account for a transfer; `null` for expense/income.
+    pub transfer_account_id: Option<Uuid>,
+    pub category_id: Option<Uuid>,
+    pub direction: String,
+    /// Serialized as a string (e.g. `"25000.00"`); `rust_decimal`'s serde
+    /// impl renders decimals as strings, never floats.
+    pub amount: Decimal,
+    /// Serialized as `YYYY-MM-DD`.
+    pub occurred_on: NaiveDate,
+    pub description: Option<String>,
+}
+
+impl From<MovementBriefRow> for MovementBriefResponse {
+    fn from(
+        row: (
+            Uuid,
+            Uuid,
+            Option<Uuid>,
+            Option<Uuid>,
+            String,
+            Decimal,
+            NaiveDate,
+            Option<String>,
+        ),
+    ) -> Self {
+        let (
+            id,
+            account_id,
+            transfer_account_id,
+            category_id,
+            direction,
+            amount,
+            occurred_on,
+            description,
+        ) = row;
+        Self {
+            id,
+            account_id,
+            transfer_account_id,
+            category_id,
+            direction,
+            amount,
+            occurred_on,
+            description,
+        }
+    }
+}
+
+/// `GET /api/movements` body: the full row set, or the brief shape the SPA
+/// asks for with `?shape=brief`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum MovementsResponse {
+    Full(Vec<MovementResponse>),
+    Brief(Vec<MovementBriefResponse>),
 }
 
 /// Validate the direction: exactly `expense` or `income`, else Spanish 422.
@@ -495,9 +589,39 @@ pub async fn list_movements_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     ValidatedQuery(query): ValidatedQuery<MovementRangeQuery>,
-) -> Result<Json<Vec<MovementResponse>>, AppError> {
+) -> Result<Json<MovementsResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     let range = parse_movement_range(query.from.as_deref(), query.to.as_deref())?;
+    let shape = parse_read_shape(query.shape.as_deref())?;
+    if shape.is_brief() {
+        let brief = match range {
+            Some((from, to)) => {
+                sqlx::query_as::<_, MovementBriefRow>(LIST_MOVEMENTS_RANGE_BRIEF_SQL)
+                    .bind(user_id)
+                    .bind(from)
+                    .bind(to)
+                    .fetch_all(&state.pool)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("list_movements range failed: {e:?}");
+                        AppError::Internal
+                    })?
+            }
+            None => {
+                sqlx::query_as::<_, MovementBriefRow>(LIST_MOVEMENTS_BRIEF_SQL)
+                    .bind(user_id)
+                    .fetch_all(&state.pool)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("list_movements failed: {e:?}");
+                        AppError::Internal
+                    })?
+            }
+        };
+        return Ok(Json(MovementsResponse::Brief(
+            brief.into_iter().map(MovementBriefResponse::from).collect(),
+        )));
+    }
     let rows = match range {
         Some((from, to)) => {
             sqlx::query_as::<_, MovementRow>(LIST_MOVEMENTS_RANGE_SQL)
@@ -522,7 +646,9 @@ pub async fn list_movements_handler(
                 })?
         }
     };
-    Ok(Json(rows.into_iter().map(MovementResponse::from).collect()))
+    Ok(Json(MovementsResponse::Full(
+        rows.into_iter().map(MovementResponse::from).collect()
+    )))
 }
 
 pub async fn get_movement_handler(
@@ -643,6 +769,29 @@ pub async fn patch_movement_handler(
                 .map_err(|_| AppError::Internal)?
                 .ok_or(AppError::NotFound)?;
             continue;
+        }
+        // Same-currency rule on a re-point: the stored amount lives in the
+        // scale of the account that holds it, so moving the movement to an
+        // account of another currency would corrupt both balances. Both
+        // accounts are already locked in this transaction, in ascending order.
+        if account_id != locked_response.account_id {
+            let from_currency: String = sqlx::query_scalar(ACCOUNT_CURRENCY_SQL)
+                .bind(locked_response.account_id)
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| AppError::Internal)?;
+            let to_currency: String = sqlx::query_scalar(ACCOUNT_CURRENCY_SQL)
+                .bind(account_id)
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| AppError::Internal)?;
+            if from_currency != to_currency {
+                return Err(AppError::Validation(
+                    "la cuenta debe usar la misma moneda que la del movimiento".into(),
+                ));
+            }
         }
         // Merge from the LOCKED row: omitted fields keep their stored value
         // as of the lock, and `subscription_id` is not a PATCH field, so the
@@ -1130,6 +1279,48 @@ mod tests {
     }
 
     #[test]
+    fn brief_sql_selects_only_s12_columns_with_verbatim_scope_and_order() {
+        for sql in [LIST_MOVEMENTS_BRIEF_SQL, LIST_MOVEMENTS_RANGE_BRIEF_SQL] {
+            assert!(
+                sql.contains("user_id"),
+                "brief SQL must scope by user_id, got: {sql}"
+            );
+            // Only the SELECT list must be free of the dropped columns: the
+            // verbatim ORDER BY legitimately still mentions `created_at`.
+            let select_list = sql.split(" FROM ").next().unwrap_or(sql);
+            for dropped in ["subscription_id", "created_at", "updated_at"] {
+                assert!(
+                    !select_list.contains(dropped),
+                    "brief SELECT must not carry `{dropped}`, got: {sql}"
+                );
+            }
+            for kept in [
+                "id",
+                "account_id",
+                "transfer_account_id",
+                "category_id",
+                "direction::text",
+                "amount",
+                "occurred_on",
+                "description",
+            ] {
+                assert!(
+                    sql.contains(kept),
+                    "brief SQL must keep `{kept}`, got: {sql}"
+                );
+            }
+            assert!(
+                sql.contains("ORDER BY occurred_on DESC, created_at DESC, id DESC"),
+                "brief must keep the full list order verbatim, got: {sql}"
+            );
+        }
+        assert!(
+            LIST_MOVEMENTS_RANGE_BRIEF_SQL.contains("occurred_on >= $2 AND occurred_on <= $3"),
+            "ranged brief must keep the range bounds verbatim, got: {LIST_MOVEMENTS_RANGE_BRIEF_SQL}"
+        );
+    }
+
+    #[test]
     fn movement_sql_scopes_every_query_by_user_id_and_locks_first() {
         // Shared projection: all six movement statements select exactly the
         // same 11 columns in the same order, so `MovementRow` decodes them
@@ -1168,6 +1359,10 @@ mod tests {
         assert!(
             LOCK_ACCOUNT_SQL.contains("FOR UPDATE"),
             "account probe must lock the row, got: {LOCK_ACCOUNT_SQL}"
+        );
+        assert!(
+            ACCOUNT_CURRENCY_SQL.contains("currency") && ACCOUNT_CURRENCY_SQL.contains("user_id"),
+            "the re-point currency read must be owned, got: {ACCOUNT_CURRENCY_SQL}"
         );
         assert!(
             LOCK_TRANSFER_ACCOUNTS_SQL.contains("FOR UPDATE")
@@ -1344,6 +1539,67 @@ mod tests {
     }
 
     // -- DB-gated tests (skip without DATABASE_URL) --------------------------
+
+    /// Behavioral regression for the PATCH same-currency rule: re-pointing a
+    /// stored movement at an account of another currency used to re-denominate
+    /// the delta silently (found by the independent verifier, same class as the
+    /// pay rule). A same-currency re-point must keep working.
+    #[tokio::test]
+    async fn patch_repoint_to_another_currency_is_422_and_moves_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP patch_repoint_to_another_currency_is_422_and_moves_nothing: no DATABASE_URL"
+            );
+            return;
+        };
+        async fn balance_of(pool: &sqlx::PgPool, account_id: Uuid) -> Decimal {
+            sqlx::query_scalar("SELECT balance FROM accounts WHERE id=$1")
+                .bind(account_id)
+                .fetch_one(pool)
+                .await
+                .expect("read balance")
+        }
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cop_from = seed_account(&pool, user_id, "cop-from", "1000.00").await;
+        let cop_to = seed_account(&pool, user_id, "cop-to", "500.00").await;
+        let usd = seed_account_with_currency(&pool, user_id, "usd", "0.00", "USD").await;
+        let category = seed_category(&pool, user_id, "finance", "cat").await;
+        let movement_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on) VALUES ($1,$2,$3,'expense',$4::numeric,'2026-10-01') RETURNING id",
+        )
+        .bind(user_id)
+        .bind(cop_from)
+        .bind(category)
+        .bind("100.00")
+        .fetch_one(&pool)
+        .await
+        .expect("seed movement");
+
+        let cross: PatchMovementRequest =
+            serde_json::from_value(json!({ "account_id": usd })).expect("valid patch body");
+        let err = patch_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(movement_id),
+            Json(cross),
+        )
+        .await
+        .expect_err("a cross-currency re-point must be rejected");
+        assert_422(err);
+        assert_eq!(balance_of(&pool, cop_from).await, Decimal::from(1000));
+        assert_eq!(balance_of(&pool, usd).await, Decimal::ZERO);
+
+        let same: PatchMovementRequest =
+            serde_json::from_value(json!({ "account_id": cop_to })).expect("valid patch body");
+        let moved = patch_movement_handler(State(state), headers, Path(movement_id), Json(same))
+            .await
+            .expect("a same-currency re-point succeeds");
+        assert_eq!(moved.account_id, cop_to);
+        // The reversal credits the origin, then the new debit lands on the target.
+        assert_eq!(balance_of(&pool, cop_from).await, Decimal::from(1100));
+        assert_eq!(balance_of(&pool, cop_to).await, Decimal::from(400));
+        cleanup_user(&pool, user_id).await;
+    }
 
     fn test_pool() -> Option<sqlx::PgPool> {
         std::env::var("DATABASE_URL")
@@ -2539,8 +2795,10 @@ mod tests {
         )
         .await
         .expect("list is 200");
+        let MovementsResponse::Full(listed) = listed.0 else {
+            panic!("default list must serve the full shape");
+        };
         let dates: Vec<String> = listed
-            .0
             .iter()
             .map(|m| m.occurred_on.to_string())
             .collect();
@@ -2553,6 +2811,7 @@ mod tests {
         ValidatedQuery(MovementRangeQuery {
             from: from.map(str::to_string),
             to: to.map(str::to_string),
+            shape: None,
         })
     }
 
@@ -2589,8 +2848,10 @@ mod tests {
         )
         .await
         .expect("ranged list is 200");
+        let MovementsResponse::Full(listed) = listed.0 else {
+            panic!("default ranged list must serve the full shape");
+        };
         let mut dates: Vec<String> = listed
-            .0
             .iter()
             .map(|m| m.occurred_on.to_string())
             .collect();

@@ -329,11 +329,30 @@ export default function FinanceScreens() {
     () => toCategoryOptions(allCategories.data ?? []),
     [allCategories.data],
   );
+  // Shared, UNFILTERED account options: the movement history filter, the asset
+  // account labels and the asset form all read this list, so nothing here may
+  // depend on which modal is open.
   const movementAccountOptions = useMemo(
     () =>
       toAccountOptions((accounts.data ?? []).map((row) => ({ id: row.id, name: row.name }))),
     [accounts.data],
   );
+  // The edit modal only offers same-currency accounts: a stored movement's
+  // amount lives in the currency of the account holding it, and the server
+  // rejects a cross-currency re-point with 422, so the UI must not offer a
+  // choice that can only fail. When the movement's account is archived it is
+  // absent from the brief list, the currency is unknown, and the modal keeps
+  // every account (the server still rejects the mismatch).
+  const movementModalAccountOptions = useMemo(() => {
+    if (movementModal?.kind !== "edit") return movementAccountOptions;
+    const stored = (accounts.data ?? []).find((a) => a.id === movementModal.movement.account_id);
+    if (!stored) return movementAccountOptions;
+    return toAccountOptions(
+      (accounts.data ?? [])
+        .filter((row) => row.currency === stored.currency)
+        .map((row) => ({ id: row.id, name: row.name })),
+    );
+  }, [accounts.data, movementAccountOptions, movementModal]);
   // Transfers also need each account's currency for the client-side
   // same-currency check (the backend re-validates it regardless).
   const transferAccountOptions = useMemo(
@@ -818,7 +837,7 @@ export default function FinanceScreens() {
       {movementModal ? (
         <MovementModal
           mode={movementModal}
-          accounts={movementAccountOptions}
+          accounts={movementModalAccountOptions}
           categories={movementCategoryOptions}
           openerRef={openerRef}
           onClose={() => setMovementModal(null)}

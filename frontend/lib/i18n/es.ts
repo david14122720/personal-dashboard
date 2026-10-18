@@ -276,6 +276,7 @@ export const es = {
     subscriptionPayConfirm: "Confirmar pago",
     paidThisCycle: "Pagado este ciclo",
     subscriptionPaidThisCycle: "Esta suscripción ya está pagada este ciclo.",
+    payNoAccountInCurrency: "Necesitás una cuenta en {currency} para pagar esta suscripción.",
     subscriptionFreeNoPay: "Las suscripciones gratuitas no requieren pago.",
     subscriptionSettingsTitle: "Suscripciones",
     subscriptionSettingsHint: "Crea y edita tus cargos mensuales fijos.",
