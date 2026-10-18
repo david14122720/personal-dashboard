@@ -1,0 +1,2856 @@
+diff --git a/backend/src/routes/accounts.rs b/backend/src/routes/accounts.rs
+index f63b238..0c8c870 100644
+--- a/backend/src/routes/accounts.rs
++++ b/backend/src/routes/accounts.rs
+@@ -14,7 +14,7 @@
+ //! Registered in `main.rs` (PR4 wiring).
+ 
+ use axum::{
+-    extract::{Path, State},
++    extract::{Path, Query, State},
+     http::{HeaderMap, StatusCode},
+     Json,
+ };
+@@ -27,6 +27,7 @@ use crate::{
+     auth::helper::require_user_id,
+     error::AppError,
+     finance::money::parse_balance_amount,
++    routes::{parse_read_shape, ShapeQuery},
+     state::AppState,
+ };
+ 
+@@ -40,6 +41,43 @@ const MAX_ICON_LEN: usize = 64;
+ 
+ const CREATE_ACCOUNT_SQL: &str = "INSERT INTO accounts (user_id, name, currency, notes, color, icon) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at";
+ const LIST_ACCOUNTS_SQL: &str = "SELECT id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
++/// Brief shape (`?shape=brief`): exactly the four fields the dashboard and the
++/// finance panel read from an account. Nothing else leaves the server for the
++/// browser — the full list stays available for the MCP and the per-id route.
++const LIST_ACCOUNTS_BRIEF_SQL: &str =
++    "SELECT id, name, currency, balance FROM accounts WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
++
++/// Brief account row: id, name, currency, balance.
++type AccountBriefRow = (Uuid, String, String, Decimal);
++
++#[derive(Debug, Serialize)]
++pub struct AccountBriefResponse {
++    pub id: Uuid,
++    pub name: String,
++    pub currency: String,
++    /// Serialized as a decimal string, like the full response.
++    pub balance: Decimal,
++}
++
++impl From<AccountBriefRow> for AccountBriefResponse {
++    fn from((id, name, currency, balance): AccountBriefRow) -> Self {
++        Self {
++            id,
++            name,
++            currency,
++            balance,
++        }
++    }
++}
++
++/// `GET /api/accounts` body: the full row set, or the brief shape the SPA asks
++/// for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum AccountsResponse {
++    Full(Vec<AccountResponse>),
++    Brief(Vec<AccountBriefResponse>),
++}
+ const GET_ACCOUNT_SQL: &str = "SELECT id, name, currency, balance, notes, color, icon, is_archived, created_at, updated_at FROM accounts WHERE id=$1 AND user_id=$2";
+ 
+ /// Account row: the 10 surviving account columns (sqlx 0.8 FromRow tuple cap
+@@ -257,14 +295,28 @@ pub async fn create_account_handler(
+ pub async fn list_accounts_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+-) -> Result<Json<Vec<AccountResponse>>, AppError> {
++    Query(query): Query<ShapeQuery>,
++) -> Result<Json<AccountsResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
++    if shape.is_brief() {
++        let rows = sqlx::query_as::<_, AccountBriefRow>(LIST_ACCOUNTS_BRIEF_SQL)
++            .bind(user_id)
++            .fetch_all(&state.pool)
++            .await
++            .map_err(|_| AppError::Internal)?;
++        return Ok(Json(AccountsResponse::Brief(
++            rows.into_iter().map(AccountBriefResponse::from).collect(),
++        )));
++    }
+     let rows = sqlx::query_as::<_, AccountRow>(LIST_ACCOUNTS_SQL)
+         .bind(user_id)
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(AccountResponse::from).collect()))
++    Ok(Json(AccountsResponse::Full(
++        rows.into_iter().map(AccountResponse::from).collect(),
++    )))
+ }
+ 
+ pub async fn get_account_handler(
+diff --git a/backend/src/routes/assets.rs b/backend/src/routes/assets.rs
+index 93d4a83..896ecb6 100644
+--- a/backend/src/routes/assets.rs
++++ b/backend/src/routes/assets.rs
+@@ -37,7 +37,7 @@
+ //! Registered in `routes/mod.rs` (wiring in `main.rs` lands in Phase 6).
+ 
+ use axum::{
+-    extract::{Path, State},
++    extract::{Path, Query, State},
+     http::{HeaderMap, StatusCode},
+     Json,
+ };
+@@ -48,6 +48,7 @@ use uuid::Uuid;
+ 
+ use crate::{
+     auth::helper::require_user_id, error::AppError, finance::money::parse_money_amount_nonneg,
++    routes::{parse_read_shape, ShapeQuery},
+     state::AppState,
+ };
+ 
+@@ -80,6 +81,12 @@ pub fn validate_value(raw: &str) -> Result<Decimal, AppError> {
+ 
+ const CREATE_ASSET_SQL: &str = "INSERT INTO assets (user_id, name, category, account_id, currency, acquired_on, notes) VALUES ($1,$2,$3::asset_category,$4,$5,$6,$7) RETURNING id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at";
+ const LIST_ASSETS_SQL: &str = "SELECT id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at FROM assets WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
++/// Brief shape (`?shape=brief`): exactly the seven fields the browser views
++/// read from an asset. The WHERE scope and ORDER BY are the full list's
++/// verbatim; dropped for the browser are current_value, is_archived,
++/// created_at, updated_at (the MCP keeps the full projection).
++const LIST_ASSETS_BRIEF_SQL: &str =
++    "SELECT id, name, category::text, account_id, currency, acquired_on, notes FROM assets WHERE user_id=$1 AND NOT is_archived ORDER BY created_at ASC";
+ const GET_ASSET_SQL: &str = "SELECT id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived";
+ const ARCHIVE_ASSET_SQL: &str =
+     "UPDATE assets SET is_archived=TRUE, updated_at=now() WHERE id=$1 AND user_id=$2 AND NOT is_archived";
+@@ -90,6 +97,14 @@ const ASSET_OWNERSHIP_SQL: &str =
+ const ASSET_EXISTS_SQL: &str = "SELECT id FROM assets WHERE id=$1";
+ const ACCOUNT_OWNERSHIP_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
+ const MAX_VALUATION_SQL: &str = "SELECT max(recorded_on) FROM asset_valuations WHERE asset_id=$1";
++/// Valuation writes lock the owned asset row first (movements discipline). The
++/// ordering guard below is check-then-act, and without the lock two concurrent
++/// inserts both pass it: the `AFTER INSERT` trigger then overwrites
++/// `current_value` with whichever row commits last, older date included.
++/// `AND NOT is_archived` preserves the `ensure_asset_writable` contract
++/// (archived or foreign → 404, truly absent → 422).
++const LOCK_ASSET_SQL: &str =
++    "SELECT id FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived FOR UPDATE";
+ const CREATE_VALUATION_SQL: &str = "INSERT INTO asset_valuations (user_id, asset_id, value, recorded_on, notes) VALUES ($1,$2,$3,$4,$5) RETURNING id, asset_id, value, recorded_on, notes, created_at";
+ // Test-only probe: verifies trigger-synced current_value without going through HTTP.
+ #[cfg(test)]
+@@ -112,6 +127,65 @@ type AssetRow = (
+     DateTime<Utc>,
+ );
+ 
++/// Brief asset row: id, name, category, account_id, currency, acquired_on,
++/// notes (S12 order).
++type AssetBriefRow = (
++    Uuid,
++    String,
++    String,
++    Option<Uuid>,
++    String,
++    Option<NaiveDate>,
++    Option<String>,
++);
++
++/// Brief asset response (`?shape=brief`): id, name, category, account_id,
++/// currency, acquired_on, notes.
++#[derive(Debug, Serialize)]
++pub struct AssetBriefResponse {
++    pub id: Uuid,
++    pub name: String,
++    pub category: String,
++    pub account_id: Option<Uuid>,
++    pub currency: String,
++    pub acquired_on: Option<NaiveDate>,
++    pub notes: Option<String>,
++}
++
++impl From<AssetBriefRow> for AssetBriefResponse {
++    fn from(
++        row: (
++            Uuid,
++            String,
++            String,
++            Option<Uuid>,
++            String,
++            Option<NaiveDate>,
++            Option<String>,
++        ),
++    ) -> Self {
++        let (id, name, category, account_id, currency, acquired_on, notes) = row;
++        Self {
++            id,
++            name,
++            category,
++            account_id,
++            currency,
++            acquired_on,
++            notes,
++        }
++    }
++}
++
++/// `GET /api/assets` body: the full row set, or the brief shape the SPA asks
++/// for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum AssetsResponse {
++    Full(Vec<AssetResponse>),
++    Brief(Vec<AssetBriefResponse>),
++}
++
+ #[derive(Debug, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct CreateAssetRequest {
+@@ -396,14 +470,28 @@ pub async fn create_asset_handler(
+ pub async fn list_assets_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+-) -> Result<Json<Vec<AssetResponse>>, AppError> {
++    Query(query): Query<ShapeQuery>,
++) -> Result<Json<AssetsResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
++    if shape.is_brief() {
++        let rows = sqlx::query_as::<_, AssetBriefRow>(LIST_ASSETS_BRIEF_SQL)
++            .bind(user_id)
++            .fetch_all(&state.pool)
++            .await
++            .map_err(|_| AppError::Internal)?;
++        return Ok(Json(AssetsResponse::Brief(
++            rows.into_iter().map(AssetBriefResponse::from).collect(),
++        )));
++    }
+     let rows = sqlx::query_as::<_, AssetRow>(LIST_ASSETS_SQL)
+         .bind(user_id)
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(AssetResponse::from).collect()))
++    Ok(Json(AssetsResponse::Full(
++        rows.into_iter().map(AssetResponse::from).collect(),
++    )))
+ }
+ 
+ pub async fn get_asset_handler(
+@@ -585,12 +673,32 @@ pub async fn create_valuation_handler(
+     let value = validate_value(&body.value)?;
+     let recorded_on = validate_calendar_date(&body.recorded_on, "recorded_on")?;
+     validate_optional_text(body.notes.as_deref(), MAX_TEXT_LEN, "notes")?;
+-    ensure_asset_writable(&state.pool, asset_id, user_id).await?;
++    // Lock-first: the asset row serializes concurrent valuation writers, so the
++    // ordering guard cannot be raced. Ownership contract unchanged.
++    let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
++    let owned: Option<Uuid> = sqlx::query_scalar(LOCK_ASSET_SQL)
++        .bind(asset_id)
++        .bind(user_id)
++        .fetch_optional(&mut *tx)
++        .await
++        .map_err(|_| AppError::Internal)?;
++    if owned.is_none() {
++        let exists: Option<Uuid> = sqlx::query_scalar(ASSET_EXISTS_SQL)
++            .bind(asset_id)
++            .fetch_optional(&mut *tx)
++            .await
++            .map_err(|_| AppError::Internal)?;
++        return Err(if exists.is_some() {
++            AppError::NotFound
++        } else {
++            AppError::Validation("asset does not exist".into())
++        });
++    }
+     // Ordering guard: the trigger blindly overwrites `current_value`, so a
+     // valuation at or before the latest recorded date is rejected here.
+     let latest: Option<NaiveDate> = sqlx::query_scalar(MAX_VALUATION_SQL)
+         .bind(asset_id)
+-        .fetch_optional(&state.pool)
++        .fetch_optional(&mut *tx)
+         .await
+         .map_err(|_| AppError::Internal)?
+         .flatten();
+@@ -607,9 +715,10 @@ pub async fn create_valuation_handler(
+         .bind(value)
+         .bind(recorded_on)
+         .bind(body.notes.as_deref())
+-        .fetch_one(&state.pool)
++        .fetch_one(&mut *tx)
+         .await
+         .map_err(map_valuation_db_err)?;
++    tx.commit().await.map_err(|_| AppError::Internal)?;
+     Ok((StatusCode::CREATED, Json(ValuationResponse::from(row))))
+ }
+ 
+@@ -666,6 +775,18 @@ mod tests {
+         assert_eq!(resp.status(), axum::http::StatusCode::CONFLICT);
+     }
+ 
++    #[test]
++    fn valuation_write_locks_the_owned_asset_row_first() {
++        assert!(
++            LOCK_ASSET_SQL.contains("FOR UPDATE") && LOCK_ASSET_SQL.contains("user_id"),
++            "a valuation write must lock the owned asset row before the ordering guard, got: {LOCK_ASSET_SQL}"
++        );
++        assert!(
++            LOCK_ASSET_SQL.contains("NOT is_archived"),
++            "the lock must keep the ensure_asset_writable contract, got: {LOCK_ASSET_SQL}"
++        );
++    }
++
+     #[test]
+     fn accepts_trimmed_valid_name() {
+         assert_eq!(
+@@ -864,6 +985,46 @@ mod tests {
+         assert_eq!(entry.net_worth, entry.assets);
+     }
+ 
++    #[test]
++    fn brief_sql_selects_only_s12_columns_with_verbatim_scope_and_order() {
++        assert!(
++            LIST_ASSETS_BRIEF_SQL.contains("user_id"),
++            "brief SQL must scope by user_id, got: {LIST_ASSETS_BRIEF_SQL}"
++        );
++        // The brief projection drops current_value, is_archived, created_at
++        // and updated_at (S12); only the SELECT list is checked because the
++        // WHERE clause keeps `NOT is_archived` verbatim.
++        let select = LIST_ASSETS_BRIEF_SQL
++            .split("FROM")
++            .next()
++            .expect("brief SQL has a FROM clause");
++        for dropped in ["current_value", "is_archived", "created_at", "updated_at"] {
++            assert!(
++                !select.contains(dropped),
++                "brief SELECT must not carry `{dropped}`, got: {select}"
++            );
++        }
++        for kept in [
++            "id",
++            "name",
++            "category::text",
++            "account_id",
++            "currency",
++            "acquired_on",
++            "notes",
++        ] {
++            assert!(
++                select.contains(kept),
++                "brief SELECT must keep `{kept}`, got: {select}"
++            );
++        }
++        assert!(
++            LIST_ASSETS_BRIEF_SQL.contains("NOT is_archived")
++                && LIST_ASSETS_BRIEF_SQL.contains("ORDER BY created_at ASC"),
++            "brief must keep the full list scope and order verbatim, got: {LIST_ASSETS_BRIEF_SQL}"
++        );
++    }
++
+     #[test]
+     fn asset_sql_scopes_every_query_by_user_id() {
+         for sql in [
+@@ -1035,18 +1196,32 @@ mod tests {
+             .await
+             .expect("get own asset is 200");
+         assert_eq!(got.name, "Stock A");
+-        let listed = list_assets_handler(State(state.clone()), headers.clone())
+-            .await
+-            .expect("list assets is 200");
++        let listed = list_assets_handler(
++            State(state.clone()),
++            headers.clone(),
++            Query(ShapeQuery { shape: None }),
++        )
++        .await
++        .expect("list assets is 200");
++        let AssetsResponse::Full(listed) = listed.0 else {
++            panic!("default list must serve the full shape");
++        };
+         assert!(listed.iter().any(|a| a.id == created.id));
+         let status = delete_asset_handler(State(state.clone()), headers.clone(), Path(created.id))
+             .await
+             .expect("archive is 204");
+         assert_eq!(status, StatusCode::NO_CONTENT);
+         // Archived assets read as deleted: hidden from list and detail.
+-        let listed = list_assets_handler(State(state.clone()), headers.clone())
+-            .await
+-            .expect("list after archive is 200");
++        let listed = list_assets_handler(
++            State(state.clone()),
++            headers.clone(),
++            Query(ShapeQuery { shape: None }),
++        )
++        .await
++        .expect("list after archive is 200");
++        let AssetsResponse::Full(listed) = listed.0 else {
++            panic!("default list must serve the full shape");
++        };
+         assert!(!listed.iter().any(|a| a.id == created.id));
+         let err = get_asset_handler(State(state.clone()), headers.clone(), Path(created.id))
+             .await
+diff --git a/backend/src/routes/categories.rs b/backend/src/routes/categories.rs
+index 28ea90c..9699a81 100644
+--- a/backend/src/routes/categories.rs
++++ b/backend/src/routes/categories.rs
+@@ -25,7 +25,7 @@ use chrono::{DateTime, Utc};
+ use serde::{Deserialize, Serialize};
+ use uuid::Uuid;
+ 
+-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
++use crate::{auth::helper::require_user_id, error::AppError, routes::parse_read_shape, state::AppState};
+ 
+ /// Category kinds accepted at the API boundary (mirrors `category_kind` enum).
+ pub const CATEGORY_KINDS: &[&str] = &["finance", "habit", "goal", "task", "subscription"];
+@@ -35,6 +35,10 @@ pub const CATEGORY_KINDS: &[&str] = &["finance", "habit", "goal", "task", "subsc
+ const MAX_CATEGORY_NAME_LEN: usize = 80;
+ 
+ const LIST_CATEGORIES_SQL: &str = "SELECT id, kind::text, name, color, icon, is_archived, created_at FROM categories WHERE user_id=$1 AND ($2::category_kind IS NULL OR kind=$2::category_kind) AND NOT is_archived ORDER BY name ASC";
++/// Brief shape (`?shape=brief`): exactly the three fields the browser views
++/// read from a category. The full list stays available for the MCP.
++const LIST_CATEGORIES_BRIEF_SQL: &str =
++    "SELECT id, name, kind::text FROM categories WHERE user_id=$1 AND ($2::category_kind IS NULL OR kind=$2::category_kind) AND NOT is_archived ORDER BY name ASC";
+ const CREATE_CATEGORY_SQL: &str = "INSERT INTO categories (user_id, kind, name) VALUES ($1,$2::category_kind,$3) RETURNING id, kind::text, name, color, icon, is_archived, created_at";
+ const DELETE_CATEGORY_SQL: &str = "DELETE FROM categories WHERE id=$1 AND user_id=$2";
+ 
+@@ -48,9 +52,14 @@ type CategoryRow = (
+     DateTime<Utc>,
+ );
+ 
++/// Brief category row: id, name, kind.
++type CategoryBriefRow = (Uuid, String, String);
++
+ #[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
+ pub struct ListCategoriesQuery {
+     pub kind: Option<String>,
++    pub shape: Option<String>,
+ }
+ 
+ #[derive(Debug, Serialize)]
+@@ -89,6 +98,29 @@ impl From<CategoryRow> for CategoryResponse {
+     }
+ }
+ 
++/// Brief category response (`?shape=brief`): id, name, kind.
++#[derive(Debug, Serialize)]
++pub struct CategoryBriefResponse {
++    pub id: Uuid,
++    pub name: String,
++    pub kind: String,
++}
++
++impl From<CategoryBriefRow> for CategoryBriefResponse {
++    fn from((id, name, kind): CategoryBriefRow) -> Self {
++        Self { id, name, kind }
++    }
++}
++
++/// `GET /api/categories` body: the full row set, or the brief shape the SPA
++/// asks for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum CategoriesResponse {
++    Full(Vec<CategoryResponse>),
++    Brief(Vec<CategoryBriefResponse>),
++}
++
+ /// Validate the optional `kind` filter: `None` lists every kind, `Some`
+ /// must be one of [`CATEGORY_KINDS`] (trimmed, case-sensitive like the DB
+ /// enum), else 422.
+@@ -110,16 +142,30 @@ pub async fn list_categories_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+     Query(params): Query<ListCategoriesQuery>,
+-) -> Result<Json<Vec<CategoryResponse>>, AppError> {
++) -> Result<Json<CategoriesResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
+     let kind = validate_category_kind(params.kind.as_deref())?;
++    let shape = parse_read_shape(params.shape.as_deref())?;
++    if shape.is_brief() {
++        let rows = sqlx::query_as::<_, CategoryBriefRow>(LIST_CATEGORIES_BRIEF_SQL)
++            .bind(user_id)
++            .bind(kind)
++            .fetch_all(&state.pool)
++            .await
++            .map_err(|_| AppError::Internal)?;
++        return Ok(Json(CategoriesResponse::Brief(
++            rows.into_iter().map(CategoryBriefResponse::from).collect(),
++        )));
++    }
+     let rows = sqlx::query_as::<_, CategoryRow>(LIST_CATEGORIES_SQL)
+         .bind(user_id)
+         .bind(kind)
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(CategoryResponse::from).collect()))
++    Ok(Json(CategoriesResponse::Full(
++        rows.into_iter().map(CategoryResponse::from).collect(),
++    )))
+ }
+ 
+ /// Create body: `name` plus the optional `kind` (defaults to `finance`
+@@ -249,6 +295,37 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn brief_sql_selects_only_id_name_kind() {
++        assert!(
++            LIST_CATEGORIES_BRIEF_SQL.contains("user_id"),
++            "brief SQL must scope by user_id, got: {LIST_CATEGORIES_BRIEF_SQL}"
++        );
++        // The brief projection drops the browser-unread columns (S12);
++        // only the SELECT list is checked because the WHERE clause keeps
++        // `NOT is_archived` verbatim.
++        let select = LIST_CATEGORIES_BRIEF_SQL
++            .split("FROM")
++            .next()
++            .expect("brief SQL has a FROM clause");
++        for dropped in ["color", "icon", "is_archived", "created_at"] {
++            assert!(
++                !select.contains(dropped),
++                "brief SELECT must not carry `{dropped}`, got: {select}"
++            );
++        }
++        for kept in ["id", "name", "kind"] {
++            assert!(
++                select.contains(kept),
++                "brief SELECT must keep `{kept}`, got: {select}"
++            );
++        }
++        assert!(
++            LIST_CATEGORIES_BRIEF_SQL.contains("ORDER BY name ASC"),
++            "brief must keep the full list order verbatim, got: {LIST_CATEGORIES_BRIEF_SQL}"
++        );
++    }
++
+     #[test]
+     fn list_sql_scopes_filters_and_orders() {
+         assert!(
+@@ -361,11 +438,15 @@ mod tests {
+         }
+         let q = Query(ListCategoriesQuery {
+             kind: Some("finance".into()),
++            shape: None,
+         });
+         let body = list_categories_handler(State(state.clone()), headers.clone(), q)
+             .await
+             .expect("list finance is 200")
+             .0;
++        let CategoriesResponse::Full(body) = body else {
++            panic!("default list must serve the full shape");
++        };
+         assert_eq!(body.len(), 2);
+         assert_eq!(body[0].name, "Alimentación");
+         assert_eq!(body[1].name, "Transporte");
+@@ -382,6 +463,7 @@ mod tests {
+         let (state, headers, user_id) = db_state(&pool).await;
+         let q = Query(ListCategoriesQuery {
+             kind: Some("money".into()),
++            shape: None,
+         });
+         let err = list_categories_handler(State(state.clone()), headers, q)
+             .await
+@@ -412,11 +494,15 @@ mod tests {
+             .expect("seed foreign category");
+         let q = Query(ListCategoriesQuery {
+             kind: Some("finance".into()),
++            shape: None,
+         });
+         let body = list_categories_handler(State(state_b.clone()), headers_b, q)
+             .await
+             .expect("list is 200")
+             .0;
++        let CategoriesResponse::Full(body) = body else {
++            panic!("default list must serve the full shape");
++        };
+         assert!(
+             body.iter().all(|c| c.name != "Privada" && c.name != "Privada2"),
+             "foreign categories must not leak"
+diff --git a/backend/src/routes/events.rs b/backend/src/routes/events.rs
+index b58566e..df53c4a 100644
+--- a/backend/src/routes/events.rs
++++ b/backend/src/routes/events.rs
+@@ -39,7 +39,7 @@ use chrono::{DateTime, Utc};
+ use serde::{Deserialize, Serialize};
+ use uuid::Uuid;
+ 
+-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
++use crate::{auth::helper::require_user_id, error::AppError, routes::parse_read_shape, state::AppState};
+ 
+ const MAX_TITLE_LEN: usize = 200;
+ const MAX_TEXT_LEN: usize = 2000;
+@@ -61,6 +61,14 @@ const LIST_EVENTS_SQL: &str = "SELECT id, title, description, kind::text, starts
+ const LIST_EVENTS_FROM_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
+ const LIST_EVENTS_TO_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $2 ORDER BY starts_at ASC";
+ const LIST_EVENTS_RANGE_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE user_id=$1 AND starts_at < $3 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
++/// Brief shape (`?shape=brief`): exactly the seven fields the calendar views read.
++const LIST_EVENTS_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 ORDER BY starts_at ASC";
++/// Brief shape of the `from`-only range: same seven columns, same WHERE/ORDER BY.
++const LIST_EVENTS_FROM_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
++/// Brief shape of the `to`-only range: same seven columns, same WHERE/ORDER BY.
++const LIST_EVENTS_TO_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 AND starts_at < $2 ORDER BY starts_at ASC";
++/// Brief shape of the bounded range: same seven columns, same WHERE/ORDER BY.
++const LIST_EVENTS_RANGE_BRIEF_SQL: &str = "SELECT id, title, kind::text, starts_at, ends_at, all_day, location FROM events WHERE user_id=$1 AND starts_at < $3 AND (ends_at IS NULL OR ends_at > $2) ORDER BY starts_at ASC";
+ const GET_EVENT_SQL: &str = "SELECT id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at FROM events WHERE id=$1 AND user_id=$2";
+ const PATCH_EVENT_SQL: &str = "UPDATE events SET title=COALESCE($3,title), description=COALESCE($4,description), kind=COALESCE($5::event_kind,kind), starts_at=COALESCE($6,starts_at), ends_at=COALESCE($7,ends_at), all_day=COALESCE($8,all_day), location=COALESCE($9,location), habit_id=COALESCE($10,habit_id), goal_id=COALESCE($11,goal_id), task_id=COALESCE($12,task_id), subscription_id=COALESCE($13,subscription_id), category_id=COALESCE($14,category_id), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, kind::text, starts_at, ends_at, all_day, location, habit_id, goal_id, task_id, subscription_id, category_id, created_at, updated_at";
+ const DELETE_EVENT_SQL: &str = "DELETE FROM events WHERE id=$1 AND user_id=$2";
+@@ -147,6 +155,7 @@ pub struct PatchEventRequest {
+ pub struct EventRangeQuery {
+     pub from: Option<String>,
+     pub to: Option<String>,
++    pub shape: Option<String>,
+ }
+ 
+ #[derive(Debug, Serialize)]
+@@ -230,6 +239,62 @@ impl From<EventRow> for EventResponse {
+     }
+ }
+ 
++/// Brief event row: id, title, kind, starts_at, ends_at, all_day, location.
++type EventBriefRow = (
++    Uuid,
++    String,
++    String,
++    DateTime<Utc>,
++    Option<DateTime<Utc>>,
++    bool,
++    Option<String>,
++);
++
++#[derive(Debug, Serialize)]
++pub struct EventBriefResponse {
++    pub id: Uuid,
++    pub title: String,
++    pub kind: String,
++    pub starts_at: DateTime<Utc>,
++    pub ends_at: Option<DateTime<Utc>>,
++    pub all_day: bool,
++    pub location: Option<String>,
++}
++
++impl From<EventBriefRow> for EventBriefResponse {
++    fn from(
++        row: (
++            Uuid,
++            String,
++            String,
++            DateTime<Utc>,
++            Option<DateTime<Utc>>,
++            bool,
++            Option<String>,
++        ),
++    ) -> Self {
++        let (id, title, kind, starts_at, ends_at, all_day, location) = row;
++        Self {
++            id,
++            title,
++            kind,
++            starts_at,
++            ends_at,
++            all_day,
++            location,
++        }
++    }
++}
++
++/// `GET /api/events` body: the full row set, or the brief shape the SPA asks
++/// for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum EventsResponse {
++    Full(Vec<EventResponse>),
++    Brief(Vec<EventBriefResponse>),
++}
++
+ /// Validate a required short text field: 1-`max` chars after trimming, no
+ /// null bytes.
+ pub fn validate_required_text(
+@@ -519,8 +584,9 @@ pub async fn list_events_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+     Query(query): Query<EventRangeQuery>,
+-) -> Result<Json<Vec<EventResponse>>, AppError> {
++) -> Result<Json<EventsResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
+     let from = match query.from.as_deref() {
+         Some(raw) => Some(validate_event_datetime(raw, "from")?),
+         None => None,
+@@ -534,6 +600,42 @@ pub async fn list_events_handler(
+             return Err(AppError::Validation("to must be after from".into()));
+         }
+     }
++    if shape.is_brief() {
++        let rows = match (from, to) {
++            (Some(from), Some(to)) => {
++                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_RANGE_BRIEF_SQL)
++                    .bind(user_id)
++                    .bind(from)
++                    .bind(to)
++                    .fetch_all(&state.pool)
++                    .await
++            }
++            (Some(from), None) => {
++                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_FROM_BRIEF_SQL)
++                    .bind(user_id)
++                    .bind(from)
++                    .fetch_all(&state.pool)
++                    .await
++            }
++            (None, Some(to)) => {
++                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_TO_BRIEF_SQL)
++                    .bind(user_id)
++                    .bind(to)
++                    .fetch_all(&state.pool)
++                    .await
++            }
++            (None, None) => {
++                sqlx::query_as::<_, EventBriefRow>(LIST_EVENTS_BRIEF_SQL)
++                    .bind(user_id)
++                    .fetch_all(&state.pool)
++                    .await
++            }
++        }
++        .map_err(|_| AppError::Internal)?;
++        return Ok(Json(EventsResponse::Brief(
++            rows.into_iter().map(EventBriefResponse::from).collect(),
++        )));
++    }
+     let rows = match (from, to) {
+         (Some(from), Some(to)) => {
+             sqlx::query_as::<_, EventRow>(LIST_EVENTS_RANGE_SQL)
+@@ -565,7 +667,9 @@ pub async fn list_events_handler(
+         }
+     }
+     .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(EventResponse::from).collect()))
++    Ok(Json(EventsResponse::Full(
++        rows.into_iter().map(EventResponse::from).collect(),
++    )))
+ }
+ 
+ pub async fn get_event_handler(
+@@ -889,6 +993,51 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn events_brief_sql_returns_only_frontend_fields() {
++        for sql in [
++            LIST_EVENTS_BRIEF_SQL,
++            LIST_EVENTS_FROM_BRIEF_SQL,
++            LIST_EVENTS_TO_BRIEF_SQL,
++            LIST_EVENTS_RANGE_BRIEF_SQL,
++        ] {
++            assert!(
++                sql.contains("user_id"),
++                "events brief SQL must scope by user_id, got: {sql}"
++            );
++            for kept in [
++                "id",
++                "title",
++                "kind",
++                "starts_at",
++                "ends_at",
++                "all_day",
++                "location",
++            ] {
++                assert!(
++                    sql.contains(kept),
++                    "events brief SQL must keep `{kept}`, got: {sql}"
++                );
++            }
++            for dropped in [
++                "description",
++                "habit_id",
++                "goal_id",
++                "task_id",
++                "subscription_id",
++                "category_id",
++                "reminder_id",
++                "created_at",
++                "updated_at",
++            ] {
++                assert!(
++                    !sql.contains(dropped),
++                    "events brief SQL must not contain dropped `{dropped}`, got: {sql}"
++                );
++            }
++        }
++    }
++
+     fn lazy_pool() -> sqlx::PgPool {
+         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+             .expect("lazy pool construction must succeed")
+@@ -958,6 +1107,7 @@ mod tests {
+         Query(EventRangeQuery {
+             from: from.map(str::to_string),
+             to: to.map(str::to_string),
++            shape: None,
+         })
+     }
+ 
+@@ -1051,6 +1201,9 @@ mod tests {
+         )
+         .await
+         .expect("list events");
++        let EventsResponse::Full(listed) = listed else {
++            panic!("unfiltered list without shape must be the full variant");
++        };
+         assert!(listed.iter().any(|e| e.id == created.id));
+ 
+         let Json(patched) = patch_event_handler(
+@@ -1290,7 +1443,12 @@ mod tests {
+         .await
+         .expect("seed future event");
+ 
+-        let ids = |events: Vec<EventResponse>| events.into_iter().map(|e| e.id).collect::<Vec<_>>();
++        let ids = |events: EventsResponse| {
++            let EventsResponse::Full(events) = events else {
++                panic!("range without shape must be the full variant");
++            };
++            events.into_iter().map(|e| e.id).collect::<Vec<_>>()
++        };
+ 
+         // Bounded week window: spanning + open-ended overlap, past/future excluded.
+         let Json(week) = list_events_handler(
+@@ -1351,6 +1509,9 @@ mod tests {
+         )
+         .await
+         .expect("unbounded list");
++        let EventsResponse::Full(all) = all else {
++            panic!("unbounded list without shape must be the full variant");
++        };
+         assert_eq!(all.len(), 4);
+ 
+         // Malformed bounds are 422.
+diff --git a/backend/src/routes/goals.rs b/backend/src/routes/goals.rs
+index 2a0133d..6b9f62b 100644
+--- a/backend/src/routes/goals.rs
++++ b/backend/src/routes/goals.rs
+@@ -26,7 +26,7 @@
+ //! land in their own slices).
+ 
+ use axum::{
+-    extract::{Path, State},
++    extract::{Path, Query, State},
+     http::{HeaderMap, StatusCode},
+     Json,
+ };
+@@ -34,7 +34,12 @@ use chrono::{DateTime, NaiveDate, Utc};
+ use serde::{Deserialize, Serialize};
+ use uuid::Uuid;
+ 
+-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
++use crate::{
++    auth::helper::require_user_id,
++    error::AppError,
++    routes::{parse_read_shape, ShapeQuery},
++    state::AppState,
++};
+ 
+ const MAX_NAME_LEN: usize = 200;
+ const MAX_AREA_LEN: usize = 100;
+@@ -46,6 +51,8 @@ const GOAL_STATUSES: &[&str] = &["active", "completed", "paused", "cancelled"];
+ 
+ const CREATE_GOAL_SQL: &str = "INSERT INTO goals (user_id, name, description, area, category_id, start_date, due_date, status, color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::goal_status,$9) RETURNING id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at";
+ const LIST_GOALS_SQL: &str = "SELECT id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at FROM goals WHERE user_id=$1 ORDER BY created_at ASC";
++/// Brief shape (`?shape=brief`): exactly the eight fields the goals views read.
++const LIST_GOALS_BRIEF_SQL: &str = "SELECT id, name, description, area, due_date, progress, status::text, color FROM goals WHERE user_id=$1 ORDER BY created_at ASC";
+ const GET_GOAL_SQL: &str = "SELECT id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at FROM goals WHERE id=$1 AND user_id=$2";
+ const PATCH_GOAL_SQL: &str = "UPDATE goals SET name=COALESCE($3,name), description=COALESCE($4,description), area=COALESCE($5,area), start_date=COALESCE($6,start_date), due_date=COALESCE($7,due_date), status=COALESCE($8::goal_status,status), category_id=COALESCE($9,category_id), color=COALESCE($10,color), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, area, category_id, start_date, due_date, progress, status::text, reminder_id, color, created_at, updated_at";
+ const DELETE_GOAL_SQL: &str = "DELETE FROM goals WHERE id=$1 AND user_id=$2";
+@@ -172,6 +179,66 @@ impl From<GoalRow> for GoalResponse {
+     }
+ }
+ 
++/// Brief goal row: id, name, description, area, due_date, progress, status, color.
++type GoalBriefRow = (
++    Uuid,
++    String,
++    Option<String>,
++    String,
++    Option<NaiveDate>,
++    i16,
++    String,
++    Option<String>,
++);
++
++#[derive(Debug, Serialize)]
++pub struct GoalBriefResponse {
++    pub id: Uuid,
++    pub name: String,
++    pub description: Option<String>,
++    pub area: String,
++    pub due_date: Option<NaiveDate>,
++    pub progress: i16,
++    pub status: String,
++    pub color: Option<String>,
++}
++
++impl From<GoalBriefRow> for GoalBriefResponse {
++    fn from(
++        row: (
++            Uuid,
++            String,
++            Option<String>,
++            String,
++            Option<NaiveDate>,
++            i16,
++            String,
++            Option<String>,
++        ),
++    ) -> Self {
++        let (id, name, description, area, due_date, progress, status, color) = row;
++        Self {
++            id,
++            name,
++            description,
++            area,
++            due_date,
++            progress,
++            status,
++            color,
++        }
++    }
++}
++
++/// `GET /api/goals` body: the full row set, or the brief shape the SPA asks
++/// for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum GoalsResponse {
++    Full(Vec<GoalResponse>),
++    Brief(Vec<GoalBriefResponse>),
++}
++
+ /// Validate a required short text field: 1-`max` chars after trimming, no
+ /// null bytes.
+ pub fn validate_required_text(
+@@ -349,14 +416,28 @@ pub async fn create_goal_handler(
+ pub async fn list_goals_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+-) -> Result<Json<Vec<GoalResponse>>, AppError> {
++    Query(query): Query<ShapeQuery>,
++) -> Result<Json<GoalsResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
++    if shape.is_brief() {
++        let rows = sqlx::query_as::<_, GoalBriefRow>(LIST_GOALS_BRIEF_SQL)
++            .bind(user_id)
++            .fetch_all(&state.pool)
++            .await
++            .map_err(|_| AppError::Internal)?;
++        return Ok(Json(GoalsResponse::Brief(
++            rows.into_iter().map(GoalBriefResponse::from).collect(),
++        )));
++    }
+     let rows = sqlx::query_as::<_, GoalRow>(LIST_GOALS_SQL)
+         .bind(user_id)
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(GoalResponse::from).collect()))
++    Ok(Json(GoalsResponse::Full(
++        rows.into_iter().map(GoalResponse::from).collect(),
++    )))
+ }
+ 
+ pub async fn get_goal_handler(
+@@ -599,6 +680,51 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn goals_brief_sql_returns_only_frontend_fields() {
++        assert!(
++            LIST_GOALS_BRIEF_SQL.contains("user_id"),
++            "goals brief SQL must scope by user_id, got: {LIST_GOALS_BRIEF_SQL}"
++        );
++        for kept in [
++            "id",
++            "name",
++            "description",
++            "area",
++            "due_date",
++            "progress",
++            "status",
++            "color",
++        ] {
++            assert!(
++                LIST_GOALS_BRIEF_SQL.contains(kept),
++                "goals brief SQL must keep `{kept}`, got: {LIST_GOALS_BRIEF_SQL}"
++            );
++        }
++        // Check the SELECT column list only: the WHERE clause legitimately
++        // names `user_id`, and `reminder_id`/`category_id`/`created_at` could
++        // hide inside longer identifiers — split on SELECT..FROM first.
++        let brief_cols = LIST_GOALS_BRIEF_SQL
++            .split("SELECT")
++            .nth(1)
++            .unwrap_or("")
++            .split("FROM")
++            .next()
++            .unwrap_or("");
++        for dropped in [
++            "start_date",
++            "category_id",
++            "reminder_id",
++            "created_at",
++            "updated_at",
++        ] {
++            assert!(
++                !brief_cols.contains(dropped),
++                "goals brief SQL must not contain dropped `{dropped}`, got: {LIST_GOALS_BRIEF_SQL}"
++            );
++        }
++    }
++
+     fn lazy_pool() -> sqlx::PgPool {
+         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+             .expect("lazy pool construction must succeed")
+@@ -667,7 +793,7 @@ mod tests {
+             session_ttl_hours: 24,
+             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+         };
+-        let err = list_goals_handler(State(state), HeaderMap::new())
++        let err = list_goals_handler(State(state), HeaderMap::new(), Query(ShapeQuery { shape: None }))
+             .await
+             .expect_err("missing session must be 401");
+         assert_401(err);
+diff --git a/backend/src/routes/habits.rs b/backend/src/routes/habits.rs
+index b363353..9879400 100644
+--- a/backend/src/routes/habits.rs
++++ b/backend/src/routes/habits.rs
+@@ -66,6 +66,7 @@ use crate::{
+         dates::today_bogota,
+         money::{parse_money_amount, parse_money_amount_nonneg},
+     },
++    routes::{parse_read_shape, ShapeQuery},
+     state::AppState,
+ };
+ 
+@@ -92,6 +93,8 @@ const CREATE_HABIT_SQL: &str = "INSERT INTO habits (user_id, name, description,
+ /// List read: archived rows are kept on purpose — the UI needs them for
+ /// "Desarchivar" — unlike the today read, which filters them out.
+ const LIST_HABITS_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE user_id=$1 ORDER BY created_at ASC";
++/// Brief shape (`?shape=brief`): exactly the twelve fields the habits views read.
++const LIST_HABITS_BRIEF_SQL: &str = "SELECT id, name, direction::text, frequency::text, days_of_week, start_date, end_date, category, color, icon, is_archived, short_label FROM habits WHERE user_id=$1 ORDER BY created_at ASC";
+ const GET_HABIT_SQL: &str = "SELECT id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label FROM habits WHERE id=$1 AND user_id=$2";
+ const PATCH_HABIT_SQL: &str = "UPDATE habits SET name=COALESCE($3,name), description=COALESCE($4,description), target_per_period=COALESCE($5,target_per_period), end_date=COALESCE($6,end_date), category_id=COALESCE($7,category_id), color=COALESCE($8,color), icon=COALESCE($9,icon), is_archived=COALESCE($10,is_archived), category=COALESCE($11,category), short_label=COALESCE($12,short_label), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label";
+ const DELETE_HABIT_SQL: &str = "DELETE FROM habits WHERE id=$1 AND user_id=$2";
+@@ -270,6 +273,111 @@ impl From<HabitRow> for HabitResponse {
+     }
+ }
+ 
++/// Brief habit row: id, name, direction, frequency, days_of_week, start_date,
++/// end_date, category, color, icon, is_archived, short_label.
++type HabitBriefRow = (
++    Uuid,
++    String,
++    String,
++    String,
++    Vec<i16>,
++    NaiveDate,
++    Option<NaiveDate>,
++    Option<String>,
++    Option<String>,
++    Option<String>,
++    bool,
++    Option<String>,
++);
++
++#[derive(Debug, Serialize)]
++pub struct HabitBriefResponse {
++    pub id: Uuid,
++    pub name: String,
++    pub direction: String,
++    pub frequency: String,
++    pub days_of_week: Vec<i16>,
++    pub start_date: NaiveDate,
++    pub end_date: Option<NaiveDate>,
++    pub category: Option<String>,
++    pub color: Option<String>,
++    pub icon: Option<String>,
++    pub is_archived: bool,
++    pub short_label: Option<String>,
++}
++
++impl
++    From<(
++        Uuid,
++        String,
++        String,
++        String,
++        Vec<i16>,
++        NaiveDate,
++        Option<NaiveDate>,
++        Option<String>,
++        Option<String>,
++        Option<String>,
++        bool,
++        Option<String>,
++    )> for HabitBriefResponse
++{
++    fn from(
++        row: (
++            Uuid,
++            String,
++            String,
++            String,
++            Vec<i16>,
++            NaiveDate,
++            Option<NaiveDate>,
++            Option<String>,
++            Option<String>,
++            Option<String>,
++            bool,
++            Option<String>,
++        ),
++    ) -> Self {
++        let (
++            id,
++            name,
++            direction,
++            frequency,
++            days_of_week,
++            start_date,
++            end_date,
++            category,
++            color,
++            icon,
++            is_archived,
++            short_label,
++        ) = row;
++        Self {
++            id,
++            name,
++            direction,
++            frequency,
++            days_of_week,
++            start_date,
++            end_date,
++            category,
++            color,
++            icon,
++            is_archived,
++            short_label,
++        }
++    }
++}
++
++/// `GET /api/habits` body: the full row set, or the brief shape the SPA asks
++/// for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum HabitsResponse {
++    Full(Vec<HabitResponse>),
++    Brief(Vec<HabitBriefResponse>),
++}
++
+ #[derive(Debug, Serialize)]
+ pub struct HabitLogResponse {
+     pub id: Uuid,
+@@ -664,14 +772,28 @@ pub async fn create_habit_handler(
+ pub async fn list_habits_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+-) -> Result<Json<Vec<HabitResponse>>, AppError> {
++    Query(query): Query<ShapeQuery>,
++) -> Result<Json<HabitsResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
++    if shape.is_brief() {
++        let rows = sqlx::query_as::<_, HabitBriefRow>(LIST_HABITS_BRIEF_SQL)
++            .bind(user_id)
++            .fetch_all(&state.pool)
++            .await
++            .map_err(|_| AppError::Internal)?;
++        return Ok(Json(HabitsResponse::Brief(
++            rows.into_iter().map(HabitBriefResponse::from).collect(),
++        )));
++    }
+     let rows = sqlx::query_as::<_, HabitRow>(LIST_HABITS_SQL)
+         .bind(user_id)
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(HabitResponse::from).collect()))
++    Ok(Json(HabitsResponse::Full(
++        rows.into_iter().map(HabitResponse::from).collect(),
++    )))
+ }
+ 
+ pub async fn get_habit_handler(
+@@ -1631,6 +1753,54 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn habits_brief_sql_returns_only_frontend_fields() {
++        assert!(
++            LIST_HABITS_BRIEF_SQL.contains("user_id"),
++            "habits brief SQL must scope by user_id, got: {LIST_HABITS_BRIEF_SQL}"
++        );
++        for kept in [
++            "id",
++            "name",
++            "direction",
++            "frequency",
++            "days_of_week",
++            "start_date",
++            "end_date",
++            "category",
++            "color",
++            "icon",
++            "is_archived",
++            "short_label",
++        ] {
++            assert!(
++                LIST_HABITS_BRIEF_SQL.contains(kept),
++                "habits brief SQL must keep `{kept}`, got: {LIST_HABITS_BRIEF_SQL}"
++            );
++        }
++        // Check the SELECT column list only: the WHERE clause legitimately
++        // names `user_id` and the ORDER BY keeps `created_at` verbatim.
++        let brief_cols = LIST_HABITS_BRIEF_SQL
++            .split("SELECT")
++            .nth(1)
++            .unwrap_or("")
++            .split("FROM")
++            .next()
++            .unwrap_or("");
++        for dropped in [
++            "description",
++            "target_per_period",
++            "category_id",
++            "created_at",
++            "updated_at",
++        ] {
++            assert!(
++                !brief_cols.contains(dropped),
++                "habits brief SQL must not select dropped `{dropped}`, got: {LIST_HABITS_BRIEF_SQL}"
++            );
++        }
++    }
++
+     #[test]
+     fn streak_sql_encodes_the_read_model_contract() {
+         // Gaps-and-islands with a skipped bridge: both breaking values, the
+@@ -1759,7 +1929,7 @@ mod tests {
+             session_ttl_hours: 24,
+             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+         };
+-        let err = list_habits_handler(State(state), HeaderMap::new())
++        let err = list_habits_handler(State(state), HeaderMap::new(), Query(ShapeQuery { shape: None }))
+             .await
+             .expect_err("missing session must be 401");
+         assert_401(err);
+@@ -1788,9 +1958,16 @@ mod tests {
+             .await
+             .expect("get own habit is 200");
+         assert_eq!(got.id, created.id);
+-        let listed = list_habits_handler(State(state.clone()), headers.clone())
+-            .await
+-            .expect("list habits is 200");
++        let listed = list_habits_handler(
++            State(state.clone()),
++            headers.clone(),
++            Query(ShapeQuery { shape: None }),
++        )
++        .await
++        .expect("list habits is 200");
++        let HabitsResponse::Full(listed) = listed.0 else {
++            panic!("unfiltered list without shape must be the full variant");
++        };
+         assert!(listed.iter().any(|h| h.id == created.id));
+         let patched = patch_habit_handler(
+             State(state.clone()),
+diff --git a/backend/src/routes/mod.rs b/backend/src/routes/mod.rs
+index c708c08..e05fb24 100644
+--- a/backend/src/routes/mod.rs
++++ b/backend/src/routes/mod.rs
+@@ -15,3 +15,45 @@ pub mod sessions;
+ pub mod subscriptions;
+ pub mod tasks;
+ pub mod tokens;
++
++use crate::error::AppError;
++
++/// Read shape of a list endpoint the SPA renders.
++///
++/// `?shape=brief` returns exactly the fields the browser view reads, so the
++/// response carries no field the page cannot use (owner spec S6/S8, acceptance
++/// criterion 3). The parameter is absent for every other consumer — the MCP
++/// server passes each API response through to the agent — so that contract is
++/// untouched.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ReadShape {
++    /// Every column the resource serializes (today's response).
++    Full,
++    /// Only the fields with a frontend read site, measured per endpoint.
++    Brief,
++}
++
++impl ReadShape {
++    pub fn is_brief(self) -> bool {
++        matches!(self, ReadShape::Brief)
++    }
++}
++
++/// Query struct for list endpoints that take nothing but the read shape.
++#[derive(Debug, serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ShapeQuery {
++    pub shape: Option<String>,
++}
++
++/// Parse the `shape` query parameter. Absent means [`ReadShape::Full`]; any
++/// value other than `brief` is a strict-read 422, never silently ignored.
++pub fn parse_read_shape(raw: Option<&str>) -> Result<ReadShape, AppError> {
++    match raw {
++        None => Ok(ReadShape::Full),
++        Some("brief") => Ok(ReadShape::Brief),
++        Some(other) => Err(AppError::Validation(format!(
++            "shape must be one of: brief (got `{other}`)"
++        ))),
++    }
++}
+diff --git a/backend/src/routes/movements.rs b/backend/src/routes/movements.rs
+index 5719e23..cc8cbfc 100644
+--- a/backend/src/routes/movements.rs
++++ b/backend/src/routes/movements.rs
+@@ -54,6 +54,7 @@ use crate::{
+         validation::{ensure_owned_account, ensure_owned_category, validate_occurred_on},
+     },
+     routes::habits::ValidatedQuery,
++    routes::parse_read_shape,
+     state::AppState,
+ };
+ 
+@@ -84,6 +85,15 @@ const LIST_MOVEMENTS_SQL: &str = "SELECT id, account_id, transfer_account_id, ca
+ /// neither parameter the handler keeps serving [`LIST_MOVEMENTS_SQL`].
+ /// No `limit` (S3a): no consumer in this delivery needs pagination.
+ const LIST_MOVEMENTS_RANGE_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE user_id=$1 AND occurred_on >= $2 AND occurred_on <= $3 ORDER BY occurred_on DESC, created_at DESC, id DESC";
++/// Brief shape (`?shape=brief`) of the unbounded list: the S12 fields the
++/// browser views read; the WHERE scope and ORDER BY are the full list's
++/// verbatim. Dropped for the browser: subscription_id, created_at,
++/// updated_at (the MCP keeps the full projection).
++const LIST_MOVEMENTS_BRIEF_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description FROM movements WHERE user_id=$1 ORDER BY occurred_on DESC, created_at DESC, id DESC";
++/// Brief shape of the ranged list: same S12 columns as
++/// [`LIST_MOVEMENTS_BRIEF_SQL`] with the range bounds and the full range
++/// order verbatim.
++const LIST_MOVEMENTS_RANGE_BRIEF_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description FROM movements WHERE user_id=$1 AND occurred_on >= $2 AND occurred_on <= $3 ORDER BY occurred_on DESC, created_at DESC, id DESC";
+ const GET_MOVEMENT_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at FROM movements WHERE id=$1 AND user_id=$2";
+ /// Authoritative PATCH re-read: inside the transaction, under the account
+ /// lock, the stored money terms (account, destination, direction, amount)
+@@ -170,6 +180,7 @@ pub struct PatchMovementRequest {
+ pub struct MovementRangeQuery {
+     pub from: Option<String>,
+     pub to: Option<String>,
++    pub shape: Option<String>,
+ }
+ 
+ /// Parse the `GET /movements?from&to` range bounds (strict `YYYY-MM-DD` via
+@@ -262,6 +273,83 @@ impl From<MovementRow> for MovementResponse {
+     }
+ }
+ 
++/// Brief movement row: id, account_id, transfer_account_id, category_id,
++/// direction, amount, occurred_on, description (S12 order).
++type MovementBriefRow = (
++    Uuid,
++    Uuid,
++    Option<Uuid>,
++    Option<Uuid>,
++    String,
++    Decimal,
++    NaiveDate,
++    Option<String>,
++);
++
++/// Brief movement response (`?shape=brief`): id, account_id,
++/// transfer_account_id, category_id, direction, amount, occurred_on,
++/// description.
++#[derive(Debug, Serialize)]
++pub struct MovementBriefResponse {
++    pub id: Uuid,
++    pub account_id: Uuid,
++    /// Destination account for a transfer; `null` for expense/income.
++    pub transfer_account_id: Option<Uuid>,
++    pub category_id: Option<Uuid>,
++    pub direction: String,
++    /// Serialized as a string (e.g. `"25000.00"`); `rust_decimal`'s serde
++    /// impl renders decimals as strings, never floats.
++    pub amount: Decimal,
++    /// Serialized as `YYYY-MM-DD`.
++    pub occurred_on: NaiveDate,
++    pub description: Option<String>,
++}
++
++impl From<MovementBriefRow> for MovementBriefResponse {
++    fn from(
++        row: (
++            Uuid,
++            Uuid,
++            Option<Uuid>,
++            Option<Uuid>,
++            String,
++            Decimal,
++            NaiveDate,
++            Option<String>,
++        ),
++    ) -> Self {
++        let (
++            id,
++            account_id,
++            transfer_account_id,
++            category_id,
++            direction,
++            amount,
++            occurred_on,
++            description,
++        ) = row;
++        Self {
++            id,
++            account_id,
++            transfer_account_id,
++            category_id,
++            direction,
++            amount,
++            occurred_on,
++            description,
++        }
++    }
++}
++
++/// `GET /api/movements` body: the full row set, or the brief shape the SPA
++/// asks for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum MovementsResponse {
++    Full(Vec<MovementResponse>),
++    Brief(Vec<MovementBriefResponse>),
++}
++
+ /// Validate the direction: exactly `expense` or `income`, else Spanish 422.
+ pub fn validate_direction(raw: &str) -> Result<String, AppError> {
+     match raw.trim() {
+@@ -495,9 +583,39 @@ pub async fn list_movements_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+     ValidatedQuery(query): ValidatedQuery<MovementRangeQuery>,
+-) -> Result<Json<Vec<MovementResponse>>, AppError> {
++) -> Result<Json<MovementsResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
+     let range = parse_movement_range(query.from.as_deref(), query.to.as_deref())?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
++    if shape.is_brief() {
++        let brief = match range {
++            Some((from, to)) => {
++                sqlx::query_as::<_, MovementBriefRow>(LIST_MOVEMENTS_RANGE_BRIEF_SQL)
++                    .bind(user_id)
++                    .bind(from)
++                    .bind(to)
++                    .fetch_all(&state.pool)
++                    .await
++                    .map_err(|e| {
++                        tracing::error!("list_movements range failed: {e:?}");
++                        AppError::Internal
++                    })?
++            }
++            None => {
++                sqlx::query_as::<_, MovementBriefRow>(LIST_MOVEMENTS_BRIEF_SQL)
++                    .bind(user_id)
++                    .fetch_all(&state.pool)
++                    .await
++                    .map_err(|e| {
++                        tracing::error!("list_movements failed: {e:?}");
++                        AppError::Internal
++                    })?
++            }
++        };
++        return Ok(Json(MovementsResponse::Brief(
++            brief.into_iter().map(MovementBriefResponse::from).collect(),
++        )));
++    }
+     let rows = match range {
+         Some((from, to)) => {
+             sqlx::query_as::<_, MovementRow>(LIST_MOVEMENTS_RANGE_SQL)
+@@ -522,7 +640,9 @@ pub async fn list_movements_handler(
+                 })?
+         }
+     };
+-    Ok(Json(rows.into_iter().map(MovementResponse::from).collect()))
++    Ok(Json(MovementsResponse::Full(
++        rows.into_iter().map(MovementResponse::from).collect()
++    )))
+ }
+ 
+ pub async fn get_movement_handler(
+@@ -1129,6 +1249,48 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn brief_sql_selects_only_s12_columns_with_verbatim_scope_and_order() {
++        for sql in [LIST_MOVEMENTS_BRIEF_SQL, LIST_MOVEMENTS_RANGE_BRIEF_SQL] {
++            assert!(
++                sql.contains("user_id"),
++                "brief SQL must scope by user_id, got: {sql}"
++            );
++            // Only the SELECT list must be free of the dropped columns: the
++            // verbatim ORDER BY legitimately still mentions `created_at`.
++            let select_list = sql.split(" FROM ").next().unwrap_or(sql);
++            for dropped in ["subscription_id", "created_at", "updated_at"] {
++                assert!(
++                    !select_list.contains(dropped),
++                    "brief SELECT must not carry `{dropped}`, got: {sql}"
++                );
++            }
++            for kept in [
++                "id",
++                "account_id",
++                "transfer_account_id",
++                "category_id",
++                "direction::text",
++                "amount",
++                "occurred_on",
++                "description",
++            ] {
++                assert!(
++                    sql.contains(kept),
++                    "brief SQL must keep `{kept}`, got: {sql}"
++                );
++            }
++            assert!(
++                sql.contains("ORDER BY occurred_on DESC, created_at DESC, id DESC"),
++                "brief must keep the full list order verbatim, got: {sql}"
++            );
++        }
++        assert!(
++            LIST_MOVEMENTS_RANGE_BRIEF_SQL.contains("occurred_on >= $2 AND occurred_on <= $3"),
++            "ranged brief must keep the range bounds verbatim, got: {LIST_MOVEMENTS_RANGE_BRIEF_SQL}"
++        );
++    }
++
+     #[test]
+     fn movement_sql_scopes_every_query_by_user_id_and_locks_first() {
+         // Shared projection: all six movement statements select exactly the
+@@ -2539,8 +2701,10 @@ mod tests {
+         )
+         .await
+         .expect("list is 200");
++        let MovementsResponse::Full(listed) = listed.0 else {
++            panic!("default list must serve the full shape");
++        };
+         let dates: Vec<String> = listed
+-            .0
+             .iter()
+             .map(|m| m.occurred_on.to_string())
+             .collect();
+@@ -2553,6 +2717,7 @@ mod tests {
+         ValidatedQuery(MovementRangeQuery {
+             from: from.map(str::to_string),
+             to: to.map(str::to_string),
++            shape: None,
+         })
+     }
+ 
+@@ -2589,8 +2754,10 @@ mod tests {
+         )
+         .await
+         .expect("ranged list is 200");
++        let MovementsResponse::Full(listed) = listed.0 else {
++            panic!("default ranged list must serve the full shape");
++        };
+         let mut dates: Vec<String> = listed
+-            .0
+             .iter()
+             .map(|m| m.occurred_on.to_string())
+             .collect();
+diff --git a/backend/src/routes/notes.rs b/backend/src/routes/notes.rs
+index 88bf3ed..491e827 100644
+--- a/backend/src/routes/notes.rs
++++ b/backend/src/routes/notes.rs
+@@ -37,7 +37,12 @@ use chrono::{DateTime, Utc};
+ use serde::{Deserialize, Serialize};
+ use uuid::Uuid;
+ 
+-use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
++use crate::{
++    auth::helper::require_user_id,
++    error::AppError,
++    routes::parse_read_shape,
++    state::AppState,
++};
+ 
+ const MAX_TITLE_LEN: usize = 200;
+ /// DOS guard: note bodies larger than 1 MiB (bytes) are rejected with 422
+@@ -47,6 +52,10 @@ const MAX_BODY_BYTES: usize = 1_048_576;
+ const CREATE_NOTE_SQL: &str = "INSERT INTO notes (user_id, title, body, is_markdown, is_pinned, category_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at";
+ const LIST_NOTES_SQL: &str = "SELECT id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at FROM notes WHERE user_id=$1 ORDER BY is_pinned DESC, updated_at DESC";
+ const SEARCH_NOTES_SQL: &str = "SELECT id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at FROM notes WHERE user_id=$1 AND search_tsv @@ plainto_tsquery('simple', $2) ORDER BY is_pinned DESC, updated_at DESC";
++/// Brief shape (`?shape=brief`): exactly the five fields the notes views read.
++const LIST_NOTES_BRIEF_SQL: &str = "SELECT id, title, body, is_pinned, updated_at FROM notes WHERE user_id=$1 ORDER BY is_pinned DESC, updated_at DESC";
++/// Brief shape of the FTS search: same five columns, same WHERE/ORDER BY.
++const SEARCH_NOTES_BRIEF_SQL: &str = "SELECT id, title, body, is_pinned, updated_at FROM notes WHERE user_id=$1 AND search_tsv @@ plainto_tsquery('simple', $2) ORDER BY is_pinned DESC, updated_at DESC";
+ const GET_NOTE_SQL: &str = "SELECT id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at FROM notes WHERE id=$1 AND user_id=$2";
+ const PATCH_NOTE_SQL: &str = "UPDATE notes SET title=COALESCE($3,title), body=COALESCE($4,body), is_markdown=COALESCE($5,is_markdown), is_pinned=COALESCE($6,is_pinned), category_id=COALESCE($7,category_id), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, body, is_markdown, is_pinned, category_id, created_at, updated_at";
+ const DELETE_NOTE_SQL: &str = "DELETE FROM notes WHERE id=$1 AND user_id=$2";
+@@ -99,6 +108,7 @@ pub struct PatchNoteRequest {
+ #[serde(deny_unknown_fields)]
+ pub struct NoteSearchQuery {
+     pub q: Option<String>,
++    pub shape: Option<String>,
+ }
+ 
+ #[derive(Debug, Serialize)]
+@@ -140,6 +150,40 @@ impl From<NoteRow> for NoteResponse {
+     }
+ }
+ 
++/// Brief note row: id, title, body, is_pinned, updated_at.
++type NoteBriefRow = (Uuid, String, String, bool, DateTime<Utc>);
++
++#[derive(Debug, Serialize)]
++pub struct NoteBriefResponse {
++    pub id: Uuid,
++    pub title: String,
++    pub body: String,
++    pub is_pinned: bool,
++    pub updated_at: DateTime<Utc>,
++}
++
++impl From<NoteBriefRow> for NoteBriefResponse {
++    fn from(row: (Uuid, String, String, bool, DateTime<Utc>)) -> Self {
++        let (id, title, body, is_pinned, updated_at) = row;
++        Self {
++            id,
++            title,
++            body,
++            is_pinned,
++            updated_at,
++        }
++    }
++}
++
++/// `GET /api/notes/search` body: the full row set, or the brief shape the SPA
++/// asks for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum NotesSearchResponse {
++    Full(Vec<NoteResponse>),
++    Brief(Vec<NoteBriefResponse>),
++}
++
+ /// Validate a required short text field: 1-`max` chars after trimming, no
+ /// null bytes.
+ pub fn validate_required_text(
+@@ -264,11 +308,30 @@ pub async fn search_notes_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+     Query(query): Query<NoteSearchQuery>,
+-) -> Result<Json<Vec<NoteResponse>>, AppError> {
++) -> Result<Json<NotesSearchResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
+     // A missing/blank `q` skips the FTS predicate and returns every owned
+     // note in the same pinned-first order (spec: Empty Query scenario).
+     let trimmed = query.q.as_deref().map(str::trim).unwrap_or("");
++    if shape.is_brief() {
++        let rows = if trimmed.is_empty() {
++            sqlx::query_as::<_, NoteBriefRow>(LIST_NOTES_BRIEF_SQL)
++                .bind(user_id)
++                .fetch_all(&state.pool)
++                .await
++        } else {
++            sqlx::query_as::<_, NoteBriefRow>(SEARCH_NOTES_BRIEF_SQL)
++                .bind(user_id)
++                .bind(trimmed)
++                .fetch_all(&state.pool)
++                .await
++        }
++        .map_err(|_| AppError::Internal)?;
++        return Ok(Json(NotesSearchResponse::Brief(
++            rows.into_iter().map(NoteBriefResponse::from).collect(),
++        )));
++    }
+     let rows = if trimmed.is_empty() {
+         sqlx::query_as::<_, NoteRow>(LIST_NOTES_SQL)
+             .bind(user_id)
+@@ -282,7 +345,9 @@ pub async fn search_notes_handler(
+             .await
+     }
+     .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(NoteResponse::from).collect()))
++    Ok(Json(NotesSearchResponse::Full(
++        rows.into_iter().map(NoteResponse::from).collect(),
++    )))
+ }
+ 
+ pub async fn get_note_handler(
+@@ -496,6 +561,41 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn notes_brief_sql_returns_only_frontend_fields() {
++        for sql in [LIST_NOTES_BRIEF_SQL, SEARCH_NOTES_BRIEF_SQL] {
++            assert!(
++                sql.contains("user_id"),
++                "notes brief SQL must scope by user_id: {sql}"
++            );
++            for kept in ["id", "title", "body", "is_pinned", "updated_at"] {
++                assert!(
++                    sql.contains(kept),
++                    "notes brief SQL must keep `{kept}`: {sql}"
++                );
++            }
++            // Check the SELECT column list only: the ORDER BY verbatim keeps
++            // `updated_at` even though the FTS path also filters on it.
++            let brief_cols = sql
++                .split("SELECT")
++                .nth(1)
++                .unwrap_or("")
++                .split("FROM")
++                .next()
++                .unwrap_or("");
++            for dropped in ["is_markdown", "category_id", "created_at"] {
++                assert!(
++                    !brief_cols.contains(dropped),
++                    "notes brief SQL must not select dropped `{dropped}`: {sql}"
++                );
++            }
++        }
++        assert!(
++            SEARCH_NOTES_BRIEF_SQL.contains("search_tsv @@ plainto_tsquery('simple'"),
++            "brief search must keep the FTS predicate: {SEARCH_NOTES_BRIEF_SQL}"
++        );
++    }
++
+     fn lazy_pool() -> sqlx::PgPool {
+         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+             .expect("lazy pool construction must succeed")
+@@ -564,6 +664,7 @@ mod tests {
+     fn search_query(q: Option<&str>) -> Query<NoteSearchQuery> {
+         Query(NoteSearchQuery {
+             q: q.map(str::to_string),
++            shape: None,
+         })
+     }
+ 
+@@ -719,6 +820,9 @@ mod tests {
+         )
+         .await
+         .expect("foreign search");
++        let NotesSearchResponse::Full(results) = results else {
++            panic!("search without shape must be the full variant");
++        };
+         assert!(results.is_empty());
+         cleanup_user(&pool, user_a).await;
+         cleanup_user(&pool, user_b).await;
+@@ -789,6 +893,9 @@ mod tests {
+         )
+         .await
+         .expect("search notes");
++        let NotesSearchResponse::Full(results) = results else {
++            panic!("search without shape must be the full variant");
++        };
+         assert_eq!(results.len(), 2, "both notes match {token}");
+         assert_eq!(results[0].id, older.id, "pinned older note ranks first");
+         assert_eq!(results[1].id, newer.id, "unpinned newer note ranks second");
+@@ -833,6 +940,9 @@ mod tests {
+                 search_notes_handler(State(state.clone()), headers.clone(), search_query(q))
+                     .await
+                     .expect("blank search");
++            let NotesSearchResponse::Full(results) = results else {
++                panic!("blank search without shape must be the full variant");
++            };
+             let ids: Vec<Uuid> = results.iter().map(|n| n.id).collect();
+             assert!(ids.contains(&first.id) && ids.contains(&second.id));
+             assert_eq!(results[0].id, first.id, "pinned note first for q={q:?}");
+@@ -884,6 +994,9 @@ mod tests {
+         )
+         .await
+         .expect("search notes");
++        let NotesSearchResponse::Full(results) = results else {
++            panic!("search without shape must be the full variant");
++        };
+         assert_eq!(results.len(), 1);
+         assert_eq!(results[0].id, plan.id);
+         cleanup_user(&pool, user_id).await;
+diff --git a/backend/src/routes/subscriptions.rs b/backend/src/routes/subscriptions.rs
+index dcd80e4..00da9d9 100644
+--- a/backend/src/routes/subscriptions.rs
++++ b/backend/src/routes/subscriptions.rs
+@@ -34,7 +34,7 @@
+ //! Registered in `routes/mod.rs` (pay wiring in `main.rs`, S-B slice).
+ 
+ use axum::{
+-    extract::{Path, State},
++    extract::{Path, Query, State},
+     http::{HeaderMap, StatusCode},
+     Json,
+ };
+@@ -51,6 +51,7 @@ use crate::{
+         money::{parse_money_amount_nonneg, MAX_MONEY_AMOUNT},
+         validation::ensure_owned_category,
+     },
++    routes::{parse_read_shape, ShapeQuery},
+     state::AppState,
+ };
+ 
+@@ -74,12 +75,22 @@ pub fn validate_price(raw: &str) -> Result<Decimal, AppError> {
+ }
+ const CREATE_SUB_SQL: &str = "INSERT INTO subscriptions (user_id, name, price, currency, frequency, next_billing_on, category_id, payment_method, url, notes) VALUES ($1,$2,$3,$4,$5::subscription_frequency,$6,$7,$8,$9,$10) RETURNING id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on";
+ const LIST_SUBS_SQL: &str = "SELECT id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on FROM subscriptions WHERE user_id=$1 ORDER BY created_at ASC";
++/// Brief shape (`?shape=brief`): exactly the eight fields the browser views
++/// read from a subscription. The WHERE scope and ORDER BY are the full
++/// list's verbatim; dropped for the browser are category_id,
++/// payment_method, url, notes, cancelled_at, created_at, updated_at (the
++/// MCP keeps the full projection).
++const LIST_SUBS_BRIEF_SQL: &str =
++    "SELECT id, name, price, currency, frequency::text, next_billing_on, is_active, last_paid_on FROM subscriptions WHERE user_id=$1 ORDER BY created_at ASC";
+ const GET_SUB_SQL: &str = "SELECT id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on FROM subscriptions WHERE id=$1 AND user_id=$2";
+ const PATCH_SUB_SQL: &str = "UPDATE subscriptions SET name=COALESCE($3, name), price=COALESCE($4, price), next_billing_on=COALESCE($5, next_billing_on), is_active=COALESCE($6, is_active), cancelled_at=CASE WHEN $6 IS NULL THEN cancelled_at WHEN $6 THEN NULL ELSE COALESCE(cancelled_at, now()) END, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on";
+ const DELETE_SUB_SQL: &str = "DELETE FROM subscriptions WHERE id=$1 AND user_id=$2";
++/// Pay-time account lock. Carries the currency so the handler can enforce the
++/// same-currency rule against the subscription before any ledger row or debit
++/// is written (mirrors `LOCK_TRANSFER_ACCOUNTS_SQL` in `movements.rs`).
+ const PAY_LOCK_ACCOUNT_SQL: &str =
+-    "SELECT id FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
+-const PAY_LOCK_SUB_SQL: &str = "SELECT id, price, is_active, next_billing_on, last_paid_on FROM subscriptions WHERE id=$1 AND user_id=$2 FOR UPDATE";
++    "SELECT id, currency FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
++const PAY_LOCK_SUB_SQL: &str = "SELECT id, price, is_active, next_billing_on, last_paid_on, currency FROM subscriptions WHERE id=$1 AND user_id=$2 FOR UPDATE";
+ const SEED_CATEGORY_SQL: &str = "INSERT INTO categories (user_id, kind, name) VALUES ($1, 'finance'::category_kind, 'Suscripciones') ON CONFLICT (user_id, kind, name) DO UPDATE SET name = EXCLUDED.name RETURNING id";
+ const PAY_INSERT_MOVEMENT_SQL: &str = "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on, description, subscription_id) VALUES ($1,$2,$3,'expense',$4,$5,NULL,$6)";
+ const PAY_DEBIT_ACCOUNT_SQL: &str =
+@@ -105,8 +116,15 @@ type SubscriptionRow = (
+ );
+ 
+ /// Pay-time locked subscription: id, price, is_active, next_billing_on,
+-/// last_paid_on.
+-type PayLockedRow = (Uuid, Decimal, bool, Option<NaiveDate>, Option<NaiveDate>);
++/// last_paid_on, currency.
++type PayLockedRow = (
++    Uuid,
++    Decimal,
++    bool,
++    Option<NaiveDate>,
++    Option<NaiveDate>,
++    String,
++);
+ 
+ #[derive(Debug, Deserialize)]
+ #[serde(deny_unknown_fields)]
+@@ -233,6 +251,83 @@ impl From<SubscriptionRow> for SubscriptionResponse {
+     }
+ }
+ 
++/// Brief subscription row: id, name, price, currency, frequency,
++/// next_billing_on, is_active, last_paid_on (S12 order).
++type SubscriptionBriefRow = (
++    Uuid,
++    String,
++    Decimal,
++    String,
++    String,
++    Option<NaiveDate>,
++    bool,
++    Option<NaiveDate>,
++);
++
++/// Brief subscription response (`?shape=brief`): id, name, price, currency,
++/// frequency, next_billing_on, is_active, last_paid_on.
++#[derive(Debug, Serialize)]
++pub struct SubscriptionBriefResponse {
++    pub id: Uuid,
++    pub name: String,
++    /// Serialized as a string (e.g. `"9.99"`); `rust_decimal`'s serde impl
++    /// renders decimals as strings, never floats.
++    pub price: Decimal,
++    pub currency: String,
++    pub frequency: String,
++    pub next_billing_on: Option<NaiveDate>,
++    /// Lifecycle flag; `true` at creation alongside `cancelled_at = NULL`.
++    pub is_active: bool,
++    /// Date of the last successful pay in `America/Bogota` (`NULL` = never
++    /// paid).
++    pub last_paid_on: Option<NaiveDate>,
++}
++
++impl From<SubscriptionBriefRow> for SubscriptionBriefResponse {
++    fn from(
++        row: (
++            Uuid,
++            String,
++            Decimal,
++            String,
++            String,
++            Option<NaiveDate>,
++            bool,
++            Option<NaiveDate>,
++        ),
++    ) -> Self {
++        let (
++            id,
++            name,
++            price,
++            currency,
++            frequency,
++            next_billing_on,
++            is_active,
++            last_paid_on,
++        ) = row;
++        Self {
++            id,
++            name,
++            price,
++            currency,
++            frequency,
++            next_billing_on,
++            is_active,
++            last_paid_on,
++        }
++    }
++}
++
++/// `GET /api/subscriptions` body: the full row set, or the brief shape the
++/// SPA asks for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum SubscriptionsResponse {
++    Full(Vec<SubscriptionResponse>),
++    Brief(Vec<SubscriptionBriefResponse>),
++}
++
+ /// Validate a required short text field: 1-`max` chars after trimming, no
+ /// null bytes.
+ pub fn validate_required_text(
+@@ -388,8 +483,25 @@ pub async fn create_subscription_handler(
+ pub async fn list_subscriptions_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+-) -> Result<Json<Vec<SubscriptionResponse>>, AppError> {
++    Query(query): Query<ShapeQuery>,
++) -> Result<Json<SubscriptionsResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
++    if shape.is_brief() {
++        let rows = sqlx::query_as::<_, SubscriptionBriefRow>(LIST_SUBS_BRIEF_SQL)
++            .bind(user_id)
++            .fetch_all(&state.pool)
++            .await
++            .map_err(|e| {
++                tracing::error!("list_subscriptions failed: {e:?}");
++                AppError::Internal
++            })?;
++        return Ok(Json(SubscriptionsResponse::Brief(
++            rows.into_iter()
++                .map(SubscriptionBriefResponse::from)
++                .collect(),
++        )));
++    }
+     let rows = sqlx::query_as::<_, SubscriptionRow>(LIST_SUBS_SQL)
+         .bind(user_id)
+         .fetch_all(&state.pool)
+@@ -398,9 +510,9 @@ pub async fn list_subscriptions_handler(
+             tracing::error!("list_subscriptions failed: {e:?}");
+             AppError::Internal
+         })?;
+-    Ok(Json(
++    Ok(Json(SubscriptionsResponse::Full(
+         rows.into_iter().map(SubscriptionResponse::from).collect(),
+-    ))
++    )))
+ }
+ 
+ pub async fn get_subscription_handler(
+@@ -490,15 +602,15 @@ pub async fn pay_subscription_handler(
+     let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
+     // Lock-first (movements discipline): the account row serializes
+     // concurrent payers; a referenced foreign/missing account is 404.
+-    let locked_account: Option<Uuid> = sqlx::query_scalar(PAY_LOCK_ACCOUNT_SQL)
++    let locked_account: Option<(Uuid, String)> = sqlx::query_as(PAY_LOCK_ACCOUNT_SQL)
+         .bind(body.account_id)
+         .bind(user_id)
+         .fetch_optional(&mut *tx)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    if locked_account.is_none() {
++    let Some((_, account_currency)) = locked_account else {
+         return Err(AppError::NotFound);
+-    }
++    };
+     // Then the subscription row: foreign/missing is 404, never 403.
+     let locked: Option<PayLockedRow> = sqlx::query_as(PAY_LOCK_SUB_SQL)
+         .bind(id)
+@@ -506,9 +618,18 @@ pub async fn pay_subscription_handler(
+         .fetch_optional(&mut *tx)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    let Some((_, price, is_active, next_billing_on, last_paid_on)) = locked else {
++    let Some((_, price, is_active, next_billing_on, last_paid_on, sub_currency)) = locked else {
+         return Err(AppError::NotFound);
+     };
++    // Same-currency rule (money integrity, mirrors the transfer path): the
++    // subscription may only be paid from an account denominated in its own
++    // currency. Without this the ledger row and the debit mix scales and the
++    // account balance stops meaning what it says.
++    if account_currency != sub_currency {
++        return Err(AppError::Validation(
++            "la cuenta y la suscripción deben tener la misma moneda".into(),
++        ));
++    }
+     if !is_active {
+         return Err(AppError::Validation(
+             "la suscripción está cancelada y no se puede pagar".into(),
+@@ -884,6 +1005,50 @@ mod tests {
+         assert!(v.get("last_paid_on").is_some(), "pay state must be visible");
+     }
+ 
++    #[test]
++    fn brief_sql_selects_only_s12_columns_with_verbatim_scope_and_order() {
++        assert!(
++            LIST_SUBS_BRIEF_SQL.contains("user_id"),
++            "brief SQL must scope by user_id, got: {LIST_SUBS_BRIEF_SQL}"
++        );
++        // Only the SELECT list must be free of the dropped columns: the
++        // verbatim ORDER BY legitimately still mentions `created_at`.
++        let select_list = LIST_SUBS_BRIEF_SQL.split(" FROM ").next().unwrap_or(LIST_SUBS_BRIEF_SQL);
++        for dropped in [
++            "category_id",
++            "payment_method",
++            "url",
++            "notes",
++            "cancelled_at",
++            "created_at",
++            "updated_at",
++        ] {
++            assert!(
++                !select_list.contains(dropped),
++                "brief SELECT must not carry `{dropped}`, got: {LIST_SUBS_BRIEF_SQL}"
++            );
++        }
++        for kept in [
++            "id",
++            "name",
++            "price",
++            "currency",
++            "frequency::text",
++            "next_billing_on",
++            "is_active",
++            "last_paid_on",
++        ] {
++            assert!(
++                LIST_SUBS_BRIEF_SQL.contains(kept),
++                "brief SQL must keep `{kept}`, got: {LIST_SUBS_BRIEF_SQL}"
++            );
++        }
++        assert!(
++            LIST_SUBS_BRIEF_SQL.contains("ORDER BY created_at ASC"),
++            "brief must keep the full list order verbatim, got: {LIST_SUBS_BRIEF_SQL}"
++        );
++    }
++
+     #[test]
+     fn subscription_sql_scopes_every_query_by_user_id() {
+         for sql in [
+@@ -943,6 +1108,10 @@ mod tests {
+             PAY_LOCK_SUB_SQL.contains("FOR UPDATE") && PAY_LOCK_ACCOUNT_SQL.contains("FOR UPDATE"),
+             "pay must lock account then subscription"
+         );
++        assert!(
++            PAY_LOCK_SUB_SQL.contains("currency") && PAY_LOCK_ACCOUNT_SQL.contains("currency"),
++            "pay must carry both currencies so the same-currency rule is enforceable"
++        );
+     }
+ 
+     fn test_pool() -> Option<sqlx::PgPool> {
+@@ -1096,9 +1265,16 @@ mod tests {
+             .await
+             .expect("get own subscription is 200");
+         assert_eq!(got.name, "Netflix");
+-        let listed = list_subscriptions_handler(State(state.clone()), headers.clone())
+-            .await
+-            .expect("list subscriptions is 200");
++        let listed = list_subscriptions_handler(
++            State(state.clone()),
++            headers.clone(),
++            Query(ShapeQuery { shape: None }),
++        )
++        .await
++        .expect("list subscriptions is 200");
++        let SubscriptionsResponse::Full(listed) = listed.0 else {
++            panic!("default list must serve the full shape");
++        };
+         assert!(listed.iter().any(|s| s.id == created.id));
+         let status =
+             delete_subscription_handler(State(state.clone()), headers.clone(), Path(created.id))
+diff --git a/backend/src/routes/tasks.rs b/backend/src/routes/tasks.rs
+index b9fb61c..1c7f0c4 100644
+--- a/backend/src/routes/tasks.rs
++++ b/backend/src/routes/tasks.rs
+@@ -45,6 +45,7 @@ use crate::{
+     auth::helper::require_user_id,
+     error::AppError,
+     finance::dates::today_bogota,
++    routes::parse_read_shape,
+     state::AppState,
+ };
+ 
+@@ -67,6 +68,16 @@ const LIST_TASKS_TODAY_SQL: &str = "SELECT id, title, description, priority::tex
+ const LIST_TASKS_UPCOMING_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date > $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+ const LIST_TASKS_OVERDUE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date < $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
+ const LIST_TASKS_DONE_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND completed_at IS NOT NULL ORDER BY sort_order ASC, created_at ASC";
++/// Brief shape (`?shape=brief`): exactly the seven fields the productivity views read.
++const LIST_TASKS_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 ORDER BY sort_order ASC, created_at ASC";
++/// Brief shape of the `today` view: same seven columns, same WHERE/ORDER BY.
++const LIST_TASKS_TODAY_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND due_date = $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
++/// Brief shape of the `upcoming` view: same seven columns, same WHERE/ORDER BY.
++const LIST_TASKS_UPCOMING_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND due_date > $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
++/// Brief shape of the `overdue` view: same seven columns, same WHERE/ORDER BY.
++const LIST_TASKS_OVERDUE_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND due_date < $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
++/// Brief shape of the `done` view: same seven columns, same WHERE/ORDER BY.
++const LIST_TASKS_DONE_BRIEF_SQL: &str = "SELECT id, title, priority::text, status::text, due_date, completed_at, goal_id FROM tasks WHERE user_id=$1 AND completed_at IS NOT NULL ORDER BY sort_order ASC, created_at ASC";
+ const GET_TASK_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE id=$1 AND user_id=$2";
+ const PATCH_TASK_SQL: &str = "UPDATE tasks SET title=COALESCE($3,title), description=COALESCE($4,description), priority=COALESCE($5::task_priority,priority), status=COALESCE($6::task_status,status), due_date=COALESCE($7,due_date), goal_id=COALESCE($8,goal_id), category_id=COALESCE($9,category_id), sort_order=COALESCE($10,sort_order), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
+ const DELETE_TASK_SQL: &str = "DELETE FROM tasks WHERE id=$1 AND user_id=$2";
+@@ -132,6 +143,7 @@ pub struct PatchTaskRequest {
+ #[serde(deny_unknown_fields)]
+ pub struct TaskViewQuery {
+     pub view: Option<String>,
++    pub shape: Option<String>,
+ }
+ 
+ #[derive(Debug, Serialize)]
+@@ -204,6 +216,62 @@ impl From<TaskRow> for TaskResponse {
+     }
+ }
+ 
++/// Brief task row: id, title, priority, status, due_date, completed_at, goal_id.
++type TaskBriefRow = (
++    Uuid,
++    String,
++    String,
++    String,
++    Option<NaiveDate>,
++    Option<DateTime<Utc>>,
++    Option<Uuid>,
++);
++
++#[derive(Debug, Serialize)]
++pub struct TaskBriefResponse {
++    pub id: Uuid,
++    pub title: String,
++    pub priority: String,
++    pub status: String,
++    pub due_date: Option<NaiveDate>,
++    pub completed_at: Option<DateTime<Utc>>,
++    pub goal_id: Option<Uuid>,
++}
++
++impl From<TaskBriefRow> for TaskBriefResponse {
++    fn from(
++        row: (
++            Uuid,
++            String,
++            String,
++            String,
++            Option<NaiveDate>,
++            Option<DateTime<Utc>>,
++            Option<Uuid>,
++        ),
++    ) -> Self {
++        let (id, title, priority, status, due_date, completed_at, goal_id) = row;
++        Self {
++            id,
++            title,
++            priority,
++            status,
++            due_date,
++            completed_at,
++            goal_id,
++        }
++    }
++}
++
++/// `GET /api/tasks` body: the full row set, or the brief shape the SPA asks
++/// for with `?shape=brief`.
++#[derive(Debug, Serialize)]
++#[serde(untagged)]
++pub enum TasksResponse {
++    Full(Vec<TaskResponse>),
++    Brief(Vec<TaskBriefResponse>),
++}
++
+ /// Validate a required short text field: 1-`max` chars after trimming, no
+ /// null bytes.
+ pub fn validate_required_text(
+@@ -435,9 +503,28 @@ pub async fn list_tasks_handler(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+     Query(query): Query<TaskViewQuery>,
+-) -> Result<Json<Vec<TaskResponse>>, AppError> {
++) -> Result<Json<TasksResponse>, AppError> {
+     let user_id = require_user_id(&headers, &state.pool).await?;
+     let view = validate_task_view(query.view.as_deref())?;
++    let shape = parse_read_shape(query.shape.as_deref())?;
++    if shape.is_brief() {
++        let sql = match view.as_deref() {
++            Some("today") => LIST_TASKS_TODAY_BRIEF_SQL,
++            Some("upcoming") => LIST_TASKS_UPCOMING_BRIEF_SQL,
++            Some("overdue") => LIST_TASKS_OVERDUE_BRIEF_SQL,
++            Some("done") => LIST_TASKS_DONE_BRIEF_SQL,
++            _ => LIST_TASKS_BRIEF_SQL,
++        };
++        let needs_day = matches!(view.as_deref(), Some("today" | "upcoming" | "overdue"));
++        let mut q = sqlx::query_as::<_, TaskBriefRow>(sql).bind(user_id);
++        if needs_day {
++            q = q.bind(today_bogota());
++        }
++        let rows = q.fetch_all(&state.pool).await.map_err(|_| AppError::Internal)?;
++        return Ok(Json(TasksResponse::Brief(
++            rows.into_iter().map(TaskBriefResponse::from).collect(),
++        )));
++    }
+     let (sql, needs_day) = match view.as_deref() {
+         Some("today") => (LIST_TASKS_TODAY_SQL, true),
+         Some("upcoming") => (LIST_TASKS_UPCOMING_SQL, true),
+@@ -453,7 +540,9 @@ pub async fn list_tasks_handler(
+         .fetch_all(&state.pool)
+         .await
+         .map_err(|_| AppError::Internal)?;
+-    Ok(Json(rows.into_iter().map(TaskResponse::from).collect()))
++    Ok(Json(TasksResponse::Full(
++        rows.into_iter().map(TaskResponse::from).collect(),
++    )))
+ }
+ 
+ pub async fn get_task_handler(
+@@ -760,6 +849,59 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn tasks_brief_sql_returns_only_frontend_fields() {
++        for sql in [
++            LIST_TASKS_BRIEF_SQL,
++            LIST_TASKS_TODAY_BRIEF_SQL,
++            LIST_TASKS_UPCOMING_BRIEF_SQL,
++            LIST_TASKS_OVERDUE_BRIEF_SQL,
++            LIST_TASKS_DONE_BRIEF_SQL,
++        ] {
++            assert!(
++                sql.contains("user_id"),
++                "tasks brief SQL must scope by user_id, got: {sql}"
++            );
++            for kept in [
++                "id",
++                "title",
++                "priority",
++                "status",
++                "due_date",
++                "completed_at",
++                "goal_id",
++            ] {
++                assert!(
++                    sql.contains(kept),
++                    "tasks brief SQL must keep `{kept}`, got: {sql}"
++                );
++            }
++            for dropped in [
++                "description",
++                "reminder_id",
++                "category_id",
++                "sort_order",
++                "created_at",
++                "updated_at",
++            ] {
++                // Check the SELECT column list only: the ORDER BY verbatim
++                // keeps `sort_order`/`created_at` even though they are not
++                // selected.
++                let cols = sql
++                    .split("SELECT")
++                    .nth(1)
++                    .unwrap_or("")
++                    .split("FROM")
++                    .next()
++                    .unwrap_or("");
++                assert!(
++                    !cols.contains(dropped),
++                    "tasks brief SQL must not select dropped `{dropped}`, got: {sql}"
++                );
++            }
++        }
++    }
++
+     fn lazy_pool() -> sqlx::PgPool {
+         sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+             .expect("lazy pool construction must succeed")
+@@ -822,6 +964,7 @@ mod tests {
+     fn view_query(view: Option<&str>) -> Query<TaskViewQuery> {
+         Query(TaskViewQuery {
+             view: view.map(str::to_string),
++            shape: None,
+         })
+     }
+ 
+@@ -889,6 +1032,9 @@ mod tests {
+             list_tasks_handler(State(state.clone()), headers.clone(), view_query(None))
+                 .await
+                 .expect("list tasks");
++        let TasksResponse::Full(listed) = listed else {
++            panic!("unfiltered list without shape must be the full variant");
++        };
+         assert!(listed.iter().any(|t| t.id == created.id));
+ 
+         let Json(patched) = patch_task_handler(
+@@ -1120,7 +1266,12 @@ mod tests {
+         let done_today_id = seed("done-today-task", Some(today), "completed").await;
+         let undated_id = seed("undated-task", None, "pending").await;
+ 
+-        let ids = |tasks: Vec<TaskResponse>| tasks.into_iter().map(|t| t.id).collect::<Vec<_>>();
++        let ids = |tasks: TasksResponse| {
++            let TasksResponse::Full(tasks) = tasks else {
++                panic!("view without shape must be the full variant");
++            };
++            tasks.into_iter().map(|t| t.id).collect::<Vec<_>>()
++        };
+ 
+         let Json(today_tasks) = list_tasks_handler(
+             State(state.clone()),
+@@ -1188,6 +1339,9 @@ mod tests {
+         let Json(all) = list_tasks_handler(State(state.clone()), headers.clone(), view_query(None))
+             .await
+             .expect("unfiltered list");
++        let TasksResponse::Full(all) = all else {
++            panic!("unfiltered list without shape must be the full variant");
++        };
+         assert_eq!(all.len(), 5);
+ 
+         // Unknown view is 422.
+diff --git a/frontend/app/dashboard/ajustes/page.test.tsx b/frontend/app/dashboard/ajustes/page.test.tsx
+index c9746fe..702a582 100644
+--- a/frontend/app/dashboard/ajustes/page.test.tsx
++++ b/frontend/app/dashboard/ajustes/page.test.tsx
+@@ -32,10 +32,6 @@ function categoryRow(id: string, name: string, kind = "finance"): CategoryWire {
+     id,
+     kind,
+     name,
+-    color: null,
+-    icon: null,
+-    is_archived: false,
+-    created_at: "2026-01-01",
+   };
+ }
+ 
+diff --git a/frontend/app/dashboard/finance/compare/page.test.tsx b/frontend/app/dashboard/finance/compare/page.test.tsx
+index b6c3d9a..692a588 100644
+--- a/frontend/app/dashboard/finance/compare/page.test.tsx
++++ b/frontend/app/dashboard/finance/compare/page.test.tsx
+@@ -30,9 +30,6 @@ function movement(id: string, overrides: Partial<MovementWire> = {}): MovementWi
+     description: null,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-09-24T10:00:00Z",
+-    updated_at: "2026-09-24T10:00:00Z",
+     ...overrides,
+   };
+ }
+diff --git a/frontend/components/dashboard/ExpensePieSection.test.tsx b/frontend/components/dashboard/ExpensePieSection.test.tsx
+index 56995df..8e2a8a7 100644
+--- a/frontend/components/dashboard/ExpensePieSection.test.tsx
++++ b/frontend/components/dashboard/ExpensePieSection.test.tsx
+@@ -51,9 +51,6 @@ function movement(overrides: Partial<MovementWire> = {}): MovementWire {
+     description: null,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-10-15T10:00:00Z",
+-    updated_at: "2026-10-15T10:00:00Z",
+     ...overrides,
+   };
+ }
+@@ -63,10 +60,6 @@ function category(id: string, name: string): CategoryWire {
+     id,
+     kind: "finance",
+     name,
+-    color: null,
+-    icon: null,
+-    is_archived: false,
+-    created_at: "2026-10-01T00:00:00Z",
+   };
+ }
+ 
+diff --git a/frontend/components/dashboard/TotalTrendSection.test.tsx b/frontend/components/dashboard/TotalTrendSection.test.tsx
+index 7109774..bfc47cf 100644
+--- a/frontend/components/dashboard/TotalTrendSection.test.tsx
++++ b/frontend/components/dashboard/TotalTrendSection.test.tsx
+@@ -46,9 +46,6 @@ function movement(overrides: Partial<MovementWire> = {}): MovementWire {
+     description: null,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-10-03T10:00:00Z",
+-    updated_at: "2026-10-03T10:00:00Z",
+     ...overrides,
+   };
+ }
+diff --git a/frontend/components/finance/CategoryCharts.test.tsx b/frontend/components/finance/CategoryCharts.test.tsx
+index 987813b..dfd35d6 100644
+--- a/frontend/components/finance/CategoryCharts.test.tsx
++++ b/frontend/components/finance/CategoryCharts.test.tsx
+@@ -18,9 +18,6 @@ function movement(id: string, overrides: Partial<MovementWire> = {}): MovementWi
+     description: null,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-09-24T10:00:00Z",
+-    updated_at: "2026-09-24T10:00:00Z",
+     ...overrides,
+   };
+ }
+diff --git a/frontend/components/finance/MovementForms.test.tsx b/frontend/components/finance/MovementForms.test.tsx
+index 4ed3467..726cc50 100644
+--- a/frontend/components/finance/MovementForms.test.tsx
++++ b/frontend/components/finance/MovementForms.test.tsx
+@@ -384,9 +384,6 @@ describe("MovementModal", () => {
+               description: null,
+               account_id: "a1",
+               category_id: "c1",
+-              subscription_id: null,
+-              created_at: "2026-09-24T10:00:00Z",
+-              updated_at: "2026-09-24T10:00:00Z",
+             },
+           }}
+           accounts={accounts}
+@@ -418,9 +415,6 @@ describe("MovementModal", () => {
+               account_id: "a1",
+               transfer_account_id: "a2",
+               category_id: null,
+-              subscription_id: null,
+-              created_at: "2026-10-03T10:00:00Z",
+-              updated_at: "2026-10-03T10:00:00Z",
+             },
+           }}
+           accounts={accounts}
+diff --git a/frontend/components/finance/MovementHistory.test.tsx b/frontend/components/finance/MovementHistory.test.tsx
+index dd4eaa8..c6ee978 100644
+--- a/frontend/components/finance/MovementHistory.test.tsx
++++ b/frontend/components/finance/MovementHistory.test.tsx
+@@ -27,9 +27,6 @@ function wire(id: string, overrides: Partial<MovementWire> = {}): MovementWire {
+     description: `desc-${id}`,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-09-24T10:00:00Z",
+-    updated_at: "2026-09-24T10:00:00Z",
+     ...overrides,
+   };
+ }
+diff --git a/frontend/components/finance/SubscriptionForms.test.tsx b/frontend/components/finance/SubscriptionForms.test.tsx
+index a3a4a0c..1411a1c 100644
+--- a/frontend/components/finance/SubscriptionForms.test.tsx
++++ b/frontend/components/finance/SubscriptionForms.test.tsx
+@@ -17,8 +17,6 @@ function sub(id: string, overrides: Partial<SubscriptionWire> = {}): Subscriptio
+     frequency: "monthly",
+     next_billing_on: "2026-10-15",
+     is_active: true,
+-    payment_method: null,
+-    category_id: null,
+     last_paid_on: null,
+     ...overrides,
+   };
+diff --git a/frontend/components/finance/s1-capture.test.tsx b/frontend/components/finance/s1-capture.test.tsx
+index d295653..88ccd14 100644
+--- a/frontend/components/finance/s1-capture.test.tsx
++++ b/frontend/components/finance/s1-capture.test.tsx
+@@ -146,19 +146,11 @@ describe("S1 transforms (números solo en la frontera)", () => {
+           id: "2",
+           kind: "finance",
+           name: "Transporte",
+-          color: null,
+-          icon: null,
+-          is_archived: false,
+-          created_at: "",
+         },
+         {
+           id: "1",
+           kind: "finance",
+           name: "Alimentación",
+-          color: null,
+-          icon: null,
+-          is_archived: false,
+-          created_at: "",
+         },
+       ]).map((row) => row.name),
+     ).toEqual(["Alimentación", "Transporte"]);
+diff --git a/frontend/components/productivity/s2-crud.test.tsx b/frontend/components/productivity/s2-crud.test.tsx
+index d3932fa..7bde723 100644
+--- a/frontend/components/productivity/s2-crud.test.tsx
++++ b/frontend/components/productivity/s2-crud.test.tsx
+@@ -145,13 +145,11 @@ function taskRow(overrides: Partial<TaskWire> = {}): TaskWire {
+   return {
+     id: "t1",
+     title: "Buy shoes",
+-    description: null,
+     priority: "high",
+     status: "pending",
+     due_date: null,
+     completed_at: null,
+     goal_id: null,
+-    sort_order: 0,
+     ...overrides,
+   };
+ }
+@@ -296,7 +294,6 @@ describe("S2 notas: crear, fijar y eliminar", () => {
+             id: "n1",
+             title: "Plan",
+             body: "hoja de ruta",
+-            is_markdown: true,
+             is_pinned: false,
+             updated_at: "2026-09-09T10:00:00Z",
+           },
+diff --git a/frontend/components/settings/CustomCategoriesSection.test.tsx b/frontend/components/settings/CustomCategoriesSection.test.tsx
+index 3c28d7d..5d71420 100644
+--- a/frontend/components/settings/CustomCategoriesSection.test.tsx
++++ b/frontend/components/settings/CustomCategoriesSection.test.tsx
+@@ -17,10 +17,6 @@ function category(id: string, name: string, kind = "finance"): CategoryWire {
+     id,
+     kind,
+     name,
+-    color: null,
+-    icon: null,
+-    is_archived: false,
+-    created_at: "2026-01-01",
+   };
+ }
+ 
+diff --git a/frontend/components/settings/SubscriptionsSection.test.tsx b/frontend/components/settings/SubscriptionsSection.test.tsx
+index eb55252..52d4dbc 100644
+--- a/frontend/components/settings/SubscriptionsSection.test.tsx
++++ b/frontend/components/settings/SubscriptionsSection.test.tsx
+@@ -17,8 +17,6 @@ function sub(id: string, overrides: Partial<SubscriptionWire> = {}): Subscriptio
+     frequency: "monthly",
+     next_billing_on: "2026-10-15",
+     is_active: true,
+-    payment_method: null,
+-    category_id: null,
+     last_paid_on: null,
+     ...overrides,
+   };
+diff --git a/frontend/lib/api/dashboard.ts b/frontend/lib/api/dashboard.ts
+index 439a19f..a7d14fe 100644
+--- a/frontend/lib/api/dashboard.ts
++++ b/frontend/lib/api/dashboard.ts
+@@ -104,7 +104,7 @@ export function useHabitsToday() {
+ export function useAccounts() {
+   return useSWR<AccountWire[]>(
+     "dashboard/accounts",
+-    () => apiGet<AccountWire[]>("/accounts"),
++    () => apiGet<AccountWire[]>("/accounts?shape=brief"),
+     config,
+   );
+ }
+@@ -151,11 +151,11 @@ export function buildNextLayout(cur: DashboardLayout, id: string, visible: boole
+ 
+ export function useSubscriptions(v = true) {
+   const key = subscriptionsKey(v);
+-  return useSWR<SubscriptionWire[]>(key, () => apiGet<SubscriptionWire[]>("/subscriptions"), config);
++  return useSWR<SubscriptionWire[]>(key, () => apiGet<SubscriptionWire[]>("/subscriptions?shape=brief"), config);
+ }
+ export function useTasks(view: string | null, v = true) {
+   const key = tasksKey(view, v);
+-  return useSWR<TaskWire[]>(key, () => apiGet<TaskWire[]>(view ? `/tasks?view=${view}` : "/tasks"), config);
++  return useSWR<TaskWire[]>(key, () => apiGet<TaskWire[]>(view ? `/tasks?view=${view}&shape=brief` : "/tasks?shape=brief"), config);
+ }
+ export function useEvents(from: string | null, to: string | null, v = true) {
+   const key = eventsKey(from, to, v);
+@@ -163,11 +163,11 @@ export function useEvents(from: string | null, to: string | null, v = true) {
+   if (from) p.set("from", from);
+   if (to) p.set("to", to);
+   const qs = p.toString();
+-  return useSWR<EventWire[]>(key, () => apiGet<EventWire[]>(qs ? `/events?${qs}` : "/events"), config);
++  return useSWR<EventWire[]>(key, () => apiGet<EventWire[]>(qs ? `/events?${qs}&shape=brief` : "/events?shape=brief"), config);
+ }
+ export function useGoals(v = true) {
+   const key = goalsKey(v);
+-  return useSWR<GoalWire[]>(key, () => apiGet<GoalWire[]>("/goals"), config);
++  return useSWR<GoalWire[]>(key, () => apiGet<GoalWire[]>("/goals?shape=brief"), config);
+ }
+ /** Optimistic `PATCH /me/preferences { dashboard_layout }` with rollback on 422. */
+ export function useUpdateLayout() {
+diff --git a/frontend/lib/api/finance.ts b/frontend/lib/api/finance.ts
+index 08a355c..ea887a1 100644
+--- a/frontend/lib/api/finance.ts
++++ b/frontend/lib/api/finance.ts
+@@ -21,8 +21,6 @@ export interface SubscriptionWire {
+   frequency: string;
+   next_billing_on: string | null;
+   is_active: boolean;
+-  payment_method?: string | null;
+-  category_id?: string | null;
+   /** Set by the pay action (`POST /subscriptions/{id}/pay`); absent on older rows. */
+   last_paid_on?: string | null;
+ }
+@@ -30,7 +28,7 @@ export interface SubscriptionWire {
+ export function useSubscriptions() {
+   return useSWR<SubscriptionWire[]>(
+     "finance/subscriptions",
+-    () => apiGet<SubscriptionWire[]>("/subscriptions"),
++    () => apiGet<SubscriptionWire[]>("/subscriptions?shape=brief"),
+     financeConfig,
+   );
+ }
+@@ -45,15 +43,11 @@ export interface CategoryWire {
+   id: string;
+   kind: string;
+   name: string;
+-  color: string | null;
+-  icon: string | null;
+-  is_archived: boolean;
+-  created_at: string;
+ }
+ 
+ /** Fetch finance categories ordered by name (GET /categories?kind=finance). */
+ export function fetchFinanceCategories(): Promise<CategoryWire[]> {
+-  return apiGet<CategoryWire[]>("/categories?kind=finance");
++  return apiGet<CategoryWire[]>("/categories?kind=finance&shape=brief");
+ }
+ 
+ export function useFinanceCategories() {
+@@ -67,7 +61,7 @@ export function useFinanceCategories() {
+ /** Fetch subscription categories ordered by name (GET /categories?kind=subscription).
+  * Own SWR key so each classification select dedups/caches independently. */
+ export function fetchSubscriptionCategories(): Promise<CategoryWire[]> {
+-  return apiGet<CategoryWire[]>("/categories?kind=subscription");
++  return apiGet<CategoryWire[]>("/categories?kind=subscription&shape=brief");
+ }
+ 
+ export function useSubscriptionCategories() {
+@@ -123,9 +117,6 @@ export interface MovementWire {
+    * still type-check; the backend always serializes it. */
+   transfer_account_id?: string | null;
+   category_id: string | null;
+-  subscription_id: string | null;
+-  created_at: string;
+-  updated_at: string;
+ }
+ 
+ /** `POST /movements` stays a two-direction contract: transfers are created
+@@ -155,7 +146,7 @@ export interface PatchMovementInput {
+ export function useMovements() {
+   return useSWR<MovementWire[]>(
+     "finance/movements",
+-    () => apiGet<MovementWire[]>("/movements"),
++    () => apiGet<MovementWire[]>("/movements?shape=brief"),
+     financeConfig,
+   );
+ }
+@@ -186,7 +177,7 @@ export function useMovementsRange(range: MovementRange | null | undefined) {
+       const params = new URLSearchParams();
+       params.set("from", (range as MovementRange).from);
+       params.set("to", (range as MovementRange).to);
+-      return apiGet<MovementWire[]>(`/movements?${params.toString()}`);
++      return apiGet<MovementWire[]>(`/movements?${params.toString()}&shape=brief`);
+     },
+     financeConfig,
+   );
+@@ -231,7 +222,7 @@ export function deleteMovement(id: string): Promise<void> {
+ /** Fetch every owned category in one unfiltered set (`GET /categories`,
+  * no `kind` param), ordered by name. */
+ export function fetchCategories(): Promise<CategoryWire[]> {
+-  return apiGet<CategoryWire[]>("/categories");
++  return apiGet<CategoryWire[]>("/categories?shape=brief");
+ }
+ 
+ export function useCategories() {
+@@ -262,7 +253,7 @@ export function createBankAccount(name: string) {
+ }
+ 
+ export interface AssetWire { id: string; name: string; category: string; account_id: string | null; currency: string; acquired_on: string | null; notes: string | null }
+-export function fetchAssets(): Promise<AssetWire[]> { return apiGet<AssetWire[]>("/assets"); }
++export function fetchAssets(): Promise<AssetWire[]> { return apiGet<AssetWire[]>("/assets?shape=brief"); }
+ export function useAssets() { return useSWR<AssetWire[]>("finance/assets", fetchAssets, financeConfig); }
+ export function patchAsset(id: string, body: Record<string, unknown>) { return apiPatch(`/assets/${id}`, body); }
+ export function createValuation(assetId: string, input: { value: string; recorded_on: string; notes?: string }) { return apiPost(`/assets/${assetId}/valuations`, input); }
+diff --git a/frontend/lib/api/productivity.ts b/frontend/lib/api/productivity.ts
+index 13f3379..585c4b2 100644
+--- a/frontend/lib/api/productivity.ts
++++ b/frontend/lib/api/productivity.ts
+@@ -30,7 +30,6 @@ export interface GoalWire {
+   name: string;
+   description: string | null;
+   area: string;
+-  start_date: string;
+   due_date: string | null;
+   progress: number;
+   status: string;
+@@ -40,19 +39,16 @@ export interface GoalWire {
+ export interface TaskWire {
+   id: string;
+   title: string;
+-  description: string | null;
+   priority: string;
+   status: string;
+   due_date: string | null;
+   completed_at: string | null;
+   goal_id: string | null;
+-  sort_order: number;
+ }
+ 
+ export interface EventWire {
+   id: string;
+   title: string;
+-  description: string | null;
+   kind: string;
+   starts_at: string;
+   ends_at: string | null;
+@@ -64,7 +60,6 @@ export interface NoteWire {
+   id: string;
+   title: string;
+   body: string;
+-  is_markdown: boolean;
+   is_pinned: boolean;
+   updated_at: string;
+ }
+@@ -83,7 +78,7 @@ export const HABITS_LIST_KEY = "productivity/habits-list";
+ 
+ /** Full owned habit rows (`GET /habits`), including archived ones and metadata. */
+ export function useHabitsList() {
+-  return useSWR<HabitWire[]>(HABITS_LIST_KEY, () => apiGet<HabitWire[]>("/habits"), config);
++  return useSWR<HabitWire[]>(HABITS_LIST_KEY, () => apiGet<HabitWire[]>("/habits?shape=brief"), config);
+ }
+ 
+ /** One row of `GET /habits/logs?from&to` (multi-habit, single round-trip). */
+@@ -108,11 +103,11 @@ export function useHabitsHistory(from: string | null, to: string | null, swrConf
+ }
+ 
+ export function useGoals() {
+-  return useSWR<GoalWire[]>(GOALS_KEY, () => apiGet<GoalWire[]>("/goals"), config);
++  return useSWR<GoalWire[]>(GOALS_KEY, () => apiGet<GoalWire[]>("/goals?shape=brief"), config);
+ }
+ 
+ export function useTasks() {
+-  return useSWR<TaskWire[]>(TASKS_KEY, () => apiGet<TaskWire[]>("/tasks"), config);
++  return useSWR<TaskWire[]>(TASKS_KEY, () => apiGet<TaskWire[]>("/tasks?shape=brief"), config);
+ }
+ 
+ /** `?from=…&to=…` for `GET /events`, encoded; empty when both bounds are null. */
+@@ -121,7 +116,7 @@ function eventsQuery(from: string | null, to: string | null): string {
+   if (from) params.set("from", from);
+   if (to) params.set("to", to);
+   const qs = params.toString();
+-  return qs ? `?${qs}` : "";
++  return qs ? `?${qs}&shape=brief` : "?shape=brief";
+ }
+ 
+ /** Two-bound SWR key for the events read (`productivity/events?from&to`). */
+@@ -153,7 +148,7 @@ export function useNotesSearch(query: string) {
+   const key = notesSearchKey(query);
+   return useSWR<NoteWire[]>(
+     key,
+-    () => apiGet<NoteWire[]>(query ? `/notes/search?q=${encodeURIComponent(query)}` : "/notes/search"),
++    () => apiGet<NoteWire[]>(query ? `/notes/search?q=${encodeURIComponent(query)}&shape=brief` : "/notes/search?shape=brief"),
+     config,
+   );
+ }
+@@ -380,21 +375,16 @@ export interface CreateHabitInput {
+ export interface HabitWire {
+   id: string;
+   name: string;
+-  description: string | null;
+   direction: string;
+   frequency: string;
+   days_of_week: number[];
+-  target_per_period: string | number | null;
+   start_date: string;
+   end_date: string | null;
+-  category_id: string | null;
+   category: string | null;
+   short_label: string | null;
+   color: string | null;
+   icon: string | null;
+   is_archived: boolean;
+-  created_at: string;
+-  updated_at: string;
+ }
+ 
+ /**
+diff --git a/frontend/lib/finance/finance.test.ts b/frontend/lib/finance/finance.test.ts
+index 8e4763f..9ad48d1 100644
+--- a/frontend/lib/finance/finance.test.ts
++++ b/frontend/lib/finance/finance.test.ts
+@@ -218,9 +218,6 @@ function trendMovement(overrides: Partial<MovementWire> = {}): MovementWire {
+     description: null,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-10-03T10:00:00Z",
+-    updated_at: "2026-10-03T10:00:00Z",
+     ...overrides,
+   };
+ }
+@@ -450,10 +447,6 @@ function financeCategory(id: string, name: string): CategoryWire {
+     id,
+     kind: "finance",
+     name,
+-    color: null,
+-    icon: null,
+-    is_archived: false,
+-    created_at: "2026-10-01T00:00:00Z",
+   };
+ }
+ 
+diff --git a/frontend/lib/finance/jd-round1.test.ts b/frontend/lib/finance/jd-round1.test.ts
+index 4508661..b00133d 100644
+--- a/frontend/lib/finance/jd-round1.test.ts
++++ b/frontend/lib/finance/jd-round1.test.ts
+@@ -51,9 +51,6 @@ describe("JD-W2 una dirección desconocida nunca se cuenta como ingreso", () =>
+     description: null,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-10-03T10:00:00Z",
+-    updated_at: "2026-10-03T10:00:00Z",
+   };
+ 
+   it("toCategoryMovementTotals no la suma a ninguna serie", () => {
+@@ -90,10 +87,6 @@ describe("JD-W2 una dirección desconocida nunca se cuenta como ingreso", () =>
+             id: "c1",
+             kind: "finance",
+             name: "Comida",
+-            color: null,
+-            icon: null,
+-            is_archived: false,
+-            created_at: "2026-10-01T00:00:00Z",
+           },
+         ],
+         currencyByAccountId: byAccount,
+diff --git a/frontend/lib/finance/movements.test.ts b/frontend/lib/finance/movements.test.ts
+index 095abc9..4bd59e5 100644
+--- a/frontend/lib/finance/movements.test.ts
++++ b/frontend/lib/finance/movements.test.ts
+@@ -18,9 +18,6 @@ function movement(overrides: Partial<MovementWire> & { id: string }): MovementWi
+     description: null,
+     account_id: "a1",
+     category_id: "c1",
+-    subscription_id: null,
+-    created_at: "2026-09-24T10:00:00Z",
+-    updated_at: "2026-09-24T10:00:00Z",
+     ...overrides,
+   };
+ }
+diff --git a/openspec/changes/2026-09-23-simplify-finance-productivity/evidence/390-after.png b/openspec/changes/2026-09-23-simplify-finance-productivity/evidence/390-after.png
+index f8481f5..1524209 100644
+Binary files a/openspec/changes/2026-09-23-simplify-finance-productivity/evidence/390-after.png and b/openspec/changes/2026-09-23-simplify-finance-productivity/evidence/390-after.png differ
