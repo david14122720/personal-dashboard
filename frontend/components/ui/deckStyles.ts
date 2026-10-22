@@ -430,10 +430,17 @@ export const deck = {
   /** Real-version badge next to the wordmark (value comes from the i18n constant). */
   loginVersionBadge:
     "inline-flex items-center rounded border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-sky-300",
-  loginStatusPill:
-    "inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-slate-950/80 px-2.5 py-1 font-mono text-[11px] font-medium tracking-wide text-emerald-400 shadow-sm",
   /** Field label. */
   loginFieldLabel: "block text-xs font-semibold uppercase tracking-wider text-slate-300",
+  /** "Recordarme" row under the password field: the label wraps the native
+   * checkbox, so the whole 44px-tall row is the hit target and the control is
+   * named by its visible text. */
+  loginRememberRow:
+    "flex min-h-11 w-fit cursor-pointer select-none items-center gap-2.5 text-slate-300 transition-colors hover:text-slate-100 focus-within:text-sky-300",
+  /** Native checkbox of `loginRememberRow`, accented to the deck's signal
+   * blue. `h-4 w-4` is the visual box; the row supplies the target size. */
+  loginRememberBox:
+    "h-4 w-4 shrink-0 cursor-pointer rounded border-slate-600 bg-slate-950 accent-sky-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900",
   /** Field control: the prototype recipe plus the 44px minimum target. */
   loginField:
     "min-h-11 w-full rounded-lg border border-slate-700/80 bg-slate-950/70 py-2.5 text-sm text-white transition duration-150 ease-in-out placeholder:text-slate-500 focus:border-sky-400 focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-sky-400/25",
@@ -639,8 +646,9 @@ export const {
   loginLogoTile,
   loginLogoGlow,
   loginVersionBadge,
-  loginStatusPill,
   loginFieldLabel,
+  loginRememberRow,
+  loginRememberBox,
   loginField,
   loginFieldIcon,
   loginEyeToggle,

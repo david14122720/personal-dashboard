@@ -12,9 +12,18 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/login/",
 }));
 
+interface LoginBody {
+  email: string;
+  password: string;
+  remember_me?: boolean;
+}
+
+const loginBodies: LoginBody[] = [];
+
 const server = setupServer(
   http.post("http://test.local/api/login", async ({ request }) => {
-    const body = (await request.json()) as { email: string; password: string };
+    const body = (await request.json()) as LoginBody;
+    loginBodies.push(body);
     if (body.email === "you@example.com" && body.password === "secret") {
       return HttpResponse.json({ token: "tok-123", expires_at: "2026-09-08T00:00:00Z" });
     }
@@ -30,6 +39,7 @@ afterEach(() => {
   server.resetHandlers();
   localStorage.clear();
   replace.mockClear();
+  loginBodies.length = 0;
 });
 afterAll(() => server.close());
 
@@ -49,6 +59,54 @@ describe("login screen auth flow", () => {
       expect(localStorage.getItem("dashboard-token")).toBe("tok-123");
     });
     expect(replace).toHaveBeenCalledWith("/dashboard/");
+  });
+
+  it("renders an unchecked Recordarme checkbox by default and posts remember_me: false", async () => {
+    render(<LoginPage />);
+
+    const remember = screen.getByLabelText("Recordarme") as HTMLInputElement;
+    expect(remember.type).toBe("checkbox");
+    expect(remember.checked).toBe(false);
+
+    fireEvent.change(screen.getByLabelText("Correo electrónico"), {
+      target: { value: "you@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Contraseña"), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar sesión" }));
+
+    await waitFor(() => {
+      expect(localStorage.getItem("dashboard-token")).toBe("tok-123");
+    });
+    expect(loginBodies.at(-1)).toEqual({
+      email: "you@example.com",
+      password: "secret",
+      remember_me: false,
+    });
+  });
+
+  it("posts remember_me: true when Recordarme is checked", async () => {
+    render(<LoginPage />);
+
+    fireEvent.change(screen.getByLabelText("Correo electrónico"), {
+      target: { value: "you@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Contraseña"), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(screen.getByLabelText("Recordarme"));
+    expect((screen.getByLabelText("Recordarme") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar sesión" }));
+
+    await waitFor(() => {
+      expect(loginBodies.length).toBe(1);
+    });
+    expect(loginBodies[0]).toEqual({
+      email: "you@example.com",
+      password: "secret",
+      remember_me: true,
+    });
   });
 
   it("shows an alert on invalid credentials without storing a token", async () => {
@@ -84,16 +142,15 @@ describe("login screen control deck visuals", () => {
     expect(password.type).toBe("password");
   });
 
-  it("renders no control that claims behaviour the app lacks (JD item 9)", () => {
+  it("drops the EN LÍNEA badge and keeps no password-recovery link", () => {
     render(<LoginPage />);
 
-    expect(screen.getByRole("status")).toHaveTextContent("EN LÍNEA");
+    // S1/S2: the static status pill (and its role) is gone from the header.
+    expect(screen.queryByText("EN LÍNEA")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByText("v0.1.0")).toBeInTheDocument();
 
-    // `Recordar sesión` wrote state nothing read and `¿Olvidaste tu
-    // contraseña?` was an anchor whose handler did nothing: both are gone.
-    expect(screen.queryByLabelText("Recordar sesión")).toBeNull();
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    // The app still has no password-recovery flow, so no anchor claims one.
     expect(screen.queryByRole("link", { name: "¿Olvidaste tu contraseña?" })).toBeNull();
 
     expect(

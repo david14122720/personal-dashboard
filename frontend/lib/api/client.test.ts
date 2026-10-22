@@ -23,6 +23,7 @@ const seenAuthHeaders: (string | null)[] = [];
 const seenPatchAuth: (string | null)[] = [];
 const seenPatchBodies: unknown[] = [];
 const seenPatchContentTypes: (string | null)[] = [];
+const seenLoginBodies: { email: string; password: string; remember_me?: boolean }[] = [];
 let loginCalls = 0;
 let logoutCalls = 0;
 const seenLogoutAuth: (string | null)[] = [];
@@ -40,7 +41,12 @@ const server = setupServer(
   }),
   http.post("http://test.local/api/login", async ({ request }) => {
     loginCalls += 1;
-    const body = (await request.json()) as { email: string; password: string };
+    const body = (await request.json()) as {
+      email: string;
+      password: string;
+      remember_me?: boolean;
+    };
+    seenLoginBodies.push(body);
     if (body.email === "you@example.com" && body.password === "secret") {
       return HttpResponse.json({ token: "tok-123", expires_at: "2026-09-08T00:00:00Z" });
     }
@@ -76,6 +82,7 @@ afterEach(() => {
   seenPatchAuth.length = 0;
   seenPatchBodies.length = 0;
   seenPatchContentTypes.length = 0;
+  seenLoginBodies.length = 0;
   loginCalls = 0;
   logoutCalls = 0;
   seenLogoutAuth.length = 0;
@@ -137,6 +144,20 @@ describe("login auth flow", () => {
     expect(data.token).toBe("tok-123");
     expect(localStorage.getItem(TOKEN_KEY)).toBe("tok-123");
     expect(loginCalls).toBe(1);
+  });
+
+  it("sends remember_me: false by default", async () => {
+    await login("you@example.com", "secret");
+    expect(seenLoginBodies).toEqual([
+      { email: "you@example.com", password: "secret", remember_me: false },
+    ]);
+  });
+
+  it("sends remember_me: true when the caller asks for the long session", async () => {
+    await login("you@example.com", "secret", true);
+    expect(seenLoginBodies).toEqual([
+      { email: "you@example.com", password: "secret", remember_me: true },
+    ]);
   });
 
   it("throws UNAUTHORIZED and stores nothing on bad credentials", async () => {

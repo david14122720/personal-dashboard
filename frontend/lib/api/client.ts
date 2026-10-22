@@ -108,11 +108,20 @@ export interface LoginResponse {
   expires_at: string;
 }
 
-export async function login(email: string, password: string): Promise<LoginResponse> {
+/**
+ * Authenticate. `rememberMe` widens the server-side session TTL to 72h; the
+ * default keeps the configured 24h. The response token still goes through
+ * `setToken`/`TOKEN_KEY` — this only changes the TTL the server records.
+ */
+export async function login(
+  email: string,
+  password: string,
+  rememberMe = false,
+): Promise<LoginResponse> {
   const res = await fetch(`${apiBaseUrl()}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, remember_me: rememberMe }),
   });
   if (!res.ok) {
     throw await toApiError(res);

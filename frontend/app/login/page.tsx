@@ -102,6 +102,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -116,7 +117,7 @@ export default function LoginPage() {
     setError(null);
     setPending(true);
     try {
-      await login(email.trim(), password);
+      await login(email.trim(), password, remember);
       router.replace("/dashboard/");
     } catch (err) {
       setError(err instanceof Error ? err.message : t("login.error"));
@@ -143,17 +144,10 @@ export default function LoginPage() {
           <div aria-hidden="true" className={deck.loginTopHairline} />
 
           <header className="text-left">
-            <div className="mb-5 flex items-center justify-between">
+            <div className="mb-5 flex items-center">
               <span aria-hidden="true" className={deck.loginLogoTile}>
                 <span className={deck.loginLogoGlow} />
                 <HexagonIcon className="relative h-6 w-6 text-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,0.6)]" />
-              </span>
-              <span role="status" className={deck.loginStatusPill}>
-                <span aria-hidden="true" className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 motion-reduce:animate-none" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-                </span>
-                {t("login.online")}
               </span>
             </div>
             <div className="flex flex-wrap items-baseline gap-2.5">
@@ -227,14 +221,23 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* D10 (JD item 9): the prototype's `Recordar sesión` checkbox and
-                `¿Olvidaste tu contraseña?` anchor are deliberately NOT rendered.
-                Neither can be made real here: the session is a bearer token in
-                localStorage with a server-side TTL, so a remember flag would be
-                a state nobody reads, and the app has no password-recovery flow
-                to send anyone to. The prototype's `Passkey` / `Token CLI`
-                buttons and its footer links stay omitted for the same reason:
+            {/* S4/S5: `Recordarme` is real — it travels as `remember_me` in the
+                login body and widens the server-side session TTL from the
+                configured default to 72h. It sits between the password field
+                and the submit CTA. The prototype's `¿Olvidaste tu contraseña?`
+                anchor, `Passkey` / `Token CLI` buttons and footer links stay
+                omitted: the app has no password-recovery flow behind them, and
                 a visible control must not claim behaviour the app lacks. */}
+            <label className={deck.loginRememberRow}>
+              <input
+                id="login-remember"
+                type="checkbox"
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
+                className={deck.loginRememberBox}
+              />
+              <span className={deck.loginFieldLabel}>{t("login.remember")}</span>
+            </label>
             {error ? (
               <p role="alert" className="rounded-xl border border-alert/50 bg-alert/10 px-3 py-2 text-sm text-red-300">
                 {error}

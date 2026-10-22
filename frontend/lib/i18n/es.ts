@@ -38,10 +38,10 @@ export const es = {
   },
   login: {
     subtitle: "Inicia sesión en tu panel personal.",
-    online: "EN LÍNEA",
     version: APP_VERSION,
     email: "Correo electrónico",
     password: "Contraseña",
+    remember: "Recordarme",
     submit: "Iniciar sesión",
     pending: "Iniciando sesión…",
     error: "No se pudo iniciar sesión. Inténtalo de nuevo.",
