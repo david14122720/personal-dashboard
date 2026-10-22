@@ -3,7 +3,7 @@
 - change: `2026-10-03-finance-panel-consolidation`
 - phase: verify
 - date: 2026-10-03
-- delivery: **none** (owner decision: no commit, no push to any branch, no deploy) — the working tree is the deliverable, preserved as `odd/tasks/finance-panel-consolidation-delta.patch` (20 paths including the documentation edit), sha256 `b869f9c64d46055e0f93ea2671bd895b14e8e2c08d6850e4e347d96eac6bd05e`
+- delivery: **none** (owner decision: no commit, no push to any branch, no deploy) — the working tree is the deliverable, preserved as `odd/tasks/finance-panel-consolidation-delta.patch` (20 paths including the documentation edit), sha256 `9c2fca8fb3d7744b4efb230c3fe4b12ec603f3b158e9739d8906e2e005334f67` (original capture `b869f9c6…`; re-hashed 2026-10-21 after removing the dead credential literal from the patch, feature cierre-pendientes-hibrida)
 - verdict: **PASS** — 3/3 requested points implemented and observed live; full gate green; zero console errors; one coupling the request did not mention was found and fixed with its own RED
 
 ## 1. Requested points, observed
