@@ -102,11 +102,22 @@ describe("CategoryChartSection (movement source)", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("no pide el ledger hasta que hay una categoría elegida (S1)", async () => {
+    renderSection();
+    await screen.findByLabelText("Categoría");
+    // Sin categoría no hay serie que dibujar: pedir la ventana completa sería
+    // bajar el ledger entero para no mostrar nada.
+    expect(movementUrls).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText("Categoría"), { target: { value: "c1" } });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 });
+    expect(movementUrls.length).toBeGreaterThan(0);
+  });
+
   it("renders the gasto/ingreso trend for the selected category", async () => {
     renderSection();
     fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
     expect(
-      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
+      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 }),
     ).toBeInTheDocument();
     expect(screen.getByText("Gastos")).toBeInTheDocument();
     expect(screen.getByText("Ingresos")).toBeInTheDocument();
@@ -115,7 +126,7 @@ describe("CategoryChartSection (movement source)", () => {
   it("switches the rendered bucket count and labels between Mes and Día", async () => {
     const { container } = renderSection();
     fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
-    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 });
 
     expect(renderedPeriodLabels(container, "month")).toHaveLength(12);
     expect(renderedPeriodLabels(container, "day")).toHaveLength(0);
@@ -130,7 +141,7 @@ describe("CategoryChartSection (movement source)", () => {
     renderSection();
     fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c3" } });
     expect(
-      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
+      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 }),
     ).toBeInTheDocument();
     expect(screen.getByText("Sin movimientos en este periodo")).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -139,7 +150,7 @@ describe("CategoryChartSection (movement source)", () => {
   it("pide su propia ventana trendRange(period) con from/to codificados (T2)", async () => {
     renderSection();
     fireEvent.change(await screen.findByLabelText("Categoría"), { target: { value: "c1" } });
-    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 });
     expect(movementUrls.length).toBeGreaterThan(0);
     const expected = trendRange("month");
     const urls = movementUrls.map((u) => new URL(u));

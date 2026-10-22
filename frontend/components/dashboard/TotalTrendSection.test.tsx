@@ -1,13 +1,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { MovementWire } from "@/lib/api/finance";
+import type { MovementSummaryWire } from "@/lib/api/finance";
 import { chartDeckFrameClass } from "@/components/ui/chartTheme";
-import { trendRange } from "@/lib/finance/finance";
+import { trendBuckets, trendRange } from "@/lib/finance/finance";
 import TotalTrendSection from "./TotalTrendSection";
 
 const mock = vi.hoisted(() => ({
   movements: vi.fn(),
   movementsRange: vi.fn(),
+  summary: vi.fn(),
   accounts: vi.fn(),
   prefs: vi.fn(),
   mutate: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock("@/lib/api/finance", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api/finance")>()),
   useMovements: () => mock.movements(),
   useMovementsRange: (range: unknown) => mock.movementsRange(range),
+  useMovementsSummary: (query: unknown) => mock.summary(query),
 }));
 
 vi.mock("@/lib/api/dashboard", async (importOriginal) => ({
@@ -37,25 +39,42 @@ vi.mock("@/lib/api/dashboard", async (importOriginal) => ({
 
 const account = { id: "a1", name: "Billetera", type: "cash", currency: "COP", balance: "0.00" };
 
-function movement(overrides: Partial<MovementWire> = {}): MovementWire {
-  return {
-    id: "m1",
-    direction: "expense",
-    amount: "100.00",
-    occurred_on: "2026-10-03",
-    description: null,
-    account_id: "a1",
-    category_id: "c1",
-    ...overrides,
-  };
+const EMPTY_SUMMARY: MovementSummaryWire = {
+  totals: { expense: "0.00", income: "0.00", count: 0 },
+  by_account: [],
+  by_category: [],
+  buckets: [],
+  recent: [],
+  recent_total: 0,
+};
+
+function summary(partial: Partial<MovementSummaryWire> = {}): MovementSummaryWire {
+  return { ...EMPTY_SUMMARY, ...partial };
+}
+
+/** One non-empty bucket in the last window of `group`, mirroring the server
+ * keys (`YYYY-MM-DD` | `YYYY-Www` | `YYYY-MM` | `YYYY`). */
+function lastBucket(group: "day" | "week" | "month" | "year", expense: string, income = "0.00") {
+  const last = trendBuckets(group).at(-1)!;
+  return { key: last.key, from: last.from, to: last.to, expense, income };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   mock.chart.current = null;
-  mock.movements.mockReturnValue({ data: [movement()], error: undefined, isLoading: false });
-  // El panel lee el rango; useMovements queda para los consumidores sin filtrar.
-  mock.movementsRange.mockReturnValue({ data: [movement()], error: undefined, isLoading: false });
+  mock.movements.mockReturnValue({ data: [], error: undefined, isLoading: false });
+  mock.movementsRange.mockReturnValue({ data: [], error: undefined, isLoading: false });
+  // S1: el panel lee el summary (agregado en servidor); la ventana la elige la
+  // propia vista y el mock devuelve un bucket no vacío en su último periodo.
+  mock.summary.mockImplementation((query: { group: "day" | "week" | "month" | "year" }) => ({
+    data: summary({
+      totals: { expense: "100.00", income: "0.00", count: 1 },
+      buckets: [lastBucket(query.group, "100.00")],
+      recent_total: 1,
+    }),
+    error: undefined,
+    isLoading: false,
+  }));
   mock.accounts.mockReturnValue({ data: [account], error: undefined, isLoading: false });
   mock.prefs.mockReturnValue({
     data: { preferences: { currency_code: "COP", locale: "es-CO" } },
@@ -75,9 +94,9 @@ describe("TotalTrendSection", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("group", { name: "Periodo de la tendencia" })).toBeInTheDocument();
     expect(screen.getByTestId("total-trend-chart")).toBeInTheDocument();
-    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
+    expect(mock.summary).toHaveBeenCalledTimes(1);
+    expect(mock.movementsRange).not.toHaveBeenCalled();
     expect(mock.movements).not.toHaveBeenCalled();
-    expect(mock.accounts).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
   });
 
@@ -88,9 +107,8 @@ describe("TotalTrendSection", () => {
       "true",
     );
     expect(screen.getByRole("radio", { name: "Mes" })).toBeChecked();
-    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
+    expect(mock.summary).toHaveBeenCalledTimes(1);
     expect(mock.movements).not.toHaveBeenCalled();
-    expect(mock.accounts).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
     expect(mock.chart.current?.data).toHaveLength(12);
   });
@@ -129,34 +147,15 @@ describe("TotalTrendSection", () => {
   });
 
   it("muestra la nota en cero nombrando la moneda del usuario en el periodo", () => {
-    mock.movementsRange.mockReturnValue({ data: [], error: undefined, isLoading: false });
+    mock.summary.mockReturnValue({ data: summary(), error: undefined, isLoading: false });
     renderOpen();
     expect(screen.getByText("Sin movimientos en COP en este periodo")).toBeInTheDocument();
     expect(screen.queryByText("Sin movimientos en este periodo")).not.toBeInTheDocument();
     expect(screen.getByTestId("total-trend-chart")).toBeInTheDocument();
   });
 
-  it("no dice «sin movimientos» a secas cuando la regla de moneda dejó fuera movimientos del rango", () => {
-    mock.accounts.mockReturnValue({
-      data: [
-        account,
-        { id: "a2", name: "Dólares", type: "cash", currency: "USD", balance: "0.00" },
-      ],
-      error: undefined,
-      isLoading: false,
-    });
-    mock.movementsRange.mockReturnValue({
-      data: [movement({ id: "m-usd", account_id: "a2", amount: "50.00" })],
-      error: undefined,
-      isLoading: false,
-    });
-    renderOpen();
-    expect(screen.getByText("Sin movimientos en COP en este periodo")).toBeInTheDocument();
-    expect(screen.queryByText("Sin movimientos en este periodo")).not.toBeInTheDocument();
-  });
-
   it("nombra la moneda del usuario cuando no es COP", () => {
-    mock.movementsRange.mockReturnValue({ data: [], error: undefined, isLoading: false });
+    mock.summary.mockReturnValue({ data: summary(), error: undefined, isLoading: false });
     mock.prefs.mockReturnValue({
       data: { preferences: { currency_code: "USD", locale: "es-CO" } },
       error: undefined,
@@ -167,36 +166,33 @@ describe("TotalTrendSection", () => {
   });
 
   it("muestra el estado de carga en español", () => {
-    mock.movementsRange.mockReturnValue({ data: undefined, error: undefined, isLoading: true });
+    mock.summary.mockReturnValue({ data: undefined, error: undefined, isLoading: true });
     renderOpen();
     expect(screen.getByRole("status")).toHaveTextContent("Cargando…");
   });
 
-  it("muestra el error en español y reintenta las tres lecturas SWR", () => {
-    mock.movementsRange.mockReturnValue({ data: undefined, error: new Error("boom"), isLoading: false });
+  it("muestra el error en español y reintenta las lecturas SWR", () => {
+    mock.summary.mockReturnValue({ data: undefined, error: new Error("boom"), isLoading: false });
     renderOpen();
     expect(screen.getByRole("alert")).toHaveTextContent("No se pudieron cargar los movimientos");
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
-    // El reintento revalida la clave de rango por prefijo (SWR 2.5.1), no el
-    // string exacto "finance/movements", que ya no coincide con la clave.
+    // El reintento revalida la clave del summary por prefijo (SWR 2.5.1).
     expect(mock.mutate).toHaveBeenCalledWith(expect.any(Function));
     const predicates = mock.mutate.mock.calls
       .map(([arg]) => arg)
       .filter((arg): arg is (key: unknown) => boolean => typeof arg === "function");
     expect(predicates).toHaveLength(1);
     const revalidateMovements = predicates[0];
-    expect(revalidateMovements("finance/movements:2026-01-01:2026-12-31")).toBe(true);
+    expect(revalidateMovements("finance/movements-summary:2026-01-01:2026-12-31:month")).toBe(true);
     expect(revalidateMovements("finance/movements")).toBe(true);
     expect(revalidateMovements("dashboard/accounts")).toBe(false);
-    expect(mock.mutate).toHaveBeenCalledWith("dashboard/accounts");
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/me");
   });
 
   it("al colapsar desmonta el panel sin volver a montar sus hooks y deja el destino de aria-controls", () => {
     renderOpen();
     expect(mock.chart.current).not.toBeNull();
-    mock.movementsRange.mockClear();
-    mock.accounts.mockClear();
+    mock.summary.mockClear();
     mock.prefs.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Gastos vs. ingresos" }));
     expect(screen.queryByTestId("total-trend-chart")).not.toBeInTheDocument();
@@ -204,8 +200,7 @@ describe("TotalTrendSection", () => {
     expect(panel).not.toBeNull();
     expect(panel).toHaveAttribute("hidden");
     // El panel desmontado no vuelve a leer (montaje perezoso al reabrir).
-    expect(mock.movementsRange).not.toHaveBeenCalled();
-    expect(mock.accounts).not.toHaveBeenCalled();
+    expect(mock.summary).not.toHaveBeenCalled();
     expect(mock.prefs).not.toHaveBeenCalled();
   });
 
@@ -238,12 +233,44 @@ describe("TotalTrendSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("pide su propia ventana trendRange(period) al hook de rango (T2)", () => {
+  it("pide su propia ventana trendRange(period) con el group del periodo (S1)", () => {
     renderOpen();
     // Mes por defecto: la ventana exacta de los 12 buckets que dibuja.
-    expect(mock.movementsRange).toHaveBeenCalledWith(trendRange("month"));
+    expect(mock.summary).toHaveBeenCalledWith({ ...trendRange("month"), group: "month" });
 
     fireEvent.click(screen.getByRole("radio", { name: "Día" }));
-    expect(mock.movementsRange).toHaveBeenCalledWith(trendRange("day"));
+    expect(mock.summary).toHaveBeenCalledWith({ ...trendRange("day"), group: "day" });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Semana" }));
+    expect(mock.summary).toHaveBeenCalledWith({ ...trendRange("week"), group: "week" });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Año" }));
+    expect(mock.summary).toHaveBeenCalledWith({ ...trendRange("year"), group: "year" });
+  });
+
+  it("mapea los buckets del servidor por key y rellena con 0/0 los que faltan (S1)", () => {
+    const windows = trendBuckets("month");
+    const first = windows[0];
+    const last = windows[windows.length - 1];
+    mock.summary.mockReturnValue({
+      data: summary({
+        totals: { expense: "100.00", income: "40.00", count: 2 },
+        buckets: [
+          { key: first.key, from: first.from, to: first.to, expense: "30.00", income: "10.00" },
+          { key: last.key, from: last.from, to: last.to, expense: "70.00", income: "30.00" },
+        ],
+      }),
+      error: undefined,
+      isLoading: false,
+    });
+    renderOpen();
+    const rows = mock.chart.current?.data as { bucket: string; expense: number; income: number }[];
+    expect(rows).toHaveLength(12);
+    expect(rows[0]).toMatchObject({ bucket: first.key, expense: 30, income: 10 });
+    expect(rows[rows.length - 1]).toMatchObject({ bucket: last.key, expense: 70, income: 30 });
+    // Las ventanas que el servidor omitió quedan en cero, nunca se descartan.
+    expect(rows[1]).toMatchObject({ bucket: windows[1].key, expense: 0, income: 0 });
+    expect(screen.getByText(/^Gastos:/)).toHaveTextContent("Gastos: $ 100");
+    expect(screen.getByText(/^Ingresos:/)).toHaveTextContent("Ingresos: $ 40");
   });
 });

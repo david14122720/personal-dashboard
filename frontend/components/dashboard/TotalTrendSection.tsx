@@ -4,10 +4,10 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
-import { useAccounts, usePreferences } from "@/lib/api/dashboard";
-import { useMovementsRange } from "@/lib/api/finance";
+import { usePreferences } from "@/lib/api/dashboard";
+import { useMovementsSummary } from "@/lib/api/finance";
 import { formatMoney } from "@/lib/api/money";
-import { toTotalTrend, trendRange, type TrendPeriod } from "@/lib/finance/finance";
+import { toSummaryTrend, trendRange, type TrendPeriod } from "@/lib/finance/finance";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
 import DashboardDisclosure from "@/components/dashboard/DashboardDisclosure";
 import DeckPeriodPills from "@/components/dashboard/DeckPeriodPills";
@@ -22,26 +22,22 @@ const CategoryTrendChart = dynamic(() => import("@/components/finance/CategoryTr
   ),
 });
 
-/** SWR reads + memoized aggregation live in this panel only, so nothing
- * fetches or mounts until the disclosure is open. Currency comes from the
- * existing preference fallback and no conversion happens anywhere. */
+/** SWR reads live in this panel only, so nothing fetches or mounts until the
+ * disclosure is open. The window is exactly the buckets rendered, and the
+ * server already returns them grouped and single-currency filtered (S1); this
+ * panel only maps the keys onto the local bucket labels. */
 function TotalTrendPanel({ period }: { period: TrendPeriod }) {
   const range = useMemo(() => trendRange(period), [period]);
-  const movements = useMovementsRange(range);
-  const accounts = useAccounts();
+  const summary = useMovementsSummary({ ...range, group: period });
   const prefs = usePreferences();
   const reduced = usePrefersReducedMotion();
   const { mutate } = useSWRConfig();
 
-  const currencyByAccountId = useMemo(
-    () => new Map((accounts.data ?? []).map((a) => [a.id, a.currency])),
-    [accounts.data],
-  );
   const userCurrency = prefs.data?.preferences.currency_code ?? "COP";
   const locale = prefs.data?.preferences.locale ?? "es-CO";
   const buckets = useMemo(
-    () => toTotalTrend(movements.data, { period, currencyByAccountId, userCurrency }),
-    [movements.data, currencyByAccountId, userCurrency, period],
+    () => toSummaryTrend(summary.data, period),
+    [summary.data, period],
   );
   const rows: TrendRow[] = useMemo(
     () =>
@@ -58,10 +54,10 @@ function TotalTrendPanel({ period }: { period: TrendPeriod }) {
     { key: "income", label: t("finance.chartIncome"), token: "--color-flow" },
   ];
 
-  if (movements.isLoading || accounts.isLoading || prefs.isLoading) {
+  if (summary.isLoading || prefs.isLoading) {
     return <p role="status" className="text-sm text-instrument/60">{t("common.loading")}</p>;
   }
-  if (movements.error || accounts.error || prefs.error) {
+  if (summary.error || prefs.error) {
     return (
       <div role="alert" className="flex flex-col items-start gap-2 text-sm text-instrument/80">
         <p>{t("finance.movementsLoadFailed")}</p>
@@ -69,7 +65,6 @@ function TotalTrendPanel({ period }: { period: TrendPeriod }) {
           type="button"
           onClick={() => {
             void mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
-            void mutate("dashboard/accounts");
             void mutate("dashboard/me");
           }}
           className="inline-flex min-h-[44px] items-center rounded-md border border-hair px-4 py-2 font-display text-xs transition-colors hover:border-signal hover:text-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"

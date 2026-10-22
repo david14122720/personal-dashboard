@@ -94,6 +94,19 @@ const server = setupServer(
       },
     ]);
   }),
+  // S1: the cycle KPI reads the server summary, not the ledger. This fixture
+  // is the September ledger aggregated (the current month stays empty, exactly
+  // as the old browser-side aggregation saw it).
+  http.get("http://test.local/api/movements/summary", () => {
+    return HttpResponse.json({
+      totals: { expense: "0.00", income: "0.00", count: 0 },
+      by_account: [],
+      by_category: [],
+      buckets: [],
+      recent: [],
+      recent_total: 0,
+    });
+  }),
   http.get("http://test.local/api/assets", () => {
     return HttpResponse.json([]);
   }),
@@ -365,6 +378,22 @@ describe("finance T4 body", () => {
           expense("m-b", "27000.00", "c2"),
           expense("m-c", "20000.00", "c3"),
         ]),
+      ),
+      // Same three expenses as the server summary would aggregate them for the
+      // current month (the KPI reads this, not the ledger above).
+      http.get("http://test.local/api/movements/summary", () =>
+        HttpResponse.json({
+          totals: { expense: "82000.00", income: "0.00", count: 3 },
+          by_account: [{ account_id: "a1", expense: "82000.00", income: "0.00" }],
+          by_category: [
+            { category_id: "c1", expense: "35000.00", income: "0.00" },
+            { category_id: "c2", expense: "27000.00", income: "0.00" },
+            { category_id: "c3", expense: "20000.00", income: "0.00" },
+          ],
+          buckets: [],
+          recent: [],
+          recent_total: 3,
+        }),
       ),
     );
     renderScreens();

@@ -28,10 +28,10 @@ import {
 } from "@/lib/api/dashboard";
 import {
   useCategories,
-  useMovements,
+  useMovementsSummary,
   useSubscriptions as useFinanceSubscriptions,
 } from "@/lib/api/finance";
-import { formatMoney, toNumber } from "@/lib/api/money";
+import { formatMoney } from "@/lib/api/money";
 import { t } from "@/lib/i18n";
 import { toMonthlyCost } from "@/lib/dashboard/transforms";
 import {
@@ -39,18 +39,20 @@ import {
   formatMovementDate,
   isPaidThisCycle,
   toAccountCards,
-  toExpenseByCategory,
+  toSummaryExpenseSlices,
+  toSummaryExpenseTotal,
   toTotalBalance,
   todayInBogota,
 } from "@/lib/finance/finance";
 
 /**
  * Dashboard home container. Home-level SWR reads fire in parallel and coercion
- * happens at the boundary; `components/ui/*` stay pure. The four KPI tiles read
- * the same `finance/*` and `dashboard/*` keys the sections below already use
- * (accounts, preferences, subscriptions, movements, categories, habits): no
- * aggregate endpoint, no write path. The two movement chart sections keep their
- * lazily mounted panels, and the app-only widgets (tareas, eventos, metas,
+ * happens at the boundary; `components/ui/*` stay pure. The cycle KPI reads the
+ * server summary for the current month (`GET /movements/summary`, S1) and joins
+ * its category ids to the `finance/categories` read; the other tiles keep their
+ * `finance/*` and `dashboard/*` keys (accounts, preferences, subscriptions,
+ * habits). No write path. The two movement chart sections keep their lazily
+ * mounted panels, and the app-only widgets (tareas, eventos, metas,
  * personalizar) stay below the design's six cards so nothing was removed.
  */
 
@@ -71,7 +73,11 @@ export default function DashboardHome() {
   const prefs = usePreferences();
   // KPI-only finance reads (same SWR keys as the chart sections below).
   const financeSubs = useFinanceSubscriptions();
-  const movements = useMovements();
+  // Current-cycle aggregate only: the server summary applies the single-currency
+  // rule and excludes transfers from the sums, so the tile never aggregates the
+  // whole ledger in the browser (S1). The ledger reads stay in the widgets.
+  const cycleRange = currentPeriodRange("month");
+  const cycleSummary = useMovementsSummary({ ...cycleRange, group: "month" });
   const categories = useCategories();
   const updateLayout = useUpdateLayout();
   const baseLayout = resolveDashboardLayout(prefs.data);
@@ -154,33 +160,19 @@ export default function DashboardHome() {
         })}`
       : t("dashboard.kpiBalanceFooter", { currency });
 
-  // Current-cycle spend (natural month, same window the chart defaults to) over
-  // same-currency accounts only; the chips are the real categories, truncated
-  // to two plus an honest `+N más` marker so the decomposition never silently
-  // drops a real category (the KPI keeps summing all of them).
-  const cycleRange = currentPeriodRange("month");
-  const currencyByAccountId = new Map(
-    (accounts.data ?? []).map((account) => [account.id, account.currency]),
-  );
-  const cycleSpend = (movements.data ?? []).reduce((sum, movement) => {
-    if (movement.direction !== "expense") return sum;
-    if (currencyByAccountId.get(movement.account_id) !== currency) return sum;
-    if (movement.occurred_on < cycleRange.from || movement.occurred_on > cycleRange.to) return sum;
-    return sum + toNumber(movement.amount);
-  }, 0);
-  const cycleSlices = toExpenseByCategory(movements.data, {
-    range: cycleRange,
-    categories: categories.data,
-    currencyByAccountId,
-    userCurrency: currency,
-  });
+  // Current-cycle spend (natural month, same window the chart defaults to).
+  // The chips are the real categories, truncated to two plus an honest `+N más`
+  // marker so the decomposition never silently drops a real category (the KPI
+  // keeps summing all of them).
+  const cycleSpend = toSummaryExpenseTotal(cycleSummary.data);
+  const cycleSlices = toSummaryExpenseSlices(cycleSummary.data, categories.data);
   const cycleChips = cycleSlices
     .slice(0, 2)
     .map((slice) => t("dashboard.kpiCycleChip", { name: slice.name, amount: fmt(slice.value) }));
   const hiddenCycleChips = Math.max(0, cycleSlices.length - cycleChips.length);
-  const cycleTone: "ok" | "empty" | "loading" | "error" = movements.error
+  const cycleTone: "ok" | "empty" | "loading" | "error" = cycleSummary.error
     ? "error"
-    : movements.isLoading
+    : cycleSummary.isLoading
       ? "loading"
       : cycleSpend === 0
         ? "empty"

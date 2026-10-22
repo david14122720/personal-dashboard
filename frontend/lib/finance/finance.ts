@@ -13,6 +13,7 @@ import { BOGOTA_TZ } from "@/lib/time/bogota";
 import type {
   CategoryWire,
   MovementDirection,
+  MovementSummaryWire,
   MovementWire,
   SubscriptionWire,
 } from "@/lib/api/finance";
@@ -603,7 +604,13 @@ export function toCategoryTrend(
   });
 }
 
-/** Category-agnostic totals trend: every same-currency movement split into
+/** LEGACY ORACLE (S1/T5): no runtime consumer fetches the ledger to bucket it
+ * anymore — `TotalTrendSection` renders `toSummaryTrend`. Kept because its
+ * unit tests and the differential pin in `ExpensePieSection.test.tsx` compare
+ * the old client aggregation against the server summary; do not wire it into
+ * a new view.
+ *
+ * Category-agnostic totals trend: every same-currency movement split into
  * the N period buckets, expense and income kept separate (never netted).
  * Movements whose account is missing from the map are excluded (never assumed
  * to be the user currency). Unlike `toCategoryTrend` there is no category
@@ -681,7 +688,12 @@ export function currentPeriodRange(
   }
 }
 
-/** Gastos de `range` agrupados por categoría persistida, de mayor a menor.
+/** LEGACY ORACLE (S1/T5): no runtime consumer aggregates the ledger by
+ * category anymore — `ExpensePieSection` and both cycle KPIs read
+ * `toSummaryExpenseSlices`. Kept as the independent oracle the differential
+ * pin compares against the server summary; do not wire it into a new view.
+ *
+ * Gastos de `range` agrupados por categoría persistida, de mayor a menor.
  * Solo participan `direction === "expense"` con `category_id` no nulo que
  * exista en la lista `categories` respaldada por la API (los ids solo locales
  * quedan fuera); se excluyen ingresos y filas sin categoría. Aplica la regla
@@ -716,4 +728,62 @@ export function toExpenseByCategory(
     .filter(([, value]) => value !== 0)
     .map(([categoryId, value]) => ({ categoryId, name: nameById.get(categoryId)!, value }))
     .sort((a, b) => b.value - a.value);
+}
+
+// -- S1 (T5): server summary → render models (pure, no fetch, no JSX) --
+//
+// `GET /movements/summary` already applies the single-currency rule and keeps
+// transfers out of the expense/income sums. These helpers only coerce the wire
+// money and join the API-backed category names; they never re-filter currency
+// (that would double-filter) and never re-aggregate by hand.
+
+/** `totals.expense` of a summary as a render number (0 when absent). */
+export function toSummaryExpenseTotal(
+  summary: MovementSummaryWire | null | undefined,
+): number {
+  return toNumber(summary?.totals.expense);
+}
+
+/** The summary's per-category expenses joined to the API-backed category list,
+ * largest first. Same render contract as `toExpenseByCategory`: only persisted
+ * categories participate (local-only ids never render), zero totals are
+ * dropped and income is ignored. The currency/range gates live in the server
+ * now, so this helper must not repeat them. */
+export function toSummaryExpenseSlices(
+  summary: MovementSummaryWire | null | undefined,
+  categories: CategoryWire[] | null | undefined,
+): ExpenseCategorySlice[] {
+  const nameById = new Map((categories ?? []).map((c) => [c.id, c.name]));
+  return (summary?.by_category ?? [])
+    .filter((row) => nameById.has(row.category_id))
+    .map((row) => ({
+      categoryId: row.category_id,
+      name: nameById.get(row.category_id)!,
+      value: toNumber(row.expense),
+    }))
+    .filter((slice) => slice.value !== 0)
+    .sort((a, b) => b.value - a.value);
+}
+
+/** Summary buckets → the same fixed trend shape `toTotalTrend` renders: every
+ * window of `trendBuckets(period, now, buckets)` in order, with the server
+ * values looked up by `key` and windows the server omitted defaulting to 0/0.
+ * Keys are identical by contract (`YYYY-MM-DD` / `YYYY-Www` / `YYYY-MM` /
+ * `YYYY`), so the chart keeps its labels and its gap-free shape. */
+export function toSummaryTrend(
+  summary: MovementSummaryWire | null | undefined,
+  period: TrendPeriod,
+  now: Date = new Date(),
+  buckets?: number,
+): TrendBucket[] {
+  const byKey = new Map((summary?.buckets ?? []).map((bucket) => [bucket.key, bucket]));
+  return trendBuckets(period, now, buckets).map((window) => {
+    const row = byKey.get(window.key);
+    return {
+      bucket: window.key,
+      label: window.label,
+      expense: toNumber(row?.expense),
+      income: toNumber(row?.income),
+    };
+  });
 }

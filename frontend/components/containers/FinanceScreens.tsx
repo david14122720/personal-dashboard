@@ -27,7 +27,7 @@ import {
   patchAccount,
   useAssets,
   useCategories,
-  useMovements,
+  useMovementsSummary,
   useSubscriptions,
   type MovementWire,
 } from "@/lib/api/finance";
@@ -37,12 +37,13 @@ import {
   toAccountCards,
   toAccountOptions,
   toCategoryOptions,
-  toExpenseByCategory,
+  toSummaryExpenseSlices,
+  toSummaryExpenseTotal,
   toTotalBalance,
   todayInBogota,
   type AccountCardView,
 } from "@/lib/finance/finance";
-import { formatMoney, toNumber } from "@/lib/api/money";
+import { formatMoney } from "@/lib/api/money";
 import { toMonthlyCost } from "@/lib/dashboard/transforms";
 import { SubscriptionRow } from "@/components/finance/SubscriptionForms";
 import {
@@ -178,8 +179,13 @@ export function AccountBalanceEdit({
     try {
       await patchAccount(account.id, { balance: draft.trim() });
       setEditing(false);
-      await mutate((key) => typeof key === "string" && key.startsWith("finance/"));
+      // The balance lives under `dashboard/accounts`; only revalidating
+      // `finance/` would leave the tile stale. Refresh that key first and keep
+      // the broader finance scope best-effort: a failing aggregate read (e.g.
+      // the summary endpoint) must never turn a successful save into the
+      // «no se pudo guardar» state.
       await mutate("dashboard/accounts");
+      void mutate((key) => typeof key === "string" && key.startsWith("finance/")).catch(() => {});
     } catch {
       setError(t("finance.saveFailed"));
     } finally {
@@ -282,7 +288,11 @@ export default function FinanceScreens() {
   const prefs = usePreferences();
   const allCategories = useCategories();
   const assets = useAssets();
-  const movements = useMovements();
+  // Cycle KPI only: the server summary already applies the single-currency
+  // rule and keeps transfers out of the sums (S1). The ledger itself stays in
+  // `MovementHistory` with its current unfiltered `/movements` contract.
+  const cycleRange = currentPeriodRange("month");
+  const cycleSummary = useMovementsSummary({ ...cycleRange, group: "month" });
 
   // S-C movements UI: account-click filter + add/edit modal state. The
   // subscription-pay wiring belongs to S-D and chart props to S-E.
@@ -393,34 +403,20 @@ export default function FinanceScreens() {
           currency,
         });
 
-  // The charts default to the natural month, so the spend tile uses the same
-  // window over same-currency accounts only; the chips are the real top-2.
-  const cycleRange = currentPeriodRange("month");
-  const currencyByAccountId = new Map(
-    (accounts.data ?? []).map((account) => [account.id, account.currency]),
-  );
-  const cycleSpend = (movements.data ?? []).reduce((sum, movement) => {
-    if (movement.direction !== "expense") return sum;
-    if (currencyByAccountId.get(movement.account_id) !== currency) return sum;
-    if (movement.occurred_on < cycleRange.from || movement.occurred_on > cycleRange.to) return sum;
-    return sum + toNumber(movement.amount);
-  }, 0);
+  // The charts default to the natural month, so the spend tile reads the same
+  // window from the server summary; the chips are the real top-2.
+  const cycleSpend = toSummaryExpenseTotal(cycleSummary.data);
   // Truncated to two chips plus an honest `+N más` marker: the KPI keeps summing
   // every category, so folding one silently would leave the breakdown
   // unreconcilable with the figure above it (same rule as the Resumen tile).
-  const cycleSlices = toExpenseByCategory(movements.data, {
-    range: cycleRange,
-    categories: allCategories.data,
-    currencyByAccountId,
-    userCurrency: currency,
-  });
+  const cycleSlices = toSummaryExpenseSlices(cycleSummary.data, allCategories.data);
   const cycleChips = cycleSlices
     .slice(0, 2)
     .map((slice) => t("dashboard.kpiCycleChip", { name: slice.name, amount: fmt(slice.value) }));
   const hiddenCycleChips = Math.max(0, cycleSlices.length - cycleChips.length);
-  const cycleTone: "ok" | "empty" | "loading" | "error" = movements.error
+  const cycleTone: "ok" | "empty" | "loading" | "error" = cycleSummary.error
     ? "error"
-    : movements.isLoading
+    : cycleSummary.isLoading
       ? "loading"
       : cycleSpend === 0
         ? "empty"

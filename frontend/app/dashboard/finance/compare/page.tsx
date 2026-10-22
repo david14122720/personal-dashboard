@@ -23,13 +23,17 @@ const selectClass = deck.filterField;
 /**
  * Standalone two-category comparison sourced from the ranged `GET /movements`
  * read (`useMovementsRange(trendRange(period))`: exactly the window the
- * shared buckets render). Both categories
- * are bucketed over the same period (`toCategoryTrend`) and merged by bucket
- * index into one four-line trend: expense and income per category, never
- * netted, never currency-mixed (single-currency guard in `toCategoryTrend`).
- * Category A is solid and category B is dashed, so line style — not only
- * color — separates the two categories. A Finance sub-route reached only
- * through the chart button — there is intentionally no nav entry.
+ * shared buckets render), fetched only once both categories are picked —
+ * before that there is no comparison, so the window is never downloaded (S1).
+ * `GET /movements/summary` cannot serve this chart: its `by_category` totals
+ * are not bucketed and its `buckets` are category-agnostic, so a per-category
+ * time series has no expressible summary shape yet.
+ * Both categories are bucketed over the same period (`toCategoryTrend`) and
+ * merged by bucket index into one four-line trend: expense and income per
+ * category, never netted, never currency-mixed (single-currency guard in
+ * `toCategoryTrend`). Category A is solid and category B is dashed, so line
+ * style — not only color — separates the two categories. A Finance sub-route
+ * reached only through the chart button — there is intentionally no nav entry.
  */
 export default function ComparePage() {
   const router = useRouter();
@@ -46,7 +50,8 @@ export default function ComparePage() {
   const prefs = usePreferences();
   const categories = useCategories();
   const range = useMemo(() => trendRange(period), [period]);
-  const movements = useMovementsRange(range);
+  // A null range keeps SWR idle until both categories are selected.
+  const movements = useMovementsRange(first && second ? range : null);
   const accounts = useAccounts();
 
   const locale = prefs.data?.preferences.locale ?? "es-CO";

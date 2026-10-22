@@ -1,17 +1,23 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { formatMovementDate, todayInBogota } from "@/lib/finance/finance";
+import type { MovementSummaryWire } from "@/lib/api/finance";
+import {
+  currentPeriodRange,
+  formatMovementDate,
+  todayInBogota,
+} from "@/lib/finance/finance";
 import DashboardHome from "./DashboardHome";
 
 /** Every mutable global the SWR mock reads; cleared before each test so a
  * failure in one test can never leak a fixture into the next. */
 function clearMockGlobals(): void {
-  for (const key of ["__DH__", "__LAYOUT__", "__HABITS__", "__MOV__", "__MOVS__", "__SUBS__"]) {
+  for (const key of ["__DH__", "__LAYOUT__", "__HABITS__", "__MOV__", "__MOVS__", "__SUBS__", "__SUMMARY__"]) {
     delete (globalThis as Record<string, unknown>)[key];
   }
 }
 beforeEach(clearMockGlobals);
 beforeEach(() => mutateSpy.mockClear());
+beforeEach(() => summarySpy.mockClear());
 
 /** Whether a recorded `mutate` call would revalidate `key`, in any of the
  * shapes SWR accepts: a bare key, a key list, or a key matcher function. */
@@ -29,6 +35,9 @@ vi.mock("next/dynamic", () => ({ default: () => () => null }));
 /** Records every `mutate` call so the retry buttons can be pinned to the real
  * SWR keys they must revalidate (JD item 6). */
 const mutateSpy = vi.hoisted(() => vi.fn());
+/** Records every summary query so the cycle KPI can be pinned to the summary
+ * contract (S1) instead of the duplicated whole-ledger aggregation. */
+const summarySpy = vi.hoisted(() => vi.fn());
 vi.mock("swr", () => ({ useSWRConfig: () => ({ mutate: mutateSpy }) }));
 vi.mock("next/link", () => ({
   default: ({ href, children }: { href: string; children: React.ReactNode }) => (
@@ -107,6 +116,56 @@ const movementsResult = () => {
   return (globalThis as Record<string, unknown>).__MOV__ === "error" ? err() : loadedData.movements;
 };
 
+const EMPTY_SUMMARY: MovementSummaryWire = {
+  totals: { expense: "0.00", income: "0.00", count: 0 },
+  by_account: [],
+  by_category: [],
+  buckets: [],
+  recent: [],
+  recent_total: 0,
+};
+
+/** Summary fixture equivalent to a COP ledger: only expense rows on the COP
+ * account reach `expense` and `by_category` (the server rule), and the income
+ * total is derived too so the fixture never lies about the contract. */
+function summaryFromLedger(rows: { direction: string; amount: string; account_id: string; category_id: string | null }[]): MovementSummaryWire {
+  const expenseByCategory = new Map<string, number>();
+  let expense = 0;
+  let income = 0;
+  for (const row of rows) {
+    if (row.account_id !== "a1") continue; // the only COP account in the fixture
+    const amount = Number(row.amount);
+    if (row.direction === "expense") {
+      expense += amount;
+      const categoryId = row.category_id ?? "";
+      expenseByCategory.set(categoryId, (expenseByCategory.get(categoryId) ?? 0) + amount);
+    } else if (row.direction === "income") {
+      income += amount;
+    }
+  }
+  return {
+    ...EMPTY_SUMMARY,
+    totals: { expense, income, count: rows.length },
+    by_category: [...expenseByCategory.entries()].map(([categoryId, value]) => ({
+      category_id: categoryId,
+      expense: value,
+      income: "0.00",
+    })),
+    recent_total: rows.length,
+  };
+}
+
+/** S1: the cycle KPI and both chart panels read the summary; `__MOVS__` still
+ * overrides the ledger fixture and `__MOV__ = "error"` fails every movements
+ * read so the existing independent-error tests keep their meaning. */
+const summaryResult = () => {
+  const explicit = (globalThis as Record<string, unknown>).__SUMMARY__;
+  if (explicit) return q(explicit);
+  const custom = (globalThis as Record<string, unknown>).__MOVS__;
+  if (Array.isArray(custom)) return q(summaryFromLedger(custom as Parameters<typeof summaryFromLedger>[0]));
+  return (globalThis as Record<string, unknown>).__MOV__ === "error" ? err() : q(EMPTY_SUMMARY);
+};
+
 vi.mock("@/lib/api/finance", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/api/finance")>();
   return {
@@ -114,6 +173,10 @@ vi.mock("@/lib/api/finance", async (importOriginal) => {
     useSubscriptions: () => (globalThis as Record<string, unknown>).__SUBS__ ?? loadedData.financeSubs,
     useMovements: () => movementsResult(),
     useMovementsRange: () => movementsResult(),
+    useMovementsSummary: (query: unknown) => {
+      summarySpy(query);
+      return summaryResult();
+    },
     useCategories: () => loadedData.categories,
     // S-F: the removed debt/savings ledgers have no hooks left to mock —
     // any regression reintroducing a /debts or /savings-goals read fails
@@ -375,6 +438,32 @@ describe("DashboardHome T3 KPI tiles (real data only)", () => {
       within(kpis).getByText("Comida ($ 35.000) + Transporte ($ 27.000) +1 más"),
     ).toBeInTheDocument();
     delete (globalThis as Record<string, unknown>).__MOVS__;
+  });
+
+  it("pide el summary del mes actual con group month para el gasto del ciclo (S1)", () => {
+    render(<DashboardHome />);
+    expect(summarySpy).toHaveBeenCalledWith({
+      ...currentPeriodRange("month"),
+      group: "month",
+    });
+  });
+
+  it("toma el gasto del ciclo y sus chips del summary, no de la lectura del ledger (S1)", () => {
+    (globalThis as Record<string, unknown>).__SUMMARY__ = {
+      totals: { expense: "25000.00", income: "0.00", count: 1 },
+      by_account: [],
+      by_category: [{ category_id: "c1", expense: "25000.00", income: "0.00" }],
+      buckets: [],
+      recent: [],
+      recent_total: 1,
+    } satisfies MovementSummaryWire;
+    render(<DashboardHome />);
+    const kpis = screen.getByRole("region", { name: "Resumen de métricas" });
+    // El ledger fixture es de septiembre: si el KPI volviera a agregar en el
+    // cliente, mostraría el estado vacío en vez de esta cifra.
+    expect(within(kpis).getByText("$ 25.000")).toBeInTheDocument();
+    expect(within(kpis).getByText("Comida ($ 25.000)")).toBeInTheDocument();
+    delete (globalThis as Record<string, unknown>).__SUMMARY__;
   });
 
   it("shows the real balance footer and the excluded foreign-currency account", () => {

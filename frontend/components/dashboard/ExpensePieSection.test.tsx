@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CategoryWire, MovementWire } from "@/lib/api/finance";
-import { currentPeriodRange } from "@/lib/finance/finance";
+import type {
+  CategoryWire,
+  MovementSummaryWire,
+  MovementWire,
+} from "@/lib/api/finance";
+import { currentPeriodRange, toExpenseByCategory } from "@/lib/finance/finance";
 import MovementsSnapshot from "@/components/dashboard/widgets/MovementsSnapshot";
 import ExpensePieSection from "./ExpensePieSection";
 import TotalTrendSection from "./TotalTrendSection";
@@ -9,6 +13,7 @@ import TotalTrendSection from "./TotalTrendSection";
 const mock = vi.hoisted(() => ({
   movements: vi.fn(),
   movementsRange: vi.fn(),
+  summary: vi.fn(),
   accounts: vi.fn(),
   categories: vi.fn(),
   prefs: vi.fn(),
@@ -29,6 +34,7 @@ vi.mock("@/lib/api/finance", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api/finance")>()),
   useMovements: () => mock.movements(),
   useMovementsRange: (range: unknown) => mock.movementsRange(range),
+  useMovementsSummary: (query: unknown) => mock.summary(query),
   useCategories: () => mock.categories(),
 }));
 
@@ -41,6 +47,19 @@ vi.mock("@/lib/api/dashboard", async (importOriginal) => ({
 const NOW = new Date(2026, 9, 15, 12, 0, 0); // jueves 15 de octubre de 2026
 
 const account = { id: "a1", name: "Billetera", type: "cash", currency: "COP", balance: "0.00" };
+
+const EMPTY_SUMMARY: MovementSummaryWire = {
+  totals: { expense: "0.00", income: "0.00", count: 0 },
+  by_account: [],
+  by_category: [],
+  buckets: [],
+  recent: [],
+  recent_total: 0,
+};
+
+function summary(partial: Partial<MovementSummaryWire> = {}): MovementSummaryWire {
+  return { ...EMPTY_SUMMARY, ...partial };
+}
 
 function movement(overrides: Partial<MovementWire> = {}): MovementWire {
   return {
@@ -63,6 +82,16 @@ function category(id: string, name: string): CategoryWire {
   };
 }
 
+const MONTH_SUMMARY = summary({
+  totals: { expense: "150.00", income: "0.00", count: 2 },
+  by_category: [
+    { category_id: "c1", expense: "100.00", income: "0.00" },
+    { category_id: "c2", expense: "50.00", income: "0.00" },
+  ],
+  recent: [],
+  recent_total: 2,
+});
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
@@ -76,16 +105,9 @@ beforeEach(() => {
     error: undefined,
     isLoading: false,
   });
-  // El panel lee el rango; el snapshot sin filtrar sigue en useMovements.
-  mock.movementsRange.mockImplementation((range: unknown) => ({
-    data: [
-      movement({ id: "m1", category_id: "c1", amount: "100.00", occurred_on: "2026-10-15" }),
-      movement({ id: "m2", category_id: "c2", amount: "50.00", occurred_on: "2026-10-02" }),
-    ],
-    error: undefined,
-    isLoading: false,
-    range,
-  }));
+  mock.movementsRange.mockReturnValue({ data: [], error: undefined, isLoading: false });
+  // S1: el pastel lee el summary del mismo periodo que dibuja.
+  mock.summary.mockReturnValue({ data: MONTH_SUMMARY, error: undefined, isLoading: false });
   mock.accounts.mockReturnValue({ data: [account], error: undefined, isLoading: false });
   mock.categories.mockReturnValue({
     data: [category("c1", "Comida"), category("c2", "Transporte")],
@@ -114,9 +136,9 @@ describe("ExpensePieSection", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("group", { name: "Periodo del pastel" })).toBeInTheDocument();
     expect(screen.getByTestId("dynamic-chart")).toBeInTheDocument();
-    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
+    expect(mock.summary).toHaveBeenCalledTimes(1);
+    expect(mock.movementsRange).not.toHaveBeenCalled();
     expect(mock.movements).not.toHaveBeenCalled();
-    expect(mock.accounts).toHaveBeenCalledTimes(1);
     expect(mock.categories).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
   });
@@ -128,9 +150,7 @@ describe("ExpensePieSection", () => {
       "true",
     );
     expect(screen.getByRole("radio", { name: "Mes" })).toBeChecked();
-    expect(mock.movementsRange).toHaveBeenCalledTimes(1);
-    expect(mock.movements).not.toHaveBeenCalled();
-    expect(mock.accounts).toHaveBeenCalledTimes(1);
+    expect(mock.summary).toHaveBeenCalledTimes(1);
     expect(mock.categories).toHaveBeenCalledTimes(1);
     expect(mock.prefs).toHaveBeenCalledTimes(1);
     expect(mock.chart.current?.data).toEqual([
@@ -153,26 +173,37 @@ describe("ExpensePieSection", () => {
     ]);
   });
 
-  it("recalcula el rango del periodo actual (día/semana/mes/año)", () => {
+  it("recalcula el rango del periodo actual y agrupa igual (día/semana/mes/año)", () => {
     renderOpen();
-    expect(mock.chart.current?.data).toHaveLength(2);
+    expect(mock.summary).toHaveBeenCalledWith({
+      ...currentPeriodRange("month", NOW),
+      group: "month",
+    });
 
-    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
-    expect(mock.chart.current?.data).toEqual([{ categoryId: "c1", name: "Comida", value: 100 }]);
-
-    fireEvent.click(screen.getByRole("radio", { name: "Semana" }));
-    expect(mock.chart.current?.data).toEqual([{ categoryId: "c1", name: "Comida", value: 100 }]);
-
-    fireEvent.click(screen.getByRole("radio", { name: "Año" }));
+    for (const [label, period] of [
+      ["Día", "day"],
+      ["Semana", "week"],
+      ["Año", "year"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("radio", { name: label }));
+      expect(mock.summary).toHaveBeenCalledWith({
+        ...currentPeriodRange(period, NOW),
+        group: period,
+      });
+    }
+    // El contrato de render no cambia entre periodos: el servidor decide qué
+    // categorías tienen gasto en cada ventana.
     expect(mock.chart.current?.data).toHaveLength(2);
   });
 
   it("excluye categorías que no vienen de la API persistida", () => {
-    mock.movementsRange.mockReturnValue({
-      data: [
-        movement({ id: "local", category_id: "local-only", amount: "999.00" }),
-        movement({ id: "m1", category_id: "c1", amount: "100.00" }),
-      ],
+    mock.summary.mockReturnValue({
+      data: summary({
+        by_category: [
+          { category_id: "local-only", expense: "999.00", income: "0.00" },
+          { category_id: "c1", expense: "100.00", income: "0.00" },
+        ],
+      }),
       error: undefined,
       isLoading: false,
     });
@@ -187,14 +218,31 @@ describe("ExpensePieSection", () => {
     ]);
   });
 
+  it("ignora ingresos y rebanadas en cero del summary", () => {
+    mock.summary.mockReturnValue({
+      data: summary({
+        by_category: [
+          { category_id: "c1", expense: "0.00", income: "500.00" },
+          { category_id: "c2", expense: "50.00", income: "20.00" },
+        ],
+      }),
+      error: undefined,
+      isLoading: false,
+    });
+    renderOpen();
+    expect(mock.chart.current?.data).toEqual([
+      { categoryId: "c2", name: "Transporte", value: 50 },
+    ]);
+  });
+
   it("muestra el estado de carga en español", () => {
-    mock.categories.mockReturnValue({ data: undefined, error: undefined, isLoading: true });
+    mock.summary.mockReturnValue({ data: undefined, error: undefined, isLoading: true });
     renderOpen();
     expect(screen.getByRole("status")).toHaveTextContent("Cargando…");
     expect(screen.queryByTestId("dynamic-chart")).not.toBeInTheDocument();
   });
 
-  it("muestra el error en español y reintenta las cuatro lecturas SWR", () => {
+  it("muestra el error en español y reintenta sus tres lecturas SWR", () => {
     mock.categories.mockReturnValue({
       data: undefined,
       error: new Error("boom"),
@@ -203,18 +251,16 @@ describe("ExpensePieSection", () => {
     renderOpen();
     expect(screen.getByRole("alert")).toHaveTextContent("No se pudieron cargar los movimientos");
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
-    // El reintento revalida la clave de rango por prefijo (SWR 2.5.1), no el
-    // string exacto "finance/movements", que ya no coincide con la clave.
+    // El reintento revalida la clave del summary por prefijo (SWR 2.5.1).
     expect(mock.mutate).toHaveBeenCalledWith(expect.any(Function));
     const predicates = mock.mutate.mock.calls
       .map(([arg]) => arg)
       .filter((arg): arg is (key: unknown) => boolean => typeof arg === "function");
     expect(predicates).toHaveLength(1);
     const revalidateMovements = predicates[0];
-    expect(revalidateMovements("finance/movements:2026-10-01:2026-10-31")).toBe(true);
+    expect(revalidateMovements("finance/movements-summary:2026-10-01:2026-10-31:month")).toBe(true);
     expect(revalidateMovements("finance/movements")).toBe(true);
     expect(revalidateMovements("dashboard/accounts")).toBe(false);
-    expect(mock.mutate).toHaveBeenCalledWith("dashboard/accounts");
     expect(mock.mutate).toHaveBeenCalledWith("finance/categories");
     expect(mock.mutate).toHaveBeenCalledWith("dashboard/me");
   });
@@ -222,8 +268,7 @@ describe("ExpensePieSection", () => {
   it("al colapsar desmonta el panel sin volver a montar sus hooks y deja el destino de aria-controls", () => {
     renderOpen();
     expect(mock.chart.current).not.toBeNull();
-    mock.movementsRange.mockClear();
-    mock.accounts.mockClear();
+    mock.summary.mockClear();
     mock.categories.mockClear();
     mock.prefs.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
@@ -232,8 +277,7 @@ describe("ExpensePieSection", () => {
     expect(panel).not.toBeNull();
     expect(panel).toHaveAttribute("hidden");
     // El panel desmontado no vuelve a leer (montaje perezoso al reabrir).
-    expect(mock.movementsRange).not.toHaveBeenCalled();
-    expect(mock.accounts).not.toHaveBeenCalled();
+    expect(mock.summary).not.toHaveBeenCalled();
     expect(mock.categories).not.toHaveBeenCalled();
     expect(mock.prefs).not.toHaveBeenCalled();
   });
@@ -241,11 +285,13 @@ describe("ExpensePieSection", () => {
   it("conserva el periodo elegido al colapsar y reabrir", () => {
     renderOpen();
     fireEvent.click(screen.getByRole("radio", { name: "Día" }));
-    expect(mock.chart.current?.data).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
     fireEvent.click(screen.getByRole("button", { name: "Gastos por categoría" }));
     expect(screen.getByRole("radio", { name: "Día" })).toBeChecked();
-    expect(mock.chart.current?.data).toHaveLength(1);
+    expect(mock.summary).toHaveBeenCalledWith({
+      ...currentPeriodRange("day", NOW),
+      group: "day",
+    });
   });
 
   it("suprime la animación cuando el usuario prefiere menos movimiento", () => {
@@ -302,21 +348,83 @@ describe("ExpensePieSection", () => {
     expect(trendMonth?.checked).toBe(true);
   });
 
-  it("pide su propia ventana currentPeriodRange(period) al hook de rango (T2)", () => {
+  it("pide su propia ventana currentPeriodRange(period) al summary (S1)", () => {
     renderOpen();
     // Mes por defecto sobre el reloj falso (jueves 15 de octubre de 2026).
-    expect(mock.movementsRange).toHaveBeenCalledWith(currentPeriodRange("month", NOW));
-    expect(mock.movementsRange).toHaveBeenCalledWith({ from: "2026-10-01", to: "2026-10-31" });
+    expect(mock.summary).toHaveBeenCalledWith({
+      from: "2026-10-01",
+      to: "2026-10-31",
+      group: "month",
+    });
 
     fireEvent.click(screen.getByRole("radio", { name: "Día" }));
-    expect(mock.movementsRange).toHaveBeenCalledWith(currentPeriodRange("day", NOW));
+    expect(mock.summary).toHaveBeenCalledWith({
+      ...currentPeriodRange("day", NOW),
+      group: "day",
+    });
   });
 
   it("MovementsSnapshot sigue en la lectura sin filtrar useMovements() (T2)", () => {
     mock.movements.mockClear();
-    mock.movementsRange.mockClear();
+    mock.summary.mockClear();
     render(<MovementsSnapshot />);
     expect(mock.movements).toHaveBeenCalled();
-    expect(mock.movementsRange).not.toHaveBeenCalled();
+    expect(mock.summary).not.toHaveBeenCalled();
+  });
+
+  it("el render del summary coincide con la agregación cliente anterior (pin S1)", () => {
+    // Fixture con todas las trampas del agregado viejo: moneda extranjera,
+    // ingreso, transferencia, categoría sin persistir y fila fuera de rango.
+    const ledger: MovementWire[] = [
+      movement({ id: "m1", category_id: "c1", amount: "100.00", occurred_on: "2026-10-15" }),
+      movement({ id: "m2", category_id: "c1", amount: "20.00", occurred_on: "2026-10-01" }),
+      movement({ id: "m3", category_id: "c2", amount: "50.00", occurred_on: "2026-10-02" }),
+      movement({ id: "m4", category_id: "c2", amount: "999.00", occurred_on: "2026-10-03", account_id: "a2" }),
+      movement({ id: "m5", category_id: "c1", amount: "500.00", occurred_on: "2026-10-04", direction: "income" }),
+      movement({ id: "m6", category_id: "c1", amount: "700.00", occurred_on: "2026-10-05", direction: "transfer" }),
+      movement({ id: "m7", category_id: "local-only", amount: "111.00", occurred_on: "2026-10-06" }),
+      movement({ id: "m8", category_id: "c2", amount: "222.00", occurred_on: "2026-09-30" }),
+    ];
+    const range = currentPeriodRange("month", NOW);
+    const categories = [category("c1", "Comida"), category("c2", "Transporte")];
+    const oracle = toExpenseByCategory(ledger, {
+      range,
+      categories,
+      currencyByAccountId: new Map([
+        ["a1", "COP"],
+        ["a2", "USD"],
+      ]),
+      userCurrency: "COP",
+    });
+    // Equivalente servidor: mismo filtro (moneda del usuario, expense, rango)
+    // y agrupación por categoría; sin transferencias, ingresos ni ids locales.
+    const byCategory = new Map<string, number>();
+    for (const row of ledger) {
+      if (row.direction !== "expense") continue;
+      if (row.account_id !== "a1") continue;
+      if (row.occurred_on < range.from || row.occurred_on > range.to) continue;
+      const id = row.category_id ?? "";
+      byCategory.set(id, (byCategory.get(id) ?? 0) + Number(row.amount));
+    }
+    mock.summary.mockReturnValue({
+      data: summary({
+        by_category: [...byCategory.entries()].map(([categoryId, expense]) => ({
+          category_id: categoryId,
+          expense,
+          income: "0.00",
+        })),
+      }),
+      error: undefined,
+      isLoading: false,
+    });
+    mock.categories.mockReturnValue({ data: categories, error: undefined, isLoading: false });
+
+    renderOpen();
+
+    expect(mock.chart.current?.data).toEqual(oracle);
+    expect(mock.chart.current?.data).toEqual([
+      { categoryId: "c1", name: "Comida", value: 120 },
+      { categoryId: "c2", name: "Transporte", value: 50 },
+    ]);
   });
 });

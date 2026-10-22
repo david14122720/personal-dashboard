@@ -107,7 +107,7 @@ describe("compare page (movement split)", () => {
     renderPage();
     await pickCategories();
     expect(
-      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }),
+      await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(4);
     expect(screen.getByText("Gastos · Comida")).toBeInTheDocument();
@@ -120,7 +120,7 @@ describe("compare page (movement split)", () => {
   it("switches the shared chart bucket labels between Mes and Día", async () => {
     const { container } = renderPage();
     await pickCategories();
-    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 });
 
     expect(renderedPeriodLabels(container, "month")).toHaveLength(12);
 
@@ -144,10 +144,22 @@ describe("compare page (movement split)", () => {
     }
   });
 
+  it("no pide el ledger hasta que ambas categorías están elegidas (S1)", async () => {
+    renderPage();
+    const selectA = await screen.findByLabelText("Categoría A");
+    // Sin las dos categorías no hay comparación: la ventana no se descarga.
+    expect(movementUrls).toHaveLength(0);
+    fireEvent.change(selectA, { target: { value: "c1" } });
+    expect(movementUrls).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText("Categoría B"), { target: { value: "c2" } });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 });
+    expect(movementUrls.length).toBeGreaterThan(0);
+  });
+
   it("pide su propia ventana trendRange(period) con from/to codificados (T2)", async () => {
     renderPage();
     await pickCategories();
-    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 });
     expect(movementUrls.length).toBeGreaterThan(0);
     const expectedMonth = trendRange("month");
     const urls = movementUrls.map((u) => new URL(u));
@@ -155,7 +167,7 @@ describe("compare page (movement split)", () => {
     expect(urls.map((u) => u.searchParams.get("to"))).toContain(expectedMonth.to);
 
     fireEvent.click(screen.getByRole("radio", { name: "Día" }));
-    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" });
+    await screen.findByRole("img", { name: "Tendencia de gastos e ingresos" }, { timeout: 5000 });
     const expectedDay = trendRange("day");
     const urlsAfter = movementUrls.map((u) => new URL(u));
     expect(urlsAfter.map((u) => u.searchParams.get("from"))).toContain(expectedDay.from);

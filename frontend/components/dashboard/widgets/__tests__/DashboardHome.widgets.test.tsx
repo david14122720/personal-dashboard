@@ -44,6 +44,18 @@ vi.mock("@/lib/api/finance", async (importOriginal) => {
     // hook; they filter client-side over the window they request, so the same
     // fixture feeds both.
     useMovementsRange: () => q(movements),
+    // S1 (T5): the cycle KPI and the panels read the server summary. These
+    // suites pin widget layout/history, not the KPI figure, so an empty
+    // aggregate keeps the page honest without inventing numbers.
+    useMovementsSummary: () =>
+      q({
+        totals: { expense: "0.00", income: "0.00", count: 0 },
+        by_account: [],
+        by_category: [],
+        buckets: [],
+        recent: [],
+        recent_total: 0,
+      }),
     useCategories: () => q(categories),
   };
 });

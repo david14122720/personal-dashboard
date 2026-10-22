@@ -183,6 +183,89 @@ export function useMovementsRange(range: MovementRange | null | undefined) {
   );
 }
 
+// -- S1 (T5): server-side movement aggregates (`GET /movements/summary`) --
+
+/** Bucket granularity of the summary read. */
+export type MovementSummaryGroup = "day" | "week" | "month" | "year";
+
+/** Echo of the requested summary window: inclusive `from`/`to` over
+ * `occurred_on` (`YYYY-MM-DD`) plus the bucket granularity. */
+export interface MovementSummaryQuery {
+  from: string;
+  to: string;
+  group: MovementSummaryGroup;
+}
+
+/** Totals over the window. `expense`/`income` sum only user-currency
+ * expense/income rows; `count` counts every movement, transfers included. */
+export interface MovementSummaryTotalsWire {
+  expense: string | number;
+  income: string | number;
+  count: number;
+}
+
+export interface MovementSummaryAccountWire {
+  account_id: string;
+  expense: string | number;
+  income: string | number;
+}
+
+export interface MovementSummaryCategoryWire {
+  category_id: string;
+  expense: string | number;
+  income: string | number;
+}
+
+/** One bucket of the window. `key` is `YYYY-MM-DD` (day), ISO `YYYY-Www`
+ * (week), `YYYY-MM` (month) or `YYYY` (year). */
+export interface MovementSummaryBucketWire {
+  key: string;
+  from: string;
+  to: string;
+  expense: string | number;
+  income: string | number;
+}
+
+/** Payload of `GET /movements/summary`: final aggregates plus the five most
+ * recent movements and the full-range movement count. */
+export interface MovementSummaryWire {
+  totals: MovementSummaryTotalsWire;
+  by_account: MovementSummaryAccountWire[];
+  by_category: MovementSummaryCategoryWire[];
+  buckets: MovementSummaryBucketWire[];
+  recent: MovementWire[];
+  recent_total: number;
+}
+
+/** SWR key for a summary window (`finance/movements-summary:<from>:<to>:<group>`,
+ * the `movementsRangeKey` style); null when the window is missing, inverted or
+ * carries no valid group, so SWR stays idle. The prefix keeps the existing
+ * `finance/movements` retry predicates working. */
+export function movementsSummaryKey(
+  query: MovementSummaryQuery | null | undefined,
+): string | null {
+  if (!query?.from || !query?.to || !query?.group || query.from > query.to) return null;
+  return `finance/movements-summary:${query.from}:${query.to}:${query.group}`;
+}
+
+/** Aggregated movements read (`GET /movements/summary?from&to&group`).
+ * The server applies the single-currency rule and excludes transfers from the
+ * `expense`/`income` sums, so consumers never re-filter or re-aggregate. */
+export function useMovementsSummary(query: MovementSummaryQuery | null | undefined) {
+  const key = movementsSummaryKey(query);
+  return useSWR<MovementSummaryWire>(
+    key,
+    () => {
+      const params = new URLSearchParams();
+      params.set("from", (query as MovementSummaryQuery).from);
+      params.set("to", (query as MovementSummaryQuery).to);
+      params.set("group", (query as MovementSummaryQuery).group);
+      return apiGet<MovementSummaryWire>(`/movements/summary?${params.toString()}`);
+    },
+    financeConfig,
+  );
+}
+
 /** Create a movement (amount travels as a decimal string, never a number). */
 export function createMovement(input: CreateMovementInput): Promise<MovementWire> {
   return apiPost<MovementWire>("/movements", input);

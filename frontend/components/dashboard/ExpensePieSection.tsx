@@ -4,11 +4,11 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { useSWRConfig } from "swr";
 import { t } from "@/lib/i18n";
-import { useAccounts, usePreferences } from "@/lib/api/dashboard";
-import { useCategories, useMovementsRange } from "@/lib/api/finance";
+import { usePreferences } from "@/lib/api/dashboard";
+import { useCategories, useMovementsSummary } from "@/lib/api/finance";
 import {
   currentPeriodRange,
-  toExpenseByCategory,
+  toSummaryExpenseSlices,
   type TrendPeriod,
 } from "@/lib/finance/finance";
 import { usePrefersReducedMotion } from "@/lib/dashboard/useReducedMotion";
@@ -25,40 +25,30 @@ const ExpenseCategoryPieChart = dynamic(
   },
 );
 
-/** SWR reads + memoized aggregation live in this panel only, so nothing
- * fetches or mounts until the disclosure is open. Category names are joined
- * from the API-backed `finance/categories` read; local-only ids never render.
- * Currency comes from the existing preference fallback and is never converted. */
+/** SWR reads live in this panel only, so nothing fetches or mounts until the
+ * disclosure is open. The server summary already returns the current window's
+ * per-category expenses with the single-currency rule applied (S1); this panel
+ * only joins the API-backed category names (`finance/categories`), so
+ * local-only ids never render and nothing is re-filtered or converted. */
 function ExpensePiePanel({ period }: { period: TrendPeriod }) {
   const range = useMemo(() => currentPeriodRange(period), [period]);
-  const movements = useMovementsRange(range);
-  const accounts = useAccounts();
+  const summary = useMovementsSummary({ ...range, group: period });
   const categories = useCategories();
   const prefs = usePreferences();
   const reduced = usePrefersReducedMotion();
   const { mutate } = useSWRConfig();
 
-  const currencyByAccountId = useMemo(
-    () => new Map((accounts.data ?? []).map((a) => [a.id, a.currency])),
-    [accounts.data],
-  );
   const userCurrency = prefs.data?.preferences.currency_code ?? "COP";
   const locale = prefs.data?.preferences.locale ?? "es-CO";
   const slices = useMemo(
-    () =>
-      toExpenseByCategory(movements.data, {
-        range,
-        categories: categories.data,
-        currencyByAccountId,
-        userCurrency,
-      }),
-    [movements.data, categories.data, currencyByAccountId, userCurrency, range],
+    () => toSummaryExpenseSlices(summary.data, categories.data),
+    [summary.data, categories.data],
   );
 
-  if (movements.isLoading || accounts.isLoading || categories.isLoading || prefs.isLoading) {
+  if (summary.isLoading || categories.isLoading || prefs.isLoading) {
     return <p role="status" className="text-sm text-instrument/60">{t("common.loading")}</p>;
   }
-  if (movements.error || accounts.error || categories.error || prefs.error) {
+  if (summary.error || categories.error || prefs.error) {
     return (
       <div role="alert" className="flex flex-col items-start gap-2 text-sm text-instrument/80">
         <p>{t("finance.movementsLoadFailed")}</p>
@@ -66,7 +56,6 @@ function ExpensePiePanel({ period }: { period: TrendPeriod }) {
           type="button"
           onClick={() => {
             void mutate((key) => typeof key === "string" && key.startsWith("finance/movements"));
-            void mutate("dashboard/accounts");
             void mutate("finance/categories");
             void mutate("dashboard/me");
           }}
