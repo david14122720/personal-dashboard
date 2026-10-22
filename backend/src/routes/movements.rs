@@ -41,9 +41,10 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Days, Months, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
@@ -70,10 +71,18 @@ const LOCK_ACCOUNT_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=
 /// /accounts` never accepts it — so the read needs no extra lock.
 const ACCOUNT_CURRENCY_SQL: &str = "SELECT currency FROM accounts WHERE id=$1 AND user_id=$2";
 /// Transfer-scoped account lock: unlike [`LOCK_ACCOUNT_SQL`] it also returns
-/// the currency, so the handler can enforce the same-currency rule on the
-/// locked rows (design D2.2).
+/// the currency and the archived flag, so the handler can enforce the
+/// same-currency rule and the archived backstop on the locked rows (design
+/// D2.2; S3). `is_archived` is read under the same lock: no check-then-act.
 const LOCK_TRANSFER_ACCOUNTS_SQL: &str =
-    "SELECT id, currency FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
+    "SELECT id, currency, is_archived FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
+/// Archived flag of an owned account, read AFTER [`LOCK_ACCOUNT_SQL`] (or the
+/// transfer lock) has serialized on the row. Deliberately separate from the
+/// ownership helper: `ensure_owned_account` and `LOCK_ACCOUNT_SQL` keep their
+/// ownership-only semantics for Pay and every other caller (S3), while the
+/// create and re-point handlers apply this dedicated archived backstop.
+const ACCOUNT_ARCHIVED_SQL: &str =
+    "SELECT is_archived FROM accounts WHERE id=$1 AND user_id=$2";
 const INSERT_MOVEMENT_SQL: &str = "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on, description, subscription_id) VALUES ($1,$2,$3,$4::movement_direction,$5,$6,$7,$8) RETURNING id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description, subscription_id, created_at, updated_at";
 /// Transfer insert: the enum literal and the destination are written here —
 /// `category_id`/`subscription_id` are omitted so the CHECKs keep them NULL.
@@ -108,8 +117,69 @@ const LOCK_MOVEMENT_SQL: &str = "SELECT id, account_id, transfer_account_id, cat
 /// A movement whose account changed between the snapshot and the account
 /// lock (PATCH or DELETE) restarts from a refreshed snapshot (the lock set is
 /// the only thing recalculated); bounded so a pathological race ends in a
-/// clean, fully rolled-back 500 instead of an unbounded loop.
+/// clean, fully-rolled-back 500 instead of an unbounded loop.
 const MOVEMENT_LOCK_RETRY_ATTEMPTS: usize = 5;
+
+// -- S1 (T5): `GET /movements/summary` ------------------------------------
+//
+// The server owns the aggregation the dashboard used to do in the browser:
+// one request returns final totals, per-account/per-category splits, calendar
+// buckets and the five most recent rows. `expense`/`income` mirror the client
+// rule `isUserCurrencyMovement`: only movements whose account is ACTIVE and
+// whose currency equals the user's default currency participate (a foreign
+// account is excluded, never converted; an archived account is hidden from
+// `/accounts`, so it was already absent from the client map). Transfers feed
+// `count`/`recent_total` but never the sums.
+
+/// The caller's default currency (`user_preferences.currency_code`), with the
+/// documented COP fallback when the row is missing.
+const USER_CURRENCY_SQL: &str =
+    "SELECT COALESCE((SELECT currency_code::text FROM user_preferences WHERE user_id=$1), 'COP')";
+/// One round-trip for the totals: user-currency expense, user-currency income,
+/// user-currency movement count (transfers included) and every movement in
+/// range (`recent_total`).
+const SUMMARY_TOTALS_SQL: &str = "SELECT \
+    COALESCE(SUM(CASE WHEN a.currency=$2 AND NOT a.is_archived AND m.direction='expense'::movement_direction THEN m.amount END), 0), \
+    COALESCE(SUM(CASE WHEN a.currency=$2 AND NOT a.is_archived AND m.direction='income'::movement_direction THEN m.amount END), 0), \
+    COUNT(*) FILTER (WHERE a.currency=$2 AND NOT a.is_archived), \
+    COUNT(*) \
+ FROM movements m JOIN accounts a ON a.id=m.account_id AND a.user_id=m.user_id \
+ WHERE m.user_id=$1 AND m.occurred_on >= $3 AND m.occurred_on <= $4";
+/// Per-account expense/income, grouped in SQL (no N+1). Transfers are neither
+/// expense nor income, so they are filtered out; foreign-currency and archived
+/// accounts follow the same exclusion as the totals.
+const SUMMARY_BY_ACCOUNT_SQL: &str = "SELECT m.account_id, \
+    COALESCE(SUM(CASE WHEN m.direction='expense'::movement_direction THEN m.amount END), 0), \
+    COALESCE(SUM(CASE WHEN m.direction='income'::movement_direction THEN m.amount END), 0) \
+ FROM movements m JOIN accounts a ON a.id=m.account_id AND a.user_id=m.user_id \
+ WHERE m.user_id=$1 AND m.occurred_on >= $2 AND m.occurred_on <= $3 \
+   AND a.currency=$4 AND NOT a.is_archived AND m.direction <> 'transfer'::movement_direction \
+ GROUP BY m.account_id ORDER BY m.account_id ASC";
+/// Per-category expense/income. Rows without a category are excluded (the
+/// client never rendered a "sin categoría" slice); ORDER BY 2 is the expense
+/// sum, largest first, the client pie's ordering.
+const SUMMARY_BY_CATEGORY_SQL: &str = "SELECT m.category_id, \
+    COALESCE(SUM(CASE WHEN m.direction='expense'::movement_direction THEN m.amount END), 0), \
+    COALESCE(SUM(CASE WHEN m.direction='income'::movement_direction THEN m.amount END), 0) \
+ FROM movements m JOIN accounts a ON a.id=m.account_id AND a.user_id=m.user_id \
+ WHERE m.user_id=$1 AND m.occurred_on >= $2 AND m.occurred_on <= $3 \
+   AND m.category_id IS NOT NULL \
+   AND a.currency=$4 AND NOT a.is_archived AND m.direction <> 'transfer'::movement_direction \
+ GROUP BY m.category_id ORDER BY 2 DESC, m.category_id ASC";
+/// Bucket sums: `date_trunc($4, ...)` keeps the grouping in SQL and returns the
+/// unit start (Monday for ISO weeks). Rust expands the missing (empty) units
+/// around these rows so charts stay gap-free, exactly like `trendBuckets`.
+const SUMMARY_BUCKETS_SQL: &str = "SELECT date_trunc($4, m.occurred_on::timestamp)::date AS bucket_start, \
+    COALESCE(SUM(CASE WHEN m.direction='expense'::movement_direction THEN m.amount END), 0), \
+    COALESCE(SUM(CASE WHEN m.direction='income'::movement_direction THEN m.amount END), 0) \
+ FROM movements m JOIN accounts a ON a.id=m.account_id AND a.user_id=m.user_id \
+ WHERE m.user_id=$1 AND m.occurred_on >= $2 AND m.occurred_on <= $3 \
+   AND a.currency=$5 AND NOT a.is_archived AND m.direction <> 'transfer'::movement_direction \
+ GROUP BY 1 ORDER BY 1 ASC";
+/// `recent`: the first five rows of the same window, full list order
+/// (`occurred_on DESC, created_at DESC, id DESC`). Every movement participates
+/// here (all accounts/directions), matching `recent_total`.
+const SUMMARY_RECENT_SQL: &str = "SELECT id, account_id, transfer_account_id, category_id, direction::text, amount, occurred_on, description FROM movements WHERE user_id=$1 AND occurred_on >= $2 AND occurred_on <= $3 ORDER BY occurred_on DESC, created_at DESC, id DESC LIMIT 5";
 
 /// Movement row: 11 columns (sqlx 0.8 `FromRow` tuple cap is 16).
 /// `transfer_account_id` sits after `account_id`, matching the shared
@@ -189,6 +259,16 @@ pub struct MovementRangeQuery {
     pub shape: Option<String>,
 }
 
+/// `GET /movements/summary` query: a REQUIRED inclusive window plus the bucket
+/// granularity. Unlike [`MovementRangeQuery`] there is no unbounded mode.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MovementSummaryQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub group: Option<String>,
+}
+
 /// Parse the `GET /movements?from&to` range bounds (strict `YYYY-MM-DD` via
 /// the shared [`validate_occurred_on`], else 422): with neither bound there
 /// is no range (`Ok(None)` — the handler serves [`LIST_MOVEMENTS_SQL`]);
@@ -213,6 +293,146 @@ pub fn parse_movement_range(
             "from and to must be provided together".into(),
         )),
     }
+}
+
+/// Bucket granularity of `GET /movements/summary`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryGroup {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl SummaryGroup {
+    /// The `date_trunc` unit name.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+        }
+    }
+}
+
+/// Parse the `group` query parameter strictly, following [`parse_read_shape`]:
+/// missing or any value other than the four contract values is 422, never
+/// silently defaulted.
+pub fn parse_summary_group(raw: Option<&str>) -> Result<SummaryGroup, AppError> {
+    match raw {
+        Some("day") => Ok(SummaryGroup::Day),
+        Some("week") => Ok(SummaryGroup::Week),
+        Some("month") => Ok(SummaryGroup::Month),
+        Some("year") => Ok(SummaryGroup::Year),
+        Some(other) => Err(AppError::Validation(format!(
+            "group must be one of: day, week, month, year (got `{other}`)"
+        ))),
+        None => Err(AppError::Validation(
+            "group is required: one of day, week, month, year".into(),
+        )),
+    }
+}
+
+/// Parse the summary window: both bounds are mandatory (unlike the optional
+/// `/movements` range), and the shared [`parse_movement_range`] keeps the
+/// strict `YYYY-MM-DD` format, the `from <= to` ordering and the
+/// half-specified 422.
+pub fn parse_summary_window(
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<(NaiveDate, NaiveDate), AppError> {
+    parse_movement_range(from, to)?
+        .ok_or_else(|| AppError::Validation("from and to are required".into()))
+}
+
+/// First day of the calendar unit containing `date` (Monday for `week`).
+fn summary_unit_start(group: SummaryGroup, date: NaiveDate) -> NaiveDate {
+    match group {
+        SummaryGroup::Day => date,
+        SummaryGroup::Week => {
+            let offset = i64::from(date.weekday().num_days_from_monday()) as u64;
+            date.checked_sub_days(Days::new(offset)).unwrap_or(date)
+        }
+        SummaryGroup::Month => {
+            NaiveDate::from_ymd_opt(date.year(), date.month(), 1).unwrap_or(date)
+        }
+        SummaryGroup::Year => NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap_or(date),
+    }
+}
+
+/// Inclusive last day of the unit that starts at `start`. Week is Monday to
+/// Sunday, matching the client's `trendWindow`.
+fn summary_unit_end(group: SummaryGroup, start: NaiveDate) -> NaiveDate {
+    match group {
+        SummaryGroup::Day => start,
+        SummaryGroup::Week => start
+            .checked_add_days(Days::new(6))
+            .unwrap_or(NaiveDate::MAX),
+        SummaryGroup::Month => {
+            let (year, month) = (start.year(), start.month());
+            if month == 12 {
+                NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(NaiveDate::MAX)
+            } else {
+                NaiveDate::from_ymd_opt(year, month + 1, 1)
+                    .and_then(|first| first.pred_opt())
+                    .unwrap_or(NaiveDate::MAX)
+            }
+        }
+        SummaryGroup::Year => NaiveDate::from_ymd_opt(start.year(), 12, 31)
+            .unwrap_or(NaiveDate::MAX),
+    }
+}
+
+/// Contract bucket key: `YYYY-MM-DD` (day), ISO `YYYY-Www` (week), `YYYY-MM`
+/// (month) or `YYYY` (year) — byte-identical to the client's `trendWindow`.
+fn summary_bucket_key(group: SummaryGroup, start: NaiveDate) -> String {
+    match group {
+        SummaryGroup::Day => start.format("%Y-%m-%d").to_string(),
+        SummaryGroup::Week => {
+            let iso = start.iso_week();
+            format!("{}-W{:02}", iso.year(), iso.week())
+        }
+        SummaryGroup::Month => format!("{:04}-{:02}", start.year(), start.month()),
+        SummaryGroup::Year => start.year().to_string(),
+    }
+}
+
+/// First day of the NEXT unit, or `None` at the representable date ceiling.
+fn next_summary_unit_start(group: SummaryGroup, start: NaiveDate) -> Option<NaiveDate> {
+    match group {
+        SummaryGroup::Day => start.succ_opt(),
+        SummaryGroup::Week => start.checked_add_days(Days::new(7)),
+        SummaryGroup::Month => start.checked_add_months(Months::new(1)),
+        SummaryGroup::Year => NaiveDate::from_ymd_opt(start.year() + 1, 1, 1),
+    }
+}
+
+/// Every calendar unit intersecting the inclusive `[from, to]` window, oldest
+/// first, with its natural unit boundaries (a week is its Monday-Sunday
+/// window). Empty units are present with zero totals so the chart keeps its
+/// gap-free shape; the SQL rows fill the ones that carry movements.
+fn summary_bucket_windows(
+    group: SummaryGroup,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Vec<SummaryBucket> {
+    let mut buckets = Vec::new();
+    let mut start = summary_unit_start(group, from);
+    while start <= to {
+        buckets.push(SummaryBucket {
+            key: summary_bucket_key(group, start),
+            from: start,
+            to: summary_unit_end(group, start),
+            expense: Decimal::ZERO,
+            income: Decimal::ZERO,
+        });
+        match next_summary_unit_start(group, start) {
+            Some(next) => start = next,
+            None => break,
+        }
+    }
+    buckets
 }
 
 #[derive(Debug, Serialize)]
@@ -356,6 +576,56 @@ pub enum MovementsResponse {
     Brief(Vec<MovementBriefResponse>),
 }
 
+/// Pinned wire contract of `GET /api/movements/summary` (S1/T5). Field names
+/// and nesting are frozen: the dashboard/finance sections render these
+/// aggregates directly.
+#[derive(Debug, Serialize)]
+pub struct MovementSummaryTotals {
+    /// Sum of user-currency expense rows (decimal string on the wire).
+    pub expense: Decimal,
+    /// Sum of user-currency income rows (decimal string on the wire).
+    pub income: Decimal,
+    /// User-currency movements in the window, transfers included.
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MovementSummaryAccount {
+    pub account_id: Uuid,
+    pub expense: Decimal,
+    pub income: Decimal,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MovementSummaryCategory {
+    pub category_id: Uuid,
+    pub expense: Decimal,
+    pub income: Decimal,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SummaryBucket {
+    /// `YYYY-MM-DD` | `YYYY-Www` | `YYYY-MM` | `YYYY`.
+    pub key: String,
+    /// Inclusive natural unit bounds (week = Monday..Sunday).
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    pub expense: Decimal,
+    pub income: Decimal,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MovementSummaryResponse {
+    pub totals: MovementSummaryTotals,
+    pub by_account: Vec<MovementSummaryAccount>,
+    pub by_category: Vec<MovementSummaryCategory>,
+    pub buckets: Vec<SummaryBucket>,
+    /// Up to five most recent movements in the window, most recent first.
+    pub recent: Vec<MovementBriefResponse>,
+    /// Every movement in the window, the label count ("N movimientos").
+    pub recent_total: i64,
+}
+
 /// Validate the direction: exactly `expense` or `income`, else Spanish 422.
 pub fn validate_direction(raw: &str) -> Result<String, AppError> {
     match raw.trim() {
@@ -467,6 +737,20 @@ pub async fn create_movement_handler(
             "la cuenta debe pertenecer al usuario".into(),
         ));
     }
+    // S3 backstop: an archived account can no longer originate a movement.
+    // Ownership stays the same (the helper above is untouched); this is a
+    // dedicated gate read under the row just locked.
+    let archived: bool = sqlx::query_scalar(ACCOUNT_ARCHIVED_SQL)
+        .bind(body.account_id)
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if archived {
+        return Err(AppError::Validation(
+            "no se pueden crear movimientos sobre cuentas archivadas".into(),
+        ));
+    }
     ensure_owned_category(&mut *tx, body.category_id, user_id).await?;
     let row = sqlx::query_as::<_, MovementRow>(INSERT_MOVEMENT_SQL)
         .bind(user_id)
@@ -528,17 +812,25 @@ pub async fn create_transfer_handler(
     let mut from_currency: Option<String> = None;
     let mut to_currency: Option<String> = None;
     for account_id in ids {
-        let locked: Option<(Uuid, String)> = sqlx::query_as(LOCK_TRANSFER_ACCOUNTS_SQL)
+        let locked: Option<(Uuid, String, bool)> = sqlx::query_as(LOCK_TRANSFER_ACCOUNTS_SQL)
             .bind(account_id)
             .bind(user_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(|_| AppError::Internal)?;
-        let Some((locked_id, currency)) = locked else {
+        let Some((locked_id, currency, archived)) = locked else {
             return Err(AppError::Validation(
                 "la cuenta debe pertenecer al usuario".into(),
             ));
         };
+        // S3 backstop: neither transfer leg may be an archived account. The
+        // flag comes from the locked row, so an archive racing this write can
+        // never slip a transfer through.
+        if archived {
+            return Err(AppError::Validation(
+                "no se pueden crear movimientos sobre cuentas archivadas".into(),
+            ));
+        }
         if locked_id == body.from_account_id {
             from_currency = Some(currency);
         } else {
@@ -649,6 +941,126 @@ pub async fn list_movements_handler(
     Ok(Json(MovementsResponse::Full(
         rows.into_iter().map(MovementResponse::from).collect()
     )))
+}
+
+/// `GET /api/movements/summary?from&to&group` — final aggregates for one
+/// window (S1/T5). All summing/grouping happens in SQL; Rust only expands the
+/// empty calendar buckets. Registered as a STATIC route before `/movements/{id}`
+/// so `{id}` can never capture "summary".
+pub async fn movement_summary_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ValidatedQuery(query): ValidatedQuery<MovementSummaryQuery>,
+) -> Result<Json<MovementSummaryResponse>, AppError> {
+    let user_id = require_user_id(&headers, &state.pool).await?;
+    let (from, to) = parse_summary_window(query.from.as_deref(), query.to.as_deref())?;
+    let group = parse_summary_group(query.group.as_deref())?;
+    let currency: String = sqlx::query_scalar(USER_CURRENCY_SQL)
+        .bind(user_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("movement summary currency failed: {e:?}");
+            AppError::Internal
+        })?;
+    let (expense, income, count, recent_total) =
+        sqlx::query_as::<_, (Decimal, Decimal, i64, i64)>(SUMMARY_TOTALS_SQL)
+            .bind(user_id)
+            .bind(&currency)
+            .bind(from)
+            .bind(to)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("movement summary totals failed: {e:?}");
+                AppError::Internal
+            })?;
+    let by_account = sqlx::query_as::<_, (Uuid, Decimal, Decimal)>(SUMMARY_BY_ACCOUNT_SQL)
+        .bind(user_id)
+        .bind(from)
+        .bind(to)
+        .bind(&currency)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("movement summary by_account failed: {e:?}");
+            AppError::Internal
+        })?
+        .into_iter()
+        .map(|(account_id, expense, income)| MovementSummaryAccount {
+            account_id,
+            expense,
+            income,
+        })
+        .collect();
+    let by_category = sqlx::query_as::<_, (Uuid, Decimal, Decimal)>(SUMMARY_BY_CATEGORY_SQL)
+        .bind(user_id)
+        .bind(from)
+        .bind(to)
+        .bind(&currency)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("movement summary by_category failed: {e:?}");
+            AppError::Internal
+        })?
+        .into_iter()
+        .map(|(category_id, expense, income)| MovementSummaryCategory {
+            category_id,
+            expense,
+            income,
+        })
+        .collect();
+    // One grouped SQL scan; the empty units are filled from the pure window
+    // expansion so the response always carries every bucket in order.
+    let mut bucket_totals: HashMap<NaiveDate, (Decimal, Decimal)> =
+        sqlx::query_as::<_, (NaiveDate, Decimal, Decimal)>(SUMMARY_BUCKETS_SQL)
+            .bind(user_id)
+            .bind(from)
+            .bind(to)
+            .bind(group.as_str())
+            .bind(&currency)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("movement summary buckets failed: {e:?}");
+                AppError::Internal
+            })?
+            .into_iter()
+            .map(|(start, expense, income)| (start, (expense, income)))
+            .collect();
+    let mut buckets = summary_bucket_windows(group, from, to);
+    for bucket in &mut buckets {
+        if let Some((expense, income)) = bucket_totals.remove(&bucket.from) {
+            bucket.expense = expense;
+            bucket.income = income;
+        }
+    }
+    let recent = sqlx::query_as::<_, MovementBriefRow>(SUMMARY_RECENT_SQL)
+        .bind(user_id)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("movement summary recent failed: {e:?}");
+            AppError::Internal
+        })?
+        .into_iter()
+        .map(MovementBriefResponse::from)
+        .collect();
+    Ok(Json(MovementSummaryResponse {
+        totals: MovementSummaryTotals {
+            expense,
+            income,
+            count,
+        },
+        by_account,
+        by_category,
+        buckets,
+        recent,
+        recent_total,
+    }))
 }
 
 pub async fn get_movement_handler(
@@ -769,6 +1181,22 @@ pub async fn patch_movement_handler(
                 .map_err(|_| AppError::Internal)?
                 .ok_or(AppError::NotFound)?;
             continue;
+        }
+        // S3 backstop: only the NEW target is gated. Moving a movement AWAY
+        // from an archived account stays allowed (that is how stored data is
+        // corrected), and an amount-only edit is not a re-point at all.
+        if account_id != locked_response.account_id {
+            let archived: bool = sqlx::query_scalar(ACCOUNT_ARCHIVED_SQL)
+                .bind(account_id)
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| AppError::Internal)?;
+            if archived {
+                return Err(AppError::Validation(
+                    "no se puede mover un movimiento a una cuenta archivada".into(),
+                ));
+            }
         }
         // Same-currency rule on a re-point: the stored amount lives in the
         // scale of the account that holds it, so moving the movement to an
@@ -1329,6 +1757,7 @@ mod tests {
         for sql in [
             LOCK_ACCOUNT_SQL,
             LOCK_TRANSFER_ACCOUNTS_SQL,
+            ACCOUNT_ARCHIVED_SQL,
             INSERT_MOVEMENT_SQL,
             INSERT_TRANSFER_SQL,
             APPLY_BALANCE_SQL,
@@ -1337,6 +1766,12 @@ mod tests {
             LIST_MOVEMENTS_SQL,
             GET_MOVEMENT_SQL,
             LOCK_MOVEMENT_SQL,
+            USER_CURRENCY_SQL,
+            SUMMARY_TOTALS_SQL,
+            SUMMARY_BY_ACCOUNT_SQL,
+            SUMMARY_BY_CATEGORY_SQL,
+            SUMMARY_BUCKETS_SQL,
+            SUMMARY_RECENT_SQL,
         ] {
             assert!(
                 sql.contains("user_id"),
@@ -1359,6 +1794,19 @@ mod tests {
         assert!(
             LOCK_ACCOUNT_SQL.contains("FOR UPDATE"),
             "account probe must lock the row, got: {LOCK_ACCOUNT_SQL}"
+        );
+        assert!(
+            !LOCK_ACCOUNT_SQL.contains("is_archived"),
+            "S3: the shared account lock stays ownership-only (Pay and every other caller), got: {LOCK_ACCOUNT_SQL}"
+        );
+        assert!(
+            ACCOUNT_ARCHIVED_SQL.contains("is_archived")
+                && ACCOUNT_ARCHIVED_SQL.contains("user_id"),
+            "the archived backstop must read the owned row's flag, got: {ACCOUNT_ARCHIVED_SQL}"
+        );
+        assert!(
+            LOCK_TRANSFER_ACCOUNTS_SQL.contains("is_archived"),
+            "the transfer lock must carry the archived flag, got: {LOCK_TRANSFER_ACCOUNTS_SQL}"
         );
         assert!(
             ACCOUNT_CURRENCY_SQL.contains("currency") && ACCOUNT_CURRENCY_SQL.contains("user_id"),
@@ -1514,6 +1962,190 @@ mod tests {
         assert_eq!(to.to_string(), "2026-10-31");
     }
 
+    #[test]
+    fn summary_group_accepts_the_contract_values_and_rejects_others_as_422() {
+        assert_eq!(parse_summary_group(Some("day")).unwrap(), SummaryGroup::Day);
+        assert_eq!(parse_summary_group(Some("week")).unwrap(), SummaryGroup::Week);
+        assert_eq!(parse_summary_group(Some("month")).unwrap(), SummaryGroup::Month);
+        assert_eq!(parse_summary_group(Some("year")).unwrap(), SummaryGroup::Year);
+        for raw in [None, Some(""), Some("quarter"), Some("Month"), Some("months")] {
+            assert_422(parse_summary_group(raw).unwrap_err());
+        }
+    }
+
+    #[test]
+    fn summary_window_requires_both_bounds_and_keeps_them_inclusive() {
+        let (from, to) =
+            parse_summary_window(Some("2026-10-01"), Some("2026-10-31")).expect("valid window");
+        assert_eq!(from.to_string(), "2026-10-01");
+        assert_eq!(to.to_string(), "2026-10-31");
+        // Unlike the optional `/movements` range, the summary has no unbounded
+        // mode: absent, half-specified, malformed and inverted windows are 422.
+        for (from, to) in [
+            (None, None),
+            (Some("2026-10-01"), None),
+            (None, Some("2026-10-31")),
+            (Some("not-a-date"), Some("2026-10-31")),
+            (Some("2026-10-31"), Some("2026-10-01")),
+        ] {
+            assert_422(parse_summary_window(from, to).unwrap_err());
+        }
+    }
+
+    #[test]
+    fn summary_query_accepts_the_contract_and_rejects_unknown_fields() {
+        let ok: MovementSummaryQuery = serde_json::from_value(json!({
+            "from": "2026-10-01", "to": "2026-10-31", "group": "month"
+        }))
+        .expect("contract query must deserialize");
+        assert_eq!(ok.group.as_deref(), Some("month"));
+        for bad in [
+            json!({"from": "2026-10-01", "to": "2026-10-31", "group": "month", "limit": 5}),
+            json!({"from": "2026-10-01", "to": "2026-10-31", "group": "month", "period": "month"}),
+        ] {
+            assert!(
+                serde_json::from_value::<MovementSummaryQuery>(bad.clone()).is_err(),
+                "summary query must reject unknown field: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_buckets_use_contract_keys_and_natural_boundaries() {
+        let d = |year, month, day| NaiveDate::from_ymd_opt(year, month, day).unwrap();
+        let day_buckets =
+            summary_bucket_windows(SummaryGroup::Day, d(2026, 10, 1), d(2026, 10, 3));
+        assert_eq!(
+            day_buckets.iter().map(|b| b.key.as_str()).collect::<Vec<_>>(),
+            ["2026-10-01", "2026-10-02", "2026-10-03"]
+        );
+        assert!(
+            day_buckets.iter().all(|b| b.from == b.to),
+            "a day bucket covers exactly its day"
+        );
+
+        // ISO weeks: 2026-10-01 is Thursday of W40 (Mon 28 Sep – Sun 4 Oct).
+        let week_buckets =
+            summary_bucket_windows(SummaryGroup::Week, d(2026, 10, 1), d(2026, 10, 14));
+        assert_eq!(
+            week_buckets
+                .iter()
+                .map(|b| b.key.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-W40", "2026-W41", "2026-W42"]
+        );
+        assert_eq!(
+            (week_buckets[0].from, week_buckets[0].to),
+            (d(2026, 9, 28), d(2026, 10, 4))
+        );
+        assert_eq!(
+            (week_buckets[1].from, week_buckets[1].to),
+            (d(2026, 10, 5), d(2026, 10, 11))
+        );
+        assert_eq!(
+            (week_buckets[2].from, week_buckets[2].to),
+            (d(2026, 10, 12), d(2026, 10, 18))
+        );
+
+        let month_buckets =
+            summary_bucket_windows(SummaryGroup::Month, d(2026, 9, 15), d(2026, 11, 2));
+        assert_eq!(
+            month_buckets
+                .iter()
+                .map(|b| b.key.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-09", "2026-10", "2026-11"]
+        );
+        assert_eq!(
+            (month_buckets[1].from, month_buckets[1].to),
+            (d(2026, 10, 1), d(2026, 10, 31))
+        );
+        assert_eq!(
+            (month_buckets[2].from, month_buckets[2].to),
+            (d(2026, 11, 1), d(2026, 11, 30))
+        );
+
+        let year_buckets =
+            summary_bucket_windows(SummaryGroup::Year, d(2025, 6, 1), d(2026, 3, 1));
+        assert_eq!(
+            year_buckets
+                .iter()
+                .map(|b| b.key.as_str())
+                .collect::<Vec<_>>(),
+            ["2025", "2026"]
+        );
+        assert_eq!(
+            (year_buckets[0].from, year_buckets[0].to),
+            (d(2025, 1, 1), d(2025, 12, 31))
+        );
+        assert!(year_buckets
+            .iter()
+            .all(|b| b.expense == Decimal::ZERO && b.income == Decimal::ZERO));
+    }
+
+    #[test]
+    fn summary_response_serializes_the_pinned_contract() {
+        let response = MovementSummaryResponse {
+            totals: MovementSummaryTotals {
+                expense: Decimal::new(11000, 2),
+                income: Decimal::new(5000, 2),
+                count: 4,
+            },
+            by_account: vec![MovementSummaryAccount {
+                account_id: Uuid::new_v4(),
+                expense: Decimal::new(11000, 2),
+                income: Decimal::new(5000, 2),
+            }],
+            by_category: vec![MovementSummaryCategory {
+                category_id: Uuid::new_v4(),
+                expense: Decimal::new(11000, 2),
+                income: Decimal::new(5000, 2),
+            }],
+            buckets: vec![SummaryBucket {
+                key: "2026-10".into(),
+                from: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+                to: NaiveDate::from_ymd_opt(2026, 10, 31).unwrap(),
+                expense: Decimal::new(11000, 2),
+                income: Decimal::new(5000, 2),
+            }],
+            recent: Vec::new(),
+            recent_total: 6,
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        // Money stays a decimal string (the repo-wide wire convention).
+        assert_eq!(v["totals"]["expense"], "110.00");
+        assert_eq!(v["totals"]["income"], "50.00");
+        assert_eq!(v["totals"]["count"], 4);
+        assert!(v["by_account"].is_array());
+        assert!(v["by_account"][0].get("account_id").is_some());
+        assert!(v["by_category"].is_array());
+        assert!(v["by_category"][0].get("category_id").is_some());
+        assert_eq!(v["buckets"][0]["key"], "2026-10");
+        assert_eq!(v["buckets"][0]["from"], "2026-10-01");
+        assert_eq!(v["buckets"][0]["to"], "2026-10-31");
+        assert!(v["recent"].is_array());
+        assert_eq!(v["recent_total"], 6);
+        let keys: std::collections::BTreeSet<&str> = v
+            .as_object()
+            .expect("summary is a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "totals",
+                "by_account",
+                "by_category",
+                "buckets",
+                "recent",
+                "recent_total"
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
     #[tokio::test]
     async fn range_query_extraction_rejects_unknown_fields_as_422() {
         use axum::extract::FromRequestParts;
@@ -1598,6 +2230,193 @@ mod tests {
         // The reversal credits the origin, then the new debit lands on the target.
         assert_eq!(balance_of(&pool, cop_from).await, Decimal::from(1100));
         assert_eq!(balance_of(&pool, cop_to).await, Decimal::from(400));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S3 backstop: creating a movement on an archived account is 422 and
+    /// persists nothing. The active-account control stays 201.
+    #[tokio::test]
+    async fn create_on_archived_account_is_422_and_persists_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP create_on_archived_account_is_422_and_persists_nothing: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let archived = seed_archived_account(&pool, user_id, "Vieja", "1000.00").await;
+        let category = seed_category(&pool, user_id, "finance", "cat").await;
+        let err = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_body(archived, category, json!({"amount": "100.00"})),
+        )
+        .await
+        .expect_err("an archived source account must be 422");
+        assert_422(err);
+        assert_eq!(movement_count(&pool, user_id).await, 0);
+        assert_eq!(account_balance(&pool, archived).await, Decimal::from(1000));
+
+        // Control: the same body on an active account is still 201.
+        let active = seed_account(&pool, user_id, "Activa", "1000.00").await;
+        let (status, created) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_body(active, category, json!({"amount": "100.00"})),
+        )
+        .await
+        .expect("an active source account stays creatable");
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created.account_id, active);
+        assert_eq!(account_balance(&pool, active).await, Decimal::from(900));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S3 covers the transfer target too: either archived leg is 422 and the
+    /// transfer writes no row and moves no balance.
+    #[tokio::test]
+    async fn create_transfer_with_archived_account_is_422_and_persists_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP create_transfer_with_archived_account_is_422_and_persists_nothing: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let active = seed_account(&pool, user_id, "Activa", "1000.00").await;
+        let archived = seed_archived_account(&pool, user_id, "Vieja", "1000.00").await;
+        for (from, to) in [(archived, active), (active, archived)] {
+            let err = create_transfer_handler(
+                State(state.clone()),
+                headers.clone(),
+                Json(transfer_body(from, to, "50.00", "2026-10-04")),
+            )
+            .await
+            .expect_err("an archived transfer leg must be 422");
+            assert_422(err);
+        }
+        assert_eq!(movement_count(&pool, user_id).await, 0);
+        assert_eq!(account_balance(&pool, active).await, Decimal::from(1000));
+        assert_eq!(account_balance(&pool, archived).await, Decimal::from(1000));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S3: re-pointing a movement TOWARD an archived account is 422 and moves
+    /// neither row nor balance.
+    #[tokio::test]
+    async fn repoint_to_archived_account_is_422_and_moves_nothing() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP repoint_to_archived_account_is_422_and_moves_nothing: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let origin = seed_account(&pool, user_id, "Origen", "1000.00").await;
+        let archived = seed_archived_account(&pool, user_id, "Vieja", "500.00").await;
+        let category = seed_category(&pool, user_id, "finance", "cat").await;
+        let (_, created) = create_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_body(
+                origin,
+                category,
+                json!({"amount": "100.00", "occurred_on": "2026-10-01"}),
+            ),
+        )
+        .await
+        .expect("seed movement is 201");
+        assert_eq!(account_balance(&pool, origin).await, Decimal::from(900));
+
+        let err = patch_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.id),
+            Json(
+                serde_json::from_value(json!({"account_id": archived}))
+                    .expect("valid patch body"),
+            ),
+        )
+        .await
+        .expect_err("re-pointing to an archived account must be 422");
+        assert_422(err);
+        let stored_account: Uuid =
+            sqlx::query_scalar("SELECT account_id FROM movements WHERE id=$1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read stored movement");
+        assert_eq!(stored_account, origin);
+        assert_eq!(account_balance(&pool, origin).await, Decimal::from(900));
+        assert_eq!(account_balance(&pool, archived).await, Decimal::from(500));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S3: the correction path stays open — a movement stored on an archived
+    /// account can be re-pointed to an active one, and an amount-only edit on
+    /// the archived account is not a re-point and stays allowed.
+    #[tokio::test]
+    async fn repoint_away_from_archived_account_is_200() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP repoint_away_from_archived_account_is_200: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let target = seed_account(&pool, user_id, "Activa", "1000.00").await;
+        let archived = seed_archived_account(&pool, user_id, "Vieja", "900.00").await;
+        let category = seed_category(&pool, user_id, "finance", "cat").await;
+        let movement_id = seed_movement_row(
+            &pool,
+            user_id,
+            archived,
+            None,
+            Some(category),
+            "expense",
+            "100.00",
+            "2026-10-01",
+            Some("correccion"),
+        )
+        .await;
+        let patched = patch_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(movement_id),
+            Json(
+                serde_json::from_value(json!({"account_id": target}))
+                    .expect("valid patch body"),
+            ),
+        )
+        .await
+        .expect("moving away from an archived account stays 200");
+        assert_eq!(patched.account_id, target);
+        assert_eq!(account_balance(&pool, archived).await, Decimal::from(1000));
+        assert_eq!(account_balance(&pool, target).await, Decimal::from(900));
+
+        // Amount-only edit on a movement still stored on the archived account:
+        // there is no NEW archived target, so it is not the blocked re-point.
+        let kept = seed_movement_row(
+            &pool,
+            user_id,
+            archived,
+            None,
+            Some(category),
+            "expense",
+            "20.00",
+            "2026-10-02",
+            None,
+        )
+        .await;
+        let edited = patch_movement_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(kept),
+            Json(
+                serde_json::from_value(json!({"amount": "30.00"}))
+                    .expect("valid patch body"),
+            ),
+        )
+        .await
+        .expect("an amount-only edit on an archived account stays 200");
+        assert_eq!(edited.account_id, archived);
+        assert_eq!(edited.amount, Decimal::new(3000, 2));
         cleanup_user(&pool, user_id).await;
     }
 
@@ -1701,6 +2520,55 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("seed category")
+    }
+
+    /// Archived owned account: creation must reject it, while stored movements
+    /// on it remain editable (the correction path).
+    async fn seed_archived_account(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        name: &str,
+        balance: &str,
+    ) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, balance, is_archived) VALUES ($1,$2,$3::numeric,TRUE) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(balance)
+        .fetch_one(pool)
+        .await
+        .expect("seed archived account")
+    }
+
+    /// Raw ledger row for scenarios the create handlers now reject (an archived
+    /// account) or for transfers. The balance is NOT adjusted: callers seed it.
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_movement_row(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        account_id: Uuid,
+        transfer_account_id: Option<Uuid>,
+        category_id: Option<Uuid>,
+        direction: &str,
+        amount: &str,
+        occurred_on: &str,
+        description: Option<&str>,
+    ) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO movements (user_id, account_id, transfer_account_id, category_id, direction, amount, occurred_on, description) VALUES ($1,$2,$3,$4,$5::movement_direction,$6::numeric,$7::date,$8) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(account_id)
+        .bind(transfer_account_id)
+        .bind(category_id)
+        .bind(direction)
+        .bind(amount)
+        .bind(occurred_on)
+        .bind(description)
+        .fetch_one(pool)
+        .await
+        .expect("seed movement row")
     }
 
     fn create_body(account_id: Uuid, category_id: Uuid, extra: serde_json::Value) -> Json<CreateMovementRequest> {
@@ -2871,6 +3739,350 @@ mod tests {
                 axum::http::StatusCode::UNPROCESSABLE_ENTITY
             );
         }
+        cleanup_user(&pool, user_id).await;
+    }
+
+    fn summary_query(
+        from: Option<&str>,
+        to: Option<&str>,
+        group: Option<&str>,
+    ) -> ValidatedQuery<MovementSummaryQuery> {
+        ValidatedQuery(MovementSummaryQuery {
+            from: from.map(str::to_string),
+            to: to.map(str::to_string),
+            group: group.map(str::to_string),
+        })
+    }
+
+    /// S1/T5: every field of the pinned contract, aggregated from SQL, against
+    /// the same rules the client used to apply in the browser
+    /// (`isUserCurrencyMovement` + `toExpenseByCategory`): only movements on
+    /// ACTIVE accounts of the user's default currency feed `expense`/`income`
+    /// and `count`; transfers count but never sum; `recent_total` counts every
+    /// movement in the window.
+    #[tokio::test]
+    async fn summary_aggregates_follow_the_single_currency_client_rule() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP summary_aggregates_follow_the_single_currency_client_rule: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cop_a = seed_account(&pool, user_id, "A", "0.00").await;
+        let cop_b = seed_account(&pool, user_id, "B", "0.00").await;
+        let usd = seed_account_with_currency(&pool, user_id, "USD", "0.00", "USD").await;
+        let archived = seed_archived_account(&pool, user_id, "Vieja", "0.00").await;
+        let cat1 = seed_category(&pool, user_id, "finance", "Mercado").await;
+        let cat2 = seed_category(&pool, user_id, "finance", "Transporte").await;
+        let d = |day| NaiveDate::from_ymd_opt(2026, 10, day).unwrap();
+        // Counted: active COP accounts (rows 1..=3 + the transfer).
+        seed_movement_row(
+            &pool, user_id, cop_a, None, Some(cat1), "expense", "100.00", "2026-10-01",
+            Some("uno"),
+        )
+        .await;
+        seed_movement_row(
+            &pool, user_id, cop_a, None, Some(cat1), "income", "50.00", "2026-10-02",
+            Some("dos"),
+        )
+        .await;
+        seed_movement_row(
+            &pool, user_id, cop_b, None, Some(cat2), "expense", "10.00", "2026-10-03",
+            Some("tres"),
+        )
+        .await;
+        // Excluded from the aggregates: foreign currency, archived account.
+        seed_movement_row(
+            &pool, user_id, usd, None, Some(cat1), "expense", "999.00", "2026-10-04",
+            Some("cuatro"),
+        )
+        .await;
+        seed_movement_row(
+            &pool, user_id, archived, None, Some(cat1), "expense", "777.00", "2026-10-06",
+            Some("cinco"),
+        )
+        .await;
+        // Excluded: outside the window.
+        seed_movement_row(
+            &pool, user_id, cop_a, None, Some(cat2), "expense", "5.00", "2026-09-30",
+            Some("fuera"),
+        )
+        .await;
+        seed_movement_row(
+            &pool, user_id, cop_a, None, Some(cat2), "income", "7.00", "2026-11-01",
+            Some("fuera2"),
+        )
+        .await;
+        // Counted in `count` / `recent_total`, never in expense/income.
+        seed_movement_row(
+            &pool, user_id, cop_a, Some(cop_b), None, "transfer", "30.00", "2026-10-07",
+            Some("seis"),
+        )
+        .await;
+
+        let summary = movement_summary_handler(
+            State(state.clone()),
+            headers.clone(),
+            summary_query(Some("2026-10-01"), Some("2026-10-31"), Some("month")),
+        )
+        .await
+        .expect("summary is 200");
+
+        assert_eq!(summary.totals.expense, Decimal::new(11000, 2));
+        assert_eq!(summary.totals.income, Decimal::new(5000, 2));
+        assert_eq!(
+            summary.totals.count, 4,
+            "active user-currency movements, transfer included"
+        );
+        assert_eq!(summary.recent_total, 6, "every movement in range");
+
+        assert_eq!(summary.by_account.len(), 2);
+        let account_a = summary
+            .by_account
+            .iter()
+            .find(|row| row.account_id == cop_a)
+            .expect("account A is present");
+        assert_eq!(account_a.expense, Decimal::new(10000, 2));
+        assert_eq!(account_a.income, Decimal::new(5000, 2));
+        let account_b = summary
+            .by_account
+            .iter()
+            .find(|row| row.account_id == cop_b)
+            .expect("account B is present");
+        assert_eq!(account_b.expense, Decimal::new(1000, 2));
+        assert_eq!(account_b.income, Decimal::ZERO);
+        assert!(
+            !summary.by_account.iter().any(|row| row.account_id == usd
+                || row.account_id == archived),
+            "foreign-currency and archived accounts never aggregate"
+        );
+
+        assert_eq!(summary.by_category.len(), 2);
+        let mercado = summary
+            .by_category
+            .iter()
+            .find(|row| row.category_id == cat1)
+            .expect("category 1 is present");
+        assert_eq!(mercado.expense, Decimal::new(10000, 2));
+        assert_eq!(mercado.income, Decimal::new(5000, 2));
+        let transporte = summary
+            .by_category
+            .iter()
+            .find(|row| row.category_id == cat2)
+            .expect("category 2 is present");
+        assert_eq!(transporte.expense, Decimal::new(1000, 2));
+        assert_eq!(transporte.income, Decimal::ZERO);
+        // Largest expense first, mirroring the client pie ordering.
+        assert_eq!(summary.by_category[0].category_id, cat1);
+
+        assert_eq!(summary.buckets.len(), 1);
+        assert_eq!(summary.buckets[0].key, "2026-10");
+        assert_eq!(summary.buckets[0].from, d(1));
+        assert_eq!(summary.buckets[0].to, d(31));
+        assert_eq!(summary.buckets[0].expense, Decimal::new(11000, 2));
+        assert_eq!(summary.buckets[0].income, Decimal::new(5000, 2));
+
+        // `recent`: up to five, most recent first, from EVERY movement set.
+        assert_eq!(summary.recent.len(), 5);
+        assert_eq!(summary.recent[0].occurred_on, d(7));
+        assert_eq!(summary.recent[0].direction, "transfer");
+        assert_eq!(summary.recent[0].transfer_account_id, Some(cop_b));
+        assert_eq!(
+            summary
+                .recent
+                .iter()
+                .map(|row| row.occurred_on)
+                .collect::<Vec<_>>(),
+            vec![d(7), d(6), d(4), d(3), d(2)]
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S1/T5: the user's default currency is read server-side from
+    /// `user_preferences` (fallback COP), never assumed from the account name.
+    #[tokio::test]
+    async fn summary_reads_the_users_default_currency_from_preferences() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP summary_reads_the_users_default_currency_from_preferences: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let cop = seed_account(&pool, user_id, "Pesos", "0.00").await;
+        let usd = seed_account_with_currency(&pool, user_id, "Dolares", "0.00", "USD").await;
+        let category = seed_category(&pool, user_id, "finance", "cat").await;
+        seed_movement_row(
+            &pool, user_id, cop, None, Some(category), "expense", "100.00", "2026-10-01", None,
+        )
+        .await;
+        seed_movement_row(
+            &pool, user_id, usd, None, Some(category), "expense", "9.00", "2026-10-02", None,
+        )
+        .await;
+
+        // No preferences row: the documented fallback is COP.
+        let cop_summary = movement_summary_handler(
+            State(state.clone()),
+            headers.clone(),
+            summary_query(Some("2026-10-01"), Some("2026-10-31"), Some("day")),
+        )
+        .await
+        .expect("summary is 200");
+        assert_eq!(cop_summary.totals.expense, Decimal::new(10000, 2));
+        assert_eq!(cop_summary.totals.count, 1);
+
+        sqlx::query(
+            "INSERT INTO user_preferences (user_id, currency_code) VALUES ($1,'USD') ON CONFLICT (user_id) DO UPDATE SET currency_code='USD'",
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("switch the user's default currency");
+        let usd_summary = movement_summary_handler(
+            State(state.clone()),
+            headers.clone(),
+            summary_query(Some("2026-10-01"), Some("2026-10-31"), Some("day")),
+        )
+        .await
+        .expect("summary is 200");
+        assert_eq!(usd_summary.totals.expense, Decimal::new(900, 2));
+        assert_eq!(usd_summary.totals.count, 1);
+        assert_eq!(usd_summary.by_account.len(), 1);
+        assert_eq!(usd_summary.by_account[0].account_id, usd);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S1/T5: the summary window has no unbounded mode and the group is
+    /// strict; every bad combination is a 422 before any aggregate query.
+    #[tokio::test]
+    async fn summary_rejects_missing_or_invalid_parameters_as_422() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP summary_rejects_missing_or_invalid_parameters_as_422: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        for query in [
+            summary_query(None, None, Some("month")),
+            summary_query(Some("2026-10-01"), None, Some("month")),
+            summary_query(None, Some("2026-10-31"), Some("month")),
+            summary_query(Some("2026-10-01"), Some("2026-10-31"), None),
+            summary_query(Some("2026-10-01"), Some("2026-10-31"), Some("quarter")),
+            summary_query(Some("not-a-date"), Some("2026-10-31"), Some("month")),
+            summary_query(Some("2026-10-31"), Some("2026-10-01"), Some("month")),
+        ] {
+            let err = movement_summary_handler(State(state.clone()), headers.clone(), query)
+                .await
+                .expect_err("bad summary parameters must be 422");
+            assert_422(err);
+        }
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S1/T5: `date_trunc` grouping matches the client keys for all four
+    /// granularities, including the ISO week-year boundary (2027-01-01 belongs
+    /// to ISO week 2026-W53).
+    #[tokio::test]
+    async fn summary_bucket_grouping_covers_every_group() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP summary_bucket_grouping_covers_every_group: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let account = seed_account(&pool, user_id, "Cash", "0.00").await;
+        let category = seed_category(&pool, user_id, "finance", "cat").await;
+        for (direction, amount, date) in [
+            ("expense", "10.00", "2026-10-01"),
+            ("income", "20.00", "2026-10-04"),
+            ("expense", "30.00", "2026-10-05"),
+            ("expense", "40.00", "2026-12-31"),
+            ("income", "50.00", "2027-01-01"),
+        ] {
+            seed_movement_row(
+                &pool,
+                user_id,
+                account,
+                None,
+                Some(category),
+                direction,
+                amount,
+                date,
+                None,
+            )
+            .await;
+        }
+        let grouped = |group: &'static str| {
+            let state = state.clone();
+            let headers = headers.clone();
+            async move {
+                movement_summary_handler(
+                    State(state),
+                    headers,
+                    summary_query(Some("2026-10-01"), Some("2027-01-01"), Some(group)),
+                )
+                .await
+                .expect("summary is 200")
+            }
+        };
+
+        let day = grouped("day").await;
+        assert_eq!(day.buckets.len(), 93, "Oct 1..Jan 1 is 93 inclusive days");
+        let day_bucket = |key: &str| {
+            day.buckets
+                .iter()
+                .find(|b| b.key == key)
+                .unwrap_or_else(|| panic!("missing day bucket {key}"))
+        };
+        assert_eq!(day_bucket("2026-10-01").expense, Decimal::new(1000, 2));
+        assert_eq!(day_bucket("2026-10-04").income, Decimal::new(2000, 2));
+        assert_eq!(day_bucket("2026-10-05").expense, Decimal::new(3000, 2));
+        assert_eq!(day_bucket("2026-12-31").expense, Decimal::new(4000, 2));
+        assert_eq!(day_bucket("2027-01-01").income, Decimal::new(5000, 2));
+
+        let week = grouped("week").await;
+        let week_bucket = |key: &str| {
+            week.buckets
+                .iter()
+                .find(|b| b.key == key)
+                .unwrap_or_else(|| panic!("missing week bucket {key}"))
+        };
+        assert_eq!(week.buckets[0].from.to_string(), "2026-09-28");
+        assert_eq!(
+            week.buckets.last().unwrap().to.to_string(),
+            "2027-01-03"
+        );
+        assert_eq!(week_bucket("2026-W40").expense, Decimal::new(1000, 2));
+        assert_eq!(week_bucket("2026-W40").income, Decimal::new(2000, 2));
+        assert_eq!(week_bucket("2026-W41").expense, Decimal::new(3000, 2));
+        // 2026-12-31 (Thu) and 2027-01-01 (Fri) share ISO week 2026-W53.
+        assert_eq!(week_bucket("2026-W53").expense, Decimal::new(4000, 2));
+        assert_eq!(week_bucket("2026-W53").income, Decimal::new(5000, 2));
+
+        let month = grouped("month").await;
+        assert_eq!(
+            month
+                .buckets
+                .iter()
+                .map(|b| b.key.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-10", "2026-11", "2026-12", "2027-01"]
+        );
+        assert_eq!(month.buckets[0].expense, Decimal::new(4000, 2));
+        assert_eq!(month.buckets[0].income, Decimal::new(2000, 2));
+        assert_eq!(month.buckets[1].expense, Decimal::ZERO);
+        assert_eq!(month.buckets[2].expense, Decimal::new(4000, 2));
+        assert_eq!(month.buckets[3].income, Decimal::new(5000, 2));
+
+        let year = grouped("year").await;
+        assert_eq!(
+            year.buckets.iter().map(|b| b.key.as_str()).collect::<Vec<_>>(),
+            ["2026", "2027"]
+        );
+        assert_eq!(year.buckets[0].expense, Decimal::new(8000, 2));
+        assert_eq!(year.buckets[0].income, Decimal::new(2000, 2));
+        assert_eq!(year.buckets[1].expense, Decimal::ZERO);
+        assert_eq!(year.buckets[1].income, Decimal::new(5000, 2));
         cleanup_user(&pool, user_id).await;
     }
 }

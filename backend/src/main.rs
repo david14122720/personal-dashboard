@@ -105,6 +105,13 @@ fn api_routes() -> Router<AppState> {
             "/movements/transfer",
             post(routes::movements::create_transfer_handler),
         )
+        // S1 (T5): static summary route, registered BEFORE `{id}` exactly like
+        // `/movements/transfer`; `{id}` would otherwise parse "summary" as a
+        // UUID and answer 400.
+        .route(
+            "/movements/summary",
+            get(routes::movements::movement_summary_handler),
+        )
         .route(
             "/movements/{id}",
             get(routes::movements::get_movement_handler)
@@ -531,6 +538,11 @@ mod api_nest_tests {
             // S-A (finance-simplify-movements): the movements ledger must
             // be reachable — without a session every route answers 401.
             ("GET", "/api/movements".to_string()),
+            // S1 (T5): the static `/movements/summary` route must beat the
+            // `{id}` matcher. If `{id}` captured "summary", `Path<Uuid>`
+            // would reject with 400 before auth; 401 proves the summary
+            // handler itself was reached.
+            ("GET", "/api/movements/summary".to_string()),
             ("GET", format!("/api/movements/{id}")),
             ("PATCH", format!("/api/movements/{id}")),
             ("DELETE", format!("/api/movements/{id}")),
