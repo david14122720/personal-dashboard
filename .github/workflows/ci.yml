@@ -28,6 +28,9 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgres://user:password@localhost:5432/personal_dashboard
+      # Session TTL tests pin the production default; docker-compose and the
+      # deployed environment both carry this same value.
+      SESSION_TTL_HOURS: 24
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
