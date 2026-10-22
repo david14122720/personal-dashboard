@@ -105,6 +105,14 @@ const MAX_VALUATION_SQL: &str = "SELECT max(recorded_on) FROM asset_valuations W
 /// (archived or foreign → 404, truly absent → 422).
 const LOCK_ASSET_SQL: &str =
     "SELECT id FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived FOR UPDATE";
+/// Stored currency of the owned asset, read AFTER [`LOCK_ASSET_SQL`]: the
+/// currency guard compares against this value, never against the request echo.
+const ASSET_CURRENCY_SQL: &str = "SELECT currency FROM assets WHERE id=$1 AND user_id=$2";
+/// Currency re-labelling is only safe while the asset has no valuation
+/// history: `asset_valuations` stores amounts without a currency, so changing
+/// the label would silently re-denominate every historical net-worth point.
+const ASSET_VALUATIONS_EXIST_SQL: &str =
+    "SELECT EXISTS(SELECT 1 FROM asset_valuations WHERE asset_id=$1)";
 const CREATE_VALUATION_SQL: &str = "INSERT INTO asset_valuations (user_id, asset_id, value, recorded_on, notes) VALUES ($1,$2,$3,$4,$5) RETURNING id, asset_id, value, recorded_on, notes, created_at";
 // Test-only probe: verifies trigger-synced current_value without going through HTTP.
 #[cfg(test)]
@@ -546,6 +554,31 @@ pub async fn patch_asset_handler(
     }
     // Archivado/ajeno → 404, inexistente puro → 422 (contrato ensure_asset_writable).
     ensure_asset_writable(&state.pool, id, user_id).await?;
+    // Lock-first: the currency guard and the UPDATE must see the same snapshot,
+    // exactly like the valuation POST. A concurrent valuation insert locks this
+    // same row, so it can never slip history between the check and the write.
+    let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
+    let locked: Option<Uuid> = sqlx::query_scalar(LOCK_ASSET_SQL)
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if locked.is_none() {
+        // The pre-transaction probe can lose a race (the asset was archived or
+        // deleted meanwhile); resolve the same contract under the lock:
+        // archived/foreign → 404, absent for everybody → 422.
+        let exists: Option<Uuid> = sqlx::query_scalar(ASSET_EXISTS_SQL)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        return Err(if exists.is_some() {
+            AppError::NotFound
+        } else {
+            AppError::Validation("asset does not exist".into())
+        });
+    }
     let name = match body.name.as_deref() {
         Some(raw) => Some(validate_required_text(raw, MAX_NAME_LEN, "name")?),
         None => None,
@@ -561,6 +594,27 @@ pub async fn patch_asset_handler(
         Some(raw) => Some(validate_currency(Some(raw))?),
         None => None,
     };
+    if let Some(currency) = currency.as_deref() {
+        let stored: String = sqlx::query_scalar(ASSET_CURRENCY_SQL)
+            .bind(id)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        if currency != stored.as_str() {
+            let has_valuations: bool = sqlx::query_scalar(ASSET_VALUATIONS_EXIST_SQL)
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| AppError::Internal)?;
+            if has_valuations {
+                return Err(AppError::Validation(
+                    "no se puede cambiar la moneda de un activo con valuaciones registradas"
+                        .into(),
+                ));
+            }
+        }
+    }
     let acquired_on = match body.acquired_on.as_deref() {
         Some(raw) => Some(validate_calendar_date(raw, "acquired_on")?),
         None => None,
@@ -601,10 +655,11 @@ pub async fn patch_asset_handler(
     qb.push(" RETURNING id, name, category::text, account_id, current_value, currency, acquired_on, notes, is_archived, created_at, updated_at");
     let row = qb
         .build_query_as::<AssetRow>()
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_asset_db_err)?
         .ok_or(AppError::NotFound)?;
+    tx.commit().await.map_err(|_| AppError::Internal)?;
     Ok(Json(AssetResponse::from(row)))
 }
 
@@ -1506,6 +1561,7 @@ mod tests {
 #[cfg(test)]
 mod patch_asset_tests {
     use super::*;
+    use axum::response::IntoResponse;
     use serde_json::json;
 
     #[test]
@@ -1614,6 +1670,137 @@ mod patch_asset_tests {
             .execute(pool)
             .await
             .expect("cleanup user");
+    }
+
+    #[tokio::test]
+    async fn patch_currency_change_with_valuations_is_422_and_keeps_the_label() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP patch_currency_change_with_valuations_is_422_and_keeps_the_label: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, created) = create_asset_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(
+                serde_json::from_value(json!({
+                    "name": "Casa",
+                    "category": "property",
+                    "currency": "COP"
+                }))
+                .expect("valid asset body"),
+            ),
+        )
+        .await
+        .expect("create asset is 201");
+        let (status, _) = create_valuation_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.id),
+            Json(
+                serde_json::from_value(json!({"value": "1000.00", "recorded_on": "2026-09-01"}))
+                    .expect("valid valuation body"),
+            ),
+        )
+        .await
+        .expect("valuation is 201");
+        assert_eq!(status, StatusCode::CREATED);
+
+        // One valuation exists → re-labelling the currency would re-denominate
+        // the whole net-worth history: 422 and no write at all.
+        let err = patch_asset_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.id),
+            Json(
+                serde_json::from_value(json!({"currency": "USD"}))
+                    .expect("valid patch body"),
+            ),
+        )
+        .await
+        .expect_err("changing the currency over a valuation history must be 422");
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let stored: (String, Decimal) =
+            sqlx::query_as("SELECT currency, current_value FROM assets WHERE id=$1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read stored asset");
+        assert_eq!(stored.0, "COP", "the rejected PATCH must not re-label");
+        assert_eq!(stored.1, Decimal::new(100000, 2));
+        let valuations: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM asset_valuations WHERE asset_id=$1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("count valuations");
+        assert_eq!(valuations, 1, "the rejected PATCH must not touch history");
+
+        // Re-sending the SAME currency (normalized) is not a change: allowed.
+        let patched = patch_asset_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.id),
+            Json(
+                serde_json::from_value(json!({"currency": "cop"}))
+                    .expect("valid patch body"),
+            ),
+        )
+        .await
+        .expect("a same-currency PATCH stays 200");
+        assert_eq!(patched.currency, "COP");
+        assert_eq!(patched.current_value, Decimal::new(100000, 2));
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn patch_currency_change_without_valuations_is_200_and_relabels() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP patch_currency_change_without_valuations_is_200_and_relabels: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, created) = create_asset_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(
+                serde_json::from_value(json!({
+                    "name": "Billetera",
+                    "category": "cash",
+                    "currency": "COP"
+                }))
+                .expect("valid asset body"),
+            ),
+        )
+        .await
+        .expect("create asset is 201");
+        let patched = patch_asset_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.id),
+            Json(
+                serde_json::from_value(json!({"currency": "USD"}))
+                    .expect("valid patch body"),
+            ),
+        )
+        .await
+        .expect("a currency change without valuations is 200");
+        assert_eq!(patched.currency, "USD");
+        assert_eq!(patched.current_value, Decimal::ZERO);
+        let stored: String = sqlx::query_scalar("SELECT currency FROM assets WHERE id=$1")
+            .bind(created.id)
+            .fetch_one(&pool)
+            .await
+            .expect("read stored currency");
+        assert_eq!(stored, "USD", "the new label must be persisted");
+        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]
