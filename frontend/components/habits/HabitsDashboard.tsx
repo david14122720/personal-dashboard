@@ -37,7 +37,7 @@ import {
   type DashHabit,
   type DashLog,
 } from "@/lib/productivity/habitDashboard";
-import { todayYmdLocal } from "@/lib/productivity/productivity";
+import { todayInBogota } from "@/lib/finance/finance";
 import HabitCreateModal from "./HabitCreateModal";
 import HabitGrid, { type HabitGridRow } from "./HabitGrid";
 import WeeklyChart, { type HabitReportRow } from "./WeeklyChart";
@@ -265,7 +265,7 @@ function Skeleton({ className }: { className?: string }) {
 }
 
 export interface HabitsDashboardProps {
-  /** Test seam; defaults to the user's real local today. */
+  /** Test seam; defaults to today in America/Bogota (the server clock). */
   todayYmd?: string;
 }
 
@@ -280,7 +280,10 @@ export interface HabitsDashboardProps {
  */
 export default function HabitsDashboard({ todayYmd }: HabitsDashboardProps) {
   const { mutate } = useSWRConfig();
-  const today = todayYmd ?? todayYmdLocal();
+  // One clock with `/habits/today` and `TodayHabits`: the Bogota calendar
+  // day. The device clock would disagree for part of every day and could
+  // register a log the server considers future.
+  const today = todayYmd ?? todayInBogota();
   const currentMonth = today.slice(0, 7);
   // History is anchored to today (not the visible month), so its span stays
   // under the 366-day API cap no matter how far back the user navigates.

@@ -19,6 +19,14 @@ vi.mock("next/link", () => ({
     h("a", { href, ...rest }, children),
 }));
 
+// HabitsDashboard now takes its default day from the Bogota clock (S6), so
+// the harness pins that seam too; `todayYmdLocal` still feeds the create
+// modal's default start_date.
+vi.mock("@/lib/finance/finance", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/finance/finance")>();
+  return { ...actual, todayInBogota: () => "2026-09-15" };
+});
+
 vi.mock("@/lib/productivity/productivity", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/productivity/productivity")>();
   return { ...actual, todayYmdLocal: () => "2026-09-15" };
