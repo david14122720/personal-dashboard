@@ -62,7 +62,12 @@ const TASK_PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
 /// The four status-based views accepted by `GET /tasks?view=`.
 const TASK_VIEWS: &[&str] = &["today", "upcoming", "overdue", "done"];
 
-const CREATE_TASK_SQL: &str = "INSERT INTO tasks (user_id, title, description, priority, status, due_date, goal_id, category_id, sort_order) VALUES ($1,$2,$3,$4::task_priority,$5::task_status,$6,$7,$8,COALESCE($9,0)) RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
+/// New rows without an explicit `sort_order` append at the end of the user's
+/// list (`MAX(sort_order) + 1`, `0` for the first one). The subquery is scoped
+/// by `user_id=$1`, the same list the reads order, so ordering is per user.
+/// Two concurrent creates may derive the same value; `ORDER BY sort_order,
+/// created_at` keeps the rendered order deterministic in that case.
+const CREATE_TASK_SQL: &str = "INSERT INTO tasks (user_id, title, description, priority, status, due_date, goal_id, category_id, sort_order) VALUES ($1,$2,$3,$4::task_priority,$5::task_status,$6,$7,$8,COALESCE($9,(SELECT COALESCE(MAX(sort_order)+1,0) FROM tasks WHERE user_id=$1))) RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
 const LIST_TASKS_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 ORDER BY sort_order ASC, created_at ASC";
 const LIST_TASKS_TODAY_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date = $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
 const LIST_TASKS_UPCOMING_SQL: &str = "SELECT id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at FROM tasks WHERE user_id=$1 AND due_date > $2 AND completed_at IS NULL ORDER BY sort_order ASC, created_at ASC";
@@ -115,7 +120,8 @@ pub struct CreateTaskRequest {
     /// Optional link to an owned goal (foreign → 404, missing → 422).
     pub goal_id: Option<Uuid>,
     pub category_id: Option<Uuid>,
-    /// Ordering within the user's list (defaults to 0).
+    /// Ordering within the user's list; omitted → `MAX(sort_order) + 1`
+    /// (append at the end, `0` for the first task).
     pub sort_order: Option<i32>,
 }
 
@@ -133,7 +139,7 @@ pub struct PatchTaskRequest {
     /// Optional link to an owned goal (foreign → 404, missing → 422).
     pub goal_id: Option<Uuid>,
     pub category_id: Option<Uuid>,
-    /// Ordering within the user's list.
+    /// Ordering within the user's list; omitted → the stored value is kept.
     pub sort_order: Option<i32>,
 }
 
@@ -961,6 +967,14 @@ mod tests {
         Json(serde_json::from_value(json!({"title": title})).expect("valid task body"))
     }
 
+    fn task_body_with_order(title: &str, sort_order: Option<i32>) -> Json<CreateTaskRequest> {
+        let payload = match sort_order {
+            Some(order) => json!({"title": title, "sort_order": order}),
+            None => json!({"title": title}),
+        };
+        Json(serde_json::from_value(payload).expect("valid task body"))
+    }
+
     fn view_query(view: Option<&str>) -> Query<TaskViewQuery> {
         Query(TaskViewQuery {
             view: view.map(str::to_string),
@@ -1399,6 +1413,130 @@ mod tests {
         .await
         .expect_err("unowned category must be 422");
         assert_422(err);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    // -- S5: server-derived sort_order --
+
+    #[tokio::test]
+    async fn create_without_sort_order_appends_at_the_end() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP create_without_sort_order_appends_at_the_end: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, Json(first)) = create_task_handler(
+            State(state.clone()),
+            headers.clone(),
+            task_body_with_order("Primera", None),
+        )
+        .await
+        .expect("first create");
+        let (_, Json(second)) = create_task_handler(
+            State(state.clone()),
+            headers.clone(),
+            task_body_with_order("Segunda", None),
+        )
+        .await
+        .expect("second create");
+        assert_eq!(first.sort_order, 0);
+        assert_eq!(second.sort_order, 1);
+
+        let Json(listed) =
+            list_tasks_handler(State(state.clone()), headers.clone(), view_query(None))
+                .await
+                .expect("list tasks");
+        let TasksResponse::Full(rows) = listed else {
+            panic!("unfiltered list without shape must be the full variant");
+        };
+        assert_eq!(
+            rows.iter()
+                .map(|task| (task.title.as_str(), task.sort_order))
+                .collect::<Vec<_>>(),
+            vec![("Primera", 0), ("Segunda", 1)]
+        );
+
+        // The max is per user: another user's first default task starts at 0.
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let (_, Json(other)) = create_task_handler(
+            State(state_b),
+            headers_b,
+            task_body_with_order("Ajena", None),
+        )
+        .await
+        .expect("other user create");
+        assert_eq!(other.sort_order, 0);
+        cleanup_user(&pool, user_id).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    #[tokio::test]
+    async fn explicit_sort_order_is_accepted_and_the_next_default_follows_it() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP explicit_sort_order_is_accepted_and_the_next_default_follows_it: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, Json(explicit)) = create_task_handler(
+            State(state.clone()),
+            headers.clone(),
+            task_body_with_order("Explícita", Some(10)),
+        )
+        .await
+        .expect("explicit create");
+        assert_eq!(explicit.sort_order, 10);
+        let (_, Json(next)) = create_task_handler(
+            State(state.clone()),
+            headers.clone(),
+            task_body_with_order("Siguiente", None),
+        )
+        .await
+        .expect("default create");
+        assert_eq!(next.sort_order, 11);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn patch_without_sort_order_keeps_the_stored_value() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP patch_without_sort_order_keeps_the_stored_value: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let (_, Json(created)) = create_task_handler(
+            State(state.clone()),
+            headers.clone(),
+            task_body_with_order("Original", Some(7)),
+        )
+        .await
+        .expect("create with explicit order");
+        assert_eq!(created.sort_order, 7);
+
+        let Json(patched) = patch_task_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.id),
+            Json(
+                serde_json::from_value(json!({"title": "Renombrada"})).expect("valid patch"),
+            ),
+        )
+        .await
+        .expect("patch other fields");
+        assert_eq!(patched.title, "Renombrada");
+        assert_eq!(patched.sort_order, 7);
+
+        // An explicit sort_order on PATCH is still honoured.
+        let Json(resorted) = patch_task_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(created.id),
+            Json(serde_json::from_value(json!({"sort_order": 3})).expect("valid patch")),
+        )
+        .await
+        .expect("patch explicit sort_order");
+        assert_eq!(resorted.sort_order, 3);
         cleanup_user(&pool, user_id).await;
     }
 }

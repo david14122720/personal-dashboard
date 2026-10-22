@@ -494,6 +494,28 @@ pub fn validate_calendar_date(raw: &str, field: &'static str) -> Result<NaiveDat
         .map_err(|_| AppError::Validation(format!("{field} must be a calendar date YYYY-MM-DD")))
 }
 
+/// Parse and bound a log date: any calendar day up to the current Bogota day.
+///
+/// The upper bound compares two calendar dates (`NaiveDate`), never instants,
+/// so "today" stays writable until Bogota midnight regardless of the server
+/// timezone. There is deliberately no lower bound: backfilling history is
+/// legitimate.
+pub fn validate_log_date(raw: &str) -> Result<NaiveDate, AppError> {
+    validate_log_date_at(raw, today_bogota())
+}
+
+/// Pure seam for [`validate_log_date`] so tests inject the Bogota day instead
+/// of depending on the wall clock.
+fn validate_log_date_at(raw: &str, today: NaiveDate) -> Result<NaiveDate, AppError> {
+    let date = validate_calendar_date(raw, "log_date")?;
+    if date > today {
+        return Err(AppError::Validation(
+            "no se pueden registrar hábitos para fechas futuras".into(),
+        ));
+    }
+    Ok(date)
+}
+
 /// Validate `direction` against the `habit_direction` enum values (exact
 /// match after trimming), else 422.
 pub fn validate_direction(raw: &str) -> Result<String, AppError> {
@@ -897,7 +919,7 @@ pub async fn create_log_handler(
     Json(body): Json<CreateLogRequest>,
 ) -> Result<(StatusCode, Json<HabitLogResponse>), AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
-    let log_date = validate_calendar_date(&body.log_date, "log_date")?;
+    let log_date = validate_log_date(&body.log_date)?;
     let status = validate_log_status(&body.status)?;
     let count = validate_count(body.count_value.as_deref())?;
     validate_optional_text(body.notes.as_deref(), MAX_TEXT_LEN, "notes")?;
@@ -930,7 +952,7 @@ pub async fn patch_log_handler(
 ) -> Result<Json<HabitLogResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
     validate_log_patch(&body)?;
-    let log_date = validate_calendar_date(&raw_date, "log_date")?;
+    let log_date = validate_log_date(&raw_date)?;
     let status = match body.status.as_deref() {
         Some(raw) => Some(validate_log_status(raw)?),
         None => None,
@@ -961,7 +983,7 @@ pub async fn delete_log_handler(
     Path((habit_id, raw_date)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
-    let log_date = validate_calendar_date(&raw_date, "log_date")?;
+    let log_date = validate_log_date(&raw_date)?;
     ensure_habit_writable(&state.pool, habit_id, user_id).await?;
     sqlx::query(DELETE_LOG_SQL)
         .bind(habit_id)
@@ -1890,6 +1912,22 @@ mod tests {
         )
     }
 
+    /// `YYYY-MM-DD` for `today_bogota() + days`; the bound is computed with
+    /// the same production clock instead of hardcoding a date.
+    fn bogota_day_shifted(days: i64) -> String {
+        (today_bogota() + chrono::Duration::days(days))
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
+    async fn log_row_count(pool: &sqlx::PgPool, user_id: Uuid) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM habit_logs WHERE user_id=$1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("count logs")
+    }
+
     async fn seed_habit(pool: &sqlx::PgPool, user_id: Uuid) -> Uuid {
         sqlx::query_scalar(
             "INSERT INTO habits (user_id, name, direction) VALUES ($1,$2,'build') RETURNING id",
@@ -2432,6 +2470,133 @@ mod tests {
             !plan.contains("Seq Scan on habit_logs"),
             "streak must not sequential-scan habit_logs, got:\n{plan}"
         );
+        cleanup_user(&pool, user_id).await;
+    }
+
+    // -- S4: log_date upper bound (future dates are rejected) --
+
+    fn assert_future_date_422(err: AppError) {
+        match err {
+            AppError::Validation(msg) => assert_eq!(
+                msg,
+                "no se pueden registrar hábitos para fechas futuras"
+            ),
+            other => panic!("expected a future-date validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_date_bound_is_the_bogota_calendar_day_not_an_instant() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).expect("valid date");
+        // The Bogota day itself is the inclusive upper bound; backfill is open.
+        assert_eq!(validate_log_date_at("2026-09-15", today).unwrap(), today);
+        assert_eq!(
+            validate_log_date_at(" 2026-09-14 ", today).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 9, 14).expect("valid date")
+        );
+        // One calendar day later is already future (no time-of-day component).
+        for future in ["2026-09-16", "2026-12-31", "2027-01-01"] {
+            assert_future_date_422(validate_log_date_at(future, today).unwrap_err());
+        }
+        // Format errors keep the `validate_calendar_date` contract.
+        assert_422(validate_log_date_at("15/09/2026", today).unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn future_log_create_is_422_and_writes_no_row() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP future_log_create_is_422_and_writes_no_row: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let habit_id = seed_habit(&pool, user_id).await;
+        let tomorrow = bogota_day_shifted(1);
+        let err = create_log_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(habit_id),
+            log_body(&tomorrow, "done"),
+        )
+        .await
+        .expect_err("a future log date must be 422");
+        assert_future_date_422(err);
+        assert_eq!(log_row_count(&pool, user_id).await, 0);
+
+        // Boundary + past stay writable: the bound is calendar-based, so the
+        // Bogota "today" itself is accepted, as is any backfill.
+        for (offset, expected) in [(0_i64, StatusCode::CREATED), (-1, StatusCode::CREATED)] {
+            let (status, Json(row)) = create_log_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(habit_id),
+                log_body(&bogota_day_shifted(offset), "done"),
+            )
+            .await
+            .expect("today and past dates must stay writable");
+            assert_eq!(status, expected);
+            assert_eq!(row.log_date.to_string(), bogota_day_shifted(offset));
+        }
+        assert_eq!(log_row_count(&pool, user_id).await, 2);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn future_log_patch_and_delete_are_422_and_leave_the_row_untouched() {
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP future_log_patch_and_delete_are_422_and_leave_the_row_untouched: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let habit_id = seed_habit(&pool, user_id).await;
+        let today = bogota_day_shifted(0);
+        let (_, Json(created)) = create_log_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(habit_id),
+            log_body(&today, "done"),
+        )
+        .await
+        .expect("today log is 201");
+        assert_eq!(created.status, "done");
+
+        let tomorrow = bogota_day_shifted(1);
+        let err = patch_log_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path((habit_id, tomorrow.clone())),
+            Json(PatchLogRequest {
+                status: Some("missed".to_string()),
+                count_value: None,
+                notes: None,
+            }),
+        )
+        .await
+        .expect_err("a future log patch must be 422");
+        assert_future_date_422(err);
+        let err = delete_log_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path((habit_id, tomorrow)),
+        )
+        .await
+        .expect_err("a future log delete must be 422");
+        assert_future_date_422(err);
+
+        // The rejected writes left the existing log exactly as it was.
+        let stored: (String, i64) = sqlx::query_as(
+            "SELECT status::text, COUNT(*) OVER () FROM habit_logs WHERE habit_id=$1 AND user_id=$2 AND log_date=$3::date",
+        )
+        .bind(habit_id)
+        .bind(user_id)
+        .bind(&today)
+        .fetch_one(&pool)
+        .await
+        .expect("the today log still exists");
+        assert_eq!(stored.0, "done");
+        assert_eq!(stored.1, 1);
+        assert_eq!(log_row_count(&pool, user_id).await, 1);
         cleanup_user(&pool, user_id).await;
     }
 }
