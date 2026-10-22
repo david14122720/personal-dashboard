@@ -24,10 +24,19 @@ use crate::{
 const LOGIN_LOOKUP_SQL: &str =
     "SELECT id, password_hash, is_active FROM users WHERE email = $1::citext";
 
+/// Session lifetime when the "Recordarme" checkbox is checked (S5): three
+/// days, overriding the configured default of `SESSION_TTL_HOURS` (24h in
+/// production).
+pub const REMEMBER_ME_TTL_HOURS: i64 = 72;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    /// Optional "Recordarme" flag. `#[serde(default)]` keeps older clients
+    /// working: an omitted field means the default session TTL.
+    #[serde(default)]
+    pub remember_me: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,7 +185,15 @@ pub async fn login_handler(
 
     let token = tokens::generate_token();
     let token_hash = tokens::hash_token(&token);
-    let expires_at = Utc::now() + Duration::hours(state.session_ttl_hours as i64);
+    // S5: a checked "Recordarme" overrides the configured default (24h in
+    // production) with the 72h window; the flag is optional, so an older
+    // client that omits `remember_me` keeps the configured default.
+    let ttl_hours = if body.remember_me {
+        REMEMBER_ME_TTL_HOURS
+    } else {
+        state.session_ttl_hours as i64
+    };
+    let expires_at = Utc::now() + Duration::hours(ttl_hours);
 
     let ip_str = ip.to_string();
     sqlx::query(
@@ -250,6 +267,7 @@ mod tests {
         LoginRequest {
             email: "user@example.com".into(),
             password: "correct horse battery staple".into(),
+            remember_me: false,
         }
     }
 
@@ -403,6 +421,190 @@ mod tests {
             .expect("cleanup user");
     }
 
+    /// The throwaway fixture must not outlive its test: neither the user row
+    /// nor any session it owned (sessions cascade from `users(id)`) may remain
+    /// in production.
+    async fn assert_user_fully_deleted(pool: &sqlx::PgPool, user_id: uuid::Uuid) {
+        let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("count leftover users");
+        let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("count leftover sessions");
+        assert_eq!(
+            (users, sessions),
+            (0, 0),
+            "the throwaway user and its sessions must not outlive the test"
+        );
+    }
+
+    // -- S3/S5: the session TTL branch (default vs `Recordarme`) --
+
+    /// The production default is pinned through `SESSION_TTL_HOURS`; the TTL
+    /// tests configure `AppState` with this same value instead of a second
+    /// hard-coded copy, so the handler branch is what they exercise.
+    fn configured_ttl_hours() -> u64 {
+        std::env::var("SESSION_TTL_HOURS")
+            .expect("SESSION_TTL_HOURS must be sourced with DATABASE_URL")
+            .parse()
+            .expect("SESSION_TTL_HOURS must be an integer")
+    }
+
+    async fn seed_login_user(pool: &sqlx::PgPool, label: &str) -> (String, String, uuid::Uuid) {
+        let email = format!("login-{label}-{}@example.com", uuid::Uuid::new_v4());
+        let password = "correct horse battery staple".to_string();
+        let user_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, display_name) VALUES ($1,$2,$3) RETURNING id",
+        )
+        .bind(&email)
+        .bind(crate::auth::password::hash_password(&password).expect("hash password"))
+        .bind("login ttl test")
+        .fetch_one(pool)
+        .await
+        .expect("seed user");
+        (email, password, user_id)
+    }
+
+    /// A legacy client that omits `remember_me` must keep the default session:
+    /// the field is `#[serde(default)]`, not required and not denied.
+    #[test]
+    fn login_request_defaults_remember_me_to_false() {
+        let request: LoginRequest =
+            serde_json::from_str(r#"{"email":"user@example.com","password":"secret"}"#)
+                .expect("a login body without remember_me must deserialize");
+        assert!(
+            !request.remember_me,
+            "an omitted remember_me must mean the default TTL"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_login_expires_in_the_configured_ttl() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP default_login_expires_in_the_configured_ttl: no DATABASE_URL");
+            return;
+        };
+        let ttl_hours = configured_ttl_hours();
+        assert_eq!(
+            ttl_hours, 24,
+            "S3: the production default session must stay at 24h"
+        );
+        let (email, password, user_id) = seed_login_user(&pool, "ttl-default").await;
+        let limiter = Arc::new(LoginRateLimiter::with_trusted_proxies(Vec::new()));
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: ttl_hours,
+            rate_limiter: limiter,
+        };
+
+        let before = Utc::now();
+        let (_, Json(body)) = login_handler(
+            State(state),
+            PeerAddr(None),
+            HeaderMap::new(),
+            Json(LoginRequest {
+                email,
+                password,
+                remember_me: false,
+            }),
+        )
+        .await
+        .expect("login succeeds");
+        let after = Utc::now();
+
+        let expected = Duration::hours(ttl_hours as i64);
+        assert!(
+            body.expires_at >= before + expected && body.expires_at <= after + expected,
+            "an unchecked Recordarme must use the {ttl_hours}h configured TTL, got {}",
+            body.expires_at
+        );
+
+        // The observable rule is the stored session's validity, not just the
+        // echoed timestamp: the row the token authenticates against must carry
+        // the same expiry.
+        let stored: chrono::DateTime<Utc> =
+            sqlx::query_scalar("SELECT expires_at FROM sessions WHERE token_hash = $1")
+                .bind(crate::auth::tokens::hash_token(&body.token))
+                .fetch_one(&pool)
+                .await
+                .expect("read the session row");
+        // Postgres stores microseconds, so the echoed timestamp may differ
+        // from the row by sub-microsecond precision only.
+        let delta = stored - body.expires_at;
+        assert!(
+            delta < Duration::microseconds(1) && delta > Duration::microseconds(-1),
+            "the stored session expiry must match the response, delta {delta}"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        assert_user_fully_deleted(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    async fn remember_me_login_expires_in_72_hours() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP remember_me_login_expires_in_72_hours: no DATABASE_URL");
+            return;
+        };
+        assert_eq!(
+            REMEMBER_ME_TTL_HOURS, 72,
+            "S5: Recordarme must extend the session to exactly 3 days"
+        );
+        let ttl_hours = configured_ttl_hours();
+        let (email, password, user_id) = seed_login_user(&pool, "ttl-remember").await;
+        let limiter = Arc::new(LoginRateLimiter::with_trusted_proxies(Vec::new()));
+        // The state still carries the short default: remembering must override
+        // it, not inherit it.
+        let state = AppState {
+            pool: pool.clone(),
+            session_ttl_hours: ttl_hours,
+            rate_limiter: limiter,
+        };
+
+        let before = Utc::now();
+        let (_, Json(body)) = login_handler(
+            State(state),
+            PeerAddr(None),
+            HeaderMap::new(),
+            Json(LoginRequest {
+                email,
+                password,
+                remember_me: true,
+            }),
+        )
+        .await
+        .expect("login succeeds");
+        let after = Utc::now();
+
+        let expected = Duration::hours(REMEMBER_ME_TTL_HOURS);
+        assert!(
+            body.expires_at >= before + expected && body.expires_at <= after + expected,
+            "a checked Recordarme must use the {REMEMBER_ME_TTL_HOURS}h TTL, got {}",
+            body.expires_at
+        );
+
+        let stored: chrono::DateTime<Utc> =
+            sqlx::query_scalar("SELECT expires_at FROM sessions WHERE token_hash = $1")
+                .bind(crate::auth::tokens::hash_token(&body.token))
+                .fetch_one(&pool)
+                .await
+                .expect("read the session row");
+        // Postgres stores microseconds, so the echoed timestamp may differ
+        // from the row by sub-microsecond precision only.
+        let delta = stored - body.expires_at;
+        assert!(
+            delta < Duration::microseconds(1) && delta > Duration::microseconds(-1),
+            "the stored session expiry must match the response, delta {delta}"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        assert_user_fully_deleted(&pool, user_id).await;
+    }
+
     #[tokio::test]
     async fn peers_get_independent_buckets_and_rotating_xff_never_creates_one() {
         // Two peers, an empty trusted set: each bucket is keyed by the peer
@@ -541,6 +743,7 @@ mod tests {
             Json(LoginRequest {
                 email: "   ".into(),
                 password: "x".into(),
+                remember_me: false,
             }),
         )
         .await;
@@ -591,18 +794,22 @@ mod tests {
             LoginRequest {
                 email: "".into(),
                 password: "x".into(),
+                remember_me: false,
             },
             LoginRequest {
                 email: "user@example.com".into(),
                 password: "".into(),
+                remember_me: false,
             },
             LoginRequest {
                 email: format!("{}@example.com", "a".repeat(320)),
                 password: "x".into(),
+                remember_me: false,
             },
             LoginRequest {
                 email: "user@example.com".into(),
                 password: "p".repeat(1025),
+                remember_me: false,
             },
         ];
         for body in cases {
@@ -679,7 +886,11 @@ mod tests {
                 State(state.clone()),
                 PeerAddr(None),
                 HeaderMap::new(),
-                Json(LoginRequest { email, password }),
+                Json(LoginRequest {
+                    email,
+                    password,
+                    remember_me: false,
+                }),
             )
         };
 
@@ -746,6 +957,7 @@ mod tests {
             Json(LoginRequest {
                 email,
                 password: password.into(),
+                remember_me: false,
             }),
         )
         .await
@@ -795,6 +1007,7 @@ mod tests {
             Json(LoginRequest {
                 email: email.clone(),
                 password: password.into(),
+                remember_me: false,
             }),
         )
         .await;
@@ -838,6 +1051,7 @@ mod tests {
         let body = LoginRequest {
             email: email.clone(),
             password: password.into(),
+            remember_me: false,
         };
 
         for attempt in 0..2 {
@@ -897,6 +1111,7 @@ mod tests {
             Json(LoginRequest {
                 email: email.clone(),
                 password: "wrong-password".into(),
+                remember_me: false,
             }),
         )
         .await;
@@ -910,6 +1125,7 @@ mod tests {
             Json(LoginRequest {
                 email: unknown.clone(),
                 password: "whatever".into(),
+                remember_me: false,
             }),
         )
         .await;
