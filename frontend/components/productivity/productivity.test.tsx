@@ -720,6 +720,11 @@ describe("productivity KPI row (T5a, real data only)", () => {
   });
 
   it("shows the next real events under their own date once today's have ended", async () => {
+    // Pin local 15:00 so `now ± N hours` never crosses midnight: with the real
+    // clock this fixture produced yesterday's event between 00:00 and 02:59
+    // local (CI runs in UTC), silently emptying today's rows.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 22, 15, 0, 0)); // local 15:00 Thu 2026-10-22
     const ended = {
       id: "e-ended",
       title: "Ya terminó",
