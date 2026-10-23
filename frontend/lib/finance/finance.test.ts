@@ -7,6 +7,7 @@ import {
   currentPeriodRange,
   normalizeManualAmount,
   toAccountCards,
+  toAccountTrend,
   toCategoryMovementTotals,
   toCategoryTrend,
   toExpenseByCategory,
@@ -317,6 +318,97 @@ describe("toCategoryTrend", () => {
     expect(years.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
 
     const weeks = toCategoryTrend([], { ...TREND_BASE, period: "week", now, buckets: 2 });
+    expect(weeks.map((b) => b.bucket)).toEqual(["2026-W39", "2026-W40"]);
+  });
+});
+
+// -- W4: tendencia por cuenta (molde de toCategoryTrend, filtro account_id) --
+describe("toAccountTrend", () => {
+  const now = new Date(2026, 9, 3, 12, 0, 0); // sábado 3 de octubre de 2026
+  // a2 shares the user currency: only the account filter can exclude it.
+  const accounts = new Map([
+    ["a1", "COP"],
+    ["a2", "COP"],
+    ["usd1", "USD"],
+  ]);
+  const base = {
+    accountId: "a1",
+    currencyByAccountId: accounts,
+    userCurrency: "COP",
+  } as const;
+
+  it("devuelve siempre N buckets y deja los vacíos en 0/0", () => {
+    const buckets = toAccountTrend([trendMovement()], { ...base, period: "day", now });
+    expect(buckets).toHaveLength(14);
+    expect(buckets[13]).toMatchObject({ bucket: "2026-10-03", expense: 100, income: 0 });
+    expect(buckets.slice(0, 13).every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+  });
+
+  it("filtra la cuenta exacta: excluye movimientos de otras cuentas", () => {
+    const buckets = toAccountTrend(
+      [
+        trendMovement({ id: "mine", account_id: "a1", amount: "100.00" }),
+        trendMovement({ id: "other", account_id: "a2", amount: "999.00" }),
+        trendMovement({ id: "other-income", account_id: "a2", direction: "income", amount: "888.00" }),
+      ],
+      { ...base, period: "day", now },
+    );
+    expect(buckets[13]).toMatchObject({ expense: 100, income: 0 });
+    expect(buckets.reduce((sum, b) => sum + b.expense + b.income, 0)).toBe(100);
+  });
+
+  it("acumula gasto e ingreso por separado en el mismo bucket (nunca netea)", () => {
+    const buckets = toAccountTrend(
+      [
+        trendMovement({ id: "e1", direction: "expense", amount: "25000.00" }),
+        trendMovement({ id: "i1", direction: "income", amount: "40000.00" }),
+      ],
+      { ...base, period: "day", now },
+    );
+    expect(buckets[13]).toMatchObject({ expense: 25000, income: 40000 });
+    expect(Object.keys(buckets[13]).sort()).toEqual(["bucket", "expense", "income", "label"]);
+  });
+
+  it("excluye transferencias: no son gasto ni ingreso de ninguna cuenta", () => {
+    const buckets = toAccountTrend(
+      [
+        trendMovement({ id: "t1", direction: "transfer", amount: "999.00", transfer_account_id: "a2" }),
+        trendMovement({ id: "t2", direction: "transfer", account_id: "a2", amount: "777.00", transfer_account_id: "a1" }),
+      ],
+      { ...base, period: "day", now },
+    );
+    expect(buckets.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+  });
+
+  it("aplica la regla de una sola moneda de toCategoryTrend (sin convertir)", () => {
+    const usd = toAccountTrend(
+      [trendMovement({ id: "usd", account_id: "usd1", amount: "999.00" })],
+      { ...base, accountId: "usd1", period: "day", now },
+    );
+    expect(usd.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+
+    const unknown = toAccountTrend(
+      [trendMovement({ id: "ghost", account_id: "ghost", amount: "555.00" })],
+      { ...base, accountId: "ghost", period: "day", now },
+    );
+    expect(unknown.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+  });
+
+  it("no desplaza el día por parsear la fecha como UTC (primero del mes)", () => {
+    const buckets = toAccountTrend(
+      [trendMovement({ occurred_on: "2026-10-01", amount: "500.00" })],
+      { ...base, period: "month", now },
+    );
+    expect(buckets[11]).toMatchObject({ bucket: "2026-10", expense: 500 });
+    expect(buckets[10].expense).toBe(0);
+  });
+
+  it("tolera payload indefinido o vacío y mantiene los N buckets en cero", () => {
+    const years = toAccountTrend(undefined, { ...base, period: "year", now });
+    expect(years).toHaveLength(5);
+    expect(years.every((b) => b.expense === 0 && b.income === 0)).toBe(true);
+
+    const weeks = toAccountTrend([], { ...base, period: "week", now, buckets: 2 });
     expect(weeks.map((b) => b.bucket)).toEqual(["2026-W39", "2026-W40"]);
   });
 });

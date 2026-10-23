@@ -29,7 +29,7 @@ const selectClass =
   "min-h-11 w-full rounded-lg border border-hair bg-card px-3 text-xs text-instrument transition-colors focus:border-signal focus:outline-none focus:ring-2 focus:ring-signal/30";
 
 /** Real period range of the current buckets (`YYYY-MM-DD` bounds, inclusive). */
-function trendRangeLabel(
+export function trendRangeLabel(
   period: TrendPeriod,
   locale: string,
   now?: Date,

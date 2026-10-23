@@ -53,6 +53,7 @@ import {
 } from "@/components/finance/MovementForms";
 import { MovementHistory } from "@/components/finance/MovementHistory";
 import { CategoryChartSection } from "@/components/finance/CategoryCharts";
+import { AccountChartSection } from "@/components/finance/AccountCharts";
 import { AssetEditForm, AssetValuationForm } from "@/components/finance/AssetForms";
 
 /**
@@ -747,6 +748,14 @@ export default function FinanceScreens() {
                   locale={locale}
                   currency={currency}
                 />
+              </div>
+
+              {/* Mobile (<lg): both wrappers share order-2, so the DOM tie
+                  breakers keep categories -> account -> movements(3). At lg
+                  the right column stack already puts this card right below
+                  the categories block. */}
+              <div className="max-lg:order-2" data-finance-account-chart>
+                <AccountChartSection locale={locale} currency={currency} />
               </div>
 
               <div className="max-lg:order-5">

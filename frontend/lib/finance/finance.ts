@@ -604,6 +604,46 @@ export function toCategoryTrend(
   });
 }
 
+/** One account's movements split into the N period buckets. Exact mold of
+ * `toCategoryTrend` with the account filter: transfers are never expense nor
+ * income, the single-currency rule is identical (accounts missing from the
+ * map are excluded, never converted), expense and income are kept separate
+ * (never netted) and every bucket is returned, empty ones as 0/0 so the trend
+ * has no gaps. */
+export function toAccountTrend(
+  movements: MovementWire[] | undefined,
+  opts: {
+    accountId: string;
+    period: TrendPeriod;
+    currencyByAccountId: Map<string, string>;
+    userCurrency: string;
+    now?: Date;
+    buckets?: number;
+  },
+): TrendBucket[] {
+  const windows = trendBuckets(opts.period, opts.now, opts.buckets);
+  const totals = new Map<string, { expense: number; income: number }>(
+    windows.map((w) => [w.key, { expense: 0, income: 0 }]),
+  );
+  for (const m of movements ?? []) {
+    // D2.6 #2: a transfer never lands in the `ingreso` series (nor expense).
+    if (m.direction === "transfer") continue;
+    if (m.account_id !== opts.accountId) continue;
+    if (!isUserCurrencyMovement(m, opts.currencyByAccountId, opts.userCurrency)) continue;
+    const window = windows.find((w) => w.from <= m.occurred_on && m.occurred_on <= w.to);
+    if (!window) continue;
+    const total = totals.get(window.key)!;
+    const amount = toNumber(m.amount);
+    if (m.direction === "expense") total.expense += amount;
+    else if (m.direction === "income") total.income += amount;
+    // No default arm: an unknown direction never becomes income.
+  }
+  return windows.map((w) => {
+    const total = totals.get(w.key)!;
+    return { bucket: w.key, label: w.label, expense: total.expense, income: total.income };
+  });
+}
+
 /** LEGACY ORACLE (S1/T5): no runtime consumer fetches the ledger to bucket it
  * anymore — `TotalTrendSection` renders `toSummaryTrend`. Kept because its
  * unit tests and the differential pin in `ExpensePieSection.test.tsx` compare

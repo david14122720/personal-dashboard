@@ -118,3 +118,53 @@ describe("FinanceScreens cycle KPI (S1 summary)", () => {
     expect(mock.movements).toHaveBeenCalled();
   });
 });
+
+describe("AccountChartSection clamp (S1)", () => {
+  it("renderiza el bloque de cuentas exactamente debajo del de categorías", () => {
+    render(<FinanceScreens />);
+    const categories = screen.getByRole("region", { name: "Gastos e ingresos por categoría" });
+    const accounts = screen.getByRole("region", { name: "Gastos e ingresos por cuenta" });
+    // DOM order: the account block follows the categories block, so both the
+    // desktop column and the mobile `order-*` sequence keep them adjacent.
+    expect(
+      categories.compareDocumentPosition(accounts) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("en móvil el orden aplanado es categorías → cuentas, nunca con el ledger en medio", () => {
+    render(<FinanceScreens />);
+    const categories = screen.getByRole("region", { name: "Gastos e ingresos por categoría" });
+    const accounts = screen.getByRole("region", { name: "Gastos e ingresos por cuenta" });
+    // css (order property) is jsdom-invisible; pin the computed-order contract
+    // instead: both wrappers carry `max-lg:order-2` and the account wrapper is
+    // the categories wrapper's immediate next sibling, so the order-2 tie
+    // resolves categories -> account (the movements ledger stays order-3).
+    const catWrap = categories.closest('[class*="max-lg:order-2"]');
+    const accWrap = accounts.closest('[data-finance-account-chart]');
+    expect(catWrap).not.toBeNull();
+    expect(accWrap).not.toBeNull();
+    expect(catWrap!.getAttribute("class")).toContain("max-lg:order-2");
+    expect(accWrap!.getAttribute("class")).toContain("max-lg:order-2");
+    expect(catWrap!.nextElementSibling).toBe(accWrap);
+  });
+
+  it("conserva el bloque de categorías: selector, píldoras y link Comparar", () => {
+    render(<FinanceScreens />);
+    const categories = screen.getByRole("region", { name: "Gastos e ingresos por categoría" });
+    expect(within(categories).getByLabelText("Categoría")).toBeInTheDocument();
+    expect(within(categories).getByRole("radio", { name: "Mes" })).toBeChecked();
+    expect(
+      within(categories).getByRole("link", { name: "Comparar categorías de gasto" }),
+    ).toBeInTheDocument();
+    expect(within(categories).getByRole("status")).toHaveTextContent(
+      "Sin movimientos en esta categoría aún",
+    );
+  });
+
+  it("el selector Cuenta lista dinámicamente las cuentas del usuario (S4)", () => {
+    render(<FinanceScreens />);
+    const accounts = screen.getByRole("region", { name: "Gastos e ingresos por cuenta" });
+    const select = within(accounts).getByLabelText("Cuenta");
+    expect(within(select).getByRole("option", { name: "Billetera" })).toBeInTheDocument();
+  });
+});

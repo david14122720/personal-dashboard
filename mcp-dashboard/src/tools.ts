@@ -139,7 +139,69 @@ const AddIncomeSchema = z.object({
   category_id: uuid,
 });
 
-const ListMovementsSchema = z.object({});
+// --- list_movements filters (T4 / S6) ---
+// Account filtering is client-side on purpose: the backend has no
+// account/category filter on GET /movements (only the occurred_on range).
+// from/to travel as query params and are applied server-side.
+
+/**
+ * Keep only the movements belonging to `accountId`. `null` means "no
+ * account filter" and returns a copy of the whole input, so callers never
+ * mutate the fetched payload. Pure: no I/O, no mutation.
+ *
+ * A transfer stores its origin in `account_id` and its destination in
+ * `transfer_account_id`, so it counts for the origin account only — the
+ * same rule the finance account chart applies.
+ */
+export function filterMovementsByAccount<T extends { account_id?: unknown }>(
+  movements: readonly T[],
+  accountId: string | null,
+): T[] {
+  if (accountId === null) return [...movements];
+  // Zod accepts uppercase UUIDs (the RFC format is case-insensitive) but the
+  // backend serializes `account_id` lowercase (`uuid` crate), so both sides
+  // normalize to lowercase — otherwise a valid uppercase id would fetch the
+  // unfiltered list and silently answer with zero movements.
+  const wanted = accountId.toLowerCase();
+  return movements.filter(
+    (movement) => String(movement.account_id).toLowerCase() === wanted,
+  );
+}
+
+/**
+ * Resolve an exact, case-sensitive account name to its UUID from the owned
+ * non-archived accounts returned by GET /accounts. An unknown name is a
+ * validation error, never a silent empty result. Pure: no I/O.
+ */
+export function resolveAccountIdByName(
+  accounts: readonly { id: string; name: string }[],
+  accountName: string,
+): string {
+  const match = accounts.find((account) => account.name === accountName);
+  if (!match) {
+    throw new Error(
+      `unknown account_name "${accountName}": no owned non-archived account has that exact name (call list_accounts to see valid names)`,
+    );
+  }
+  return match.id;
+}
+
+const ListMovementsSchema = z
+  .object({
+    account_id: optionalUuid,
+    account_name: z.string().min(1).max(200).optional(),
+    from: CalendarDate.optional(),
+    to: CalendarDate.optional(),
+  })
+  .refine((args) => !(args.account_id !== undefined && args.account_name !== undefined), {
+    message: "account_id and account_name are mutually exclusive: pass at most one",
+  })
+  .refine((args) => (args.from === undefined) === (args.to === undefined), {
+    message: "from and to must be provided together (YYYY-MM-DD)",
+  })
+  .refine((args) => args.from === undefined || args.to === undefined || args.from <= args.to, {
+    message: "to must be after from",
+  });
 
 const GetMovementSchema = z.object({ id: uuid });
 
@@ -481,11 +543,47 @@ const entries: ToolEntry[] = [
     def: {
       name: "list_movements",
       description:
-        "GET /api/movements. Lists all movements (expenses, income and transfers) ordered by date descending. No filters server-side: fetch then filter client-side for charts or summaries.",
-      inputSchema: { type: "object", properties: {} },
+        "GET /api/movements. Lists movements (expenses, income and transfers) ordered by date descending. Optional filters: account_id (owned account UUID) or account_name (exact, case-sensitive name of an owned non-archived account; mutually exclusive with account_id, and an unknown name is a validation error) restrict the result to one account; from/to (YYYY-MM-DD, inclusive, both together) bound the occurred_on range server-side. Account filtering is client-side over the fetched payload on the movement's account_id (a transfer counts for its origin account only). No other filters server-side: fetch then filter client-side for charts or summaries. With no arguments it returns the full unfiltered list, exactly as before.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          account_id: optStrProp("Owned account UUID; mutually exclusive with account_name"),
+          account_name: optStrProp(
+            "Exact owned non-archived account name (case-sensitive); mutually exclusive with account_id",
+          ),
+          from: optStrProp("Inclusive start date YYYY-MM-DD; requires to"),
+          to: optStrProp("Inclusive end date YYYY-MM-DD; requires from"),
+        },
+      },
     },
     schema: ListMovementsSchema,
-    run: async (_args, token) => fmt(await apiGet("/movements", undefined, token)),
+    run: async (args, token) => {
+      const query =
+        args.from !== undefined && args.to !== undefined
+          ? { from: args.from, to: args.to }
+          : undefined;
+      // Resolve the name first: an unknown account_name must fail before the
+      // movements request, never degrade to an unfiltered (or empty) list.
+      const accountId: string | null =
+        args.account_id !== undefined
+          ? args.account_id
+          : args.account_name !== undefined
+            ? resolveAccountIdByName(
+                await apiGet<Array<{ id: string; name: string }>>(
+                  "/accounts",
+                  undefined,
+                  token,
+                ),
+                args.account_name,
+              )
+            : null;
+      const movements = await apiGet<Array<{ account_id?: unknown }>>(
+        "/movements",
+        query,
+        token,
+      );
+      return fmt(filterMovementsByAccount(movements, accountId));
+    },
   },
   {
     def: {
