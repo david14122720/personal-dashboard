@@ -64,30 +64,6 @@ function ArrowIcon({ className }: { className?: string }) {
   );
 }
 
-/** Brand hexagon (login-desktop.html:62-66), drawn in the repo icon style (D3). */
-function HexagonIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      <polygon
-        points="12 2 2 7 2 17 12 22 22 17 22 7 12 2"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <line x1="12" x2="12" y1="22" y2="15.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <polyline
-        points="22 7 12 12.5 2 7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="12" cy="12" r="2.5" fill="currentColor" />
-    </svg>
-  );
-}
-
 function ShieldIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
@@ -147,7 +123,7 @@ export default function LoginPage() {
             <div className="mb-5 flex items-center">
               <span aria-hidden="true" className={deck.loginLogoTile}>
                 <span className={deck.loginLogoGlow} />
-                <HexagonIcon className="relative h-6 w-6 text-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,0.6)]" />
+                <img src="/logo.svg" alt="Control Deck" className="relative h-8 w-8" />
               </span>
             </div>
             <div className="flex flex-wrap items-baseline gap-2.5">

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" class="w-full h-full">
+    <defs>
+        <linearGradient id="hexGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#00f2fe"></stop>
+            <stop offset="100%" stop-color="#0066ff"></stop>
+        </linearGradient>
+        <linearGradient id="hexGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#10b981"></stop>
+            <stop offset="100%" stop-color="#059669"></stop>
+        </linearGradient>
+    </defs>
+    <!-- Hex Outer Frame -->
+    <path d="M50 8 L87 29 L87 71 L50 92 L13 71 L13 29 Z" fill="none" stroke="url(#hexGrad1)" stroke-width="4" stroke-linejoin="round"></path>
+    <!-- Inner Deck Layers -->
+    <path d="M50 24 L73 37 L50 50 L27 37 Z" fill="url(#hexGrad1)" opacity="0.9"></path>
+    <path d="M50 54 L73 41 L73 53 L50 66 L27 53 L27 41 Z" fill="url(#hexGrad1)" opacity="0.6"></path>
+    <path d="M50 70 L73 57 L73 69 L50 82 L27 69 L27 57 Z" fill="url(#hexGrad2)" opacity="0.85"></path>
+    <!-- Pulse Node -->
+    <circle cx="50" cy="50" r="4" fill="#ffffff"></circle>
+</svg>

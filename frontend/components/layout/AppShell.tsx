@@ -107,26 +107,6 @@ function LogoutIcon({ className }: IconProps) {
   );
 }
 
-/** Brand cube: the design's package glyph, drawn in the repo icon style. */
-function CubeIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
-      <path
-        d="M10 2.6l6 3.3v7.9l-6 3.3-6-3.3V5.9l6-3.3z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 6l6 3.3L16 6M10 9.3V17"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function CalendarIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
@@ -424,7 +404,7 @@ function MobileChrome() {
         <div className="flex h-14 items-center justify-between gap-2 px-4">
           <div className="flex min-w-0 items-center gap-2">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-sky-500/30 bg-sky-500/10 text-signal">
-              <CubeIcon className="h-4 w-4" />
+              <img src="/logo.svg" alt="" className="h-5 w-5" />
             </span>
             <span className="flex min-w-0 items-baseline gap-1.5">
               <span className="truncate text-headline-md tracking-tight">
@@ -511,7 +491,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex flex-col">
             <div className="flex h-16 items-center gap-3 border-b border-hair px-6">
               <span className="glow-cyan-sm flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10 text-sky-400">
-                <CubeIcon className="h-5 w-5" />
+                {/* Official brand asset; the square tile keeps the 1:1 ratio. */}
+                <img src="/logo.svg" alt="" className="h-6 w-6" />
               </span>
               <div className="min-w-0">
                 <p className="flex items-center gap-1.5 text-base font-bold tracking-tight">

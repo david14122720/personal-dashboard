@@ -295,3 +295,24 @@ describe("AppShell top bar", () => {
     expect(within(main).getByTestId("child")).toBeInTheDocument();
   });
 });
+
+describe("AppShell brand logo", () => {
+  it("renders the official Control Deck logo at 1:1 in the rail brand and the mobile header", () => {
+    const { container } = renderShell();
+
+    const logos = container.querySelectorAll('img[src="/logo.svg"]');
+    expect(logos).toHaveLength(2);
+    for (const logo of logos) {
+      expect(logo.getAttribute("alt")).toBe("");
+      // Aspect-ratio 1:1 containers: identical height and width sizing classes.
+      const size = RegExp(/\bh-(\d+(?:\.\d+)?)\s+w-\1\b/).exec(logo.className);
+      expect(size).not.toBeNull();
+    }
+    // Both tiles are square (h-N w-N) and exactly one keeps the rail glow.
+    const tiles = Array.from(logos, (logo) => logo.parentElement!);
+    for (const tile of tiles) {
+      expect(/\bh-(\d+(?:\.\d+)?)\s+w-\1\b/.test(tile.className)).toBe(true);
+    }
+    expect(tiles.filter((tile) => tile.classList.contains("glow-cyan-sm"))).toHaveLength(1);
+  });
+});

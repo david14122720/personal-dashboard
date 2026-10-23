@@ -161,3 +161,16 @@ describe("login screen control deck visuals", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("login screen brand logo", () => {
+  it("renders the official logo inside the square glow tile", () => {
+    const { container } = render(<LoginPage />);
+
+    const logo = container.querySelector('img[src="/logo.svg"]');
+    expect(logo).not.toBeNull();
+    expect(logo!.getAttribute("alt")).toBe("Control Deck");
+    // Aspect-ratio 1:1 container (h-12 w-12 glow tile).
+    expect(logo!.parentElement).toHaveClass("h-12");
+    expect(logo!.parentElement).toHaveClass("w-12");
+  });
+});

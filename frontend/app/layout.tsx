@@ -50,6 +50,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="es" className={`${display.variable} ${body.variable} ${mono.variable} ${deckDisplay.variable}`}>
       <head>
+        {/* Official Control Deck favicon (vector, Hex Cyber-Deck). Explicit
+            link because the `app/favicon` convention only accepts .ico. */}
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
         <script dangerouslySetInnerHTML={{ __html: FOUC_GUARD }} />
       </head>
       <body>{children}</body>
