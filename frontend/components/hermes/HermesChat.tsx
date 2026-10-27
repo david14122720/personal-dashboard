@@ -2,14 +2,39 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import ArtifactCard from "@/components/hermes/ArtifactCard";
+import AttachmentBar from "@/components/hermes/AttachmentBar";
 import HermesMarkdown from "@/components/hermes/HermesMarkdown";
-import { HermesError, type HermesErrorCode, sendHermesMessage } from "@/lib/api/hermes";
+import MicButton from "@/components/hermes/MicButton";
+import { HermesError, type HermesErrorCode, sendHermesTurn } from "@/lib/api/hermes";
+import { collectArtifacts, type Artifact } from "@/lib/hermes/artifacts";
+import {
+  planAttachments,
+  releaseAttachment,
+  type AttachmentKind,
+  type AttachmentRejection,
+  type PendingAttachment,
+} from "@/lib/hermes/attachments";
 import { loadOrCreateSessionId, newSessionId, saveSessionId } from "@/lib/hermes/session";
 import { t } from "@/lib/i18n";
 
+interface SentAttachment {
+  name: string;
+  size: number;
+  kind: AttachmentKind;
+}
+
 type Bubble =
-  | { id: number; role: "user" | "assistant"; content: string }
-  | { id: number; role: "error"; code: HermesErrorCode; retryContent: string };
+  | { id: number; role: "user"; content: string; attachments: SentAttachment[] }
+  | { id: number; role: "assistant"; content: string; artifacts: Artifact[]; warnings: string[] }
+  | {
+      id: number;
+      role: "error";
+      code: HermesErrorCode;
+      retryContent: string;
+      retryFiles: File[];
+      retryIds: string[];
+    };
 
 let nextBubbleId = 1;
 function bubbleId(): number {
@@ -28,6 +53,10 @@ function errorKey(code: HermesErrorCode) {
       return "hermes.errorSessionExpired" as const;
     case "too_long":
       return "hermes.errorTooLong" as const;
+    case "too_large":
+      return "hermes.errorTooLarge" as const;
+    case "too_many_attachments":
+      return "hermes.errorTooManyAttachmentsServer" as const;
     case "unavailable":
       return "hermes.errorUnavailable" as const;
     case "network":
@@ -39,14 +68,31 @@ function errorKey(code: HermesErrorCode) {
   }
 }
 
+function rejectionKey(code: AttachmentRejection) {
+  switch (code) {
+    case "too_many":
+      return "hermes.errorTooManyAttachments" as const;
+    case "file_too_large":
+      return "hermes.errorFileTooLarge" as const;
+    default:
+      return "hermes.errorTotalTooLarge" as const;
+  }
+}
+
 export default function HermesChat() {
   const router = useRouter();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
   const logRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentsRef = useRef<PendingAttachment[]>([]);
+  attachmentsRef.current = attachments;
 
   // Recover or mint the UUID after mount: the static export prerenders this
   // page, and localStorage does not exist on the server.
@@ -59,18 +105,88 @@ export default function HermesChat() {
     if (log) log.scrollTop = log.scrollHeight;
   }, [messages, sending]);
 
-  async function request(content: string) {
+  // Object URLs live only while the chip does.
+  useEffect(
+    () => () => {
+      attachmentsRef.current.forEach(releaseAttachment);
+    },
+    [],
+  );
+
+  function clearAttachments() {
+    attachmentsRef.current.forEach(releaseAttachment);
+    setAttachments([]);
+  }
+
+  /** Drop only the chips that travelled with the successful turn. */
+  function clearSentAttachments(ids: readonly string[]) {
+    if (ids.length === 0) return;
+    const sent = new Set(ids);
+    setAttachments((prev) => {
+      const keep: PendingAttachment[] = [];
+      prev.forEach((item) => {
+        if (sent.has(item.id)) releaseAttachment(item);
+        else keep.push(item);
+      });
+      return keep;
+    });
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (target) releaseAttachment(target);
+      return prev.filter((item) => item.id !== id);
+    });
+  }
+
+  function addFiles(files: File[]) {
+    if (files.length === 0) return;
+    const { accepted, rejection } = planAttachments(attachmentsRef.current, files);
+    if (accepted.length > 0) {
+      setAttachments((prev) => [...prev, ...accepted]);
+    }
+    if (rejection) {
+      setNotice(
+        t(rejectionKey(rejection.code), {
+          name: rejection.filename ?? "",
+        }),
+      );
+    } else {
+      setNotice(null);
+    }
+  }
+
+  async function request(content: string, files: File[], sentIds: readonly string[]) {
     if (!sessionId) return;
     setSending(true);
     try {
-      const reply = await sendHermesMessage(sessionId, content);
-      setMessages((prev) => [...prev, { id: bubbleId(), role: "assistant", content: reply }]);
+      const result = await sendHermesTurn(sessionId, { content, files });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: bubbleId(),
+          role: "assistant",
+          content: result.reply,
+          artifacts: collectArtifacts(result.reply, result.artifacts),
+          warnings: result.warnings,
+        },
+      ]);
+      clearSentAttachments(sentIds);
+      setNotice(null);
     } catch (error) {
       const code = error instanceof HermesError ? error.code : "network";
       if (code === "session_expired") router.replace("/login/");
       setMessages((prev) => [
         ...prev,
-        { id: bubbleId(), role: "error", code, retryContent: content },
+        {
+          id: bubbleId(),
+          role: "error",
+          code,
+          retryContent: content,
+          retryFiles: files,
+          retryIds: [...sentIds],
+        },
       ]);
     } finally {
       setSending(false);
@@ -79,10 +195,23 @@ export default function HermesChat() {
 
   function submit() {
     const content = input.trim();
-    if (!content || sending || !sessionId) return;
-    setMessages((prev) => [...prev, { id: bubbleId(), role: "user", content }]);
+    const pending = attachmentsRef.current;
+    if ((!content && pending.length === 0) || sending || !sessionId) return;
+    const sentAttachment = pending.map<SentAttachment>((item) => ({
+      name: item.file.name,
+      size: item.file.size,
+      kind: item.kind,
+    }));
+    setMessages((prev) => [
+      ...prev,
+      { id: bubbleId(), role: "user", content, attachments: sentAttachment },
+    ]);
     setInput("");
-    void request(content);
+    void request(
+      content,
+      pending.map((item) => item.file),
+      pending.map((item) => item.id),
+    );
     inputRef.current?.focus();
   }
 
@@ -90,7 +219,7 @@ export default function HermesChat() {
     if (sending) return;
     setMessages((prev) => prev.filter((bubble) => bubble.id !== message.id));
     inputRef.current?.focus();
-    void request(message.retryContent);
+    void request(message.retryContent, message.retryFiles, message.retryIds);
   }
 
   function startNewConversation() {
@@ -100,11 +229,37 @@ export default function HermesChat() {
     setSessionId(id);
     setMessages([]);
     setInput("");
+    clearAttachments();
+    setNotice(null);
     inputRef.current?.focus();
   }
 
+  const canSend = !sending && Boolean(sessionId) && (input.trim().length > 0 || attachments.length > 0);
+
   return (
-    <section className="flex h-[calc(100dvh-16rem)] min-h-[24rem] flex-col overflow-hidden rounded-xl border border-hair bg-panel md:h-[calc(100dvh-7.5rem)]">
+    <section
+      data-testid="hermes-dropzone"
+      onDragOver={(event) => {
+        if (sending) return;
+        if (event.dataTransfer?.types?.includes("Files")) {
+          event.preventDefault();
+          setDragging(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        if (sending) return;
+        addFiles(Array.from(event.dataTransfer?.files ?? []));
+        inputRef.current?.focus();
+      }}
+      className={`flex h-[calc(100dvh-16rem)] min-h-[24rem] flex-col overflow-hidden rounded-xl border bg-panel transition-colors md:h-[calc(100dvh-7.5rem)] ${
+        dragging ? "border-sky-400/70 ring-2 ring-sky-400/30" : "border-hair"
+      }`}
+    >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-hair px-4 py-3 sm:px-6">
         <div className="min-w-0">
           <p className="text-[10px] font-bold uppercase tracking-wider text-muted">
@@ -164,6 +319,9 @@ export default function HermesChat() {
             </span>
             <p className="text-sm font-semibold text-instrument">{t("hermes.emptyTitle")}</p>
             <p className="max-w-sm text-xs leading-relaxed text-muted">{t("hermes.emptyBody")}</p>
+            <p className="max-w-sm text-[11px] leading-relaxed text-muted/80">
+              {t("hermes.dropHint")}
+            </p>
           </div>
         ) : null}
 
@@ -176,7 +334,10 @@ export default function HermesChat() {
                 className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200 sm:max-w-[85%]"
               >
                 <p className="leading-relaxed">{t(errorKey(message.code))}</p>
-                {message.code !== "too_long" && message.code !== "session_expired" ? (
+                {message.code !== "too_long" &&
+                message.code !== "too_large" &&
+                message.code !== "too_many_attachments" &&
+                message.code !== "session_expired" ? (
                   <button
                     type="button"
                     onClick={() => retry(message)}
@@ -197,7 +358,7 @@ export default function HermesChat() {
               className={`flex ${isUser ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
+                className={`min-w-0 max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
                   isUser
                     ? "rounded-br-md bg-sky-500/15 text-instrument"
                     : "rounded-bl-md border border-hair bg-card text-slate-200"
@@ -205,11 +366,55 @@ export default function HermesChat() {
               >
                 <p className="sr-only">{isUser ? t("hermes.you") : t("hermes.assistant")}</p>
                 {isUser ? (
-                  <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+                  <>
+                    {message.content ? (
+                      <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+                    ) : null}
+                    {message.attachments.length > 0 ? (
+                      <ul
+                        aria-label={t("hermes.attachmentsLabel")}
+                        className={`flex w-full min-w-0 flex-wrap gap-1.5 ${message.content ? "mt-2" : ""}`}
+                      >
+                        {message.attachments.map((item, index) => (
+                          <li
+                            key={`${message.id}-attachment-${index}`}
+                            className="flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-deck/60 px-2 py-1 text-[11px] text-slate-200"
+                          >
+                            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-3.5 w-3.5 text-sky-300">
+                              <path d="M7.5 11.5l4-4a2.5 2.5 0 013.5 3.5l-5 5a4 4 0 01-5.5-5.5l5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                            </svg>
+                            <span className="max-w-[10rem] truncate" title={item.name}>
+                              {item.name}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </>
                 ) : (
-                  <div data-testid="hermes-markdown">
-                    <HermesMarkdown>{message.content}</HermesMarkdown>
-                  </div>
+                  <>
+                    <div data-testid="hermes-markdown">
+                      <HermesMarkdown>{message.content}</HermesMarkdown>
+                    </div>
+                    {message.warnings.length > 0 ? (
+                      <ul
+                        role="note"
+                        aria-label={t("hermes.warningsLabel")}
+                        className="mt-3 space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200"
+                      >
+                        {message.warnings.map((warning, index) => (
+                          <li key={`${message.id}-warning-${index}`}>{warning}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {message.artifacts.length > 0 ? (
+                      <div className="mt-3 grid gap-2">
+                        {message.artifacts.map((artifact) => (
+                          <ArtifactCard key={artifact.id} artifact={artifact} />
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
                 )}
               </div>
             </div>
@@ -238,7 +443,56 @@ export default function HermesChat() {
         <label htmlFor="hermes-input" className="sr-only">
           {t("hermes.placeholder")}
         </label>
+
+        {notice ? (
+          <p
+            role="alert"
+            className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          >
+            {notice}
+          </p>
+        ) : null}
+
+        <AttachmentBar items={attachments} onRemove={removeAttachment} disabled={sending} />
+
         <div className="flex items-end gap-2">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!sessionId || sending}
+            aria-label={t("hermes.attach")}
+            title={t("hermes.attach")}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-hair bg-deck text-muted transition-colors hover:border-sky-500/40 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-5 w-5">
+              <path
+                d="M12.5 6.5l-5.6 5.6a2.4 2.4 0 003.4 3.4l6-6a4 4 0 10-5.7-5.7l-6 6a5.6 5.6 0 007.9 7.9"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            data-testid="hermes-file-input"
+            tabIndex={-1}
+            aria-hidden="true"
+            className="sr-only"
+            onChange={(event) => {
+              addFiles(Array.from(event.target.files ?? []));
+              event.target.value = "";
+            }}
+          />
+
+          <MicButton
+            disabled={!sessionId || sending}
+            onRecorded={(file) => addFiles([file])}
+          />
+
           <textarea
             id="hermes-input"
             ref={inputRef}
@@ -253,17 +507,29 @@ export default function HermesChat() {
             }}
             placeholder={t("hermes.placeholder")}
             disabled={!sessionId}
-            className="max-h-40 min-h-[44px] flex-1 resize-none rounded-lg border border-hair bg-deck px-3 py-2.5 text-sm text-instrument placeholder:text-muted focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-60"
+            className="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none rounded-lg border border-hair bg-deck px-3 py-2.5 text-sm text-instrument placeholder:text-muted focus-visible:outline-2 focus-visible:outline-signal disabled:opacity-60"
           />
           <button
             type="submit"
-            disabled={!input.trim() || sending || !sessionId}
-            className="min-h-[44px] shrink-0 rounded-lg bg-signal px-4 py-2.5 text-sm font-semibold text-deck transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={!canSend}
+            aria-label={t("hermes.send")}
+            className="flex min-h-[44px] shrink-0 items-center justify-center rounded-lg bg-signal px-3 py-2.5 text-sm font-semibold text-deck transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:px-4"
           >
-            {t("hermes.send")}
+            <span className="hidden sm:inline">{t("hermes.send")}</span>
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-5 w-5 sm:hidden">
+              <path d="M3.5 10h9M8.5 5.5L13 10l-4.5 4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </button>
         </div>
-        <p className="mt-1.5 hidden text-[10px] text-muted sm:block">{t("hermes.hint")}</p>
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-muted">
+          <span className="hidden sm:inline">{t("hermes.hint")}</span>
+          <span className="inline-flex items-center gap-1">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-3 w-3">
+              <path d="M10 3.5l6 2.5v4.4c0 3.9-2.6 6.2-6 7.6-3.4-1.4-6-3.7-6-7.6V6l6-2.5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+            </svg>
+            {t("hermes.attachHint")}
+          </span>
+        </div>
       </form>
     </section>
   );

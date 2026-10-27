@@ -16,24 +16,76 @@ process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 const ENDPOINT = "http://test.local/api/hermes";
 const SESSION = "3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a";
 
-const seen: {
+interface SeenTurn {
   session: string | null;
   authorization: string | null;
   body: unknown;
-}[] = [];
+  form: { message: string; files: { name: string; size: number; type: string }[] } | null;
+}
+
+const seen: SeenTurn[] = [];
+
+// msw's fetch interceptor cannot serialize jsdom's FormData (it expects the
+// undici implementation and throws while recording the request). Multipart
+// turns are asserted through a fetch spy instead; the JSON path still goes
+// through msw.
+interface MultipartSeen {
+  message: string;
+  files: { name: string; size: number; type: string }[];
+}
+let multipartSeen: MultipartSeen[] = [];
+let multipartReplies: { status: number; body: unknown }[] = [];
+
+function stubMultipartFetch() {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    const form = init?.body as FormData;
+    multipartSeen.push({
+      message: String(form.get("message") ?? ""),
+      files: form.getAll("files").map((value) => {
+        const file = value as File;
+        return { name: file.name, size: file.size, type: file.type };
+      }),
+    });
+    const next = multipartReplies.shift() ?? {
+      status: 200,
+      body: { reply: "ok", artifacts: artifactsPayload, warnings: warningsPayload },
+    };
+    return new Response(JSON.stringify(next.body), {
+      status: next.status,
+      headers: { "content-type": "application/json" },
+    });
+  });
+}
 
 let reply = "**Hola**\n\n- uno\n- dos\n\n```js\nconst x = 1;\n```";
+let artifactsPayload: { name: string; url: string; mime?: string; size?: number }[] = [];
+let warningsPayload: string[] = [];
 let failNext = false;
 let deferred = false;
 let release: (() => void) | null = null;
 
 const server = setupServer(
   http.post(ENDPOINT, async ({ request }) => {
-    seen.push({
+    const contentType = request.headers.get("content-type") ?? "";
+    const entry: SeenTurn = {
       session: request.headers.get("x-hermes-session-id"),
       authorization: request.headers.get("authorization"),
-      body: await request.json(),
-    });
+      body: null,
+      form: null,
+    };
+    if (contentType.startsWith("multipart/form-data")) {
+      const form = await request.formData();
+      entry.form = {
+        message: String(form.get("message") ?? ""),
+        files: form.getAll("files").map((value) => {
+          const file = value as File;
+          return { name: file.name, size: file.size, type: file.type };
+        }),
+      };
+    } else {
+      entry.body = await request.json();
+    }
+    seen.push(entry);
     if (deferred) {
       await new Promise<void>((resolve) => {
         release = resolve;
@@ -46,7 +98,7 @@ const server = setupServer(
         { status: 502 },
       );
     }
-    return HttpResponse.json({ choices: [{ message: { content: reply } }] });
+    return HttpResponse.json({ reply, artifacts: artifactsPayload, warnings: warningsPayload });
   }),
 );
 
@@ -55,6 +107,11 @@ afterEach(() => {
   server.resetHandlers();
   seen.length = 0;
   reply = "**Hola**\n\n- uno\n- dos\n\n```js\nconst x = 1;\n```";
+  artifactsPayload = [];
+  warningsPayload = [];
+  multipartSeen = [];
+  multipartReplies = [];
+  vi.restoreAllMocks();
   failNext = false;
   deferred = false;
   release = null;
@@ -248,6 +305,196 @@ describe("HermesChat", () => {
     fireEvent.click(retry);
     expect(document.activeElement).toBe(input());
     await screen.findByTestId("hermes-markdown");
+  });
+
+  function fileInput() {
+    return screen.getByTestId("hermes-file-input");
+  }
+
+  function attach(files: File[]) {
+    fireEvent.change(fileInput(), { target: { files } });
+  }
+
+  it("sends several attachments in one multipart turn", async () => {
+    stubMultipartFetch();
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    await waitFor(() => expect(input()).toBeEnabled());
+    attach([
+      new File(["png"], "foto.png", { type: "image/png" }),
+      new File(["# nota"], "nota.md", { type: "text/markdown" }),
+    ]);
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(2);
+
+    fireEvent.change(input(), { target: { value: "mirá esto" } });
+    fireEvent.click(sendButton());
+    await screen.findByTestId("hermes-markdown");
+
+    expect(multipartSeen).toHaveLength(1);
+    expect(multipartSeen[0].message).toBe("mirá esto");
+    expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["foto.png", "nota.md"]);
+    expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
+  });
+
+  it("removes a single attachment before sending", async () => {
+    stubMultipartFetch();
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    attach([
+      new File(["a"], "uno.txt", { type: "text/plain" }),
+      new File(["b"], "dos.txt", { type: "text/plain" }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Quitar uno.txt" }));
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
+
+    fireEvent.change(input(), { target: { value: "solo dos" } });
+    fireEvent.click(sendButton());
+    await screen.findByTestId("hermes-markdown");
+    expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["dos.txt"]);
+  });
+
+  it("accepts files dropped on the chat", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    fireEvent.drop(screen.getByTestId("hermes-dropzone"), {
+      dataTransfer: {
+        files: [new File(["x"], "drop.zip", { type: "application/zip" })],
+        types: ["Files"],
+      },
+    });
+    const chip = await screen.findByTestId("attachment-chip");
+    expect(chip).toHaveTextContent("drop.zip");
+  });
+
+  it("sends a turn with attachments and no text", async () => {
+    stubMultipartFetch();
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    attach([new File(["x"], "solo.png", { type: "image/png" })]);
+    expect(sendButton()).toBeEnabled();
+    fireEvent.click(sendButton());
+    await screen.findByTestId("hermes-markdown");
+    expect(multipartSeen[0]).toEqual({
+      message: "",
+      files: [{ name: "solo.png", size: 1, type: "image/png" }],
+    });
+  });
+
+  it("rejects a batch past the attachment cap and keeps the first 20", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    attach(
+      Array.from({ length: 21 }, (_, index) =>
+        new File(["x"], `f${index}.txt`, { type: "text/plain" }),
+      ),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Máximo 20 archivos");
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(20);
+  });
+
+  it("renders Hermes artifacts with a download link and warnings", async () => {
+    artifactsPayload = [
+      {
+        name: "reporte.pdf",
+        url: "https://example.test/reporte.pdf",
+        mime: "application/pdf",
+        size: 2048,
+      },
+    ];
+    warningsPayload = ["No se pudo enviar la nota de voz «nota.webm»."];
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    await send("pasame el reporte");
+
+    const card = await screen.findByTestId("hermes-artifact");
+    expect(within(card).getByText("reporte.pdf")).toBeInTheDocument();
+    const link = within(card).getByRole("link", { name: "Descargar reporte.pdf" });
+    expect(link).toHaveAttribute("href", "https://example.test/reporte.pdf");
+    expect(link).toHaveAttribute("download", "reporte.pdf");
+    expect(screen.getByRole("note")).toHaveTextContent("nota.webm");
+  });
+
+  it("turns file links written by Hermes into artifact cards", async () => {
+    reply = "Te dejo el gráfico: [grafico.png](https://example.test/grafico.png)";
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    await send("graficame");
+
+    const card = await screen.findByTestId("hermes-artifact");
+    expect(within(card).getByText("grafico.png")).toBeInTheDocument();
+    expect(within(card).getByRole("link", { name: "Descargar grafico.png" })).toHaveAttribute(
+      "href",
+      "https://example.test/grafico.png",
+    );
+  });
+
+  it("keeps the attachments when the turn fails and retries with them", async () => {
+    stubMultipartFetch();
+    multipartReplies = [
+      { status: 502, body: { error: { code: "INTERNAL_ERROR", message: "boom" } } },
+      { status: 200, body: { reply: "ok", artifacts: [], warnings: [] } },
+    ];
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    attach([new File(["pdf"], "reporte.pdf", { type: "application/pdf" })]);
+    fireEvent.change(input(), { target: { value: "adjunto" } });
+    fireEvent.click(sendButton());
+
+    expect(await screen.findByText(/No se pudo conectar/)).toBeInTheDocument();
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+    await screen.findByTestId("hermes-markdown");
+    expect(multipartSeen).toHaveLength(2);
+    expect(multipartSeen[1].files.map((file) => file.name)).toEqual(["reporte.pdf"]);
+  });
+
+  it("keeps a file added after the failure when the retry succeeds", async () => {
+    stubMultipartFetch();
+    multipartReplies = [
+      { status: 502, body: { error: { code: "INTERNAL_ERROR", message: "boom" } } },
+      { status: 200, body: { reply: "ok", artifacts: [], warnings: [] } },
+    ];
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+
+    attach([new File(["uno"], "primero.pdf", { type: "application/pdf" })]);
+    fireEvent.change(input(), { target: { value: "adjunto" } });
+    fireEvent.click(sendButton());
+    await screen.findByText(/No se pudo conectar/);
+
+    attach([new File(["dos"], "segundo.txt", { type: "text/plain" })]);
+    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+    await screen.findByTestId("hermes-markdown");
+
+    expect(multipartSeen[1].files.map((file) => file.name)).toEqual(["primero.pdf"]);
+    const chips = screen.getAllByTestId("attachment-chip");
+    expect(chips).toHaveLength(1);
+    expect(chips[0]).toHaveTextContent("segundo.txt");
+  });
+
+  it("clears pending attachments when starting a new conversation", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    attach([new File(["x"], "pendiente.txt", { type: "text/plain" })]);
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "➕ Nueva conversación" }));
+    expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
+    expect(screen.getByText("Empezá una conversación")).toBeInTheDocument();
+  });
+
+  it("still understands the legacy upstream response shape", async () => {
+    server.use(
+      http.post(ENDPOINT, () =>
+        HttpResponse.json({ choices: [{ message: { content: "**legacy**" } }] }),
+      ),
+    );
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    await send("hola");
+    const markdown = await screen.findByTestId("hermes-markdown");
+    expect(within(markdown).getByText("legacy").tagName).toBe("STRONG");
   });
 
   it("keeps working when localStorage is unavailable", async () => {
