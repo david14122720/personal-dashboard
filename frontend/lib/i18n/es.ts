@@ -108,6 +108,13 @@ export const es = {
     expensePieChartLabel: "Gastos por categoría en el periodo actual",
     expensePieEmpty: "Sin gastos en {currency} en este periodo",
     expensePiePeriodLabel: "Periodo del pastel",
+    expensePieModeLabel: "Tipo de movimiento",
+    expensePieModeExpense: "Gastos",
+    expensePieModeIncome: "Ingresos",
+    expensePieIncomeTitle: "Ingresos por categoría",
+    expensePieIncomeHint: "Solo ingresos del periodo actual en tu moneda, agrupados por categoría.",
+    expensePieIncomeChartLabel: "Ingresos por categoría en el periodo actual",
+    expensePieIncomeEmpty: "Sin ingresos en {currency} en este periodo",
     // T3 Resumen: sub-header pill, KPI tiles, card meta and footer. Real data
     // only — no prototype figure is reused anywhere below (D10).
     kpiSummaryLabel: "Resumen de métricas",

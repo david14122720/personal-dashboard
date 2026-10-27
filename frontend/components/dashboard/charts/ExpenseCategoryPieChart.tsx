@@ -31,17 +31,22 @@ export default function ExpenseCategoryPieChart({
   locale,
   currency,
   ariaLabel,
+  emptyText,
   animate = true,
 }: {
   data: ExpenseCategorySlice[];
   locale: string;
   currency: string;
   ariaLabel?: string;
+  /** Empty-state copy; the section swaps it between expenses and income. */
+  emptyText?: string;
   animate?: boolean;
 }) {
   const { ref: chartRef, width } = useContainerWidth(360);
   if (!data || data.length === 0) {
-    return <EmptyState title={t("dashboard.expensePieEmpty", { currency })} />;
+    return (
+      <EmptyState title={emptyText ?? t("dashboard.expensePieEmpty", { currency })} />
+    );
   }
   // Real total of the rendered slices: no prototype figure is reused (D10).
   const total = data.reduce((sum, slice) => sum + slice.value, 0);

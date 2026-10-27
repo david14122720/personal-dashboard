@@ -18,6 +18,21 @@ describe("ExpenseCategoryPieChart", () => {
     expect(container.querySelector("svg")).toBeNull();
   });
 
+  it("acepta un texto vacío propio para el modo Ingresos", () => {
+    render(
+      <ExpenseCategoryPieChart
+        data={[]}
+        locale="es-CO"
+        currency="COP"
+        animate={false}
+        emptyText="Sin ingresos en COP en este periodo"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Sin ingresos en COP en este periodo",
+    );
+  });
+
   it("usa la moneda recibida en la nota vacía, no una fija", () => {
     render(<ExpenseCategoryPieChart data={[]} locale="es-CO" currency="USD" animate={false} />);
     expect(screen.getByRole("status")).toHaveTextContent("Sin gastos en USD en este periodo");

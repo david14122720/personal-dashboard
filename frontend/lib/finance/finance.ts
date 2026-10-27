@@ -793,13 +793,32 @@ export function toSummaryExpenseSlices(
   summary: MovementSummaryWire | null | undefined,
   categories: CategoryWire[] | null | undefined,
 ): ExpenseCategorySlice[] {
+  return toSummaryCategorySlices(summary, categories, "expense");
+}
+
+/** Same contract as `toSummaryExpenseSlices` reading the summary's per-category
+ * **income**: persistent categories only, zero totals dropped and largest
+ * first. The toggle never re-fetches: `by_category` carries both directions,
+ * so switching modes only re-selects the field. */
+export function toSummaryIncomeSlices(
+  summary: MovementSummaryWire | null | undefined,
+  categories: CategoryWire[] | null | undefined,
+): ExpenseCategorySlice[] {
+  return toSummaryCategorySlices(summary, categories, "income");
+}
+
+function toSummaryCategorySlices(
+  summary: MovementSummaryWire | null | undefined,
+  categories: CategoryWire[] | null | undefined,
+  direction: "expense" | "income",
+): ExpenseCategorySlice[] {
   const nameById = new Map((categories ?? []).map((c) => [c.id, c.name]));
   return (summary?.by_category ?? [])
     .filter((row) => nameById.has(row.category_id))
     .map((row) => ({
       categoryId: row.category_id,
       name: nameById.get(row.category_id)!,
-      value: toNumber(row.expense),
+      value: toNumber(row[direction]),
     }))
     .filter((slice) => slice.value !== 0)
     .sort((a, b) => b.value - a.value);

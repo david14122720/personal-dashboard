@@ -13,6 +13,8 @@ import {
   toExpenseByCategory,
   toMonthlyPrice,
   toPeriodRange,
+  toSummaryExpenseSlices,
+  toSummaryIncomeSlices,
   toSubscriptionRows,
   toTotalTrend,
   todayInBogota,
@@ -21,7 +23,7 @@ import {
   trendBuckets,
   trendRange,
 } from "./finance";
-import type { CategoryWire, MovementWire } from "@/lib/api/finance";
+import type { CategoryWire, MovementWire, MovementSummaryWire } from "@/lib/api/finance";
 
 describe("finance transforms", () => {
   it("returns empty rows for nullish input", () => {
@@ -834,5 +836,49 @@ describe("movementsRangeKey (T2)", () => {
     });
     expect(result.current.data).toBeUndefined();
     expect(result.current.isLoading).toBe(false);
+  });
+});
+
+describe("toSummaryIncomeSlices (toggle Gastos/Ingresos)", () => {
+  const categories: CategoryWire[] = [
+    { id: "c1", kind: "finance", name: "Sueldo" },
+    { id: "c2", kind: "finance", name: "Freelance" },
+  ];
+  // c2 keeps a positive income so the descending assertion can see two rows;
+  // c3 is intentionally absent from `categories` (local-only id).
+
+  const summary = {
+    totals: { expense: "0.00", income: "0.00", count: 0 },
+    by_account: [],
+    by_category: [
+      { category_id: "c1", expense: "999.00", income: "100.00" },
+      { category_id: "c2", expense: "50.00", income: "300.00" },
+      { category_id: "c3", expense: "0.00", income: "700.00" },
+    ],
+    buckets: [],
+    recent: [],
+    recent_total: 0,
+  } as MovementSummaryWire;
+
+  it("toma el income de cada categoría persistida, descarta ceros y ordena descendente", () => {
+    expect(toSummaryIncomeSlices(summary, categories)).toEqual([
+      { categoryId: "c2", name: "Freelance", value: 300 },
+      { categoryId: "c1", name: "Sueldo", value: 100 },
+    ]);
+  });
+
+  it("nunca mezcla el gasto de la misma categoría", () => {
+    const onlyExpense = {
+      ...summary,
+      by_category: [{ category_id: "c1", expense: "420.00", income: "0.00" }],
+    } as MovementSummaryWire;
+    expect(toSummaryIncomeSlices(onlyExpense, categories)).toEqual([]);
+  });
+
+  it("el helper de gastos conserva su contrato tras compartir la implementación", () => {
+    expect(toSummaryExpenseSlices(summary, categories)).toEqual([
+      { categoryId: "c1", name: "Sueldo", value: 999 },
+      { categoryId: "c2", name: "Freelance", value: 50 },
+    ]);
   });
 });

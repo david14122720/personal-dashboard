@@ -165,12 +165,85 @@ describe("ExpensePieSection", () => {
 
   it("bautiza su grupo de radio con el nombre del panel del pastel", () => {
     renderOpen();
-    expect(screen.getAllByRole("radio").map((radio) => radio.getAttribute("name"))).toEqual([
+    const periodGroup = screen.getByRole("group", { name: "Periodo del pastel" });
+    expect(within(periodGroup).getAllByRole("radio").map((radio) => radio.getAttribute("name"))).toEqual([
       "dashboard-expense-pie-period",
       "dashboard-expense-pie-period",
       "dashboard-expense-pie-period",
       "dashboard-expense-pie-period",
     ]);
+    const modeGroup = screen.getByRole("group", { name: "Tipo de movimiento" });
+    expect(within(modeGroup).getAllByRole("radio").map((radio) => radio.getAttribute("name"))).toEqual([
+      "dashboard-expense-pie-mode",
+      "dashboard-expense-pie-mode",
+    ]);
+  });
+
+  it("arranca en Gastos con el toggle junto al periodo y la tarjeta abierta", () => {
+    renderOpen();
+    expect(screen.getByRole("button", { name: "Gastos por categoría" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    const modeGroup = screen.getByRole("group", { name: "Tipo de movimiento" });
+    expect(within(modeGroup).getByRole("radio", { name: "Gastos" })).toBeChecked();
+    expect(within(modeGroup).getByRole("radio", { name: "Ingresos" })).not.toBeChecked();
+  });
+
+  it("pasa a Ingresos: título, hint, datos, aria y vacío se recalculan sin recargar", () => {
+    mock.summary.mockReturnValue({
+      data: summary({
+        by_category: [
+          { category_id: "c1", expense: "100.00", income: "300.00" },
+          { category_id: "c2", expense: "50.00", income: "0.00" },
+        ],
+      }),
+      error: undefined,
+      isLoading: false,
+    });
+    renderOpen();
+    expect(mock.summary).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("radio", { name: "Ingresos" }));
+    expect(screen.getByRole("button", { name: "Ingresos por categoría" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(
+      screen.getByText("Solo ingresos del periodo actual en tu moneda, agrupados por categoría."),
+    ).toBeInTheDocument();
+    expect(mock.chart.current?.data).toEqual([
+      { categoryId: "c1", name: "Comida", value: 300 },
+    ]);
+    expect(mock.chart.current?.ariaLabel).toBe("Ingresos por categoría en el periodo actual");
+    expect(mock.chart.current?.emptyText).toBe("Sin ingresos en COP en este periodo");
+    // El summary trae gastos e ingresos: alternar no cambia la query (el
+    // re-render vuelve a invocar el hook con la misma clave, sin fetch nuevo).
+    expect(mock.summary).toHaveBeenLastCalledWith({
+      ...currentPeriodRange("month", NOW),
+      group: "month",
+    });
+    expect(mock.movements).not.toHaveBeenCalled();
+    expect(mock.movementsRange).not.toHaveBeenCalled();
+  });
+
+  it("vuelve a Gastos y conserva el periodo elegido", () => {
+    renderOpen();
+    fireEvent.click(screen.getByRole("radio", { name: "Día" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Ingresos" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Gastos" }));
+    expect(screen.getByRole("button", { name: "Gastos por categoría" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Gastos" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Día" })).toBeChecked();
+    expect(mock.chart.current?.ariaLabel).toBe("Gastos por categoría en el periodo actual");
+  });
+
+  it("conserva el modo elegido al colapsar y reabrir", () => {
+    renderOpen();
+    fireEvent.click(screen.getByRole("radio", { name: "Ingresos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ingresos por categoría" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ingresos por categoría" }));
+    const modeGroup = screen.getByRole("group", { name: "Tipo de movimiento" });
+    expect(within(modeGroup).getByRole("radio", { name: "Ingresos" })).toBeChecked();
   });
 
   it("recalcula el rango del periodo actual y agrupa igual (día/semana/mes/año)", () => {
