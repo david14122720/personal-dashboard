@@ -53,6 +53,14 @@ async fn test_fast_handler() -> &'static str {
     "fast"
 }
 
+/// Test-only handler mounted at the OUTER level (like `/api/hermes`), used to
+/// prove that exact routes there escape the nested `/api` timeout budget.
+#[cfg(test)]
+async fn test_outer_slow_handler() -> &'static str {
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    "outer-slow"
+}
+
 /// All API routes, mounted under `/api` by [`build_router`].
 /// Slice S1 removed the `/transfers` routes (`routes::transfers` deleted);
 /// transfers are now recorded as two manual balance edits.
@@ -266,10 +274,18 @@ fn assemble(
         StatusCode::GATEWAY_TIMEOUT,
         api_timeout,
     ));
+    // The Hermes proxy is an exact route at this level, NOT inside the
+    // 15 s `/api` budget: upstream answers may take up to HERMES_TIMEOUT
+    // (>= 180 s), so it must outlive SEC-003's default API budget.
     let api: Router<AppState> = Router::new()
         .route("/health", get(routes::health::health_handler))
         .route("/ready", get(routes::ready::ready_handler))
+        .route("/api/hermes", post(routes::hermes::hermes_chat_handler))
         .nest("/api", api_routes);
+    // Same mounting shape as `/api/hermes`: exact outer route, outside the
+    // nested router that carries the 15 s budget.
+    #[cfg(test)]
+    let api = api.route("/api/__test__/outer_slow", get(test_outer_slow_handler));
     let api = api.with_state(state);
 
     let app = if let Some(dir) = static_dir {
@@ -388,6 +404,7 @@ async fn main() {
         pool,
         session_ttl_hours: config.session_ttl_hours,
         rate_limiter: Arc::new(auth::rate_limit::LoginRateLimiter::new()),
+        hermes: config.hermes.clone(),
     };
 
     // Layer order outermost -> innermost: RequestId -> Trace -> CORS -> routes
@@ -425,6 +442,7 @@ mod api_nest_tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
         }
     }
 
@@ -487,6 +505,26 @@ mod api_nest_tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn routes_mounted_at_the_outer_level_escape_the_api_budget() {
+        // The nested `/api` router gets a 20 ms budget; an exact outer route
+        // (same mounting shape as `/api/hermes`) must run for 150 ms and still
+        // answer 200. A route inside the budget would answer 504.
+        let app = assemble(lazy_state(), None, api_routes(), Duration::from_millis(20));
+        let started = std::time::Instant::now();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/__test__/outer_slow")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("router response");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(started.elapsed() >= Duration::from_millis(140));
     }
 
     #[tokio::test]
@@ -774,6 +812,7 @@ mod api_nest_tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: limiter,
+            hermes: None,
         };
 
         let app = build_router(state.clone(), None);

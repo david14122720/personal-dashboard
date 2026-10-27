@@ -1168,6 +1168,7 @@ mod today_read_tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
+            hermes: None,
         }
     }
 
@@ -1204,6 +1205,7 @@ mod today_read_tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
+            hermes: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1881,6 +1883,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
+            hermes: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1966,6 +1969,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
         };
         let err = list_habits_handler(State(state), HeaderMap::new(), Query(ShapeQuery { shape: None }))
             .await
@@ -2312,6 +2316,7 @@ mod tests {
             pool: lazy_pool(),
             session_ttl_hours: 24,
             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
         };
         let err = delete_log_handler(
             State(state),
@@ -2709,6 +2714,7 @@ mod logs_range_tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
+            hermes: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2819,6 +2825,7 @@ mod logs_range_tests {
             pool,
             session_ttl_hours: 24,
             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
         };
         let err = list_logs_range_handler(State(state), HeaderMap::new(), range_query("2026-09-01", "2026-09-30"))
             .await
@@ -2905,6 +2912,7 @@ mod logs_range_tests {
             pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused").expect("lazy pool"),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
         };
         let app = crate::build_router(state, None);
         let res = app

@@ -946,6 +946,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
+            hermes: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1009,6 +1010,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
         };
         let err = list_tasks_handler(State(state), HeaderMap::new(), view_query(None))
             .await

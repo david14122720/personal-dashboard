@@ -1,4 +1,4 @@
-use std::{env, net::IpAddr};
+use std::{env, net::IpAddr, time::Duration};
 
 /// One entry of the `TRUSTED_PROXIES` allow-list (DD3): an exact address or a
 /// CIDR block whose `X-Forwarded-For` header the login path may honour.
@@ -103,12 +103,99 @@ pub fn trusted_proxies_from_env() -> Result<Vec<TrustedProxy>, String> {
     parse_trusted_proxies(env::var("TRUSTED_PROXIES").ok().as_deref())
 }
 
+/// Hermes proxy defaults: the owner spec fixes a 180 s floor. A smaller
+/// configured value is a startup error, never a silently weakened budget.
+pub const HERMES_DEFAULT_TIMEOUT_MS: u64 = 180_000;
+
+/// Outbound Hermes configuration. The API key never leaves the backend: the
+/// browser only ever talks to `/api/hermes`.
+#[derive(Clone)]
+pub struct HermesConfig {
+    pub api_url: String,
+    pub api_key: String,
+    pub http: reqwest::Client,
+}
+
+/// Debug never prints the bearer credential, even if a future log statement
+/// derives `Debug` on the whole config.
+impl std::fmt::Debug for HermesConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HermesConfig")
+            .field("api_url", &self.api_url)
+            .field("api_key", &"<redacted>")
+            .field("http", &self.http)
+            .finish()
+    }
+}
+
+/// Parse `HERMES_TIMEOUT` (milliseconds). Absent/empty keeps the 180 s floor;
+/// anything below it is rejected so a misconfiguration cannot shorten the
+/// chat budget.
+pub fn parse_hermes_timeout(raw: Option<&str>) -> Result<Duration, String> {
+    let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(Duration::from_millis(HERMES_DEFAULT_TIMEOUT_MS));
+    };
+    let ms = raw
+        .parse::<u64>()
+        .map_err(|_| "HERMES_TIMEOUT must be an integer number of milliseconds".to_string())?;
+    if ms < HERMES_DEFAULT_TIMEOUT_MS {
+        return Err(format!(
+            "HERMES_TIMEOUT must be at least {HERMES_DEFAULT_TIMEOUT_MS} ms (180 s)"
+        ));
+    }
+    Ok(Duration::from_millis(ms))
+}
+
+/// Build the outbound config from already-read values (env-free, so tests do
+/// not mutate process state). Both the URL and key are required together;
+/// neither means "not configured" (the proxy answers 503, the app still boots).
+pub fn hermes_config_from_parts(
+    url: Option<&str>,
+    key: Option<&str>,
+    timeout_raw: Option<&str>,
+) -> Result<Option<HermesConfig>, String> {
+    let timeout = parse_hermes_timeout(timeout_raw)?;
+    let url = url.map(str::trim).filter(|v| !v.is_empty());
+    let key = key.map(str::trim).filter(|v| !v.is_empty());
+    match (url, key) {
+        (None, None) => Ok(None),
+        (Some(url), Some(key)) => {
+            let parsed =
+                reqwest::Url::parse(url).map_err(|_| "HERMES_API_URL must be an absolute URL".to_string())?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err("HERMES_API_URL must use http or https".to_string());
+            }
+            let http = reqwest::Client::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(|_| "could not build the Hermes HTTP client".to_string())?;
+            Ok(Some(HermesConfig {
+                api_url: url.to_string(),
+                api_key: key.to_string(),
+                http,
+            }))
+        }
+        _ => Err("HERMES_API_URL and HERMES_API_KEY must be configured together".to_string()),
+    }
+}
+
+/// Read the Hermes proxy configuration from the process environment.
+pub fn hermes_config_from_env() -> Result<Option<HermesConfig>, String> {
+    let url = env::var("HERMES_API_URL").ok();
+    let key = env::var("HERMES_API_KEY").ok();
+    let timeout = env::var("HERMES_TIMEOUT").ok();
+    hermes_config_from_parts(url.as_deref(), key.as_deref(), timeout.as_deref())
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
     pub port: u16,
     pub session_ttl_hours: u64,
     pub static_dir: Option<String>,
+    /// `None` when Hermes is not configured yet; `/api/hermes` then answers
+    /// 503 without breaking startup. Partial configuration is an error.
+    pub hermes: Option<HermesConfig>,
 }
 
 impl Config {
@@ -137,12 +224,14 @@ impl Config {
         // AppState shape untouched), so the login path re-reads this same
         // helper rather than receiving the value from `Config`.
         trusted_proxies_from_env().map_err(|e| format!("TRUSTED_PROXIES: {e}"))?;
+        let hermes = hermes_config_from_env().map_err(|e| format!("HERMES: {e}"))?;
 
         Ok(Self {
             database_url,
             port,
             session_ttl_hours,
             static_dir,
+            hermes,
         })
     }
 }
@@ -211,5 +300,59 @@ mod tests {
     fn port_parsing_rejects_invalid() {
         assert!("abc".parse::<u16>().is_err());
         assert!("99999".parse::<u16>().is_err());
+    }
+}
+
+#[cfg(test)]
+mod hermes_config_tests {
+    use super::*;
+
+    #[test]
+    fn timeout_defaults_to_the_180s_floor_and_rejects_smaller_values() {
+        assert_eq!(
+            parse_hermes_timeout(None).expect("absent uses the default"),
+            Duration::from_millis(180_000)
+        );
+        assert_eq!(
+            parse_hermes_timeout(Some("  ")).expect("blank uses the default"),
+            Duration::from_millis(180_000)
+        );
+        assert_eq!(
+            parse_hermes_timeout(Some("180000")).expect("the floor is accepted"),
+            Duration::from_millis(180_000)
+        );
+        assert_eq!(
+            parse_hermes_timeout(Some("240000")).expect("larger values pass"),
+            Duration::from_millis(240_000)
+        );
+        assert!(parse_hermes_timeout(Some("179999")).is_err());
+        assert!(parse_hermes_timeout(Some("nope")).is_err());
+    }
+
+    #[test]
+    fn parts_require_url_and_key_together() {
+        assert!(hermes_config_from_parts(None, None, None)
+            .expect("absent is not an error")
+            .is_none());
+        assert!(hermes_config_from_parts(Some(""), Some(""), None)
+            .expect("blank is treated as absent")
+            .is_none());
+        assert!(hermes_config_from_parts(Some("http://10.0.0.5:8642/x"), None, None).is_err());
+        assert!(hermes_config_from_parts(None, Some("secret"), None).is_err());
+    }
+
+    #[test]
+    fn parts_validate_the_upstream_url_scheme() {
+        assert!(hermes_config_from_parts(Some("ftp://host/x"), Some("k"), None).is_err());
+        assert!(hermes_config_from_parts(Some("/relative"), Some("k"), None).is_err());
+        let cfg = hermes_config_from_parts(
+            Some("http://192.168.50.120:8642/v1/chat/completions"),
+            Some("secret"),
+            Some("200000"),
+        )
+        .expect("valid config")
+        .expect("configured");
+        assert_eq!(cfg.api_url, "http://192.168.50.120:8642/v1/chat/completions");
+        assert_eq!(cfg.api_key, "secret");
     }
 }

@@ -1147,6 +1147,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
+            hermes: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(

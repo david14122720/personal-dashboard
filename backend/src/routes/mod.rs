@@ -5,6 +5,7 @@ pub mod events;
 pub mod goals;
 pub mod habits;
 pub mod health;
+pub mod hermes;
 pub mod login;
 pub mod logout;
 pub mod me;

@@ -260,6 +260,7 @@ mod tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: limiter,
+            hermes: None,
         }
     }
 
@@ -499,6 +500,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: ttl_hours,
             rate_limiter: limiter,
+            hermes: None,
         };
 
         let before = Utc::now();
@@ -563,6 +565,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: ttl_hours,
             rate_limiter: limiter,
+            hermes: None,
         };
 
         let before = Utc::now();
@@ -880,6 +883,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: limiter,
+            hermes: None,
         };
         let attempt = |email: String, password: String| {
             login_handler(
@@ -949,6 +953,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: limiter,
+            hermes: None,
         };
         let res = login_handler(
             State(state),
@@ -998,6 +1003,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: limiter,
+            hermes: None,
         };
         reset_verify_count();
         let res = login_handler(
@@ -1047,6 +1053,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: limiter.clone(),
+            hermes: None,
         };
         let body = LoginRequest {
             email: email.clone(),
@@ -1101,6 +1108,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: limiter.clone(),
+            hermes: None,
         };
         let ip_addr = ip("198.51.100.8");
 

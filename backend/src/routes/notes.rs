@@ -634,6 +634,7 @@ mod tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
+            hermes: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -674,6 +675,7 @@ mod tests {
             pool: lazy_pool(),
             session_ttl_hours: 24,
             rate_limiter: std::sync::Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
         };
         let headers = HeaderMap::new();
         let err = create_note_handler(State(state.clone()), headers.clone(), note_body("N"))
