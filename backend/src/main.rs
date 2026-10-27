@@ -9,6 +9,7 @@ mod state;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue, StatusCode},
     routing::{delete, get, patch, post},
     Json, Router,
@@ -280,7 +281,13 @@ fn assemble(
     let api: Router<AppState> = Router::new()
         .route("/health", get(routes::health::health_handler))
         .route("/ready", get(routes::ready::ready_handler))
-        .route("/api/hermes", post(routes::hermes::hermes_chat_handler))
+        // Multipart uploads need more than axum's 2 MiB default: the limit
+        // lives in `hermes.rs` next to the attachment guardrails it protects.
+        .route(
+            "/api/hermes",
+            post(routes::hermes::hermes_chat_handler)
+                .layer(DefaultBodyLimit::max(routes::hermes::MAX_BODY_BYTES)),
+        )
         .nest("/api", api_routes);
     // Same mounting shape as `/api/hermes`: exact outer route, outside the
     // nested router that carries the 15 s budget.
