@@ -1,17 +1,11 @@
 "use client";
 
 import { useEffect } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import AppShell from "@/components/layout/AppShell";
-import BankAccountsSection from "@/components/settings/BankAccountsSection";
-import SubscriptionsSection from "@/components/settings/SubscriptionsSection";
-import CustomCategoriesSection from "@/components/settings/CustomCategoriesSection";
-import { deck } from "@/components/ui/deckStyles";
-import { t } from "@/lib/i18n";
+import SettingsScreen from "@/components/settings/SettingsScreen";
 import { getToken } from "@/lib/api/client";
 
-/** Configuración hub (P5 + P6): cuentas bancarias, categorías propias y sesiones. */
+/** The unified Ajustes hub; this route opens the general tab. */
 export default function AjustesPage() {
   const router = useRouter();
 
@@ -21,43 +15,5 @@ export default function AjustesPage() {
     }
   }, [router]);
 
-  return (
-    <AppShell>
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-        <header>
-          <h1 className={deck.pageTitle}>{t("settings.title")}</h1>
-          <p className="mt-1 text-sm text-muted">{t("settings.subtitle")}</p>
-        </header>
-        {/* Reachability for the two destinations that leave the 5-item mobile tab
-            bar: both stay one tap away from this hub. */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Link
-            href="/dashboard/ajustes/tokens/"
-            className={deck.quickCard}
-          >
-            <div className="min-w-0">
-              <h2 className={deck.quickCardTitle}>
-                {t("settings.apiTokensTitle")}
-              </h2>
-              <p className={deck.sectionSubtitle}>{t("settings.apiTokensHint")}</p>
-            </div>
-          </Link>
-          <Link
-            href="/dashboard/ajustes/sesiones/"
-            className={deck.quickCard}
-          >
-            <div className="min-w-0">
-              <h2 className={deck.quickCardTitle}>
-                {t("settings.sessionsTitle")}
-              </h2>
-              <p className={deck.sectionSubtitle}>{t("settings.sessionsHint")}</p>
-            </div>
-          </Link>
-        </div>
-        <BankAccountsSection />
-        <SubscriptionsSection />
-        <CustomCategoriesSection />
-      </div>
-    </AppShell>
-  );
+  return <SettingsScreen active="general" />;
 }

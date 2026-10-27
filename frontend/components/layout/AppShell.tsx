@@ -73,20 +73,6 @@ function SlidersIcon({ className }: IconProps) {
   );
 }
 
-function KeyIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
-      <circle cx="6.8" cy="6.8" r="3.3" stroke="currentColor" strokeWidth="1.5" />
-      <path
-        d="M9.2 9.2l6.3 6.3M13.2 13.2l1.8-1.8"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 function LogoutIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
@@ -135,6 +121,20 @@ function ChevronRightIcon({ className }: IconProps) {
   );
 }
 
+function ChevronLeftIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M12.5 4.5L7 10l5.5 5.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** Fallback avatar while the real identity read is pending or failed. */
 function UserIcon({ className }: IconProps) {
   return (
@@ -150,12 +150,22 @@ function UserIcon({ className }: IconProps) {
   );
 }
 
-function DeviceIcon({ className }: IconProps) {
+/** Owner-provided Hermes mark: helmet/shield with a cross, stroke-only. */
+function HermesIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
-      <rect x="2.5" y="4" width="11" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M6.5 16h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <rect x="14" y="8.5" width="3.5" height="6.5" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" opacity="0.2" />
+      <path d="M12 6l-5 3v3c0 3.5 2.5 6.8 5 7.5 2.5-.7 5-4 5-7.5V9l-5-3z" />
+      <path d="M9 12h6M12 9v6" />
     </svg>
   );
 }
@@ -174,20 +184,26 @@ const PRIMARY_NAV: NavItem[] = [
   { href: "/dashboard/finance/", labelKey: "nav.finance", Icon: WalletIcon },
   { href: "/dashboard/productivity/", labelKey: "nav.productivity", Icon: BoardIcon },
   { href: "/dashboard/habitos/", labelKey: "nav.habits", Icon: CheckCircleIcon, chip: "activeHabits" },
+  { href: "/dashboard/hermes/", labelKey: "nav.hermes", Icon: HermesIcon },
 ];
 
+// SISTEMA is a single destination: the unified Ajustes hub owns its tabs.
 const SETTINGS_NAV: NavItem[] = [
   { href: "/dashboard/ajustes/", labelKey: "nav.general", Icon: SlidersIcon },
-  { href: "/dashboard/ajustes/tokens/", labelKey: "nav.tokens", Icon: KeyIcon },
-  { href: "/dashboard/ajustes/sesiones/", labelKey: "nav.sessions", Icon: DeviceIcon },
 ];
 
 /**
  * Mobile bottom bar: exactly the design's five destinations. `Tokens de API`
- * and `Sesiones` leave the bar and stay reachable from the Ajustes hub
+ * and `Sesiones` leave the bar and stay reachable as tabs of the Ajustes hub
  * (DESIGN-SPEC IA: five tabs, the settings children live under Ajustes).
  */
-const TAB_NAV: NavItem[] = [...PRIMARY_NAV, SETTINGS_NAV[0]];
+// The mobile bar keeps the design's five destinations. Hermes is a desktop
+// rail destination (its chat page is still responsive and deep-linkable);
+// squeezing a sixth tab into 390 px merged the first four labels.
+const TAB_NAV: NavItem[] = [
+  ...PRIMARY_NAV.filter((item) => item.href !== "/dashboard/hermes/"),
+  SETTINGS_NAV[0],
+];
 
 /* Shell chrome recipes (canonical: dashboard-desktop.html L72-232). They live
  * here because the shell is their only consumer; cross-surface recipes are
@@ -196,7 +212,11 @@ const TAB_NAV: NavItem[] = [...PRIMARY_NAV, SETTINGS_NAV[0]];
 const RAIL_GROUP_FIRST = "px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-muted";
 const RAIL_GROUP = `${RAIL_GROUP_FIRST} pt-4`;
 const RAIL_ITEM_BASE =
-  "relative flex items-center gap-3 rounded-lg border px-3.5 py-2.5 text-sm transition-colors";
+  "relative flex items-center rounded-lg border py-2.5 text-sm transition-colors";
+const RAIL_ITEM_EXPANDED = "gap-3 px-3.5";
+const RAIL_ITEM_COLLAPSED = "mx-auto h-11 w-11 justify-center px-0";
+const RAIL_TOOLTIP =
+  "pointer-events-none absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-hair bg-card px-2 py-1 text-xs font-medium text-instrument opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100";
 const RAIL_ITEM_ACTIVE = "border-sky-500/30 bg-sky-500/10 font-medium text-instrument";
 const RAIL_ITEM_IDLE =
   "border-transparent font-medium text-slate-400 hover:bg-card hover:text-instrument";
@@ -245,9 +265,41 @@ function isActive(pathname: string, href: string): boolean {
   const clean = (p: string): string => (p.endsWith("/") && p.length > 1 ? p.slice(0, -1) : p);
   const target = clean(href);
   const current = clean(pathname);
-  // The settings hub owns only its own page; children (tokens) highlight alone.
-  if (target === "/dashboard/ajustes") return current === target;
+  // The unified Ajustes hub also owns its tab routes; the rail lights the hub.
   return current === target || current.startsWith(`${target}/`);
+}
+
+const SIDEBAR_STORAGE_KEY = "pd-sidebar-collapsed";
+
+/** Read the saved rail preference; storage can be unavailable (private mode,
+ * disabled cookies) and must never break the shell. */
+function readSidebarPreference(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Expanded on the first paint (the static HTML), restored after mount so the
+ * client and the exported shell never disagree during hydration. */
+function useCollapsedSidebar(): { collapsed: boolean; toggle: () => void } {
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(readSidebarPreference());
+  }, []);
+  function toggle(): void {
+    setCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        // The rail still toggles for this page view; only persistence is lost.
+      }
+      return next;
+    });
+  }
+  return { collapsed, toggle };
 }
 
 /** Bogotá date in the app's single locale (`es-CO`, short month). */
@@ -264,49 +316,81 @@ function RailLink({
   item,
   pathname,
   activeHabits,
+  collapsed,
 }: {
   item: NavItem;
   pathname: string;
   activeHabits: number | null;
+  collapsed: boolean;
 }) {
   const active = isActive(pathname, item.href);
   const Icon = item.Icon;
-  // Honest chip: only when the real count is known and non-zero.
-  const showChip = item.chip === "activeHabits" && activeHabits !== null && activeHabits > 0;
+  const label = t(item.labelKey);
+  // Honest chip: only when the real count is known and non-zero. The icon rail
+  // has no room for it; the active background still marks the destination.
+  const showChip =
+    !collapsed && item.chip === "activeHabits" && activeHabits !== null && activeHabits > 0;
   return (
     <Link
       href={item.href}
       aria-current={active ? "page" : undefined}
-      className={`${RAIL_ITEM_BASE} ${active ? RAIL_ITEM_ACTIVE : RAIL_ITEM_IDLE}`}
+      aria-label={collapsed ? label : undefined}
+      data-tooltip={collapsed ? label : undefined}
+      className={`group ${RAIL_ITEM_BASE} ${collapsed ? RAIL_ITEM_COLLAPSED : RAIL_ITEM_EXPANDED} ${
+        active ? RAIL_ITEM_ACTIVE : RAIL_ITEM_IDLE
+      }`}
     >
       <Icon className={`h-4 w-4 shrink-0 ${active ? "text-sky-400" : "text-slate-500"}`} />
-      <span className={active ? "text-sky-300" : undefined}>{t(item.labelKey)}</span>
+      {collapsed ? (
+        <span data-rail-tooltip aria-hidden="true" className={RAIL_TOOLTIP}>
+          {label}
+        </span>
+      ) : (
+        <span data-rail-label className={active ? "text-sky-300" : undefined}>
+          {label}
+        </span>
+      )}
       {showChip ? (
         <span className={RAIL_HABITS_CHIP}>
           {t("nav.activeHabitsChip", { n: activeHabits })}
         </span>
       ) : null}
-      {active ? (
+      {active && !collapsed ? (
         <span aria-hidden="true" className={`${RAIL_ACTIVE_DOT} ${showChip ? "" : "ml-auto"}`} />
       ) : null}
     </Link>
   );
 }
 
-function RailNav() {
+function RailNav({ collapsed }: { collapsed: boolean }) {
   const pathname = usePathname() ?? "";
   const habits = useHabitsToday();
   const habitsData = habits.data;
   const activeHabits = habits.error || !habitsData ? null : habitsData.length;
   return (
-    <nav aria-label={t("nav.primary")} className="space-y-1.5 p-4">
-      <p className={RAIL_GROUP_FIRST}>{t("nav.sectionMain")}</p>
+    <nav
+      aria-label={t("nav.primary")}
+      className={collapsed ? "space-y-1.5 p-2.5" : "space-y-1.5 p-4"}
+    >
+      {collapsed ? null : <p className={RAIL_GROUP_FIRST}>{t("nav.sectionMain")}</p>}
       {PRIMARY_NAV.map((item) => (
-        <RailLink key={item.href} item={item} pathname={pathname} activeHabits={activeHabits} />
+        <RailLink
+          key={item.href}
+          item={item}
+          pathname={pathname}
+          activeHabits={activeHabits}
+          collapsed={collapsed}
+        />
       ))}
-      <p className={RAIL_GROUP}>{t("nav.sectionSystem")}</p>
+      {collapsed ? null : <p className={RAIL_GROUP}>{t("nav.sectionSystem")}</p>}
       {SETTINGS_NAV.map((item) => (
-        <RailLink key={item.href} item={item} pathname={pathname} activeHabits={activeHabits} />
+        <RailLink
+          key={item.href}
+          item={item}
+          pathname={pathname}
+          activeHabits={activeHabits}
+          collapsed={collapsed}
+        />
       ))}
     </nav>
   );
@@ -318,9 +402,27 @@ function RailNav() {
  * identity fields structurally instead of widening a lib outside this task.
  * While the read is loading or failed the card states the honest local
  * session, exactly as before, and never invents a name or an email. */
-function SessionCard() {
+function SessionCard({ collapsed }: { collapsed: boolean }) {
   const { displayName, email, initials, primary } = useIdentity();
   const secondary = displayName ? email : "";
+  if (collapsed) {
+    return (
+      <div className="flex flex-col items-center gap-2 border-t border-hair p-3">
+        <span aria-hidden="true" className={IDENTITY_AVATAR}>
+          {initials ?? <UserIcon className="h-4 w-4" />}
+        </span>
+        <button
+          type="button"
+          onClick={() => void logout()}
+          aria-label={t("nav.signOut")}
+          title={t("nav.signOut")}
+          className="flex h-11 w-11 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-hair hover:text-rose-400 focus-visible:outline-2 focus-visible:outline-signal"
+        >
+          <LogoutIcon className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="border-t border-hair p-4">
       <div className="flex items-center justify-between gap-2 rounded-lg border border-hair bg-card p-2">
@@ -477,6 +579,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // The shell owns the single notification surface on every route (the
   // prototype puts it in the topbar, `dashboard-desktop.html:210-219`): one
   // desktop branch and one mobile branch, exactly one visible at a time.
+  const { collapsed, toggle } = useCollapsedSidebar();
   return (
     <div className="min-h-screen bg-deck text-instrument">
       <a
@@ -487,24 +590,55 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </a>
       <MobileChrome />
       <div className="flex min-h-screen">
-        <aside className="sticky top-0 z-30 hidden h-screen w-64 shrink-0 flex-col justify-between border-r border-hair bg-panel md:flex">
+        <aside
+          id="app-sidebar"
+          className={`sticky top-0 z-30 hidden h-screen shrink-0 flex-col justify-between border-r border-hair bg-panel transition-[width] duration-200 md:flex ${
+            collapsed ? "md:w-[72px]" : "md:w-64"
+          }`}
+        >
           <div className="flex flex-col">
-            <div className="flex h-16 items-center gap-3 border-b border-hair px-6">
+            <div
+              className={`relative flex h-16 items-center border-b border-hair ${
+                collapsed ? "justify-center px-2" : "gap-3 px-6"
+              }`}
+            >
               <span className="glow-cyan-sm flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10 text-sky-400">
                 {/* Official brand asset; the square tile keeps the 1:1 ratio. */}
                 <img src="/logo.svg" alt="" className="h-6 w-6" />
               </span>
-              <div className="min-w-0">
-                <p className="flex items-center gap-1.5 text-base font-bold tracking-tight">
-                  Control <span className="text-signal">Deck</span>
-                  <span className={BRAND_VERSION_BADGE}>{t("nav.brandVersion")}</span>
-                </p>
-                <p className="text-[11px] text-muted">{t("nav.brandSubline")}</p>
-              </div>
+              {collapsed ? null : (
+                <div className="min-w-0 flex-1">
+                  <p className="flex items-center gap-1.5 text-base font-bold tracking-tight">
+                    Control <span className="text-signal">Deck</span>
+                    <span className={BRAND_VERSION_BADGE}>{t("nav.brandVersion")}</span>
+                  </p>
+                  <p className="text-[11px] text-muted">{t("nav.brandSubline")}</p>
+                </div>
+              )}
+              {/* Floating dock handle on the border: it consumes no header
+                  width, so the brand block never collides with it at either
+                  width (Judgment Day round 1). */}
+              <button
+                type="button"
+                onClick={toggle}
+                aria-label={
+                  collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")
+                }
+                aria-expanded={!collapsed}
+                aria-controls="app-sidebar"
+                title={collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
+                className="group/toggle absolute -right-[22px] top-1/2 z-40 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 focus-visible:outline-2 focus-visible:outline-signal"
+              >
+                <span className="flex h-6 w-6 items-center justify-center rounded-full border border-hair bg-panel shadow-sm transition-colors group-hover/toggle:text-sky-400">
+                  <ChevronLeftIcon
+                    className={`h-4 w-4 transition-transform ${collapsed ? "rotate-180" : ""}`}
+                  />
+                </span>
+              </button>
             </div>
-            <RailNav />
+            <RailNav collapsed={collapsed} />
           </div>
-          <SessionCard />
+          <SessionCard collapsed={collapsed} />
         </aside>
         <div className="flex min-w-0 flex-1 flex-col bg-deck">
           <TopBar />

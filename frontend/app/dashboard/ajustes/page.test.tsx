@@ -142,23 +142,35 @@ describe("ajustes page", () => {
     expect(within(section).getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
   });
 
-  it("links to the session management page", () => {
+  it("renders one settings interface with the three tabs and General current", () => {
     renderPage();
-    const link = screen.getByRole("link", { name: /Sesiones activas/ });
-    expect(link).toHaveAttribute("href", "/dashboard/ajustes/sesiones/");
+    const tabs = screen.getByRole("navigation", { name: "Secciones de ajustes" });
+    const links = within(tabs).getAllByRole("link");
+    expect(links.map((link) => link.textContent?.trim())).toEqual([
+      "General",
+      "Tokens de API",
+      "Sesiones",
+    ]);
+    expect(within(tabs).getByRole("link", { name: "General" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(within(tabs).getByRole("link", { name: "Tokens de API" })).toHaveAttribute(
+      "href",
+      "/dashboard/ajustes/tokens/",
+    );
+    expect(within(tabs).getByRole("link", { name: "Sesiones" })).toHaveAttribute(
+      "href",
+      "/dashboard/ajustes/sesiones/",
+    );
   });
 
-  // Both settings children leave the five-item mobile tab bar, so the hub has to
-  // keep them reachable in-page.
-  it("keeps tokens and sessions one tap away for the mobile tab bar", () => {
+  // Both settings children leave the five-item mobile tab bar, so the unified
+  // interface keeps them one tap away as tabs.
+  it("keeps tokens and sessions one tap away as tabs of the same page", () => {
     renderPage();
-    const tokens = screen
-      .getAllByRole("link", { name: /Tokens de API/ })
-      .find((link) => link.getAttribute("href") === "/dashboard/ajustes/tokens/");
-    expect(tokens).toBeDefined();
-    const sessions = screen
-      .getAllByRole("link", { name: /Sesiones activas/ })
-      .find((link) => link.getAttribute("href") === "/dashboard/ajustes/sesiones/");
-    expect(sessions).toBeDefined();
+    const tabs = screen.getByRole("navigation", { name: "Secciones de ajustes" });
+    expect(within(tabs).getByRole("link", { name: "Tokens de API" })).toBeInTheDocument();
+    expect(within(tabs).getByRole("link", { name: "Sesiones" })).toBeInTheDocument();
   });
 });

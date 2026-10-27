@@ -94,12 +94,23 @@ describe("sessions page", () => {
     expect(screen.queryByText(/token_hash/i)).not.toBeInTheDocument();
   });
 
-  it("marks the sessions entry current in the sidebar chrome", async () => {
+  it("renders inside the unified settings interface with the sessions tab current", async () => {
     render(h(SessionsPage, null));
     expect(await screen.findByText("Safari/605")).toBeInTheDocument();
 
-    const links = screen.getAllByRole("link", { name: "Sesiones" });
-    expect(links.some((link) => link.getAttribute("aria-current") === "page")).toBe(true);
+    const tabs = screen.getByRole("navigation", { name: "Secciones de ajustes" });
+    expect(within(tabs).getByRole("link", { name: "Sesiones" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(within(tabs).getByRole("link", { name: "General" })).not.toHaveAttribute(
+      "aria-current",
+    );
+    const rail = screen.getByRole("complementary");
+    expect(within(rail).getByRole("link", { name: "Ajustes" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeInTheDocument();
   });
 

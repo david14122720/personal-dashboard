@@ -13,6 +13,7 @@ export const es = {
     finance: "Finanzas",
     productivity: "Productividad",
     habits: "Hábitos",
+    hermes: "Hermes",
     tokens: "Tokens de API",
     sessions: "Sesiones",
     general: "Ajustes",
@@ -31,10 +32,38 @@ export const es = {
     // Compact mobile header (the desktop footer keeps `signOut`; a second
     // control with the same accessible name would make the shell ambiguous).
     signOutShort: "Salir",
+    // Desktop rail collapse control (the icon-only rail keeps its tooltips).
+    collapseSidebar: "Colapsar barra lateral",
+    expandSidebar: "Expandir barra lateral",
     brandSubline: "Centro de Mando",
     brandVersion: APP_VERSION,
     // Real count chip on the Hábitos rail item (`useHabitsToday` length).
     activeHabitsChip: "{n} activos",
+  },
+  hermes: {
+    kicker: "Agente",
+    title: "Hermes",
+    session: "Sesión {id}",
+    newConversation: "➕ Nueva conversación",
+    logLabel: "Conversación con Hermes",
+    emptyTitle: "Empezá una conversación",
+    emptyBody:
+      "Preguntale a Hermes lo que necesites. La memoria de la conversación vive en el servidor; acá solo se guarda el identificador de sesión.",
+    placeholder: "Escribí tu mensaje…",
+    hint: "Enter envía · Shift+Enter agrega un salto de línea",
+    send: "Enviar",
+    working: "Hermes está trabajando...",
+    retry: "Reintentar",
+    you: "Vos",
+    assistant: "Hermes",
+    errorTimeout: "Hermes tardó demasiado en responder. Probá de nuevo.",
+    errorUnauthorized: "El servidor rechazó las credenciales de Hermes. Revisá la configuración.",
+    errorUnavailable: "No se pudo conectar con el servidor de Hermes. Revisá que esté disponible.",
+    errorUpstream: "Hermes devolvió un error. Probá de nuevo en unos segundos.",
+    errorNetwork: "Se perdió la conexión con el servidor. Probá de nuevo.",
+    errorInvalid: "Hermes devolvió una respuesta inesperada. Probá de nuevo.",
+    errorTooLong: "El mensaje supera el límite de 32 KB del proxy. Acortalo y volvé a enviarlo.",
+    errorSessionExpired: "Tu sesión expiró. Iniciá sesión de nuevo para seguir conversando.",
   },
   login: {
     subtitle: "Inicia sesión en tu panel personal.",
@@ -933,7 +962,10 @@ export const es = {
   },
   settings: {
     title: "Configuración",
-    subtitle: "Cuentas bancarias y categorías para tus finanzas.",
+    subtitle: "Cuenta, credenciales y sesiones en un solo lugar.",
+    tabsLabel: "Secciones de ajustes",
+    tabGeneral: "General",
+    tabSessions: "Sesiones",
     accountsTitle: "Cuentas",
     accountsHint: "Agregá cuentas por nombre o alias; aparecen automáticamente en Finanzas.",
     accountName: "Nombre o alias",

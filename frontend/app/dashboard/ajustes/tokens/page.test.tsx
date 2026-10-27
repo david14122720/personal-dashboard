@@ -115,12 +115,24 @@ describe("tokens page", () => {
     expect(screen.getByText("1 activos")).toBeInTheDocument();
   });
 
-  it("marks the tokens entry current in the sidebar chrome", async () => {
+  it("renders inside the unified settings interface with the tokens tab current", async () => {
     render(h(TokensPage, null));
     expect(await screen.findByText("cli")).toBeInTheDocument();
 
-    const tokensLinks = screen.getAllByRole("link", { name: "Tokens de API" });
-    expect(tokensLinks.some((l) => l.getAttribute("aria-current") === "page")).toBe(true);
+    const tabs = screen.getByRole("navigation", { name: "Secciones de ajustes" });
+    expect(within(tabs).getByRole("link", { name: "Tokens de API" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(within(tabs).getByRole("link", { name: "General" })).not.toHaveAttribute(
+      "aria-current",
+    );
+    expect(screen.getByRole("heading", { level: 1, name: "Configuración" })).toBeInTheDocument();
+    const rail = screen.getByRole("complementary");
+    expect(within(rail).getByRole("link", { name: "Ajustes" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeInTheDocument();
   });
 

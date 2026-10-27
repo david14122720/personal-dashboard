@@ -1,5 +1,5 @@
 import { createElement as h } from "react";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /** Mutable shell fixtures: the path, the `useHabitsToday` and the
@@ -54,25 +54,23 @@ function renderShell() {
   return render(h(AppShell, null, h("p", { "data-testid": "child" }, "contenido")));
 }
 
-/** The rail nav is the only navigation with seven destinations. */
+/** The rail nav is the navigation inside the desktop sidebar. */
 function railNav(): HTMLElement {
-  const rail = screen
-    .getAllByRole("navigation")
-    .find((nav) => within(nav).queryAllByRole("link").length === 7);
-  if (!rail) throw new Error("rail navigation not found");
-  return rail;
+  const aside = screen.getByRole("complementary");
+  return within(aside).getByRole("navigation");
 }
 
-/** The bottom tab bar is the only navigation with five destinations. */
+/** The bottom tab bar is the navigation outside the desktop sidebar. */
 function tabNav(): HTMLElement {
   const tabs = screen
     .getAllByRole("navigation")
-    .find((nav) => within(nav).queryAllByRole("link").length === 5);
+    .find((nav) => nav.closest("#app-sidebar") === null);
   if (!tabs) throw new Error("mobile tab navigation not found");
   return tabs;
 }
 
 beforeEach(() => {
+  localStorage.clear();
   state.path = "/dashboard/";
   state.habits = { data: undefined, isLoading: true, error: undefined };
   state.prefs = { data: undefined, isLoading: true, error: undefined };
@@ -93,10 +91,13 @@ describe("AppShell rail", () => {
       "Finanzas",
       "Productividad",
       "Hábitos",
+      "Hermes",
       "Ajustes",
-      "Tokens de API",
-      "Sesiones",
     ]);
+    const hermes = within(railNav()).getByRole("link", { name: "Hermes" });
+    expect(hermes.previousElementSibling?.textContent?.trim()).toBe("Hábitos");
+    expect(hermes.getAttribute("href")).toBe("/dashboard/hermes/");
+    expect(hermes.querySelector("svg path")).not.toBeNull();
   });
 
   it("paints the active rail item with the deck recipe and marks it for assistive tech", () => {
@@ -142,7 +143,7 @@ describe("AppShell rail", () => {
 });
 
 describe("AppShell mobile chrome", () => {
-  it("keeps exactly the five design destinations and marks the current one", () => {
+  it("keeps exactly the five mobile design destinations and marks the current one", () => {
     state.path = "/dashboard/habitos/";
     renderShell();
     const tabs = tabNav();
@@ -161,16 +162,24 @@ describe("AppShell mobile chrome", () => {
       "page",
       null,
     ]);
+    // Hermes stays a desktop rail destination: a sixth tab merged the labels
+    // at 390 px (Judgment Day MAJOR). The page itself remains responsive.
+    expect(within(tabs).queryByRole("link", { name: "Hermes" })).toBeNull();
+    expect(within(railNav()).getByRole("link", { name: "Hermes" })).toBeInTheDocument();
     expect(links[0].className).toContain("min-w-[56px]");
     expect(links[3].className).toContain("text-signal");
     expect(within(tabs).queryByRole("link", { name: "Tokens de API" })).toBeNull();
     expect(within(tabs).queryByRole("link", { name: "Sesiones" })).toBeNull();
   });
 
-  it("stays reachable: every table destination keeps its own link in the shell", () => {
+  it("moves Tokens de API and Sesiones out of both chrome branches into the Ajustes hub", () => {
     renderShell();
-    expect(screen.getAllByRole("link", { name: "Tokens de API" }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("link", { name: "Sesiones" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("link", { name: "Tokens de API" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Sesiones" })).toBeNull();
+    expect(within(railNav()).getByRole("link", { name: "Ajustes" })).toHaveAttribute(
+      "href",
+      "/dashboard/ajustes/",
+    );
   });
 });
 
@@ -314,5 +323,96 @@ describe("AppShell brand logo", () => {
       expect(/\bh-(\d+(?:\.\d+)?)\s+w-\1\b/.test(tile.className)).toBe(true);
     }
     expect(tiles.filter((tile) => tile.classList.contains("glow-cyan-sm"))).toHaveLength(1);
+  });
+});
+
+describe("AppShell collapsible rail", () => {
+  function railAside(): HTMLElement {
+    return screen.getByRole("complementary");
+  }
+
+  it("starts expanded and offers the collapse control with disclosure semantics", () => {
+    renderShell();
+    const aside = railAside();
+    expect(aside.id).toBe("app-sidebar");
+    expect(aside.className).toContain("md:w-64");
+    expect(aside.className).not.toContain("md:w-[72px]");
+    const toggle = screen.getByRole("button", { name: "Colapsar barra lateral" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAttribute("aria-controls", "app-sidebar");
+    expect(within(aside).getByText("Centro de Mando")).toBeInTheDocument();
+  });
+
+  it("collapses to the icon rail: groups, labels, brand subline and profile text disappear", async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Colapsar barra lateral" }));
+    const aside = railAside();
+    expect(aside.className).toContain("md:w-[72px]");
+    expect(within(aside).queryByText("Plataforma")).toBeNull();
+    expect(within(aside).queryByText("Sistema")).toBeNull();
+    expect(within(aside).queryByText("Centro de Mando")).toBeNull();
+    expect(within(aside).queryByText(/v0\./)).toBeNull();
+    expect(within(aside).queryByText("David Rojas")).toBeNull();
+    expect(within(aside).queryByText("david@example.com")).toBeNull();
+    // Icons remain, each with its accessible name and a hover tooltip.
+    const links = within(aside).getAllByRole("link");
+    expect(links).toHaveLength(6);
+    for (const link of links) {
+      expect(link.getAttribute("aria-label")).toBeTruthy();
+      expect(link.querySelector("[data-rail-tooltip]")).not.toBeNull();
+      expect(link.querySelector("[data-rail-label]")).toBeNull();
+    }
+    expect(within(aside).getByRole("link", { name: "Dashboard" })).toHaveAttribute(
+      "data-tooltip",
+      "Dashboard",
+    );
+    await waitFor(() => {
+      expect(localStorage.getItem("pd-sidebar-collapsed")).toBe("1");
+    });
+  });
+
+  it("expands back and persists the preference", async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Colapsar barra lateral" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expandir barra lateral" }));
+    const aside = railAside();
+    expect(aside.className).toContain("md:w-64");
+    expect(within(aside).getByText("Plataforma")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(localStorage.getItem("pd-sidebar-collapsed")).toBe("0");
+    });
+  });
+
+  it("restores a stored collapsed preference after mount", async () => {
+    localStorage.setItem("pd-sidebar-collapsed", "1");
+    state.prefs = {
+      data: { email: "david@example.com", display_name: "David Rojas" },
+      isLoading: false,
+      error: undefined,
+    };
+    renderShell();
+    await waitFor(() => {
+      expect(railAside().className).toContain("md:w-[72px]");
+    });
+    expect(screen.getByRole("button", { name: "Expandir barra lateral" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  it("ignores unavailable storage instead of crashing", () => {
+    const original = window.localStorage;
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("storage disabled");
+      },
+    });
+    try {
+      renderShell();
+      expect(screen.getByRole("button", { name: "Colapsar barra lateral" })).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, "localStorage", { configurable: true, value: original });
+    }
   });
 });
