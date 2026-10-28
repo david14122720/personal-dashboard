@@ -9,14 +9,17 @@ mod state;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, Extension},
     http::{HeaderName, HeaderValue, StatusCode},
     routing::{delete, get, patch, post},
     Json, Router,
 };
 use serde_json::json;
 use tower_http::{
-    compression::CompressionLayer,
+    compression::{
+        predicate::{DefaultPredicate, NotForContentType, Predicate},
+        CompressionLayer,
+    },
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
@@ -283,10 +286,19 @@ fn assemble(
         .route("/ready", get(routes::ready::ready_handler))
         // Multipart uploads need more than axum's 2 MiB default: the limit
         // lives in `hermes.rs` next to the attachment guardrails it protects.
+        // No body ceiling (owner spec S2): attachment bytes are counted and
+        // discarded chunk by chunk, so a huge upload cannot exhaust RAM.
         .route(
             "/api/hermes",
-            post(routes::hermes::hermes_chat_handler)
-                .layer(DefaultBodyLimit::max(routes::hermes::MAX_BODY_BYTES)),
+            post(routes::hermes::hermes_chat_handler).layer(DefaultBodyLimit::disable()),
+        )
+        // Signed, ranged and streamed file delivery for `MEDIA:` paths. It
+        // carries its own short-lived signature because <video>/<img> cannot
+        // send the session bearer.
+        .route(
+            "/api/hermes/media",
+            get(routes::hermes_media::media_handler)
+                .layer(Extension(routes::hermes_media::MediaConfig::current().clone())),
         )
         .nest("/api", api_routes);
     // Same mounting shape as `/api/hermes`: exact outer route, outside the
@@ -343,7 +355,16 @@ fn assemble(
     // skips formats that do not benefit (images, fonts, archives) via its
     // default predicate. It is applied outermost in `assemble`, after the
     // security headers, so a compressed body never loses a response header.
-    .layer(CompressionLayer::new())
+    // Media streams are already compressed (MP4/MP3) and must keep their
+    // Content-Length so the browser can seek; gzipping a 50 MB video burns CPU
+    // and drops the length. The default predicate only skips images/fonts.
+    .layer(
+        CompressionLayer::new().compress_when(
+            DefaultPredicate::new()
+                .and(NotForContentType::const_new("video/"))
+                .and(NotForContentType::const_new("audio/")),
+        ),
+    )
 }
 
 /// Root router: health probes stay at `/`, the API nests under `/api`, and

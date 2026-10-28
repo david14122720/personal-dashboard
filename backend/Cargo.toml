@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 axum = { version = "0.8", features = ["json", "multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "rust_decimal"] }
 # `compression-gzip` / `compression-br` are features of the tower-http dep
 # that is already here (not a new dependency): they back the `CompressionLayer`

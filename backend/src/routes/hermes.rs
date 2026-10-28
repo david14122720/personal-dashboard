@@ -30,7 +30,11 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{config::HermesConfig, state::AppState};
+use crate::{
+    config::HermesConfig,
+    routes::hermes_media::{mime_for, MediaConfig, MEDIA_EXTENSIONS},
+    state::AppState,
+};
 
 /// Opaque session identifier minted by the UI; forwarded byte-for-byte.
 pub const SESSION_HEADER: &str = "x-hermes-session-id";
@@ -42,12 +46,20 @@ const MAX_CONTENT_BYTES: usize = 32_000;
 /// Server-side memory guardrails. They bound RAM, not file *types*: any number
 /// of images, documents, audios and archives is accepted while it fits.
 pub const MAX_ATTACHMENTS: usize = 20;
-pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
-pub const MAX_TOTAL_ATTACHMENT_BYTES: usize = 40 * 1024 * 1024;
-/// Request body ceiling: attachments + text + multipart overhead.
-pub const MAX_BODY_BYTES: usize = MAX_TOTAL_ATTACHMENT_BYTES + MAX_CONTENT_BYTES + 1024 * 1024;
+
+/// JSON turns are a message plus history-less metadata; only the multipart
+/// path is unbounded (owner spec S2), and it is read chunk by chunk.
+const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
+
+/// Media cards per reply. A model that prints fifty paths should not turn the
+/// envelope into a listing.
+const MAX_MEDIA_ARTIFACTS: usize = 32;
 /// How much of a text-like file is inlined into the prompt.
 const MAX_INLINE_TEXT_BYTES: usize = 16_000;
+
+/// Audio is base64-encoded into one JSON part; beyond this the proxy degrades
+/// the note to text instead of buffering an unbounded recording.
+const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "md", "markdown", "json", "csv", "tsv", "xml", "yaml", "yml", "log", "rs", "ts", "tsx",
@@ -71,7 +83,13 @@ pub struct ChatMessage {
 pub struct Attachment {
     pub filename: String,
     pub mime: String,
+    /// Kept only when the upstream needs the bytes (image, audio, text);
+    /// everything else is counted and discarded to bound memory.
     pub bytes: Vec<u8>,
+    pub size: u64,
+    /// The kept prefix is shorter than the file: text inlines with a marker,
+    /// audio degrades to a note instead of sending a truncated recording.
+    pub truncated: bool,
 }
 
 /// The current user turn: text and/or uploads.
@@ -201,7 +219,7 @@ fn part_for(attachment: &Attachment) -> Value {
             "Archivo adjunto: {} ({}, {} bytes). El servidor de Hermes no puede leer el contenido binario de este archivo.",
             attachment.filename,
             mime,
-            attachment.bytes.len()
+            attachment.size
         )
     })
 }
@@ -214,7 +232,7 @@ fn inline_text(attachment: &Attachment) -> Option<String> {
     }
     let lossy = String::from_utf8_lossy(&attachment.bytes);
     let body: &str = &lossy;
-    let (shown, truncated) = if body.len() > MAX_INLINE_TEXT_BYTES {
+    let (shown, truncated) = if attachment.truncated || body.len() > MAX_INLINE_TEXT_BYTES {
         let mut end = MAX_INLINE_TEXT_BYTES;
         while end > 0 && !body.is_char_boundary(end) {
             end -= 1;
@@ -240,10 +258,10 @@ fn degraded_audio_note(attachment: &Attachment) -> Value {
     json!({
         "type": "text",
         "text": format!(
-            "Nota de voz adjunta: {} ({}, {} bytes). Este servidor de Hermes todavía no procesa audio, así que no pudo escucharla.",
+            "Nota de voz adjunta como referencia: {} ({}, {} bytes). Este endpoint de Hermes sólo acepta texto e imágenes, así que no pudo escucharla.",
             attachment.filename,
             base_mime(&attachment.mime),
-            attachment.bytes.len()
+            attachment.size
         )
     })
 }
@@ -258,7 +276,7 @@ fn build_content(turn: &Turn, degrade_audio: bool) -> Value {
     }
     for attachment in &turn.attachments {
         let mime = base_mime(&attachment.mime);
-        if degrade_audio && is_audio(mime) {
+        if (degrade_audio || attachment.truncated) && is_audio(mime) {
             parts.push(degraded_audio_note(attachment));
         } else {
             parts.push(part_for(attachment));
@@ -284,7 +302,7 @@ fn degradation_warnings(turn: &Turn) -> Vec<String> {
         .filter(|a| is_audio(base_mime(&a.mime)))
         .map(|a| {
             format!(
-                "No se pudo enviar la nota de voz «{}»: este servidor de Hermes no procesa audio todavía.",
+                "La nota de voz «{}» se envió como texto: el endpoint de Hermes sólo acepta texto e imágenes.",
                 a.filename
             )
         })
@@ -299,10 +317,13 @@ fn degradation_warnings(turn: &Turn) -> Vec<String> {
 }
 
 fn upstream_unsupported(body: &Value) -> bool {
-    body.pointer("/error/code")
-        .and_then(Value::as_str)
-        .map(|code| code == "unsupported_content_type")
-        .unwrap_or(false)
+    // Measured on hermes-agent 0.22.5: `{"message":...,"code":"unsupported_content_type"}`
+    // at the top level. The nested `/error/code` form is kept for gateways that
+    // wrap it the OpenAI way.
+    ["/code", "/error/code"]
+        .iter()
+        .filter_map(|pointer| body.pointer(pointer).and_then(Value::as_str))
+        .any(|code| code == "unsupported_content_type")
 }
 
 /// Keep only artifacts a browser may safely load and download.
@@ -337,6 +358,9 @@ fn sanitize_artifacts(raw: &[Value]) -> Vec<Value> {
             if let Some(size) = object.get("size").and_then(Value::as_u64) {
                 out.insert("size".into(), Value::Number(size.into()));
             }
+            if let Some(path) = object.get("path").and_then(Value::as_str) {
+                out.insert("path".into(), Value::String(path.to_string()));
+            }
             Some(Value::Object(out))
         })
         .collect()
@@ -356,6 +380,152 @@ fn normalize(upstream: &Value, warnings: Vec<String>) -> Value {
         .map(|items| sanitize_artifacts(items))
         .unwrap_or_default();
     json!({ "reply": reply, "artifacts": artifacts, "warnings": warnings })
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Media the agent pointed at in its prose: `MEDIA:/abs/path` or a bare
+/// absolute path, restricted to extensions the chat renders. The gateway
+/// inlines images as `data:` URLs, so in practice this covers video, audio,
+/// documents and archives.
+fn known_extension(path: &str) -> bool {
+    path.rfind('.').is_some_and(|dot| {
+        MEDIA_EXTENSIONS.contains(&path[dot + 1..].to_ascii_lowercase().as_str())
+    })
+}
+
+fn media_paths(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let mut push = |candidate: &str| {
+        let path = candidate.trim_end_matches(['.', ',', ';', ':', ')', ']']);
+        if !path.starts_with('/') || !known_extension(path) {
+            return;
+        }
+        if found.iter().any(|seen| seen == path) {
+            return;
+        }
+        if found.len() < MAX_MEDIA_ARTIFACTS {
+            found.push(path.to_string());
+        }
+    };
+
+    // Markdown links keep paths with spaces unambiguous: [label](/opt/data/a b.pdf)
+    let mut rest = text;
+    while let Some(open) = rest.find("](") {
+        let after = &rest[open + 2..];
+        let Some(close) = after.find(')') else { break };
+        push(&after[..close]);
+        rest = &after[close + 1..];
+    }
+
+    // Bare MEDIA: can carry spaces; the caller resolves variants against disk.
+    for line in text.lines() {
+        if let Some(index) = line.find("MEDIA:") {
+            let tail = line[index + "MEDIA:".len()..].trim();
+            if tail.starts_with('/') {
+                push(tail);
+                // Progressive prefixes: "a b c.mp4" -> "a b c.mp4" then "a b.mp4"...
+                let mut end = tail.len();
+                for _ in 0..8 {
+                    let Some(space) = tail[..end].rfind(' ') else { break };
+                    end = space;
+                    push(&tail[..end]);
+                }
+            }
+        }
+    }
+
+    for raw in text.split_whitespace() {
+        let token = raw.trim_matches(|ch: char| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | '*' | ',' | ';' | ':'
+                )
+        });
+        let path = token.strip_prefix("MEDIA:").unwrap_or(token);
+        push(path);
+    }
+    found
+}
+
+/// First existing variant of a candidate path (whole, then shorter prefixes).
+fn media_variant(cfg: &MediaConfig, path: &str) -> Option<(String, std::path::PathBuf)> {
+    if let Some(resolved) = cfg.resolve(path) {
+        return Some((path.to_string(), resolved));
+    }
+    let mut end = path.len();
+    for _ in 0..8 {
+        let space = path[..end].rfind(' ')?;
+        end = space;
+        let candidate = &path[..end];
+        if let Some(resolved) = cfg.resolve(candidate) {
+            return Some((candidate.to_string(), resolved));
+        }
+    }
+    None
+}
+
+/// Turn existing media paths into artifacts with a signed, same-origin URL and
+/// the real size/mime from disk. A path the backend cannot see is left in the
+/// text untouched: a card that 404s would be worse than the honest path.
+async fn add_media_artifacts(envelope: &mut Value, cfg: &MediaConfig) {
+    let Some(reply) = envelope.get("reply").and_then(Value::as_str) else {
+        return;
+    };
+    let candidates = media_paths(reply);
+    if candidates.is_empty() {
+        return;
+    }
+    let now = now_secs();
+    let mut additions: Vec<Value> = Vec::new();
+    for path in candidates {
+        // A `MEDIA:` line may include trailing prose. Try the candidate, then
+        // shorter prefixes ending at a space, so "clip final.mp4" wins over
+        // "clip final.mp4, gracias".
+        let Some(resolved) = media_variant(cfg, &path) else {
+            continue;
+        };
+        let path = resolved.0;
+        let resolved = resolved.1;
+        let Ok(metadata) = tokio::fs::metadata(&resolved).await else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let name = resolved
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("archivo")
+            .to_string();
+        additions.push(json!({
+            "url": cfg.signed_url(&path, now),
+            "name": name,
+            "mime": mime_for(&resolved),
+            "size": metadata.len(),
+            "path": path,
+        }));
+    }
+    if additions.is_empty() {
+        return;
+    }
+    let Some(array) = envelope.get_mut("artifacts").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in additions {
+        let duplicate = array
+            .iter()
+            .any(|existing| existing.get("path") == item.get("path"));
+        if !duplicate {
+            array.push(item);
+        }
+    }
 }
 
 async fn read_text_field(mut field: Field<'_>) -> Result<String, Response> {
@@ -384,21 +554,33 @@ async fn read_text_field(mut field: Field<'_>) -> Result<String, Response> {
     }
 }
 
-async fn read_capped(mut field: Field<'_>, cap: usize, code: &str) -> Result<Vec<u8>, Response> {
-    let mut out = Vec::new();
+/// Consume one multipart field chunk by chunk. Bytes beyond `keep_limit` are
+/// counted and dropped, so a multi-gigabyte upload costs disk/network time and
+/// constant RAM. `truncated` tells the caller the kept prefix is incomplete.
+async fn read_field(
+    field: Field<'_>,
+    keep_limit: usize,
+) -> Result<(Vec<u8>, u64, bool), Response> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut size: u64 = 0;
+    let mut truncated = false;
+    let mut field = field;
     loop {
         match field.chunk().await {
             Ok(Some(chunk)) => {
-                if out.len() + chunk.len() > cap {
-                    return Err(error_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        code,
-                        "the attachment exceeds the upload limit",
-                    ));
+                size += chunk.len() as u64;
+                if out.len() < keep_limit {
+                    let room = keep_limit - out.len();
+                    let take = room.min(chunk.len());
+                    out.extend_from_slice(&chunk[..take]);
+                    if take < chunk.len() {
+                        truncated = true;
+                    }
+                } else if keep_limit > 0 {
+                    truncated = true;
                 }
-                out.extend_from_slice(&chunk);
             }
-            Ok(None) => return Ok(out),
+            Ok(None) => return Ok((out, size, truncated)),
             Err(_) => {
                 return Err(error_response(
                     StatusCode::BAD_REQUEST,
@@ -414,7 +596,6 @@ async fn read_capped(mut field: Field<'_>, cap: usize, code: &str) -> Result<Vec
 /// future UI can send extra metadata without breaking the proxy.
 async fn parse_multipart(mut multipart: Multipart) -> Result<Turn, Response> {
     let mut turn = Turn::default();
-    let mut total = 0usize;
     loop {
         let field = match multipart.next_field().await {
             Ok(Some(field)) => field,
@@ -448,24 +629,28 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<Turn, Response> {
                     .content_type()
                     .map(|value| base_mime(value).to_string())
                     .unwrap_or_else(|| "application/octet-stream".to_string());
-                let bytes = read_capped(field, MAX_FILE_BYTES, "ATTACHMENT_TOO_LARGE").await?;
-                total += bytes.len();
-                if total > MAX_TOTAL_ATTACHMENT_BYTES {
-                    return Err(error_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "ATTACHMENTS_TOO_LARGE",
-                        "the attachments exceed the total upload limit",
-                    ));
-                }
+                let base = base_mime(&mime).to_string();
+                let keep_limit = if is_image(&base) {
+                    usize::MAX
+                } else if is_audio(&base) {
+                    MAX_AUDIO_BYTES
+                } else if is_text_like(&base, &filename) {
+                    MAX_INLINE_TEXT_BYTES
+                } else {
+                    0
+                };
+                let (bytes, size, truncated) = read_field(field, keep_limit).await?;
                 turn.attachments.push(Attachment {
                     filename,
                     mime,
                     bytes,
+                    size,
+                    truncated,
                 });
             }
             _ => {
                 // Drain unknown fields so the stream keeps moving.
-                let _ = read_capped(field, MAX_BODY_BYTES, "INVALID_MULTIPART").await?;
+                let _ = read_field(field, 0).await?;
             }
         }
     }
@@ -624,7 +809,7 @@ pub async fn hermes_chat_handler(
         .to_ascii_lowercase();
 
     let turn = if content_type.starts_with("application/json") {
-        let bytes = match axum::body::to_bytes(request.into_body(), MAX_BODY_BYTES).await {
+        let bytes = match axum::body::to_bytes(request.into_body(), MAX_JSON_BYTES).await {
             Ok(bytes) => bytes,
             Err(_) => {
                 return error_response(
@@ -677,7 +862,8 @@ pub async fn hermes_chat_handler(
     let session = headers.get(SESSION_HEADER);
     match send_to_hermes(cfg, session, &turn).await {
         Ok((upstream, warnings)) => {
-            let envelope = normalize(&upstream, warnings);
+            let mut envelope = normalize(&upstream, warnings);
+            add_media_artifacts(&mut envelope, MediaConfig::current()).await;
             match serde_json::to_vec(&envelope) {
                 Ok(body) => Response::builder()
                     .status(StatusCode::OK)
@@ -778,6 +964,8 @@ mod tests {
             filename: filename.into(),
             mime: mime.into(),
             bytes: bytes.to_vec(),
+            size: bytes.len() as u64,
+            truncated: false,
         }
     }
 
@@ -1216,11 +1404,11 @@ mod tests {
         assert!(String::from_utf8_lossy(&body).contains("TOO_MANY_ATTACHMENTS"));
     }
 
-    /// The per-file guardrail only runs under the route's body limit: a bare
-    /// `Request` keeps axum's 2 MiB default, which rejects first. This drives
-    /// the real router layer instead of the parser in isolation.
+    /// Owner spec S2: no byte ceiling. A 12 MiB non-image attachment is
+    /// accepted, counted and discarded without ever being buffered, and the
+    /// turn still carries only its descriptor.
     #[tokio::test]
-    async fn multipart_rejects_an_attachment_over_the_size_limit() {
+    async fn multipart_accepts_an_attachment_over_the_old_limit() {
         use tower::ServiceExt;
 
         let app = Router::new()
@@ -1228,14 +1416,19 @@ mod tests {
                 "/",
                 post(|multipart: Multipart| async {
                     match parse_multipart(multipart).await {
-                        Ok(_) => StatusCode::OK,
+                        Ok(turn) => {
+                            let attachment = &turn.attachments[0];
+                            assert_eq!(attachment.size, 12 * 1024 * 1024);
+                            assert!(attachment.bytes.is_empty(), "bytes must not be buffered");
+                            StatusCode::OK
+                        }
                         Err(response) => response.status(),
                     }
                 }),
             )
-            .layer(DefaultBodyLimit::max(MAX_BODY_BYTES));
+            .layer(DefaultBodyLimit::disable());
 
-        let big = vec![0u8; MAX_FILE_BYTES + 1];
+        let big = vec![0u8; 12 * 1024 * 1024];
         let mut body = part_file("files", "grande.zip", "application/zip", &big);
         body.extend_from_slice(format!("--{B}--\r\n").as_bytes());
         let request = Request::builder()
@@ -1248,19 +1441,152 @@ mod tests {
             .expect("multipart request");
 
         let response = app.oneshot(request).await.expect("router call");
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]
-    fn files_only_turns_carry_no_empty_text_part() {
-        let mut turn = Turn::default();
-        turn.attachments
-            .push(attachment("foto.png", "image/png", &[1, 2]));
-        let content = build_content(&turn, false);
-        let parts = content.as_array().expect("content parts");
-        assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0]["type"], "image_url");
+    fn media_paths_reads_media_tokens_only() {
+        let reply = "Listo:\nMEDIA:/opt/data/clip.mp4\n/opt/data/ensayo.docx, y nada más.\n                     una ruta inventada /opt/data/noexiste.pdf y texto /opt/data/sin-extension";
+        assert_eq!(
+            media_paths(reply),
+            vec![
+                "/opt/data/clip.mp4".to_string(),
+                "/opt/data/ensayo.docx".to_string(),
+                "/opt/data/noexiste.pdf".to_string(),
+            ]
+        );
+        assert!(media_paths("sin rutas ni extensiones .zip sueltas").is_empty());
+        assert!(media_paths("MEDIA:/opt/data/x.exe").is_empty());
     }
+
+    #[tokio::test]
+    async fn a_huge_text_file_is_truncated_not_buffered() {
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route(
+                "/",
+                post(|multipart: Multipart| async {
+                    match parse_multipart(multipart).await {
+                        Ok(turn) => {
+                            let attachment = &turn.attachments[0];
+                            assert_eq!(attachment.size, 12 * 1024 * 1024);
+                            assert!(attachment.bytes.len() <= MAX_INLINE_TEXT_BYTES);
+                            assert!(attachment.truncated);
+                            StatusCode::OK
+                        }
+                        Err(response) => response.status(),
+                    }
+                }),
+            )
+            .layer(DefaultBodyLimit::disable());
+
+        let big = vec![b'x'; 12 * 1024 * 1024];
+        let mut body = part_file("files", "grande.log", "text/plain", &big);
+        body.extend_from_slice(format!("--{B}--\r\n").as_bytes());
+        let request = Request::builder()
+            .method("POST")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={B}"),
+            )
+            .body(Body::from(body))
+            .expect("multipart request");
+
+        let response = app.oneshot(request).await.expect("router call");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn media_paths_supports_spaces_and_markdown_links() {
+        let spaced = "/opt/data/entregas/mi video final.mp4";
+        let reply = format!(
+            "Tomá MEDIA:{spaced} y también [el pdf](/opt/data/entregas/informe final.pdf)."
+        );
+        let found = media_paths(&reply);
+        assert!(found.contains(&spaced.to_string()), "{found:?}");
+        assert!(
+            found.contains(&"/opt/data/entregas/informe final.pdf".to_string()),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn upstream_unsupported_accepts_the_real_top_level_code() {
+        let real = json!({"message": "Unsupported content part type 'input_audio'.", "code": "unsupported_content_type"});
+        let nested = json!({"error": {"code": "unsupported_content_type"}});
+        let other = json!({"error": {"code": "invalid_request"}});
+        assert!(upstream_unsupported(&real));
+        assert!(upstream_unsupported(&nested));
+        assert!(!upstream_unsupported(&other));
+    }
+
+    #[tokio::test]
+    async fn reply_paths_become_signed_artifacts_only_when_the_file_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-enrich-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("ensayo-celula.docx");
+        std::fs::write(&doc, b"PK\x03\x04docx").unwrap();
+        std::fs::write(dir.join("clip.mp4"), b"video").unwrap();
+
+        let cfg = MediaConfig::new(vec![dir.clone()], b"test".to_vec(), 600);
+        let mut envelope = json!({
+            "reply": format!(
+                "Listo:\nMEDIA:{}\n{}\ny también /opt/data/inventado.pdf",
+                dir.join("clip.mp4").display(),
+                doc.display()
+            ),
+            "artifacts": [],
+            "warnings": [],
+        });
+        add_media_artifacts(&mut envelope, &cfg).await;
+
+        let artifacts = envelope["artifacts"].as_array().expect("artifacts");
+        assert_eq!(artifacts.len(), 2, "{artifacts:?}");
+        assert_eq!(artifacts[0]["name"], "clip.mp4");
+        assert_eq!(artifacts[0]["mime"], "video/mp4");
+        assert_eq!(artifacts[0]["size"], 5);
+        assert_eq!(artifacts[1]["mime"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        let url = artifacts[0]["url"].as_str().unwrap();
+        assert!(url.starts_with("/api/hermes/media?path="), "{url}");
+        assert!(url.contains("&sig="));
+        assert!(url.contains("&exp="));
+        assert!(artifacts[0]["path"].as_str().unwrap().ends_with("clip.mp4"));
+        assert!(
+            artifacts.iter().all(|a| !a["name"].as_str().unwrap().contains("inventado")),
+            "a missing file must not produce a card"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_path_with_spaces_is_signed_and_card_ready() {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-enrich-space-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mi video final.mp4");
+        std::fs::write(&file, b"video").unwrap();
+        let cfg = MediaConfig::new(vec![dir.clone()], b"test".to_vec(), 600);
+        let mut envelope = json!({
+            "reply": format!("Tomá MEDIA:{} y contame.", file.display()),
+            "artifacts": [],
+            "warnings": [],
+        });
+        add_media_artifacts(&mut envelope, &cfg).await;
+        let artifacts = envelope["artifacts"].as_array().expect("artifacts");
+        assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+        assert_eq!(artifacts[0]["name"], "mi video final.mp4");
+        assert!(artifacts[0]["path"].as_str().unwrap().ends_with("mi video final.mp4"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 
     /// Real upstream round trip (network + credentials). Ignored by default:
     /// run it with `HERMES_API_URL`/`HERMES_API_KEY` exported to record latency.
@@ -1339,7 +1665,6 @@ mod tests {
 
     #[test]
     fn content_type_and_limits_are_wired() {
-        assert!(MAX_BODY_BYTES > MAX_TOTAL_ATTACHMENT_BYTES);
         assert_eq!(MAX_ATTACHMENTS, 20);
         assert!(is_text_like("text/plain", "nota.weird"));
         assert!(is_text_like("application/octet-stream", "main.rs"));
