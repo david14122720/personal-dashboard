@@ -39,6 +39,8 @@ export interface HermesArtifact {
   url: string;
   mime?: string;
   size?: number;
+  /** Absolute server path, present for signed `/api/hermes/media` URLs. */
+  path?: string;
 }
 
 export interface HermesReply {
@@ -96,6 +98,7 @@ function artifactsOf(raw: unknown): HermesArtifact[] {
       name: typeof candidate.name === "string" ? candidate.name : candidate.url,
       mime: typeof candidate.mime === "string" ? candidate.mime : undefined,
       size: typeof candidate.size === "number" ? candidate.size : undefined,
+      path: typeof candidate.path === "string" ? candidate.path : undefined,
     });
   }
   return out;

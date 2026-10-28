@@ -408,7 +408,7 @@ describe("HermesChat", () => {
 
     const card = await screen.findByTestId("hermes-artifact");
     expect(within(card).getByText("reporte.pdf")).toBeInTheDocument();
-    const link = within(card).getByRole("link", { name: "Descargar reporte.pdf" });
+    const link = within(card).getByRole("link", { name: "Descargar documento: reporte.pdf" });
     expect(link).toHaveAttribute("href", "https://example.test/reporte.pdf");
     expect(link).toHaveAttribute("download", "reporte.pdf");
     expect(screen.getByRole("note")).toHaveTextContent("nota.webm");
@@ -422,7 +422,7 @@ describe("HermesChat", () => {
 
     const card = await screen.findByTestId("hermes-artifact");
     expect(within(card).getByText("grafico.png")).toBeInTheDocument();
-    expect(within(card).getByRole("link", { name: "Descargar grafico.png" })).toHaveAttribute(
+    expect(within(card).getByRole("link", { name: "Descargar: grafico.png" })).toHaveAttribute(
       "href",
       "https://example.test/grafico.png",
     );

@@ -575,13 +575,32 @@ function TopBar() {
   );
 }
 
-export default function AppShell({ children }: { children: React.ReactNode }) {
+/**
+ * `fill` pins the shell to the viewport and makes `<main>` the flex track a
+ * full-height page needs (the chat composer must stay at the bottom and the
+ * message list must own the only scrollbar). Every other route keeps the
+ * document flow: adding `h-[100dvh] overflow-hidden` globally would trap
+ * long pages.
+ */
+export default function AppShell({
+  children,
+  fill = false,
+}: {
+  children: React.ReactNode;
+  fill?: boolean;
+}) {
   // The shell owns the single notification surface on every route (the
   // prototype puts it in the topbar, `dashboard-desktop.html:210-219`): one
   // desktop branch and one mobile branch, exactly one visible at a time.
   const { collapsed, toggle } = useCollapsedSidebar();
   return (
-    <div className="min-h-screen bg-deck text-instrument">
+    <div
+      className={
+        fill
+          ? "h-[100dvh] overflow-hidden bg-deck text-instrument"
+          : "min-h-screen bg-deck text-instrument"
+      }
+    >
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-signal focus:px-3 focus:py-2 focus:text-deck"
@@ -589,7 +608,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {t("nav.skipToContent")}
       </a>
       <MobileChrome />
-      <div className="flex min-h-screen">
+      <div className={fill ? "flex h-full min-h-0" : "flex min-h-screen"}>
         <aside
           id="app-sidebar"
           className={`sticky top-0 z-30 hidden h-screen shrink-0 flex-col justify-between border-r border-hair bg-panel transition-[width] duration-200 md:flex ${
@@ -644,7 +663,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <TopBar />
           <main
             id="main-content"
-            className="flex-1 px-4 pb-32 pt-[calc(3.5rem+env(safe-area-inset-top,0px))] md:px-6 md:pb-10 md:pt-6 xl:px-8"
+            className={
+              fill
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] pt-[calc(3.5rem+env(safe-area-inset-top,0px))] md:px-6 md:pb-6 md:pt-6 xl:px-8"
+                : "flex-1 px-4 pb-32 pt-[calc(3.5rem+env(safe-area-inset-top,0px))] md:px-6 md:pb-10 md:pt-6 xl:px-8"
+            }
           >
             {children}
           </main>

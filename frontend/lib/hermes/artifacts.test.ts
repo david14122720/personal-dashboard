@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  artifactExtension,
   artifactKind,
   collectArtifacts,
+  documentFamily,
+  downloadUrl,
   extensionOf,
   fileNameOf,
   isFileUrl,
@@ -42,7 +45,7 @@ describe("hermes artifacts", () => {
       "[un enlace normal](https://example.test/inicio) no es archivo.",
     ].join("\n");
 
-    const artifacts = collectArtifacts(reply, [
+    const { artifacts } = collectArtifacts(reply, [
       { name: "Reporte de octubre", url: "https://example.test/octubre.pdf", mime: "application/pdf", size: 1234 },
     ]);
 
@@ -58,7 +61,7 @@ describe("hermes artifacts", () => {
   });
 
   it("drops unsafe urls even when the agent asks for them", () => {
-    const artifacts = collectArtifacts("[pwn](javascript:alert(1)) https://x.test/a.js");
+    const { artifacts } = collectArtifacts("[pwn](javascript:alert(1)) https://x.test/a.js");
     expect(artifacts.map((item) => item.url)).toEqual(["https://x.test/a.js"]);
     expect(isSafeArtifactUrl("javascript:alert(1)")).toBe(false);
     expect(isSafeArtifactUrl("data:image/png;base64,aaa")).toBe(true);
@@ -67,6 +70,128 @@ describe("hermes artifacts", () => {
   });
 
   it("returns nothing for a plain conversational reply", () => {
-    expect(collectArtifacts("Hoy el dólar cerró en $3.158.")).toEqual([]);
+    expect(collectArtifacts("Hoy el dólar cerró en $3.158.")).toEqual({ artifacts: [], text: "Hoy el dólar cerró en $3.158." });
+  });
+
+  it("turns a signed media artifact into a card and removes the raw path", () => {
+    const path = "/opt/data/entregas/ensayo-celula.docx";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { artifacts, text } = collectArtifacts(
+      `Listo, te dejo el ensayo:\n\nMEDIA:${path}\n\nCualquier duda avisame.`,
+      [{ name: "ensayo-celula.docx", url, mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size: 2048, path }],
+    );
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].path).toBe(path);
+    expect(artifacts[0].kind).toBe("document");
+    expect(artifacts[0].size).toBe(2048);
+    expect(text).not.toContain("MEDIA:");
+    expect(text).not.toContain("/opt/data");
+    expect(text).toContain("Cualquier duda avisame.");
+  });
+
+  it("matches a bare absolute path the gateway prints for documents", () => {
+    const path = "/opt/data/probe-doc.pdf";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { artifacts, text } = collectArtifacts(`Tomá:\n\n${path}\n\nGracias.`, [
+      { name: "probe-doc.pdf", url, mime: "application/pdf", path },
+    ]);
+    expect(artifacts.map((item) => item.name)).toEqual(["probe-doc.pdf"]);
+    expect(text).toBe("Tomá:\n\nGracias.");
+  });
+
+  it("keeps an unmatched path visible but drops the MEDIA: prefix", () => {
+    const { artifacts, text } = collectArtifacts("Mirá:\nMEDIA:/opt/data/otro.mp4");
+    expect(artifacts).toHaveLength(0);
+    expect(text).toBe("Mirá:\n/opt/data/otro.mp4");
+  });
+
+  it("reads the download parameter and the document family", () => {
+    const path = "/opt/data/planilla.xlsx";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const artifact = { url, path, mime: undefined };
+    expect(downloadUrl(url, "planilla final.xlsx")).toBe(`${url}&download=planilla%20final.xlsx`);
+    expect(downloadUrl("https://x.test/a.pdf", "a.pdf")).toBe("https://x.test/a.pdf");
+    expect(artifactExtension(artifact)).toBe("xlsx");
+    expect(documentFamily(artifact)).toBe("excel");
+    expect(documentFamily({ url: "/opt/data/a.docx", path: "/opt/data/a.docx" })).toBe("word");
+    expect(documentFamily({ url: "/opt/data/a.pptx", path: "/opt/data/a.pptx" })).toBe("powerpoint");
+    expect(documentFamily({ url: "/opt/data/a.zip", path: "/opt/data/a.zip" })).toBe("archive");
+    expect(documentFamily({ url: "https://x.test/a.pdf", mime: "application/pdf" })).toBe("pdf");
+  });
+
+  it("never rewrites fenced code while stripping a delivered path", () => {
+    const { text } = collectArtifacts("```python\ndef f():\n    return 1\n```");
+    expect(text).toContain("    return 1");
+    expect(text).toContain("```python");
+  });
+
+  it("strips a delivered path that contains spaces", () => {
+    const path = "/opt/data/entregas/mi video final.mp4";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { artifacts, text } = collectArtifacts(`Tomá:\nMEDIA:${path}\nContame.`, [
+      { name: "mi video final.mp4", url, path, mime: "video/mp4" },
+    ]);
+    expect(artifacts).toHaveLength(1);
+    expect(text).toBe("Tomá:\nContame.");
+  });
+
+  it("classifies the gateway's inline data image as an image", () => {
+    const { artifacts } = collectArtifacts("![image](data:image/png;base64,iVBORw0KGgo=)");
+    expect(artifacts[0]?.kind).toBe("image");
+  });
+
+  it("leaves a delivered path inside a fenced code block untouched", () => {
+    const path = "/opt/data/entregas/ensayo.pdf";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { text } = collectArtifacts(
+      `Ejecutá:\n\n\`\`\`bash\ncp ${path} .\n\`\`\`\n\nMEDIA:${path}`,
+      [{ name: "ensayo.pdf", url, path, mime: "application/pdf" }],
+    );
+    expect(text).toContain(`cp ${path} .`);
+    expect(text).not.toContain(`MEDIA:${path}`);
+  });
+
+  it("removes the whole markdown link when its path is carded", () => {
+    const path = "/opt/data/entregas/informe final.pdf";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { artifacts, text } = collectArtifacts(
+      `Listo: [el informe](${path}) y nada más.`,
+      [{ name: "informe final.pdf", url, path, mime: "application/pdf" }],
+    );
+    expect(artifacts).toHaveLength(1);
+    expect(text).not.toContain("[el informe]()");
+    expect(text).not.toContain("]()");
+    expect(text).toBe("Listo: y nada más.");
+  });
+
+  it("never touches the path inside any code shape", () => {
+    const path = "/opt/data/entregas/informe.pdf";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const payload = [{ name: "informe.pdf", url, path, mime: "application/pdf" }];
+    const shapes = [
+      `Para escribir un bloque usá \`\`\` y después:\n\n\`\`\`bash\ncp ${path} .\n\`\`\`\n\nMEDIA:${path}`,
+      `~~~bash\ncp ${path} .\n~~~\n\nMEDIA:${path}`,
+      `\`\`\`\`md\n\`\`\`bash\ncp ${path} .\n\`\`\`\n\`\`\`\`\n\nMEDIA:${path}`,
+      `    cp ${path} .\n\nMEDIA:${path}`,
+    ];
+    for (const reply of shapes) {
+      const { text } = collectArtifacts(reply, payload);
+      expect(text).toContain(`cp ${path} .`);
+      expect(text).not.toContain(`MEDIA:${path}`);
+    }
+  });
+
+  it("drops titled, angle-bracket and image links whose destination is delivered", () => {
+    const path = "/opt/data/entregas/informe.pdf";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const payload = [{ name: "informe.pdf", url, path, mime: "application/pdf" }];
+    for (const reply of [
+      `Listo: [informe](${path} "descargar") y nada más.`,
+      `Listo: [informe](<${path}>) y nada más.`,
+      `Listo: ![informe](${path}) y nada más.`,
+    ]) {
+      const { text } = collectArtifacts(reply, payload);
+      expect(text).toBe("Listo: y nada más.");
+    }
   });
 });

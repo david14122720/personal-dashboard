@@ -12,7 +12,6 @@ import {
   planAttachments,
   releaseAttachment,
   type AttachmentKind,
-  type AttachmentRejection,
   type PendingAttachment,
 } from "@/lib/hermes/attachments";
 import { loadOrCreateSessionId, newSessionId, saveSessionId } from "@/lib/hermes/session";
@@ -68,16 +67,7 @@ function errorKey(code: HermesErrorCode) {
   }
 }
 
-function rejectionKey(code: AttachmentRejection) {
-  switch (code) {
-    case "too_many":
-      return "hermes.errorTooManyAttachments" as const;
-    case "file_too_large":
-      return "hermes.errorFileTooLarge" as const;
-    default:
-      return "hermes.errorTotalTooLarge" as const;
-  }
-}
+const REJECTION_KEY = "hermes.errorTooManyAttachments" as const;
 
 export default function HermesChat() {
   const router = useRouter();
@@ -89,6 +79,8 @@ export default function HermesChat() {
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
   const logRef = useRef<HTMLDivElement | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const firstScroll = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<PendingAttachment[]>([]);
@@ -100,7 +92,17 @@ export default function HermesChat() {
     setSessionId(loadOrCreateSessionId());
   }, []);
 
+  // One scroll container, one auto-scroll: the sentinel at the end of the log
+  // is scrolled into view on every send and every reply. `smooth` is skipped
+  // on the first paint so restoring a conversation does not animate.
   useEffect(() => {
+    const target = endRef.current;
+    const behavior: ScrollBehavior = firstScroll.current ? "auto" : "smooth";
+    firstScroll.current = false;
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior, block: "end" });
+      return;
+    }
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
   }, [messages, sending]);
@@ -148,7 +150,7 @@ export default function HermesChat() {
     }
     if (rejection) {
       setNotice(
-        t(rejectionKey(rejection.code), {
+        t(REJECTION_KEY, {
           name: rejection.filename ?? "",
         }),
       );
@@ -162,13 +164,14 @@ export default function HermesChat() {
     setSending(true);
     try {
       const result = await sendHermesTurn(sessionId, { content, files });
+      const collected = collectArtifacts(result.reply, result.artifacts);
       setMessages((prev) => [
         ...prev,
         {
           id: bubbleId(),
           role: "assistant",
-          content: result.reply,
-          artifacts: collectArtifacts(result.reply, result.artifacts),
+          content: collected.text,
+          artifacts: collected.artifacts,
           warnings: result.warnings,
         },
       ]);
@@ -256,7 +259,7 @@ export default function HermesChat() {
         addFiles(Array.from(event.dataTransfer?.files ?? []));
         inputRef.current?.focus();
       }}
-      className={`flex h-[calc(100dvh-16rem)] min-h-[24rem] flex-col overflow-hidden rounded-xl border bg-panel transition-colors md:h-[calc(100dvh-7.5rem)] ${
+      className={`flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-panel transition-colors ${
         dragging ? "border-sky-400/70 ring-2 ring-sky-400/30" : "border-hair"
       }`}
     >
@@ -293,7 +296,8 @@ export default function HermesChat() {
         aria-live="polite"
         aria-relevant="additions"
         aria-label={t("hermes.logLabel")}
-        className="flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6"
+        data-testid="hermes-log"
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto overflow-x-hidden px-4 py-5 sm:px-6"
       >
         {messages.length === 0 && !sending ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
@@ -431,6 +435,7 @@ export default function HermesChat() {
             {t("hermes.working")}
           </div>
         ) : null}
+        <div ref={endRef} aria-hidden="true" className="h-px w-full" />
       </div>
 
       <form
@@ -438,7 +443,7 @@ export default function HermesChat() {
           event.preventDefault();
           submit();
         }}
-        className="border-t border-hair px-4 py-3 sm:px-6"
+        className="sticky bottom-0 z-10 shrink-0 border-t border-hair bg-panel/95 px-4 py-3 backdrop-blur sm:px-6"
       >
         <label htmlFor="hermes-input" className="sr-only">
           {t("hermes.placeholder")}

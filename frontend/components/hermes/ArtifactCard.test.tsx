@@ -22,7 +22,7 @@ describe("ArtifactCard", () => {
       "href",
       "https://tracker.test/pixel.png",
     );
-    expect(screen.getByRole("link", { name: "Descargar grafico.png" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Descargar: grafico.png" })).toHaveAttribute(
       "download",
       "grafico.png",
     );
@@ -50,5 +50,56 @@ describe("ArtifactCard", () => {
     expect(audio).not.toBeNull();
     expect(audio).toHaveAttribute("preload", "none");
     expect(screen.getByRole("link", { name: "Ver" })).toBeInTheDocument();
+  });
+
+  it("shows a document badge and forces the download through the proxy", () => {
+    const path = "/opt/data/entregas/ensayo-celula.docx";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    render(
+      <ArtifactCard
+        artifact={{
+          id: path,
+          name: "ensayo-celula.docx",
+          url,
+          path,
+          mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          size: 2048,
+          kind: "document",
+        }}
+      />,
+    );
+    const badge = screen.getByTestId("hermes-artifact-badge");
+    expect(badge).toHaveTextContent("DOCX");
+    expect(screen.getByText(/application\/vnd\.openxmlformats/)).toBeInTheDocument();
+    expect(screen.getByText(/2 KB/)).toBeInTheDocument();
+    const link = screen.getByTestId("hermes-artifact-download");
+    expect(link).toHaveAttribute("href", `${url}&download=ensayo-celula.docx`);
+    expect(link).toHaveAttribute("download", "ensayo-celula.docx");
+    expect(link).toHaveAccessibleName("Descargar documento: ensayo-celula.docx");
+  });
+
+  it("gives a video a native player pointing at the signed media url", () => {
+    const path = "/opt/data/videos/clip.mp4";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { container } = render(
+      <ArtifactCard artifact={{ id: path, name: "clip.mp4", url, path, kind: "video", size: 50 * 1024 * 1024 }} />,
+    );
+    const video = container.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video).toHaveAttribute("src", url);
+    expect(video).toHaveAttribute("preload", "none");
+    expect(screen.getByRole("link", { name: "Descargar: clip.mp4" })).toHaveAttribute(
+      "href",
+      `${url}&download=clip.mp4`,
+    );
+  });
+
+  it("previews a signed media image without a remote beacon", () => {
+    const path = "/opt/data/fotos/plano.png";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { container } = render(
+      <ArtifactCard artifact={{ id: path, name: "plano.png", url, path, kind: "image", mime: "image/png" }} />,
+    );
+    expect(container.querySelector("img")).toHaveAttribute("src", url);
   });
 });

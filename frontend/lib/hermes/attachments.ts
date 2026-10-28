@@ -1,9 +1,10 @@
 /**
- * Pending chat attachments: classification, guardrails and preview URLs.
+ * Pending chat attachments: classification and preview URLs.
  *
- * The limits mirror the Rust proxy (`MAX_ATTACHMENTS`, `MAX_FILE_BYTES`,
- * `MAX_TOTAL_ATTACHMENT_BYTES`). They bound memory, not file types: images,
- * documents, audio and archives all travel the same path.
+ * There is no byte ceiling (owner spec S2): the proxy counts and discards
+ * non-image bytes chunk by chunk and streams back whatever Hermes delivers.
+ * Only the attachment *count* stays bounded, because each chip is a separate
+ * multipart part.
  */
 
 export type AttachmentKind = "image" | "audio" | "text" | "other";
@@ -16,10 +17,7 @@ export interface PendingAttachment {
   previewUrl: string | null;
 }
 
-export type AttachmentRejection =
-  | "too_many"
-  | "file_too_large"
-  | "total_too_large";
+export type AttachmentRejection = "too_many";
 
 export interface AttachmentPlan {
   accepted: PendingAttachment[];
@@ -27,8 +25,6 @@ export interface AttachmentPlan {
 }
 
 export const MAX_ATTACHMENTS = 20;
-export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-export const MAX_TOTAL_BYTES = 40 * 1024 * 1024;
 
 const TEXT_EXTENSIONS = new Set([
   "txt", "md", "markdown", "json", "csv", "tsv", "xml", "yaml", "yml", "log",
@@ -86,7 +82,7 @@ export function releaseAttachment(attachment: PendingAttachment): void {
 
 /**
  * Decide which incoming files fit. It never silently truncates a valid batch:
- * the first file that breaks a limit is reported so the UI can name it.
+ * the first file that breaks the count is reported so the UI can name it.
  */
 export function planAttachments(
   existing: readonly PendingAttachment[],
@@ -94,21 +90,13 @@ export function planAttachments(
 ): AttachmentPlan {
   const accepted: PendingAttachment[] = [];
   let count = existing.length;
-  let total = existing.reduce((sum, item) => sum + item.file.size, 0);
 
   for (const file of incoming) {
     if (count >= MAX_ATTACHMENTS) {
       return { accepted, rejection: { code: "too_many", filename: file.name } };
     }
-    if (file.size > MAX_FILE_BYTES) {
-      return { accepted, rejection: { code: "file_too_large", filename: file.name } };
-    }
-    if (total + file.size > MAX_TOTAL_BYTES) {
-      return { accepted, rejection: { code: "total_too_large", filename: file.name } };
-    }
     accepted.push(makeAttachment(file));
     count += 1;
-    total += file.size;
   }
 
   return { accepted, rejection: null };

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_ATTACHMENTS,
-  MAX_FILE_BYTES,
-  MAX_TOTAL_BYTES,
   classifyFile,
   formatBytes,
   makeAttachment,
@@ -35,10 +33,13 @@ describe("hermes attachments", () => {
     expect(plan.accepted.map((item) => item.file.name)).toEqual(["a.png", "b.pdf", "c.webm"]);
   });
 
-  it("rejects the first file that breaks the per-file limit", () => {
-    const plan = planAttachments([], [file("ok.txt", 10), file("grande.zip", MAX_FILE_BYTES + 1)]);
-    expect(plan.accepted.map((item) => item.file.name)).toEqual(["ok.txt"]);
-    expect(plan.rejection).toEqual({ code: "file_too_large", filename: "grande.zip" });
+  it("accepts files of any size, including a 60 MB archive", () => {
+    const plan = planAttachments([], [
+      file("ok.txt", 10),
+      file("grande.zip", 60 * 1024 * 1024, "application/zip"),
+    ]);
+    expect(plan.rejection).toBeNull();
+    expect(plan.accepted.map((item) => item.file.name)).toEqual(["ok.txt", "grande.zip"]);
   });
 
   it("rejects the 21st file", () => {
@@ -50,10 +51,11 @@ describe("hermes attachments", () => {
     expect(plan.rejection).toEqual({ code: "too_many", filename: "extra.txt" });
   });
 
-  it("rejects a batch that exceeds the total budget", () => {
-    const existing = [makeAttachment(file("previo.bin", MAX_TOTAL_BYTES - 5))];
-    const plan = planAttachments(existing, [file("resto.bin", 10)]);
-    expect(plan.rejection).toEqual({ code: "total_too_large", filename: "resto.bin" });
+  it("has no total byte budget either", () => {
+    const existing = [makeAttachment(file("previo.bin", 500 * 1024 * 1024))];
+    const plan = planAttachments(existing, [file("resto.bin", 600 * 1024 * 1024)]);
+    expect(plan.rejection).toBeNull();
+    expect(plan.accepted).toHaveLength(1);
   });
 
   it("formats sizes for the chip label", () => {

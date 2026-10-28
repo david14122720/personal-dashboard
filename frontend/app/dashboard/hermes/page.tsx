@@ -17,7 +17,7 @@ export default function HermesPage() {
   }, [router]);
 
   return (
-    <AppShell>
+    <AppShell fill>
       <HermesChat />
     </AppShell>
   );
