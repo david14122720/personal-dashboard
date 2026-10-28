@@ -15,18 +15,19 @@
 //!
 //! The route is mounted at the root router (not inside the 15 s `/api`
 //! timeout budget) because Hermes answers may legitimately take minutes; the
-//! outbound client enforces `HERMES_TIMEOUT` (>= 180 s).
+//! outbound client enforces `HERMES_TIMEOUT` (10 min by default).
 
 use std::fmt::Write as _;
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{multipart::Field, FromRequest, Multipart, Request, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -664,13 +665,13 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<Turn, Response> {
     Ok(turn)
 }
 
-async fn post_once(
+fn upstream_request(
+    client: &reqwest::Client,
     cfg: &HermesConfig,
     session: Option<&HeaderValue>,
     body_json: &Value,
-) -> Result<reqwest::Response, Response> {
-    let mut request = cfg
-        .http
+) -> reqwest::RequestBuilder {
+    let mut request = client
         .post(&cfg.api_url)
         .bearer_auth(&cfg.api_key)
         .json(body_json);
@@ -682,23 +683,36 @@ async fn post_once(
             value.clone(),
         );
     }
-    request.send().await.map_err(|err| {
-        if err.is_timeout() {
-            tracing::warn!("hermes upstream timed out");
-            error_response(
-                StatusCode::GATEWAY_TIMEOUT,
-                "HERMES_TIMEOUT",
-                "Hermes did not answer in time",
-            )
-        } else {
-            tracing::warn!("hermes upstream is unreachable");
-            error_response(
-                StatusCode::BAD_GATEWAY,
-                "HERMES_UNAVAILABLE",
-                "Hermes is unreachable",
-            )
-        }
-    })
+    request
+}
+
+fn upstream_send_error(err: &reqwest::Error) -> Response {
+    if err.is_timeout() {
+        tracing::warn!("hermes upstream timed out");
+        error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            "HERMES_TIMEOUT",
+            "Hermes did not answer in time",
+        )
+    } else {
+        tracing::warn!("hermes upstream is unreachable");
+        error_response(
+            StatusCode::BAD_GATEWAY,
+            "HERMES_UNAVAILABLE",
+            "Hermes is unreachable",
+        )
+    }
+}
+
+async fn post_once(
+    cfg: &HermesConfig,
+    session: Option<&HeaderValue>,
+    body_json: &Value,
+) -> Result<reqwest::Response, Response> {
+    upstream_request(&cfg.http, cfg, session, body_json)
+        .send()
+        .await
+        .map_err(|err| upstream_send_error(&err))
 }
 
 /// Forward one user turn, degrading audio once if the upstream rejects it.
@@ -766,6 +780,344 @@ async fn send_to_hermes(
             "Hermes returned an unreadable response",
         )),
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// Streamed turns (SSE)
+//
+// Hermes 0.22.5 speaks OpenAI-style SSE: `data: {"choices":[{"delta":
+// {"reasoning_content"|"content"}}]}`, plus `event: hermes.tool.progress`
+// frames while a tool runs, terminated by `data: [DONE]`. The browser only
+// sees the proxy's own events (`start`, `thinking`, `tool`, `delta`, `done`,
+// `error`) so the upstream wire format stays replaceable.
+// ---------------------------------------------------------------------------
+
+/// The browser opts into incremental events with `Accept: text/event-stream`.
+fn wants_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+}
+
+fn sse_event(name: &str, data: &Value) -> Bytes {
+    // JSON strings never contain raw newlines, so one `data:` line per event
+    // is always a complete frame.
+    Bytes::from(format!("event: {name}\ndata: {data}\n\n"))
+}
+
+fn body_for_stream(turn: &Turn, degrade_audio: bool) -> Value {
+    let mut body = body_for(turn, degrade_audio);
+    body["stream"] = json!(true);
+    body
+}
+
+async fn post_stream(
+    cfg: &HermesConfig,
+    session: Option<&HeaderValue>,
+    body_json: &Value,
+) -> Result<reqwest::Response, Response> {
+    upstream_request(&cfg.stream_http, cfg, session, body_json)
+        .send()
+        .await
+        .map_err(|err| upstream_send_error(&err))
+}
+
+/// Open the upstream stream, degrading unsupported parts once. A 400 still
+/// arrives as JSON even in stream mode (measured), so the same retry applies.
+async fn open_stream(
+    cfg: &HermesConfig,
+    session: Option<&HeaderValue>,
+    turn: &Turn,
+) -> Result<(reqwest::Response, Vec<String>), Response> {
+    let mut warnings = Vec::new();
+    let mut upstream = post_stream(cfg, session, &body_for_stream(turn, false)).await?;
+    if upstream.status() == reqwest::StatusCode::BAD_REQUEST {
+        let body = upstream.json::<Value>().await.unwrap_or(Value::Null);
+        if upstream_unsupported(&body) {
+            tracing::info!("hermes rejected unsupported content parts; retrying degraded stream");
+            warnings = degradation_warnings(turn);
+            upstream = post_stream(cfg, session, &body_for_stream(turn, true)).await?;
+        } else {
+            return Err(map_upstream_status(reqwest::StatusCode::BAD_REQUEST));
+        }
+    }
+    if !upstream.status().is_success() {
+        return Err(map_upstream_status(upstream.status()));
+    }
+    Ok((upstream, warnings))
+}
+
+/// Incomplete SSE frames carried between network chunks.
+#[derive(Default)]
+struct SseFrames {
+    buffer: Vec<u8>,
+}
+
+fn find_frames(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(2).position(|pair| pair == b"\n\n")
+}
+
+impl SseFrames {
+    fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        // CRLF is valid SSE; JSON strings never carry a raw CR, so dropping
+        // every CR before matching keeps LF framing correct for both dialects.
+        self.buffer.extend(chunk.iter().copied().filter(|byte| *byte != b'\r'));
+        let mut frames = Vec::new();
+        while let Some(index) = find_frames(&self.buffer) {
+            let frame: Vec<u8> = self.buffer.drain(..index + 2).collect();
+            frames.push(String::from_utf8_lossy(&frame).into_owned());
+        }
+        frames
+    }
+}
+
+fn parse_frame(frame: &str) -> (Option<String>, Option<String>) {
+    let mut event = None;
+    let mut data = String::new();
+    for line in frame.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            event = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    (event, (!data.is_empty()).then_some(data))
+}
+
+const THINK_OPEN: &str = "<thinking>";
+const THINK_CLOSE: &str = "</thinking>";
+
+/// Longest suffix of `text` that is a proper prefix of `tag`: those bytes may
+/// begin a tag split across two chunks and must not be emitted yet.
+fn partial_suffix(text: &str, tag: &str) -> usize {
+    let max = tag.len().min(text.len());
+    // `..=max`: when the whole pending buffer is a prefix of the tag (the
+    // normal start of a content stream) it must be held, not emitted.
+    for len in (1..=max).rev() {
+        if tag.is_char_boundary(len) && text.ends_with(&tag[..len]) {
+            return len;
+        }
+    }
+    0
+}
+
+/// Routes `<thinking>…</thinking>` found in content deltas to the accordion.
+/// `reasoning_content` arrives separately and never passes through here.
+#[derive(Default)]
+struct ThinkingSplitter {
+    pending: String,
+    inside: bool,
+}
+
+impl ThinkingSplitter {
+    fn push(&mut self, chunk: &str) -> (String, String) {
+        let mut visible = String::new();
+        let mut thinking = String::new();
+        self.pending.push_str(chunk);
+        loop {
+            let (marker, sink) = if self.inside {
+                (THINK_CLOSE, &mut thinking)
+            } else {
+                (THINK_OPEN, &mut visible)
+            };
+            if let Some(index) = self.pending.find(marker) {
+                sink.push_str(&self.pending[..index]);
+                self.pending.drain(..index + marker.len());
+                self.inside = !self.inside;
+                continue;
+            }
+            let keep = partial_suffix(&self.pending, marker);
+            let cut = self.pending.len() - keep;
+            sink.push_str(&self.pending[..cut]);
+            self.pending.drain(..cut);
+            break;
+        }
+        (visible, thinking)
+    }
+
+    fn finish(&mut self) -> (String, String) {
+        let rest = std::mem::take(&mut self.pending);
+        if self.inside {
+            (String::new(), rest)
+        } else {
+            (rest, String::new())
+        }
+    }
+}
+
+/// Turn the upstream stream into the browser's event stream. The task owns the
+/// upstream response: the handler returns as soon as the headers are written.
+fn stream_response(upstream: reqwest::Response, timeout_ms: u64, warnings: Vec<String>) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
+    let _ = tx.try_send(sse_event("start", &json!({ "timeoutMs": timeout_ms })));
+    tokio::spawn(async move {
+        // Every emit goes through this macro: when the browser aborts (the
+        // banner's "Reintentar"), the receiver is dropped and `send` fails.
+        // Returning here drops `upstream`, which closes the HTTP/1.1 request
+        // before a retry opens a second one: Hermes never runs the same tools
+        // twice.
+        macro_rules! emit {
+            ($event:expr) => {
+                if tx.send($event).await.is_err() {
+                    return;
+                }
+            };
+        }
+        let mut frames = SseFrames::default();
+        let mut splitter = ThinkingSplitter::default();
+        let mut reply = String::new();
+        let mut thinking = String::new();
+        let mut failure: Option<&'static str> = None;
+        let mut saw_done = false;
+        let mut stream = upstream.bytes_stream();
+        'outer: loop {
+            // A silent upstream must not park the task past a browser abort:
+            // race the next chunk with the receiver closing, and drop the
+            // upstream request when the tab goes away.
+            let next = tokio::select! {
+                next = stream.next() => next,
+                _ = tx.closed() => return,
+            };
+            let Some(chunk) = next else { break };
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    failure = Some(if err.is_timeout() {
+                        "HERMES_TIMEOUT"
+                    } else {
+                        "HERMES_UNAVAILABLE"
+                    });
+                    break;
+                }
+            };
+            for frame in frames.push(&chunk) {
+                let (event, data) = parse_frame(&frame);
+                let Some(data) = data else { continue };
+                if data.trim() == "[DONE]" {
+                    saw_done = true;
+                    break 'outer;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(&data) else {
+                    continue;
+                };
+                // Some gateways report mid-stream failures in-band instead of
+                // a TCP error.
+                if value.get("error").is_some() {
+                    failure = Some("HERMES_UPSTREAM_ERROR");
+                    break 'outer;
+                }
+                if event.as_deref() == Some("hermes.tool.progress") || value.get("tool").is_some() {
+                    emit!(sse_event("tool", &value));
+                    continue;
+                }
+                let Some(delta) = value.pointer("/choices/0/delta") else {
+                    continue;
+                };
+                if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        thinking.push_str(text);
+                        emit!(sse_event("thinking", &json!({ "text": text })));
+                    }
+                }
+                if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        let name = call
+                            .pointer("/function/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("herramienta");
+                        let label = call
+                            .pointer("/function/arguments")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        emit!(sse_event(
+                            "tool",
+                            &json!({ "tool": name, "label": label, "status": "running" }),
+                        ));
+                    }
+                }
+                if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                    let (visible, inner) = splitter.push(text);
+                    if !inner.is_empty() {
+                        thinking.push_str(&inner);
+                        emit!(sse_event("thinking", &json!({ "text": inner })));
+                    }
+                    if !visible.is_empty() {
+                        reply.push_str(&visible);
+                        emit!(sse_event("delta", &json!({ "text": visible })));
+                    }
+                }
+            }
+        }
+        let (visible, inner) = splitter.finish();
+        if !inner.is_empty() {
+            thinking.push_str(&inner);
+            emit!(sse_event("thinking", &json!({ "text": inner })));
+        }
+        if !visible.is_empty() {
+            reply.push_str(&visible);
+            emit!(sse_event("delta", &json!({ "text": visible })));
+        }
+        if let Some(code) = failure {
+            emit!(sse_event(
+                "error",
+                &json!({ "code": code, "message": "Hermes did not answer in time" }),
+            ));
+            return;
+        }
+        if reply.trim().is_empty() && thinking.trim().is_empty() {
+            emit!(sse_event(
+                "error",
+                &json!({
+                    "code": "HERMES_UPSTREAM_ERROR",
+                    "message": "Hermes returned an empty stream",
+                }),
+            ));
+            return;
+        }
+        let mut warnings = warnings;
+        if !saw_done && failure.is_none() {
+            // Clean EOF without [DONE]: deliver what arrived, but say so.
+            warnings.push(
+                "La respuesta se cortó antes de terminar; puede estar incompleta.".to_string(),
+            );
+        }
+        let mut envelope = json!({
+            "reply": reply,
+            "artifacts": Vec::<Value>::new(),
+            "warnings": warnings,
+            "reasoning": thinking,
+        });
+        add_media_artifacts(&mut envelope, MediaConfig::current()).await;
+        emit!(sse_event("done", &envelope));
+    });
+
+    let body = Body::from_stream(futures_util::stream::unfold(
+        rx,
+        |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|bytes| (Ok::<Bytes, std::io::Error>(bytes), rx))
+        },
+    ));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .header("x-accel-buffering", "no")
+        .body(body)
+        .unwrap_or_else(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "could not build the response",
+            )
+        })
 }
 
 fn map_upstream_status(status: reqwest::StatusCode) -> Response {
@@ -860,6 +1212,12 @@ pub async fn hermes_chat_handler(
     };
 
     let session = headers.get(SESSION_HEADER);
+    if wants_stream(&headers) {
+        return match open_stream(cfg, session, &turn).await {
+            Ok((upstream, warnings)) => stream_response(upstream, cfg.timeout_ms, warnings),
+            Err(response) => response,
+        };
+    }
     match send_to_hermes(cfg, session, &turn).await {
         Ok((upstream, warnings)) => {
             let mut envelope = normalize(&upstream, warnings);
@@ -889,7 +1247,10 @@ pub async fn hermes_chat_handler(
 mod tests {
     use std::{
         net::{Ipv4Addr, SocketAddr},
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
     };
 
     use std::time::Duration;
@@ -910,10 +1271,15 @@ mod tests {
         HermesConfig {
             api_url,
             api_key: "upstream-secret".into(),
+            timeout_ms,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_millis(timeout_ms))
                 .build()
                 .expect("test client"),
+            stream_http: reqwest::Client::builder()
+                .read_timeout(Duration::from_millis(timeout_ms))
+                .build()
+                .expect("test stream client"),
         }
     }
 
@@ -1611,12 +1977,19 @@ mod tests {
         let real = HermesConfig {
             api_url: url,
             api_key: key,
+            timeout_ms: crate::config::HERMES_DEFAULT_TIMEOUT_MS,
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_millis(
                     crate::config::HERMES_DEFAULT_TIMEOUT_MS,
                 ))
                 .build()
                 .expect("real client"),
+            stream_http: reqwest::Client::builder()
+                .read_timeout(std::time::Duration::from_millis(
+                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
+                ))
+                .build()
+                .expect("real stream client"),
         };
         let started = std::time::Instant::now();
         let (value, warnings) = send_to_hermes(&real, None, &turn)
@@ -1629,6 +2002,47 @@ mod tests {
 
     /// Proves the real upstream's `unsupported_content_type` shape maps to the
     /// graceful retry (the whole reason the degradation exists).
+    /// Proves the measured SSE contract end to end: reasoning frames, tool
+    /// progress frames and a final done envelope from the real gateway.
+    #[tokio::test]
+    #[ignore = "hits the real Hermes upstream; run with HERMES_API_URL/KEY exported"]
+    async fn real_upstream_streams_thinking_and_tools() {
+        let url = std::env::var("HERMES_API_URL").expect("HERMES_API_URL");
+        let key = std::env::var("HERMES_API_KEY").expect("HERMES_API_KEY");
+        let real = HermesConfig {
+            api_url: url,
+            api_key: key,
+            timeout_ms: crate::config::HERMES_DEFAULT_TIMEOUT_MS,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_millis(
+                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
+                ))
+                .build()
+                .expect("real client"),
+            stream_http: reqwest::Client::builder()
+                .read_timeout(Duration::from_millis(
+                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
+                ))
+                .build()
+                .expect("real stream client"),
+        };
+        let turn = turn("Usá una herramienta para contar los archivos de /opt/data. Sé breve.");
+        let started = std::time::Instant::now();
+        let (upstream, warnings) = open_stream(&real, None, &turn)
+            .await
+            .expect("real upstream opened a stream");
+        let body = sse_text(stream_response(upstream, real.timeout_ms, warnings)).await;
+        eprintln!(
+            "REAL_STREAM_MS={} BYTES={}",
+            started.elapsed().as_millis(),
+            body.len()
+        );
+        assert!(body.contains("event: start"), "{body}");
+        assert!(body.contains("event: thinking"), "{body}");
+        assert!(body.contains("event: done"), "{body}");
+        assert!(!body.contains("event: error"), "{body}");
+    }
+
     #[tokio::test]
     #[ignore = "hits the real Hermes upstream; run with HERMES_API_URL/KEY exported"]
     async fn real_upstream_degrades_audio_with_a_warning() {
@@ -1637,12 +2051,19 @@ mod tests {
         let real = HermesConfig {
             api_url: url,
             api_key: key,
+            timeout_ms: crate::config::HERMES_DEFAULT_TIMEOUT_MS,
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_millis(
                     crate::config::HERMES_DEFAULT_TIMEOUT_MS,
                 ))
                 .build()
                 .expect("real client"),
+            stream_http: reqwest::Client::builder()
+                .read_timeout(std::time::Duration::from_millis(
+                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
+                ))
+                .build()
+                .expect("real stream client"),
         };
         let mut turn = turn("Te mando una nota de voz, respondé solo: recibida");
         turn.attachments.push(attachment(
@@ -1672,5 +2093,314 @@ mod tests {
         assert_eq!(audio_format("audio/webm", "nota.webm"), "webm");
         assert_eq!(audio_format("application/octet-stream", "nota.wav"), "wav");
         assert_eq!(audio_format("audio/mpeg", "nota.mp3"), "mp3");
+    }
+
+    // -----------------------------------------------------------------
+    // SSE
+    // -----------------------------------------------------------------
+
+    async fn fake_upstream(seen: &Seen, headers: &HeaderMap, body: &Value) {
+        seen.0.lock().expect("seen lock").push(SeenRequest {
+            authorization: headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            session: headers
+                .get(SESSION_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            body: body.clone(),
+        });
+    }
+
+    const SSE_BODY: &str = concat!(
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"pienso \"}}]}\n\n",
+        "event: hermes.tool.progress\ndata: {\"tool\":\"terminal\",\"label\":\"ls -A /opt/data\",\"status\":\"running\"}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"<thinking>oculto</thinking>Listo: \"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"todo bien\"}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    async fn sse_upstream(State(seen): State<Seen>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+        fake_upstream(&seen, &headers, &body).await;
+        (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            SSE_BODY,
+        )
+            .into_response()
+    }
+
+    async fn sse_after_audio_rejection(
+        State(seen): State<Seen>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Response {
+        let first = {
+            let mut locked = seen.0.lock().expect("seen lock");
+            locked.push(SeenRequest {
+                authorization: headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string),
+                session: None,
+                body: body.clone(),
+            });
+            locked.len() == 1
+        };
+        if first {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {"code": "unsupported_content_type"}})),
+            )
+                .into_response();
+        }
+        (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            SSE_BODY,
+        )
+            .into_response()
+    }
+
+    async fn stalled_upstream() -> Response {
+        let first = futures_util::stream::once(async {
+            Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"x\"}}]}\n\n",
+            ))
+        });
+        let body = Body::from_stream(first.chain(futures_util::stream::pending::<
+            Result<Bytes, std::io::Error>,
+        >()));
+        ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+    }
+
+    async fn sse_text(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read sse body");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn streamed_turn_emits_start_thinking_tool_delta_and_done() {
+        let seen = Seen::default();
+        let app = Router::new()
+            .route("/v1/chat/completions", post(sse_upstream))
+            .with_state(seen.clone());
+        let url = spawn(app).await;
+        let config = cfg(url, 5_000);
+        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
+            .await
+            .expect("open stream");
+        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
+
+        assert!(body.contains("event: start"));
+        assert!(body.contains("\"timeoutMs\":5000"));
+        assert!(body.contains("event: thinking"));
+        assert!(body.contains("pienso "));
+        assert!(body.contains("event: tool"));
+        assert!(body.contains("\"tool\":\"terminal\""));
+        assert!(body.contains("\"label\":\"ls -A /opt/data\""));
+        assert!(body.contains("event: delta"));
+        assert!(body.contains("event: done"));
+        // Tags never reach the browser: thinking is a separate channel.
+        assert!(!body.contains("<thinking>"), "{body}");
+        assert!(body.contains("Listo: "));
+        assert!(body.contains("oculto"));
+        // The upstream was asked for a stream.
+        assert_eq!(seen.0.lock().expect("seen").first().expect("one").body["stream"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn streamed_turn_degrades_an_unsupported_part_once() {
+        let seen = Seen::default();
+        let app = Router::new()
+            .route("/v1/chat/completions", post(sse_after_audio_rejection))
+            .with_state(seen.clone());
+        let url = spawn(app).await;
+        let config = cfg(url, 5_000);
+        let mut turn = turn("te mando una nota");
+        turn.attachments.push(attachment("nota.webm", "audio/webm", b"RIFF"));
+        let (upstream, warnings) = open_stream(&config, None, &turn)
+            .await
+            .expect("open degraded stream");
+        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
+
+        let requests = seen.0.lock().expect("seen");
+        assert_eq!(requests.len(), 2, "one plain attempt and one degraded retry");
+        assert_eq!(requests[0].body["stream"], json!(true));
+        let parts = requests[1].body["messages"][0]["content"]
+            .as_array()
+            .expect("degraded content parts");
+        assert!(parts.iter().all(|part| part["type"] != "input_audio"));
+        assert!(body.contains("event: done"));
+        assert!(body.contains("nota de voz"));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_stream_reports_the_timeout_event() {
+        let app = Router::new().route("/v1/chat/completions", post(stalled_upstream));
+        let url = spawn(app).await;
+        let config = cfg(url, 100);
+        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
+            .await
+            .expect("open stream");
+        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
+        assert!(body.contains("event: error"), "{body}");
+        assert!(body.contains("HERMES_TIMEOUT"));
+    }
+
+    #[test]
+    fn thinking_splitter_keeps_tags_and_their_text_apart() {
+        let mut splitter = ThinkingSplitter::default();
+        let (visible, thinking) = splitter.push("Hola <thin");
+        assert_eq!((visible.as_str(), thinking.as_str()), ("Hola ", ""));
+        let (visible, thinking) = splitter.push("king>dudo</thinking>chau");
+        assert_eq!((visible.as_str(), thinking.as_str()), ("chau", "dudo"));
+        let (visible, thinking) = splitter.finish();
+        assert_eq!((visible.as_str(), thinking.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn thinking_splitter_flushes_an_unterminated_block_as_thinking() {
+        let mut splitter = ThinkingSplitter::default();
+        let (visible, thinking) = splitter.push("a <thinking>b");
+        assert_eq!((visible.as_str(), thinking.as_str()), ("a ", "b"));
+        let (visible, thinking) = splitter.finish();
+        assert_eq!((visible.as_str(), thinking.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn sse_frames_reassemble_split_frames_and_parse_event_names() {
+        let mut frames = SseFrames::default();
+        assert!(frames.push(b"event: hermes.tool.progress\ndata: {\"tool\":\"x\"}\n").is_empty());
+        let ready = frames.push(b"\n");
+        assert_eq!(ready.len(), 1);
+        let (event, data) = parse_frame(&ready[0]);
+        assert_eq!(event.as_deref(), Some("hermes.tool.progress"));
+        assert_eq!(data.as_deref(), Some("{\"tool\":\"x\"}"));
+    }
+
+    #[test]
+    fn sse_frames_accept_crlf_line_endings() {
+        let mut frames = SseFrames::default();
+        let ready = frames.push(b"event: thinking\r\ndata: {\"text\":\"x\"}\r\n\r\n");
+        assert_eq!(ready.len(), 1);
+        let (event, data) = parse_frame(&ready[0]);
+        assert_eq!(event.as_deref(), Some("thinking"));
+        assert_eq!(data.as_deref(), Some("{\"text\":\"x\"}"));
+    }
+
+    /// The browser aborting (banner "Reintentar") drops the receiver; the
+    /// spawned task must stop reading the upstream instead of letting Hermes
+    /// run the same tools twice.
+    #[tokio::test]
+    async fn dropping_the_browser_body_cancels_the_upstream_stream() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counted = counter.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let counted = counted.clone();
+                async move {
+                    let stream = futures_util::stream::unfold(counted, |counted| async move {
+                        tokio::time::sleep(Duration::from_millis(15)).await;
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        Some((
+                            Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                                b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n",
+                            )),
+                            counted,
+                        ))
+                    });
+                    (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        Body::from_stream(stream),
+                    )
+                }
+            }),
+        );
+        let url = spawn(app).await;
+        let config = cfg(url, 5_000);
+        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
+            .await
+            .expect("open stream");
+        let response = stream_response(upstream, config.timeout_ms, warnings);
+        let mut body = response.into_body().into_data_stream();
+        let first = body.next().await.expect("first chunk").expect("chunk");
+        assert!(String::from_utf8_lossy(&first).contains("event: start"));
+        drop(body);
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let settled = counter.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            settled,
+            counter.load(Ordering::SeqCst),
+            "the upstream stream must stop after the browser disconnects"
+        );
+    }
+
+    #[test]
+    fn thinking_splitter_holds_a_buffer_that_is_only_a_tag_prefix() {
+        // Judgment Day B (CRITICAL): the whole buffer can be a prefix of the
+        // opening tag; emitting it leaked the reasoning into the answer.
+        let mut splitter = ThinkingSplitter::default();
+        let (visible, thinking) = splitter.push("<thin");
+        assert_eq!((visible.as_str(), thinking.as_str()), ("", ""));
+        let (visible, thinking) = splitter.push("king>secreto</thinking>Listo");
+        assert_eq!((visible.as_str(), thinking.as_str()), ("Listo", "secreto"));
+    }
+
+    #[test]
+    fn thinking_splitter_holds_a_buffer_that_is_only_a_closing_prefix() {
+        let mut splitter = ThinkingSplitter::default();
+        assert_eq!(splitter.push("<thinking>"), (String::new(), String::new()));
+        assert_eq!(splitter.push("</"), (String::new(), String::new()));
+        let (visible, thinking) = splitter.push("thinking>La respuesta final");
+        assert_eq!((visible.as_str(), thinking.as_str()), ("La respuesta final", ""));
+    }
+
+    #[tokio::test]
+    async fn an_in_band_error_frame_fails_the_stream() {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"parcial\"}}]}\n\ndata: {\"error\":{\"message\":\"boom\"}}\n\n",
+                )
+            }),
+        );
+        let url = spawn(app).await;
+        let config = cfg(url, 5_000);
+        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
+            .await
+            .expect("open stream");
+        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
+        assert!(body.contains("event: error"), "{body}");
+        assert!(body.contains("HERMES_UPSTREAM_ERROR"), "{body}");
+        assert!(!body.contains("event: done"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_stream_without_done_warns_that_the_answer_may_be_cut() {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"casi todo\"}}]}\n\n",
+                )
+            }),
+        );
+        let url = spawn(app).await;
+        let config = cfg(url, 5_000);
+        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
+            .await
+            .expect("open stream");
+        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
+        assert!(body.contains("event: done"), "{body}");
+        assert!(body.contains("se cortó antes de terminar"), "{body}");
     }
 }

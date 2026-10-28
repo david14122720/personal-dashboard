@@ -280,7 +280,7 @@ fn assemble(
     ));
     // The Hermes proxy is an exact route at this level, NOT inside the
     // 15 s `/api` budget: upstream answers may take up to HERMES_TIMEOUT
-    // (>= 180 s), so it must outlive SEC-003's default API budget.
+    // (10 min by default), so it must outlive SEC-003's default API budget.
     let api: Router<AppState> = Router::new()
         .route("/health", get(routes::health::health_handler))
         .route("/ready", get(routes::ready::ready_handler))
@@ -299,6 +299,12 @@ fn assemble(
             "/api/hermes/media",
             get(routes::hermes_media::media_handler)
                 .layer(Extension(routes::hermes_media::MediaConfig::current().clone())),
+        )
+        // Authenticated signing for paths the reply text still mentions but
+        // the proxy did not pre-sign (e.g. a `/tmp` render).
+        .route(
+            "/api/hermes/media/sign",
+            post(routes::hermes_media::sign_handler),
         )
         .nest("/api", api_routes);
     // Same mounting shape as `/api/hermes`: exact outer route, outside the
@@ -362,7 +368,10 @@ fn assemble(
         CompressionLayer::new().compress_when(
             DefaultPredicate::new()
                 .and(NotForContentType::const_new("video/"))
-                .and(NotForContentType::const_new("audio/")),
+                .and(NotForContentType::const_new("audio/"))
+                // SSE frames must reach the browser as they arrive: buffering
+                // them behind gzip would kill the live timer and accordion.
+                .and(NotForContentType::const_new("text/event-stream")),
         ),
     )
 }

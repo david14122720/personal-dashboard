@@ -103,9 +103,13 @@ pub fn trusted_proxies_from_env() -> Result<Vec<TrustedProxy>, String> {
     parse_trusted_proxies(env::var("TRUSTED_PROXIES").ok().as_deref())
 }
 
-/// Hermes proxy defaults: the owner spec fixes a 180 s floor. A smaller
-/// configured value is a startup error, never a silently weakened budget.
-pub const HERMES_DEFAULT_TIMEOUT_MS: u64 = 180_000;
+/// Hermes proxy defaults: the owner spec fixes a 10 min budget so heavy tool
+/// chains finish without a premature disconnect.
+pub const HERMES_DEFAULT_TIMEOUT_MS: u64 = 600_000;
+
+/// Smallest accepted `HERMES_TIMEOUT`. Anything below it is a startup error,
+/// never a silently weakened budget.
+pub const HERMES_MIN_TIMEOUT_MS: u64 = 60_000;
 
 /// Outbound Hermes configuration. The API key never leaves the backend: the
 /// browser only ever talks to `/api/hermes`.
@@ -114,6 +118,12 @@ pub struct HermesConfig {
     pub api_url: String,
     pub api_key: String,
     pub http: reqwest::Client,
+    /// Client for streamed turns: no total deadline, only a per-read silence
+    /// budget, so a long tool chain that keeps emitting never gets killed.
+    pub stream_http: reqwest::Client,
+    /// Effective `HERMES_TIMEOUT` in milliseconds; the browser uses it to
+    /// decide when to offer "keep waiting" instead of guessing the budget.
+    pub timeout_ms: u64,
 }
 
 /// Debug never prints the bearer credential, even if a future log statement
@@ -123,14 +133,16 @@ impl std::fmt::Debug for HermesConfig {
         f.debug_struct("HermesConfig")
             .field("api_url", &self.api_url)
             .field("api_key", &"<redacted>")
+            .field("timeout_ms", &self.timeout_ms)
             .field("http", &self.http)
+            .field("stream_http", &self.stream_http)
             .finish()
     }
 }
 
-/// Parse `HERMES_TIMEOUT` (milliseconds). Absent/empty keeps the 180 s floor;
-/// anything below it is rejected so a misconfiguration cannot shorten the
-/// chat budget.
+/// Parse `HERMES_TIMEOUT` (milliseconds). Absent/empty keeps the 10 min
+/// default; anything below the 60 s floor is rejected so a misconfiguration
+/// cannot shorten the chat budget to something unusable.
 pub fn parse_hermes_timeout(raw: Option<&str>) -> Result<Duration, String> {
     let Some(raw) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(Duration::from_millis(HERMES_DEFAULT_TIMEOUT_MS));
@@ -138,9 +150,9 @@ pub fn parse_hermes_timeout(raw: Option<&str>) -> Result<Duration, String> {
     let ms = raw
         .parse::<u64>()
         .map_err(|_| "HERMES_TIMEOUT must be an integer number of milliseconds".to_string())?;
-    if ms < HERMES_DEFAULT_TIMEOUT_MS {
+    if ms < HERMES_MIN_TIMEOUT_MS {
         return Err(format!(
-            "HERMES_TIMEOUT must be at least {HERMES_DEFAULT_TIMEOUT_MS} ms (180 s)"
+            "HERMES_TIMEOUT must be at least {HERMES_MIN_TIMEOUT_MS} ms (60 s)"
         ));
     }
     Ok(Duration::from_millis(ms))
@@ -169,10 +181,17 @@ pub fn hermes_config_from_parts(
                 .timeout(timeout)
                 .build()
                 .map_err(|_| "could not build the Hermes HTTP client".to_string())?;
+            let stream_http = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(timeout)
+                .build()
+                .map_err(|_| "could not build the Hermes stream client".to_string())?;
             Ok(Some(HermesConfig {
                 api_url: url.to_string(),
                 api_key: key.to_string(),
                 http,
+                stream_http,
+                timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
             }))
         }
         _ => Err("HERMES_API_URL and HERMES_API_KEY must be configured together".to_string()),
@@ -308,24 +327,24 @@ mod hermes_config_tests {
     use super::*;
 
     #[test]
-    fn timeout_defaults_to_the_180s_floor_and_rejects_smaller_values() {
+    fn timeout_defaults_to_ten_minutes_and_rejects_values_below_the_floor() {
         assert_eq!(
             parse_hermes_timeout(None).expect("absent uses the default"),
-            Duration::from_millis(180_000)
+            Duration::from_millis(600_000)
         );
         assert_eq!(
             parse_hermes_timeout(Some("  ")).expect("blank uses the default"),
-            Duration::from_millis(180_000)
+            Duration::from_millis(600_000)
         );
         assert_eq!(
-            parse_hermes_timeout(Some("180000")).expect("the floor is accepted"),
-            Duration::from_millis(180_000)
+            parse_hermes_timeout(Some("60000")).expect("the floor is accepted"),
+            Duration::from_millis(60_000)
         );
         assert_eq!(
-            parse_hermes_timeout(Some("240000")).expect("larger values pass"),
-            Duration::from_millis(240_000)
+            parse_hermes_timeout(Some("900000")).expect("larger values pass"),
+            Duration::from_millis(900_000)
         );
-        assert!(parse_hermes_timeout(Some("179999")).is_err());
+        assert!(parse_hermes_timeout(Some("59999")).is_err());
         assert!(parse_hermes_timeout(Some("nope")).is_err());
     }
 

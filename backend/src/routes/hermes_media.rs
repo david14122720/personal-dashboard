@@ -22,11 +22,12 @@ use std::{
 
 use axum::{
     body::Body,
-    extract::{Extension, Query},
+    extract::{Extension, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
+    Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncSeekExt, AsyncReadExt};
@@ -34,7 +35,12 @@ use tokio_util::io::ReaderStream;
 
 pub const MEDIA_ROUTE: &str = "/api/hermes/media";
 
-const DEFAULT_ROOT: &str = "/opt/data";
+/// `/tmp` is allowed by default too: the owner spec names it explicitly, and
+/// the agent writes scratch renders there. Access still requires the signed
+/// URL plus the canonicalized-root check.
+const DEFAULT_ROOTS: &[&str] = &["/opt/data", "/tmp"];
+/// One sign request may carry the paths of a single reply.
+const MAX_SIGN_PATHS: usize = 32;
 // Cards live in the transcript: a page open for a day must still play its
 // video. The signature is scoped to one path, so a week is the comfort zone.
 const DEFAULT_TTL_SECS: i64 = 604_800;
@@ -43,14 +49,15 @@ const MAX_TTL_SECS: i64 = 2_592_000;
 /// Extensions the chat is allowed to turn into a media card.
 pub const MEDIA_EXTENSIONS: &[&str] = &[
     // video
-    "mp4", "webm", "mov", "mkv",
+    "mp4", "webm", "mov", "mkv", "m4v",
     // audio
     "mp3", "wav", "ogg", "oga", "m4a", "flac", "aac", "opus",
     // images
     "png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico",
     // documents and archives
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
-    "txt", "csv", "json", "md", "log", "zip", "tar", "gz", "rar", "7z",
+    "txt", "csv", "json", "md", "log", "tsv", "yaml", "yml",
+    "zip", "tar", "gz", "tgz", "bz2", "rar", "7z",
 ];
 
 #[derive(Clone, Debug)]
@@ -89,7 +96,7 @@ impl MediaConfig {
                     .collect::<Vec<_>>()
             })
             .filter(|roots| !roots.is_empty())
-            .unwrap_or_else(|| vec![PathBuf::from(DEFAULT_ROOT)]);
+            .unwrap_or_else(|| DEFAULT_ROOTS.iter().map(PathBuf::from).collect());
         let secret = std::env::var("HERMES_MEDIA_SECRET")
             .ok()
             .map(|value| value.trim().to_string())
@@ -378,6 +385,101 @@ fn http_date(modified: SystemTime) -> String {
 }
 
 /// `GET|HEAD /api/hermes/media` — signed, ranged, streamed file delivery.
+/// One file the UI may offer as a card: name, mime, size and a signed URL.
+#[derive(Debug, Serialize)]
+pub struct MediaLink {
+    pub path: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub url: String,
+}
+
+/// Resolve one mentioned path into a card, or `None` when it does not exist,
+/// is not a regular file, or escapes the allowed roots.
+pub fn link_for(cfg: &MediaConfig, path: &str, now: i64) -> Option<MediaLink> {
+    let resolved = cfg.resolve(path)?;
+    let meta = std::fs::metadata(&resolved).ok()?;
+    if !meta.is_file() || !has_media_extension(&resolved) {
+        return None;
+    }
+    let name = resolved.file_name()?.to_string_lossy().into_owned();
+    Some(MediaLink {
+        path: path.to_string(),
+        name,
+        mime: mime_for(&resolved).to_string(),
+        size: meta.len(),
+        url: cfg.signed_url(path, now),
+    })
+}
+
+/// Same allowlist the chat proxy uses for artifact detection: the sign route
+/// must not become a generic "read any file in the roots" oracle.
+fn has_media_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| MEDIA_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SignRequest {
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+/// `POST /api/hermes/media/sign` — authenticated. The reply text may mention a
+/// path the proxy did not pre-sign (a `/tmp` render, a path inside a code
+/// block); the UI asks for a URL here before drawing the download card.
+/// Paths that do not resolve to a real file inside the roots are dropped
+/// silently: a dead card is worse than plain text.
+pub async fn sign_handler(
+    State(state): State<crate::state::AppState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+) -> Response {
+    // Auth runs before the body is read: an unauthenticated caller gets 401,
+    // never a parse error that reveals request-shape details.
+    if let Err(err) = crate::auth::helper::require_user_id(&headers, &state.pool).await {
+        return err.into_response();
+    }
+    let bytes = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(serde_json::json!({"error": {"code": "PAYLOAD_TOO_LARGE"}})),
+            )
+                .into_response()
+        }
+    };
+    let body: SignRequest = match serde_json::from_slice(&bytes) {
+        Ok(body) => body,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": {"code": "INVALID_JSON"}})),
+            )
+                .into_response()
+        }
+    };
+    let cfg = MediaConfig::current();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+    let mut items: Vec<MediaLink> = Vec::new();
+    for path in body.paths.iter().take(MAX_SIGN_PATHS) {
+        if let Some(link) = link_for(cfg, path, now) {
+            if items.iter().any(|seen| seen.path == link.path) {
+                continue;
+            }
+            items.push(link);
+        }
+    }
+    Json(serde_json::json!({ "items": items })).into_response()
+}
+
 pub async fn media_handler(
     Extension(cfg): Extension<MediaConfig>,
     Query(query): Query<MediaQuery>,

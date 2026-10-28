@@ -28,4 +28,5 @@ base64 = "0.23"
 hex = "0.4"
 subtle = "2"
 rust_decimal = { version = "1", features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
