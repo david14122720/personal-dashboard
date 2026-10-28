@@ -24,6 +24,8 @@ interface SeenTurn {
 }
 
 const seen: SeenTurn[] = [];
+const signSeen: string[][] = [];
+const SIGN = "http://test.local/api/hermes/media/sign";
 
 // msw's fetch interceptor cannot serialize jsdom's FormData (it expects the
 // undici implementation and throws while recording the request). Multipart
@@ -50,14 +52,41 @@ function stubMultipartFetch() {
       status: 200,
       body: { reply: "ok", artifacts: artifactsPayload, warnings: warningsPayload },
     };
-    return new Response(JSON.stringify(next.body), {
-      status: next.status,
-      headers: { "content-type": "application/json" },
+    if (next.status !== 200) {
+      return new Response(JSON.stringify(next.body), {
+        status: next.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const payload = next.body as { reply?: string };
+    return new Response(sseBody(payload.reply ?? "ok"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
     });
   });
 }
 
 let reply = "**Hola**\n\n- uno\n- dos\n\n```js\nconst x = 1;\n```";
+
+/**
+ * The chat speaks SSE now. Every mocked turn answers the same envelope the
+ * proxy emits on `done`, optionally preceded by thinking/tool frames.
+ */
+function sseBody(text: string, extra: string[] = []): string {
+  const start = `event: start\ndata: ${JSON.stringify({ timeoutMs: 600_000 })}\n\n`;
+  const done = `event: done\ndata: ${JSON.stringify({
+    reply: text,
+    artifacts: artifactsPayload,
+    warnings: warningsPayload,
+  })}\n\n`;
+  return `${start}${extra.join("")}${done}`;
+}
+
+function sse(text: string, extra: string[] = []): HttpResponse<string> {
+  return new HttpResponse(sseBody(text, extra), {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
 let artifactsPayload: { name: string; url: string; mime?: string; size?: number }[] = [];
 let warningsPayload: string[] = [];
 let failNext = false;
@@ -98,7 +127,20 @@ const server = setupServer(
         { status: 502 },
       );
     }
-    return HttpResponse.json({ reply, artifacts: artifactsPayload, warnings: warningsPayload });
+    return sse(reply);
+  }),
+  http.post(SIGN, async ({ request }) => {
+    const body = (await request.json()) as { paths?: string[] };
+    signSeen.push(body.paths ?? []);
+    return HttpResponse.json({
+      items: (body.paths ?? []).map((path) => ({
+        path,
+        name: path.split("/").pop() ?? "archivo",
+        mime: "image/png",
+        size: 12,
+        url: `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=stub`,
+      })),
+    });
   }),
 );
 
@@ -111,6 +153,7 @@ afterEach(() => {
   warningsPayload = [];
   multipartSeen = [];
   multipartReplies = [];
+  signSeen.length = 0;
   vi.restoreAllMocks();
   failNext = false;
   deferred = false;
@@ -408,7 +451,7 @@ describe("HermesChat", () => {
 
     const card = await screen.findByTestId("hermes-artifact");
     expect(within(card).getByText("reporte.pdf")).toBeInTheDocument();
-    const link = within(card).getByRole("link", { name: "Descargar documento: reporte.pdf" });
+    const link = within(card).getByRole("link", { name: "Descargar archivo: reporte.pdf" });
     expect(link).toHaveAttribute("href", "https://example.test/reporte.pdf");
     expect(link).toHaveAttribute("download", "reporte.pdf");
     expect(screen.getByRole("note")).toHaveTextContent("nota.webm");
@@ -484,17 +527,127 @@ describe("HermesChat", () => {
     expect(screen.getByText("Empezá una conversación")).toBeInTheDocument();
   });
 
-  it("still understands the legacy upstream response shape", async () => {
+  it("signs paths the proxy did not pre-sign and draws a card", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    reply = "El render quedó acá:\n\n/tmp/render.png";
+    render(<HermesChat />);
+    await send("generá el render");
+
+    const card = await screen.findByTestId("hermes-artifact");
+    expect(card).toHaveTextContent("render.png");
+    expect(signSeen).toEqual([["/tmp/render.png"]]);
+    const markdown = screen.getByTestId("hermes-markdown");
+    expect(markdown).not.toHaveTextContent("/tmp/render.png");
+  });
+
+  it("keeps the reply when signing a path fails", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    reply = "El render quedó en /tmp/render.png";
+    server.use(http.post(SIGN, () => HttpResponse.json({ error: { code: "BOOM" } }, { status: 500 })));
+    render(<HermesChat />);
+    await send("generá el render");
+
+    await screen.findByTestId("hermes-markdown");
+    expect(screen.getByTestId("hermes-markdown")).toHaveTextContent("/tmp/render.png");
+    expect(screen.queryByTestId("hermes-artifact")).not.toBeInTheDocument();
+  });
+
+  it("streams thinking and tools into a collapsed accordion", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     server.use(
       http.post(ENDPOINT, () =>
-        HttpResponse.json({ choices: [{ message: { content: "**legacy**" } }] }),
+        sse("La respuesta", [
+          `event: thinking\ndata: ${JSON.stringify({ text: "Estoy pensando" })}\n\n`,
+          `event: tool\ndata: ${JSON.stringify({
+            tool: "terminal",
+            label: "ls -A /opt/data",
+            status: "running",
+            toolCallId: "call-1",
+          })}\n\n`,
+        ]),
       ),
     );
-    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
     await send("hola");
-    const markdown = await screen.findByTestId("hermes-markdown");
-    expect(within(markdown).getByText("legacy").tagName).toBe("STRONG");
+
+    const accordion = await screen.findByTestId("hermes-thought");
+    expect(accordion).toHaveTextContent("Llamando a terminal");
+    // Collapsed by default: the reasoning exists but is not rendered.
+    expect(screen.queryByText("Estoy pensando")).not.toBeInTheDocument();
+    fireEvent.click(within(accordion).getByRole("button"));
+    expect(screen.getByText("Estoy pensando")).toBeInTheDocument();
+    expect(screen.getByText(/ls -A \/opt\/data/)).toBeInTheDocument();
+  });
+
+  it("turns a numbered choice list into an interactive card that answers itself", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    reply =
+      "¿Cómo querés que maneje las notificaciones?\n\n1. Solo Telegram\n2. Telegram + resumen semanal\n3. Silencioso\n\nRespondé con el número.";
+    render(<HermesChat />);
+    await send("configurá las notificaciones");
+
+    const card = await screen.findByTestId("hermes-question");
+    expect(card).toHaveTextContent("¿Cómo querés que maneje las notificaciones?");
+    expect(within(card).getByText("Solo Telegram")).toBeInTheDocument();
+    // The static list never reaches the markdown body.
+    const markdown = screen.getByTestId("hermes-markdown");
+    expect(markdown).not.toHaveTextContent("Solo Telegram");
+    expect(markdown).not.toHaveTextContent("Respondé con el número");
+
+    fireEvent.click(within(card).getByText("Telegram + resumen semanal"));
+    await waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[1].body).toEqual({
+      messages: [{ role: "user", content: "Telegram + resumen semanal" }],
+    });
+    await waitFor(() =>
+      expect(within(card).getByText(/Respondido: Telegram \+ resumen semanal/)).toBeInTheDocument(),
+    );
+  });
+
+  it("shows the live clock while waiting and offers the limit banner", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    server.use(
+      http.post(ENDPOINT, () => {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(`event: start\ndata: ${JSON.stringify({ timeoutMs: 0 })}\n\n`),
+            );
+            release = () => {
+              controller.enqueue(
+                encoder.encode(
+                  `event: done\ndata: ${JSON.stringify({
+                    reply: "tarde",
+                    artifacts: [],
+                    warnings: [],
+                  })}\n\n`,
+                ),
+              );
+              controller.close();
+            };
+          },
+        });
+        return new HttpResponse(stream, {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }),
+    );
+    render(<HermesChat />);
+    await send("tardá lo que haga falta");
+
+    const clock = await screen.findByTestId("hermes-elapsed");
+    expect(clock).toHaveTextContent("00:00");
+    expect(screen.getByRole("status")).toHaveTextContent("Hermes está trabajando");
+    const banner = await screen.findByTestId("hermes-time-limit");
+    expect(within(banner).getByText("Seguir esperando")).toBeInTheDocument();
+
+    fireEvent.click(within(banner).getByText("Seguir esperando"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("hermes-time-limit")).not.toBeInTheDocument(),
+    );
+    release?.();
+    await screen.findByText("tarde");
   });
 
   it("keeps working when localStorage is unavailable", async () => {

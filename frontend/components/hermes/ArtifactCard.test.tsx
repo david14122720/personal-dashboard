@@ -75,7 +75,7 @@ describe("ArtifactCard", () => {
     const link = screen.getByTestId("hermes-artifact-download");
     expect(link).toHaveAttribute("href", `${url}&download=ensayo-celula.docx`);
     expect(link).toHaveAttribute("download", "ensayo-celula.docx");
-    expect(link).toHaveAccessibleName("Descargar documento: ensayo-celula.docx");
+    expect(link).toHaveAccessibleName("Descargar archivo: ensayo-celula.docx");
   });
 
   it("gives a video a native player pointing at the signed media url", () => {

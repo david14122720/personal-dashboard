@@ -58,8 +58,16 @@ test.describe("Hermes media cards", () => {
       localStorage.setItem("dashboard-token", "e2e-stub");
       localStorage.setItem("hermes-session-id", "7f3c1d2e-1111-4aaa-9bbb-00000000e2e0");
     });
+    // The chat speaks the proxy's SSE contract now: one start frame and the
+    // final envelope on `done`.
     await page.route("**/api/hermes", (route) =>
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope()) }),
+      route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+        body: `event: start\ndata: ${JSON.stringify({ timeoutMs: 600000 })}\n\nevent: done\ndata: ${JSON.stringify(
+          envelope(),
+        )}\n\n`,
+      }),
     );
     await page.route("**/api/hermes/media**", fulfillMedia);
   });

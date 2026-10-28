@@ -181,6 +181,34 @@ describe("hermes artifacts", () => {
     }
   });
 
+  it("keeps a whole-line path inside a fenced block", () => {
+    const path = "/tmp/render.png";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const reply = `Mirá el script:\n\n\`\`\`\nprint(1)\n${path}\n\`\`\`\n\n${path}`;
+    const { text } = collectArtifacts(reply, [{ name: "render.png", url, path, mime: "image/png" }]);
+    expect(text).toContain(`print(1)\n${path}`);
+    expect(text.split("\n").filter((line) => line === path)).toHaveLength(1);
+  });
+
+  it("only closes a fence with its own marker and length", () => {
+    const path = "/tmp/render.png";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const payload = [{ name: "render.png", url, path, mime: "image/png" }];
+    const answer = `Ejemplo:\n\n\`\`\`\`md\n\`\`\`bash\ncp ${path} .\n\`\`\`\n\`\`\`\`\n\n${path}`;
+    const { text } = collectArtifacts(answer, payload);
+    expect(text).toContain(`cp ${path} .`);
+    // The block is closed correctly, so the standalone card line is stripped.
+    expect(text.endsWith(path)).toBe(false);
+  });
+
+  it("leaves an indented code line untouched", () => {
+    const path = "/tmp/render.png";
+    const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const payload = [{ name: "render.png", url, path, mime: "image/png" }];
+    const { text } = collectArtifacts(`Texto:\n\n    ${path}\n\n${path}`, payload);
+    expect(text).toContain(`    ${path}`);
+  });
+
   it("drops titled, angle-bracket and image links whose destination is delivered", () => {
     const path = "/opt/data/entregas/informe.pdf";
     const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;

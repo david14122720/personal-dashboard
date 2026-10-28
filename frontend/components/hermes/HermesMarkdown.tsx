@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -77,7 +78,7 @@ const components: Components = {
   ),
 };
 
-export default function HermesMarkdown({ children }: { children: string }) {
+function HermesMarkdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkBreaks]}
@@ -88,3 +89,9 @@ export default function HermesMarkdown({ children }: { children: string }) {
     </ReactMarkdown>
   );
 }
+
+/**
+ * Memoized: while one reply streams (a state update every 60 ms) the rest of
+ * the transcript must not re-parse its Markdown on every chunk.
+ */
+export default memo(HermesMarkdown);

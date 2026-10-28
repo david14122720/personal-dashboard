@@ -202,7 +202,23 @@ function stripDeliveredPaths(reply: string, delivered: Map<string, Artifact>): s
     return match;
   });
 
+  // Fence tracking: a whole line that is a path inside a code block is
+  // documentation, not a duplicate card, and must stay byte for byte.
+  let fence: { mark: string; size: number } | null = null;
   const lines = withoutLinks.split("\n").flatMap((line) => {
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const run = fenceMatch[1];
+      // A fence closes only with the same character and at least the same
+      // length: a 4-backtick block may contain 3-backtick lines.
+      if (fence === null) fence = { mark: run[0], size: run.length };
+      else if (fence.mark === run[0] && run.length >= fence.size) fence = null;
+      return [line];
+    }
+    if (fence !== null) return [line];
+    // Four spaces (or a tab) start an indented code block.
+    if (/^(?: {4}|\t)/.test(line)) return [line];
+
     const trimmed = line.trim().replace(/[.,;:]+$/, "");
     const bare = trimmed.startsWith("MEDIA:")
       ? trimmed.slice("MEDIA:".length).trim()

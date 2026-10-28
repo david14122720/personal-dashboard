@@ -54,6 +54,28 @@ export interface HermesTurn {
   files?: readonly File[];
 }
 
+/** One `event: hermes.tool.progress` frame, kept opaque for the UI. */
+export interface HermesToolEvent {
+  tool: string;
+  label?: string;
+  emoji?: string;
+  status?: string;
+  toolCallId?: string;
+}
+
+export interface HermesStreamHandlers {
+  /** Upstream budget reported by the proxy; the UI uses it for the banner. */
+  onStart?: (timeoutMs: number) => void;
+  onThinking?: (text: string) => void;
+  onTool?: (tool: HermesToolEvent) => void;
+  onDelta?: (text: string) => void;
+}
+
+interface SseFrame {
+  event: string;
+  data: string;
+}
+
 interface HermesChoice {
   message?: { content?: unknown };
 }
@@ -62,7 +84,27 @@ interface HermesResponse {
   reply?: unknown;
   artifacts?: unknown;
   warnings?: unknown;
+  reasoning?: unknown;
   choices?: HermesChoice[];
+}
+
+function codeForUpstream(upstreamCode: string | undefined): HermesErrorCode {
+  switch (upstreamCode) {
+    case "HERMES_TIMEOUT":
+      return "timeout";
+    case "HERMES_UNAUTHORIZED":
+      return "unauthorized";
+    case "HERMES_UNAVAILABLE":
+      return "unavailable";
+    case "HERMES_UPSTREAM_ERROR":
+      return "upstream";
+    case "TOO_MANY_ATTACHMENTS":
+      return "too_many_attachments";
+    case "PAYLOAD_TOO_LARGE":
+      return "too_large";
+    default:
+      return "upstream";
+  }
 }
 
 function codeForStatus(status: number, upstreamCode?: string): HermesErrorCode {
@@ -109,17 +151,16 @@ function warningsOf(raw: unknown): string[] {
   return raw.filter((item): item is string => typeof item === "string");
 }
 
-/**
- * Send exactly the current user turn. History is intentionally NOT sent: the
- * Hermes server keeps the conversation memory under `sessionId`.
- */
-export async function sendHermesTurn(
+/** Headers and body shared by the JSON and the stream transports. */
+function buildTurn(
   sessionId: string,
   turn: HermesTurn,
-): Promise<HermesReply> {
+  accept?: string,
+): { headers: Record<string, string>; body: BodyInit } {
   const token = getToken();
   const headers: Record<string, string> = { "X-Hermes-Session-Id": sessionId };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (accept) headers.Accept = accept;
 
   const files = turn.files ?? [];
   let body: BodyInit;
@@ -132,7 +173,60 @@ export async function sendHermesTurn(
     for (const file of files) form.append("files", file, file.name);
     body = form;
   }
+  return { headers, body };
+}
 
+function errorFromResponse(status: number, text: string): HermesError {
+  let upstreamCode: string | undefined;
+  try {
+    const parsed = JSON.parse(text) as { error?: { code?: unknown } };
+    if (typeof parsed.error?.code === "string") upstreamCode = parsed.error.code;
+  } catch {
+    // Non-JSON error body: status still decides.
+  }
+  return new HermesError(
+    codeForStatus(status, upstreamCode),
+    `hermes status ${status}`,
+    status,
+  );
+}
+
+function parseSseFrame(raw: string): SseFrame {
+  let event = "message";
+  const data: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  return { event, data: data.join("\n") };
+}
+
+function replyFromEnvelope(data: string): HermesReply {
+  let parsed: HermesResponse;
+  try {
+    parsed = JSON.parse(data) as HermesResponse;
+  } catch {
+    throw new HermesError("invalid_response", "hermes returned an unreadable event");
+  }
+  const reply = typeof parsed.reply === "string" ? parsed.reply : "";
+  const artifacts = artifactsOf(parsed.artifacts);
+  // A thinking-only turn is still a valid answer: the accordion carries it.
+  const reasoned = typeof parsed.reasoning === "string" && parsed.reasoning.trim().length > 0;
+  if (reply.trim().length === 0 && artifacts.length === 0 && !reasoned) {
+    throw new HermesError("invalid_response", "hermes returned no message content");
+  }
+  return { reply, artifacts, warnings: warningsOf(parsed.warnings) };
+}
+
+/**
+ * Send exactly the current user turn. History is intentionally NOT sent: the
+ * Hermes server keeps the conversation memory under `sessionId`.
+ */
+export async function sendHermesTurn(
+  sessionId: string,
+  turn: HermesTurn,
+): Promise<HermesReply> {
+  const { headers, body } = buildTurn(sessionId, turn);
   let res: Response;
   try {
     res = await fetch(`${apiBaseUrl()}/hermes`, { method: "POST", headers, body });
@@ -141,20 +235,7 @@ export async function sendHermesTurn(
   }
 
   const text = await res.text();
-  if (!res.ok) {
-    let upstreamCode: string | undefined;
-    try {
-      const parsed = JSON.parse(text) as { error?: { code?: unknown } };
-      if (typeof parsed.error?.code === "string") upstreamCode = parsed.error.code;
-    } catch {
-      // Non-JSON error body: status still decides.
-    }
-    throw new HermesError(
-      codeForStatus(res.status, upstreamCode),
-      `hermes status ${res.status}`,
-      res.status,
-    );
-  }
+  if (!res.ok) throw errorFromResponse(res.status, text);
 
   let data: HermesResponse;
   try {
@@ -182,4 +263,161 @@ export async function sendHermesTurn(
 
 function isLegacyContent(value: unknown): value is string {
   return typeof value === "string";
+}
+
+/**
+ * Ask the proxy to sign paths the reply still mentions. Authenticated with the
+ * dashboard session (unlike the media route itself, which uses the signature).
+ * Unknown or unreadable paths are dropped by the backend, so the caller gets
+ * only cards that can actually download.
+ */
+export async function signHermesMedia(
+  paths: readonly string[],
+  timeoutMs = 5_000,
+): Promise<HermesArtifact[]> {
+  if (paths.length === 0) return [];
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  // The reply is already streamed; an unanswered sign request must cost the
+  // extra cards, never the turn. The timer covers the body too: a proxy that
+  // sends headers and then stalls is as bad as one that never answers.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`${apiBaseUrl()}/hermes/media/sign`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ paths: [...paths] }),
+        signal: controller.signal,
+      });
+    } catch {
+      throw new HermesError("network", "network error");
+    }
+    if (!res.ok) throw errorFromResponse(res.status, await res.text());
+    let data: { items?: unknown };
+    try {
+      data = (await res.json()) as { items?: unknown };
+    } catch {
+      throw new HermesError("invalid_response", "hermes returned an unreadable response");
+    }
+    return artifactsOf(data.items);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Same turn, incremental: the proxy answers `text/event-stream` with
+ * `start`/`thinking`/`tool`/`delta`/`done`/`error`. Resolves with the final
+ * envelope, exactly like [`sendHermesTurn`], so callers keep one shape.
+ *
+ * No timeout of its own: a heavy Hermes turn may legitimately run for minutes.
+ * The caller owns the `AbortController` (the banner's "Reintentar" aborts it).
+ */
+export async function sendHermesTurnStream(
+  sessionId: string,
+  turn: HermesTurn,
+  handlers: HermesStreamHandlers = {},
+  signal?: AbortSignal,
+): Promise<HermesReply> {
+  const { headers, body } = buildTurn(sessionId, turn, "text/event-stream");
+  let res: Response;
+  try {
+    res = await fetch(`${apiBaseUrl()}/hermes`, { method: "POST", headers, body, signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    throw new HermesError("network", "network error");
+  }
+
+  if (!res.ok) throw errorFromResponse(res.status, await res.text());
+  if (!res.body) throw new HermesError("invalid_response", "hermes returned no stream");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: HermesReply | null = null;
+
+  const handle = (raw: string): void => {
+    if (!raw.trim()) return;
+    const { event, data } = parseSseFrame(raw);
+    switch (event) {
+      case "start": {
+        try {
+          const parsed = JSON.parse(data) as { timeoutMs?: unknown };
+          if (typeof parsed.timeoutMs === "number") handlers.onStart?.(parsed.timeoutMs);
+        } catch {
+          // A malformed start frame only costs the banner threshold.
+        }
+        return;
+      }
+      case "thinking": {
+        try {
+          const parsed = JSON.parse(data) as { text?: unknown };
+          if (typeof parsed.text === "string" && parsed.text) handlers.onThinking?.(parsed.text);
+        } catch {
+          // Skip unreadable frames instead of killing the turn.
+        }
+        return;
+      }
+      case "tool": {
+        try {
+          const parsed = JSON.parse(data) as HermesToolEvent;
+          if (typeof parsed.tool === "string") handlers.onTool?.(parsed);
+        } catch {
+          // Same: a broken progress frame is cosmetic.
+        }
+        return;
+      }
+      case "delta": {
+        try {
+          const parsed = JSON.parse(data) as { text?: unknown };
+          if (typeof parsed.text === "string" && parsed.text) handlers.onDelta?.(parsed.text);
+        } catch {
+          // Ignore.
+        }
+        return;
+      }
+      case "done":
+        result = replyFromEnvelope(data);
+        return;
+      case "error": {
+        let code: string | undefined;
+        try {
+          const parsed = JSON.parse(data) as { code?: unknown };
+          if (typeof parsed.code === "string") code = parsed.code;
+        } catch {
+          // Fall through with the generic code.
+        }
+        throw new HermesError(codeForUpstream(code), "hermes stream error");
+      }
+      default:
+        return;
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let index = buffer.indexOf("\n\n");
+      while (index >= 0) {
+        handle(buffer.slice(0, index));
+        buffer = buffer.slice(index + 2);
+        index = buffer.indexOf("\n\n");
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) handle(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!result) {
+    throw new HermesError("invalid_response", "hermes closed the stream without a reply");
+  }
+  return result;
 }

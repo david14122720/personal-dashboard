@@ -5,9 +5,20 @@ import { useRouter } from "next/navigation";
 import ArtifactCard from "@/components/hermes/ArtifactCard";
 import AttachmentBar from "@/components/hermes/AttachmentBar";
 import HermesMarkdown from "@/components/hermes/HermesMarkdown";
+import InteractiveQuestionCard from "@/components/hermes/InteractiveQuestionCard";
 import MicButton from "@/components/hermes/MicButton";
-import { HermesError, type HermesErrorCode, sendHermesTurn } from "@/lib/api/hermes";
+import ThoughtAccordion, { type ThoughtEntry } from "@/components/hermes/ThoughtAccordion";
+import {
+  HermesError,
+  type HermesErrorCode,
+  type HermesToolEvent,
+  sendHermesTurnStream,
+  signHermesMedia,
+} from "@/lib/api/hermes";
 import { collectArtifacts, type Artifact } from "@/lib/hermes/artifacts";
+import { formatElapsed } from "@/lib/hermes/elapsed";
+import { scanMediaPaths } from "@/lib/hermes/paths";
+import { splitQuestion, type HermesQuestion } from "@/lib/hermes/questions";
 import {
   planAttachments,
   releaseAttachment,
@@ -25,7 +36,16 @@ interface SentAttachment {
 
 type Bubble =
   | { id: number; role: "user"; content: string; attachments: SentAttachment[] }
-  | { id: number; role: "assistant"; content: string; artifacts: Artifact[]; warnings: string[] }
+  | {
+      id: number;
+      role: "assistant";
+      content: string;
+      artifacts: Artifact[];
+      warnings: string[];
+      thoughts: ThoughtEntry[];
+      question: HermesQuestion | null;
+      answered: string | null;
+    }
   | {
       id: number;
       role: "error";
@@ -68,6 +88,31 @@ function errorKey(code: HermesErrorCode) {
 }
 
 const REJECTION_KEY = "hermes.errorTooManyAttachments" as const;
+/** Matches the backend default; replaced by the proxy's `start` event. */
+const DEFAULT_TIMEOUT_MS = 600_000;
+
+/** One thinking entry, extended in place while reasoning keeps arriving. */
+function appendThought(entries: ThoughtEntry[], text: string): ThoughtEntry[] {
+  const last = entries[entries.length - 1];
+  if (last && last.kind === "thinking") {
+    return [...entries.slice(0, -1), { kind: "thinking", text: (last.text ?? "") + text }];
+  }
+  return [...entries, { kind: "thinking", text }];
+}
+
+/** Tool frames repeat the same `toolCallId`; the latest status wins. */
+function upsertTool(entries: ThoughtEntry[], tool: HermesToolEvent): ThoughtEntry[] {
+  const index = entries.findIndex(
+    (entry) => entry.kind === "tool" && entry.tool?.toolCallId && entry.tool.toolCallId === tool.toolCallId,
+  );
+  if (index < 0) return [...entries, { kind: "tool", tool }];
+  const merged = [...entries];
+  // A completion frame may only carry `status`: keep the label/emoji captured
+  // while the tool was running.
+  const previous = merged[index].tool ?? { tool: tool.tool };
+  merged[index] = { kind: "tool", tool: { ...previous, ...tool } };
+  return merged;
+}
 
 export default function HermesChat() {
   const router = useRouter();
@@ -78,6 +123,24 @@ export default function HermesChat() {
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
+  const [live, setLive] = useState<{
+    content: string;
+    thoughts: ThoughtEntry[];
+    firstDelta: boolean;
+    timeoutMs: number;
+    startedAt: number;
+    waitingAgain: boolean;
+  } | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const thoughtsRef = useRef<ThoughtEntry[]>([]);
+  const pendingDeltaRef = useRef("");
+  const flushTimerRef = useRef<number | null>(null);
+  const retryTurnRef = useRef<{ content: string; files: File[]; ids: string[] }>({
+    content: "",
+    files: [],
+    ids: [],
+  });
   const logRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const firstScroll = useRef(true);
@@ -106,6 +169,27 @@ export default function HermesChat() {
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
   }, [messages, sending]);
+
+  // Live MM:SS: recomputed from the wall clock so a throttled tab still shows
+  // real elapsed time. It stops as soon as the first content delta renders.
+  useEffect(() => {
+    if (!live || live.firstDelta) return;
+    const started = live.startedAt;
+    const update = () => setElapsed(Math.floor((Date.now() - started) / 1000));
+    update();
+    const handle = window.setInterval(update, 1_000);
+    return () => window.clearInterval(handle);
+  }, [live?.startedAt, live?.firstDelta]);
+
+  // Streaming changes `live`, not `messages`: scroll on both.
+  useEffect(() => {
+    const target = endRef.current;
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [live]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   // Object URLs live only while the chip does.
   useEffect(
@@ -161,23 +245,95 @@ export default function HermesChat() {
 
   async function request(content: string, files: File[], sentIds: readonly string[]) {
     if (!sessionId) return;
+    // One in-flight turn at a time: a retry replaces the previous controller.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    retryTurnRef.current = { content, files, ids: [...sentIds] };
+    thoughtsRef.current = [];
+    pendingDeltaRef.current = "";
+    if (flushTimerRef.current !== null) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
     setSending(true);
+    setElapsed(0);
+    setLive({
+      content: "",
+      thoughts: [],
+      firstDelta: false,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      startedAt: Date.now(),
+      waitingAgain: false,
+    });
+
+    const updateThoughts = (next: (entries: ThoughtEntry[]) => ThoughtEntry[]) => {
+      thoughtsRef.current = next(thoughtsRef.current);
+      setLive((prev) => (prev ? { ...prev, thoughts: thoughtsRef.current } : prev));
+    };
+
     try {
-      const result = await sendHermesTurn(sessionId, { content, files });
-      const collected = collectArtifacts(result.reply, result.artifacts);
+      const result = await sendHermesTurnStream(
+        sessionId,
+        { content, files },
+        {
+          onStart: (timeoutMs) =>
+            setLive((prev) => (prev ? { ...prev, timeoutMs } : prev)),
+          onThinking: (text) => updateThoughts((entries) => appendThought(entries, text)),
+          onTool: (tool) => updateThoughts((entries) => upsertTool(entries, tool)),
+          onDelta: (text) => {
+            // The clock stops on the first token, but the text is flushed at
+            // most every 60 ms: re-parsing the whole reply per token is O(n²).
+            setLive((prev) => (prev ? { ...prev, firstDelta: true } : prev));
+            pendingDeltaRef.current += text;
+            if (flushTimerRef.current !== null) return;
+            flushTimerRef.current = window.setTimeout(() => {
+              flushTimerRef.current = null;
+              const chunk = pendingDeltaRef.current;
+              pendingDeltaRef.current = "";
+              if (!chunk) return;
+              setLive((prev) =>
+                prev ? { ...prev, content: prev.content + chunk } : prev,
+              );
+            }, 60);
+          },
+        },
+        controller.signal,
+      );
+      // Universal route interceptor: any path the proxy did not pre-sign is
+      // signed here before the cards are built. Failures only cost the extra
+      // cards, never the reply.
+      const pending = scanMediaPaths(result.reply).filter(
+        (path) => !result.artifacts.some((artifact) => artifact.path === path),
+      );
+      let artifacts = result.artifacts;
+      if (pending.length > 0) {
+        try {
+          artifacts = [...artifacts, ...(await signHermesMedia(pending))];
+        } catch {
+          artifacts = result.artifacts;
+        }
+      }
+      const collected = collectArtifacts(result.reply, artifacts);
+      const split = splitQuestion(collected.text);
       setMessages((prev) => [
         ...prev,
         {
           id: bubbleId(),
           role: "assistant",
-          content: collected.text,
+          content: split.text,
           artifacts: collected.artifacts,
           warnings: result.warnings,
+          thoughts: thoughtsRef.current,
+          question: split.question,
+          answered: null,
         },
       ]);
       clearSentAttachments(sentIds);
       setNotice(null);
     } catch (error) {
+      // A user-requested "Reintentar" aborts the old request on purpose.
+      if (error instanceof Error && error.name === "AbortError") return;
       const code = error instanceof HermesError ? error.code : "network";
       if (code === "session_expired") router.replace("/login/");
       setMessages((prev) => [
@@ -192,25 +348,71 @@ export default function HermesChat() {
         },
       ]);
     } finally {
-      setSending(false);
+      if (flushTimerRef.current !== null) {
+        window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      pendingDeltaRef.current = "";
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setSending(false);
+        setLive(null);
+      }
     }
+  }
+
+  /** Push a user bubble and forward the turn (shared by text, retry, answers). */
+  function sendTurn(content: string, files: File[], sentIds: readonly string[]) {
+    const pending = sentIds.length > 0 ? attachmentsRef.current : [];
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: bubbleId(),
+        role: "user",
+        content,
+        attachments: pending.map<SentAttachment>((item) => ({
+          name: item.file.name,
+          size: item.file.size,
+          kind: item.kind,
+        })),
+      },
+    ]);
+    void request(content, files, sentIds);
+  }
+
+  /** Answering the card sends a normal turn and locks that card. */
+  function answerQuestion(messageId: number, answer: string) {
+    setMessages((prev) =>
+      prev.map((bubble) =>
+        bubble.id === messageId && bubble.role === "assistant"
+          ? { ...bubble, answered: answer }
+          : bubble,
+      ),
+    );
+    sendTurn(answer, [], []);
+    inputRef.current?.focus();
+  }
+
+  /** The banner's "Seguir esperando": keep the stream, stop nagging. */
+  function keepWaiting() {
+    setLive((prev) => (prev ? { ...prev, waitingAgain: true } : prev));
+  }
+
+  /** The banner's "Reintentar": drop the live turn and ask again. */
+  function retryLive() {
+    const { content, files, ids } = retryTurnRef.current;
+    abortRef.current?.abort();
+    setLive(null);
+    setSending(false);
+    void request(content, files, ids);
   }
 
   function submit() {
     const content = input.trim();
     const pending = attachmentsRef.current;
     if ((!content && pending.length === 0) || sending || !sessionId) return;
-    const sentAttachment = pending.map<SentAttachment>((item) => ({
-      name: item.file.name,
-      size: item.file.size,
-      kind: item.kind,
-    }));
-    setMessages((prev) => [
-      ...prev,
-      { id: bubbleId(), role: "user", content, attachments: sentAttachment },
-    ]);
     setInput("");
-    void request(
+    sendTurn(
       content,
       pending.map((item) => item.file),
       pending.map((item) => item.id),
@@ -397,6 +599,7 @@ export default function HermesChat() {
                   </>
                 ) : (
                   <>
+                    <ThoughtAccordion entries={message.thoughts} />
                     <div data-testid="hermes-markdown">
                       <HermesMarkdown>{message.content}</HermesMarkdown>
                     </div>
@@ -418,6 +621,14 @@ export default function HermesChat() {
                         ))}
                       </div>
                     ) : null}
+                    {message.question ? (
+                      <InteractiveQuestionCard
+                        question={message.question}
+                        answered={message.answered}
+                        disabled={sending}
+                        onAnswer={(answer) => answerQuestion(message.id, answer)}
+                      />
+                    ) : null}
                   </>
                 )}
               </div>
@@ -425,14 +636,67 @@ export default function HermesChat() {
           );
         })}
 
-        {sending ? (
-          <div role="status" className="flex items-center gap-2 text-xs text-muted">
+        {live && live.content.length > 0 ? (
+          <div data-role="assistant" data-streaming="true" className="flex justify-start">
+            <div className="min-w-0 max-w-[85%] rounded-2xl rounded-bl-md border border-hair bg-card px-4 py-2.5 text-sm text-slate-200">
+              <p className="sr-only">{t("hermes.assistant")}</p>
+              <ThoughtAccordion entries={live.thoughts} />
+              <div data-testid="hermes-markdown">
+                <HermesMarkdown>{live.content}</HermesMarkdown>
+              </div>
+            </div>
+          </div>
+        ) : live && live.thoughts.length > 0 ? (
+          // Nothing rendered yet: the thought header floats above the status
+          // line instead of drawing an empty bubble around itself.
+          <div data-role="assistant" data-streaming="true" className="px-1">
+            <p className="sr-only">{t("hermes.assistant")}</p>
+            <ThoughtAccordion entries={live.thoughts} streaming={!live.firstDelta} />
+          </div>
+        ) : null}
+
+        {live && !live.firstDelta ? (
+          <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted">
             <span aria-hidden="true" className="flex items-center gap-1">
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:-0.2s]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:-0.1s]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400" />
             </span>
-            {t("hermes.working")}
+            <span>{t("hermes.working")}</span>
+            {/* Decorative: the status text is announced once, not every tick. */}
+            <span
+              aria-hidden="true"
+              data-testid="hermes-elapsed"
+              className="font-mono tabular-nums text-sky-300"
+            >
+              ⏱️ {formatElapsed(elapsed)}
+            </span>
+          </div>
+        ) : null}
+
+        {live && !live.firstDelta && elapsed * 1000 >= live.timeoutMs && !live.waitingAgain ? (
+          <div
+            role="alert"
+            data-testid="hermes-time-limit"
+            className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200"
+          >
+            <p className="leading-relaxed">{t("hermes.timeLimit")}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={keepWaiting}
+                className="rounded-md border border-amber-400/40 px-2.5 py-1 text-xs font-semibold text-amber-100 transition-colors hover:bg-amber-500/20"
+              >
+                {t("hermes.keepWaiting")}
+              </button>
+              <button
+                type="button"
+                onClick={retryLive}
+                className="rounded-md border border-rose-400/40 px-2.5 py-1 text-xs font-semibold text-rose-100 transition-colors hover:bg-rose-500/20"
+              >
+                {t("hermes.retry")}
+              </button>
+            </div>
           </div>
         ) : null}
         <div ref={endRef} aria-hidden="true" className="h-px w-full" />
