@@ -1,60 +1,66 @@
-//! Authenticated proxy for the Hermes chat agent.
+//! Authenticated proxy for the Hermes Runs API.
 //!
-//! The browser never sees `HERMES_API_KEY`: it posts the current user turn to
-//! `/api/hermes` (JSON or `multipart/form-data`), this handler authenticates
-//! the dashboard session, attaches the upstream Bearer credential and forwards
-//! the opaque `X-Hermes-Session-Id` header unchanged. Conversation memory lives
-//! on the Hermes server, so only the current turn travels in the body.
+//! The browser never sees `HERMES_API_KEY`: it posts a user turn to
+//! `POST /api/hermes/runs` (JSON or `multipart/form-data`), this handler
+//! authenticates the dashboard session, injects the upstream Bearer credential
+//! and a per-user session namespace, and returns a `run_id` the UI polls and
+//! streams. Conversation memory lives on the Hermes server, so only the
+//! current turn travels in the create body.
 //!
-//! Hermes 0.22.5 is OpenAI-compatible but only accepts `text` and `image_url`
-//! content parts: it rejects multipart bodies, `input_audio` and document
-//! parts. The proxy therefore translates each upload into the closest part the
-//! upstream can read (see [`part_for`]) and, when the upstream still rejects an
-//! unsupported part, retries once with an honest text note and reports a
-//! warning instead of dropping the attachment silently.
+//! Session namespacing (D5): the browser sends its own client UUID as
+//! `sessionId`; the proxy forwards `session_id = "pd-<user_id>-<uuid>"`
+//! towards Hermes and `X-Hermes-Session-Key: pd-<user_id>` for long-term
+//! memory. Run ownership is verified by asking `GET /v1/runs/{id}` and
+//! requiring its `session_id` to start with `pd-<user_id>-`: no in-memory or
+//! DB state, and a user can never steer another user's session, stream or
+//! approvals.
 //!
-//! The route is mounted at the root router (not inside the 15 s `/api`
-//! timeout budget) because Hermes answers may legitimately take minutes; the
-//! outbound client enforces `HERMES_TIMEOUT` (10 min by default).
+//! Event transport (D7): `GET /api/hermes/runs/{id}/events` re-emits the
+//! upstream SSE frames verbatim (`id:`, `data:`, `: keepalive` comments
+//! included). The gateway vocabulary is the contract; the proxy translates
+//! nothing.
+//!
+//! The routes are mounted at the root router (not inside the 15 s `/api`
+//! timeout budget) because runs may legitimately take minutes; the outbound
+//! client enforces `HERMES_TIMEOUT` (10 min by default) and the events stream
+//! only a per-read silence budget.
 
-use std::fmt::Write as _;
+use std::{
+    fmt::Write as _,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
-    body::{Body, Bytes},
-    extract::{multipart::Field, FromRequest, Multipart, Request, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    body::Body,
+    extract::{multipart::Field, FromRequest, Multipart, Path, Request, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use futures_util::StreamExt as _;
+use serde::Deserialize;
 use serde_json::{json, Value};
+use uuid::Uuid;
 
-use crate::{
-    config::HermesConfig,
-    routes::hermes_media::{mime_for, MediaConfig, MEDIA_EXTENSIONS},
-    state::AppState,
-};
+use crate::{config::HermesConfig, state::AppState};
 
-/// Opaque session identifier minted by the UI; forwarded byte-for-byte.
-pub const SESSION_HEADER: &str = "x-hermes-session-id";
+/// Header the proxy sends upstream so Hermes can scope long-term memory per
+/// dashboard user. Never accepted from the browser.
+const SESSION_KEY_HEADER: &str = "x-hermes-session-key";
 
-/// The UI sends exactly one user turn; history is Hermes' server-side memory.
-const MAX_MESSAGES: usize = 1;
+/// The UI sends exactly one user turn per run; history is Hermes's
+/// server-side memory.
 const MAX_CONTENT_BYTES: usize = 32_000;
 
 /// Server-side memory guardrails. They bound RAM, not file *types*: any number
 /// of images, documents, audios and archives is accepted while it fits.
 pub const MAX_ATTACHMENTS: usize = 20;
 
-/// JSON turns are a message plus history-less metadata; only the multipart
-/// path is unbounded (owner spec S2), and it is read chunk by chunk.
+/// JSON runs are a message plus metadata; only the multipart path is unbounded
+/// (owner spec S2), and it is read chunk by chunk.
 const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
 
-/// Media cards per reply. A model that prints fifty paths should not turn the
-/// envelope into a listing.
-const MAX_MEDIA_ARTIFACTS: usize = 32;
 /// How much of a text-like file is inlined into the prompt.
 const MAX_INLINE_TEXT_BYTES: usize = 16_000;
 
@@ -67,17 +73,6 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "rb", "php", "sh", "bash", "toml", "ini",
     "cfg", "conf", "sql", "html", "htm", "css", "scss", "svelte", "vue", "patch", "diff", "env",
 ];
-
-#[derive(Debug, Deserialize)]
-pub struct ChatRequest {
-    pub messages: Vec<ChatMessage>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-}
 
 /// One uploaded file, already read from the multipart stream.
 #[derive(Debug, Clone)]
@@ -93,11 +88,13 @@ pub struct Attachment {
     pub truncated: bool,
 }
 
-/// The current user turn: text and/or uploads.
+/// The current user turn: text and/or uploads, plus the browser's client
+/// session UUID (raw; the proxy scopes it via [`scoped_session_id`]).
 #[derive(Debug, Clone, Default)]
 pub struct Turn {
     pub text: String,
     pub attachments: Vec<Attachment>,
+    pub session_id: String,
 }
 
 fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
@@ -106,30 +103,6 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
         Json(json!({"error": {"code": code, "message": message}})),
     )
         .into_response()
-}
-
-fn validate(body: &ChatRequest) -> Result<(), String> {
-    if body.messages.is_empty() {
-        return Err("messages must contain the current user message".to_string());
-    }
-    if body.messages.len() > MAX_MESSAGES {
-        return Err(
-            "only the current user message is accepted; history lives on the server".to_string(),
-        );
-    }
-    let msg = &body.messages[0];
-    if msg.role != "user" {
-        return Err("the message role must be user".to_string());
-    }
-    if msg.content.trim().is_empty() {
-        return Err("the message content must not be empty".to_string());
-    }
-    if msg.content.len() > MAX_CONTENT_BYTES {
-        return Err(format!(
-            "the message content must be at most {MAX_CONTENT_BYTES} bytes"
-        ));
-    }
-    Ok(())
 }
 
 fn base_mime(raw: &str) -> &str {
@@ -168,32 +141,10 @@ fn is_text_like(mime: &str, filename: &str) -> bool {
     TEXT_EXTENSIONS.contains(&ext.as_str())
 }
 
-/// `input_audio.format` only accepts a handful of names; map MIME first and
-/// fall back to the extension so a browser recording always has a valid value.
-fn audio_format(mime: &str, filename: &str) -> &'static str {
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match mime {
-        "audio/webm" => "webm",
-        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
-        "audio/mpeg" | "audio/mp3" => "mp3",
-        "audio/ogg" => "ogg",
-        "audio/mp4" | "audio/m4a" | "audio/x-m4a" => "m4a",
-        _ => match ext.as_str() {
-            "wav" => "wav",
-            "mp3" => "mp3",
-            "ogg" | "oga" | "opus" => "ogg",
-            "m4a" | "mp4" => "m4a",
-            _ => "webm",
-        },
-    }
-}
-
-/// One attachment as the content part the upstream can read. The table is
-/// documented in `odd/tasks/hermes-adjuntos-audio-artefactos.md`.
+/// One attachment as the content part the upstream can read. Images travel
+/// inline as `data:` URLs, text-like files are inlined, and anything else —
+/// including voice notes, which the gateway cannot hear (D6) — becomes an
+/// honest text descriptor so nothing disappears silently.
 fn part_for(attachment: &Attachment) -> Value {
     let mime = base_mime(&attachment.mime);
     if is_image(mime) {
@@ -202,17 +153,19 @@ fn part_for(attachment: &Attachment) -> Value {
             "image_url": { "url": format!("data:{mime};base64,{}", BASE64.encode(&attachment.bytes)) }
         });
     }
-    if is_audio(mime) {
-        return json!({
-            "type": "input_audio",
-            "input_audio": {
-                "data": BASE64.encode(&attachment.bytes),
-                "format": audio_format(mime, &attachment.filename),
-            }
-        });
-    }
     if let Some(text) = inline_text(attachment) {
         return json!({ "type": "text", "text": text });
+    }
+    if is_audio(mime) {
+        return json!({
+            "type": "text",
+            "text": format!(
+                "Nota de voz adjunta como referencia: {} ({}, {} bytes). Este endpoint de Hermes sólo acepta texto e imágenes, así que no pudo escucharla.",
+                attachment.filename,
+                mime,
+                attachment.size
+            )
+        });
     }
     json!({
         "type": "text",
@@ -252,281 +205,6 @@ fn inline_text(attachment: &Attachment) -> Option<String> {
         shown
     );
     Some(out)
-}
-
-/// Audio note used when the upstream cannot process `input_audio`.
-fn degraded_audio_note(attachment: &Attachment) -> Value {
-    json!({
-        "type": "text",
-        "text": format!(
-            "Nota de voz adjunta como referencia: {} ({}, {} bytes). Este endpoint de Hermes sólo acepta texto e imágenes, así que no pudo escucharla.",
-            attachment.filename,
-            base_mime(&attachment.mime),
-            attachment.size
-        )
-    })
-}
-
-fn build_content(turn: &Turn, degrade_audio: bool) -> Value {
-    if turn.attachments.is_empty() {
-        return Value::String(turn.text.trim().to_string());
-    }
-    let mut parts: Vec<Value> = Vec::with_capacity(turn.attachments.len() + 1);
-    if !turn.text.trim().is_empty() {
-        parts.push(json!({ "type": "text", "text": turn.text.trim() }));
-    }
-    for attachment in &turn.attachments {
-        let mime = base_mime(&attachment.mime);
-        if (degrade_audio || attachment.truncated) && is_audio(mime) {
-            parts.push(degraded_audio_note(attachment));
-        } else {
-            parts.push(part_for(attachment));
-        }
-    }
-    if parts.is_empty() {
-        parts.push(json!({ "type": "text", "text": "Revisá los archivos adjuntos." }));
-    }
-    Value::Array(parts)
-}
-
-fn body_for(turn: &Turn, degrade_audio: bool) -> Value {
-    json!({ "messages": [{ "role": "user", "content": build_content(turn, degrade_audio) }] })
-}
-
-/// What the user must know after the proxy degraded a part. Audio has its own
-/// message; any future unsupported part still gets a generic notice so nothing
-/// disappears silently.
-fn degradation_warnings(turn: &Turn) -> Vec<String> {
-    let mut warnings: Vec<String> = turn
-        .attachments
-        .iter()
-        .filter(|a| is_audio(base_mime(&a.mime)))
-        .map(|a| {
-            format!(
-                "La nota de voz «{}» se envió como texto: el endpoint de Hermes sólo acepta texto e imágenes.",
-                a.filename
-            )
-        })
-        .collect();
-    if warnings.is_empty() {
-        warnings.push(
-            "Hermes rechazó parte de los adjuntos; se enviaron como texto para no perder el mensaje."
-                .to_string(),
-        );
-    }
-    warnings
-}
-
-fn upstream_unsupported(body: &Value) -> bool {
-    // Measured on hermes-agent 0.22.5: `{"message":...,"code":"unsupported_content_type"}`
-    // at the top level. The nested `/error/code` form is kept for gateways that
-    // wrap it the OpenAI way.
-    ["/code", "/error/code"]
-        .iter()
-        .filter_map(|pointer| body.pointer(pointer).and_then(Value::as_str))
-        .any(|code| code == "unsupported_content_type")
-}
-
-/// Keep only artifacts a browser may safely load and download.
-fn sanitize_artifacts(raw: &[Value]) -> Vec<Value> {
-    raw.iter()
-        .filter_map(|item| {
-            let object = item.as_object()?;
-            let url = object.get("url").and_then(Value::as_str)?;
-            let safe = url.starts_with("http://")
-                || url.starts_with("https://")
-                || url.starts_with("data:");
-            if !safe {
-                return None;
-            }
-            let name = match object.get("name").and_then(Value::as_str) {
-                Some(name) if !name.trim().is_empty() => name.to_string(),
-                // A data: URL has no path tail worth showing.
-                _ if url.starts_with("data:") => "archivo".to_string(),
-                _ => url
-                    .rsplit('/')
-                    .next()
-                    .filter(|tail| !tail.is_empty())
-                    .unwrap_or("archivo")
-                    .to_string(),
-            };
-            let mut out = serde_json::Map::new();
-            out.insert("url".into(), Value::String(url.to_string()));
-            out.insert("name".into(), Value::String(name));
-            if let Some(mime) = object.get("mime").and_then(Value::as_str) {
-                out.insert("mime".into(), Value::String(mime.to_string()));
-            }
-            if let Some(size) = object.get("size").and_then(Value::as_u64) {
-                out.insert("size".into(), Value::Number(size.into()));
-            }
-            if let Some(path) = object.get("path").and_then(Value::as_str) {
-                out.insert("path".into(), Value::String(path.to_string()));
-            }
-            Some(Value::Object(out))
-        })
-        .collect()
-}
-
-/// Normalized envelope: the UI never has to know the upstream wire format.
-fn normalize(upstream: &Value, warnings: Vec<String>) -> Value {
-    let message = upstream.pointer("/choices/0/message");
-    let reply = message
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let artifacts = message
-        .and_then(|m| m.get("artifacts"))
-        .and_then(Value::as_array)
-        .map(|items| sanitize_artifacts(items))
-        .unwrap_or_default();
-    json!({ "reply": reply, "artifacts": artifacts, "warnings": warnings })
-}
-
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// Media the agent pointed at in its prose: `MEDIA:/abs/path` or a bare
-/// absolute path, restricted to extensions the chat renders. The gateway
-/// inlines images as `data:` URLs, so in practice this covers video, audio,
-/// documents and archives.
-fn known_extension(path: &str) -> bool {
-    path.rfind('.').is_some_and(|dot| {
-        MEDIA_EXTENSIONS.contains(&path[dot + 1..].to_ascii_lowercase().as_str())
-    })
-}
-
-fn media_paths(text: &str) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    let mut push = |candidate: &str| {
-        let path = candidate.trim_end_matches(['.', ',', ';', ':', ')', ']']);
-        if !path.starts_with('/') || !known_extension(path) {
-            return;
-        }
-        if found.iter().any(|seen| seen == path) {
-            return;
-        }
-        if found.len() < MAX_MEDIA_ARTIFACTS {
-            found.push(path.to_string());
-        }
-    };
-
-    // Markdown links keep paths with spaces unambiguous: [label](/opt/data/a b.pdf)
-    let mut rest = text;
-    while let Some(open) = rest.find("](") {
-        let after = &rest[open + 2..];
-        let Some(close) = after.find(')') else { break };
-        push(&after[..close]);
-        rest = &after[close + 1..];
-    }
-
-    // Bare MEDIA: can carry spaces; the caller resolves variants against disk.
-    for line in text.lines() {
-        if let Some(index) = line.find("MEDIA:") {
-            let tail = line[index + "MEDIA:".len()..].trim();
-            if tail.starts_with('/') {
-                push(tail);
-                // Progressive prefixes: "a b c.mp4" -> "a b c.mp4" then "a b.mp4"...
-                let mut end = tail.len();
-                for _ in 0..8 {
-                    let Some(space) = tail[..end].rfind(' ') else { break };
-                    end = space;
-                    push(&tail[..end]);
-                }
-            }
-        }
-    }
-
-    for raw in text.split_whitespace() {
-        let token = raw.trim_matches(|ch: char| {
-            ch.is_whitespace()
-                || matches!(
-                    ch,
-                    '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | '*' | ',' | ';' | ':'
-                )
-        });
-        let path = token.strip_prefix("MEDIA:").unwrap_or(token);
-        push(path);
-    }
-    found
-}
-
-/// First existing variant of a candidate path (whole, then shorter prefixes).
-fn media_variant(cfg: &MediaConfig, path: &str) -> Option<(String, std::path::PathBuf)> {
-    if let Some(resolved) = cfg.resolve(path) {
-        return Some((path.to_string(), resolved));
-    }
-    let mut end = path.len();
-    for _ in 0..8 {
-        let space = path[..end].rfind(' ')?;
-        end = space;
-        let candidate = &path[..end];
-        if let Some(resolved) = cfg.resolve(candidate) {
-            return Some((candidate.to_string(), resolved));
-        }
-    }
-    None
-}
-
-/// Turn existing media paths into artifacts with a signed, same-origin URL and
-/// the real size/mime from disk. A path the backend cannot see is left in the
-/// text untouched: a card that 404s would be worse than the honest path.
-async fn add_media_artifacts(envelope: &mut Value, cfg: &MediaConfig) {
-    let Some(reply) = envelope.get("reply").and_then(Value::as_str) else {
-        return;
-    };
-    let candidates = media_paths(reply);
-    if candidates.is_empty() {
-        return;
-    }
-    let now = now_secs();
-    let mut additions: Vec<Value> = Vec::new();
-    for path in candidates {
-        // A `MEDIA:` line may include trailing prose. Try the candidate, then
-        // shorter prefixes ending at a space, so "clip final.mp4" wins over
-        // "clip final.mp4, gracias".
-        let Some(resolved) = media_variant(cfg, &path) else {
-            continue;
-        };
-        let path = resolved.0;
-        let resolved = resolved.1;
-        let Ok(metadata) = tokio::fs::metadata(&resolved).await else {
-            continue;
-        };
-        if !metadata.is_file() {
-            continue;
-        }
-        let name = resolved
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("archivo")
-            .to_string();
-        additions.push(json!({
-            "url": cfg.signed_url(&path, now),
-            "name": name,
-            "mime": mime_for(&resolved),
-            "size": metadata.len(),
-            "path": path,
-        }));
-    }
-    if additions.is_empty() {
-        return;
-    }
-    let Some(array) = envelope.get_mut("artifacts").and_then(Value::as_array_mut) else {
-        return;
-    };
-    for item in additions {
-        let duplicate = array
-            .iter()
-            .any(|existing| existing.get("path") == item.get("path"));
-        if !duplicate {
-            array.push(item);
-        }
-    }
 }
 
 async fn read_text_field(mut field: Field<'_>) -> Result<String, Response> {
@@ -593,8 +271,8 @@ async fn read_field(
     }
 }
 
-/// Read `message` + repeated `files` parts. Unknown fields are ignored so a
-/// future UI can send extra metadata without breaking the proxy.
+/// Read `message` + `sessionId` + repeated `files` parts. Unknown fields are
+/// ignored so a future UI can send extra metadata without breaking the proxy.
 async fn parse_multipart(mut multipart: Multipart) -> Result<Turn, Response> {
     let mut turn = Turn::default();
     loop {
@@ -613,6 +291,9 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<Turn, Response> {
         match name.as_str() {
             "message" | "content" => {
                 turn.text = read_text_field(field).await?;
+            }
+            "sessionId" | "session_id" => {
+                turn.session_id = read_text_field(field).await?;
             }
             "files" | "file" => {
                 if turn.attachments.len() >= MAX_ATTACHMENTS {
@@ -665,28 +346,233 @@ async fn parse_multipart(mut multipart: Multipart) -> Result<Turn, Response> {
     Ok(turn)
 }
 
-fn upstream_request(
-    client: &reqwest::Client,
-    cfg: &HermesConfig,
-    session: Option<&HeaderValue>,
-    body_json: &Value,
-) -> reqwest::RequestBuilder {
-    let mut request = client
-        .post(&cfg.api_url)
-        .bearer_auth(&cfg.api_key)
-        .json(body_json);
-    if let Some(value) = session {
-        // HeaderValue is already validated by the HTTP layer: copy it as-is
-        // instead of re-parsing and risking a normalized/mangled identifier.
-        request = request.header(
-            header::HeaderName::from_static(SESSION_HEADER),
-            value.clone(),
-        );
+// ---------------------------------------------------------------------------
+// Runs addressing: base URL, session namespacing, run ids
+// ---------------------------------------------------------------------------
+
+/// Base URL for `/v1/runs*` derived from `HERMES_API_URL`, which may point at
+/// the gateway root (`http://host:8642`) or at the legacy chat endpoint
+/// (`http://host:8642/v1/chat/completions`). A trailing `/v1...` gateway path
+/// is stripped; any other base path (e.g. a reverse-proxy prefix) is
+/// preserved verbatim.
+fn api_base(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    if let Some(prefix) = trimmed.strip_suffix("/v1/chat/completions") {
+        return prefix.to_string();
     }
-    request
+    if let Some(index) = trimmed.rfind("/v1/") {
+        return trimmed[..index].to_string();
+    }
+    if let Some(prefix) = trimmed.strip_suffix("/v1") {
+        return prefix.to_string();
+    }
+    trimmed.to_string()
 }
 
-fn upstream_send_error(err: &reqwest::Error) -> Response {
+/// Scope the browser's client session UUID into this user's Hermes namespace.
+/// Returns `None` for anything that is not a UUID: no length games, no free
+/// text — a forged or missing id can never address another session.
+pub fn scoped_session_id(user_id: Uuid, client_session: &str) -> Option<String> {
+    let uuid = Uuid::parse_str(client_session.trim()).ok()?;
+    Some(format!("pd-{user_id}-{uuid}"))
+}
+
+/// True only when `session_id` lives in this user's namespace. Run ownership
+/// is decided with this predicate against the `session_id` reported by
+/// `GET /v1/runs/{id}`: no proxy-side state, no database.
+pub fn session_owned(session_id: &str, user_id: Uuid) -> bool {
+    let prefix = format!("pd-{user_id}-");
+    session_id.len() > prefix.len() && session_id.starts_with(&prefix)
+}
+
+/// Gateway run ids look like `run_<alphanumerics>` (measured 0.22.5). The
+/// shape is validated before the id ever reaches a URL.
+fn valid_run_id(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("run_") else {
+        return false;
+    };
+    !rest.is_empty() && rest.len() <= 60 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Runs request bodies and whitelisted responses
+// ---------------------------------------------------------------------------
+
+/// The `content` parts of the single user message: the text first, then one
+/// part per attachment. Voice notes arrive as degraded text notes (D6): the
+/// gateway has no audio input.
+fn runs_content(turn: &Turn) -> Value {
+    let mut parts: Vec<Value> = Vec::with_capacity(turn.attachments.len() + 1);
+    if !turn.text.trim().is_empty() {
+        parts.push(json!({ "type": "text", "text": turn.text.trim() }));
+    }
+    for attachment in &turn.attachments {
+        parts.push(part_for(attachment));
+    }
+    if parts.is_empty() {
+        parts.push(json!({ "type": "text", "text": "Revisá los archivos adjuntos." }));
+    }
+    Value::Array(parts)
+}
+
+/// `POST /v1/runs` body: exactly the current turn plus this user's scoped
+/// session. History stays server-side on Hermes.
+fn runs_body(turn: &Turn, scoped_session: &str) -> Value {
+    json!({
+        "input": [{ "role": "user", "content": runs_content(turn) }],
+        "session_id": scoped_session,
+    })
+}
+
+/// Pick a whitelisted field from either the gateway's snake_case or a
+/// camelCase alias; missing stays `null` instead of failing the envelope.
+fn runs_field(status: &Value, snake: &str, camel: &str) -> Value {
+    status
+        .get(snake)
+        .or_else(|| status.get(camel))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// The exact `GET /api/hermes/runs/{runId}` envelope (camelCase whitelist).
+fn status_envelope(run_id: &str, status: &Value) -> Value {
+    let session_id = status
+        .get("session_id")
+        .or_else(|| status.get("sessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let upstream_run = status
+        .get("run_id")
+        .or_else(|| status.get("runId"))
+        .and_then(Value::as_str)
+        .unwrap_or(run_id);
+    json!({
+        "runId": upstream_run,
+        "status": runs_field(status, "status", "status"),
+        "sessionId": session_id,
+        "createdAt": runs_field(status, "created_at", "createdAt"),
+        "updatedAt": runs_field(status, "updated_at", "updatedAt"),
+        "executionGeneration": runs_field(status, "execution_generation", "executionGeneration"),
+        "output": runs_field(status, "output", "output"),
+        "usage": runs_field(status, "usage", "usage"),
+        "completed": runs_field(status, "completed", "completed"),
+        "partial": runs_field(status, "partial", "partial"),
+        "interrupted": runs_field(status, "interrupted", "interrupted"),
+        "error": runs_field(status, "error", "error"),
+        "pendingControls": runs_field(status, "pending_controls", "pendingControls"),
+    })
+}
+
+/// Reject a run whose reported session is outside this user's namespace. A
+/// foreign or missing session is indistinguishable from "no such run".
+fn ensure_owned(status: &Value, user_id: Uuid) -> Result<(), Response> {
+    let session_id = status
+        .get("session_id")
+        .or_else(|| status.get("sessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if session_owned(session_id, user_id) {
+        Ok(())
+    } else {
+        Err(error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            "run not found",
+        ))
+    }
+}
+
+/// The `POST /api/hermes/runs/{runId}/approval` envelope: the run, the choice
+/// the proxy forwarded, and whether the gate settled.
+fn approval_envelope(run_id: &str, choice: &str, answered: &Value) -> Value {
+    let resolved = answered
+        .get("resolved")
+        .and_then(Value::as_bool)
+        .or_else(|| answered.get("settled").and_then(Value::as_bool))
+        .unwrap_or(true);
+    json!({ "runId": run_id, "choice": choice, "resolved": resolved })
+}
+
+/// The body forwarded to `POST /v1/runs/{id}/approval`: the validated choice
+/// plus `request_id`/`execution_generation` copied from the `approval.request`
+/// event when the UI saw them (S8).
+fn approval_forward(body: &Value, choice: &str) -> Value {
+    let mut forward = serde_json::Map::new();
+    if let Some(value) = body.get("request_id").or_else(|| body.get("requestId")) {
+        forward.insert("request_id".to_string(), value.clone());
+    }
+    if let Some(value) = body
+        .get("execution_generation")
+        .or_else(|| body.get("executionGeneration"))
+    {
+        forward.insert("execution_generation".to_string(), value.clone());
+    }
+    forward.insert("choice".to_string(), Value::String(choice.to_string()));
+    Value::Object(forward)
+}
+
+// ---------------------------------------------------------------------------
+// Upstream error mapping
+// ---------------------------------------------------------------------------
+
+fn upstream_code(body: &Value) -> Option<&str> {
+    body.pointer("/code")
+        .and_then(Value::as_str)
+        .or_else(|| body.pointer("/error/code").and_then(Value::as_str))
+}
+
+fn upstream_message<'a>(body: &'a Value) -> Option<&'a str> {
+    body.pointer("/message")
+        .and_then(Value::as_str)
+        .or_else(|| body.pointer("/error/message").and_then(Value::as_str))
+        .or_else(|| body.pointer("/error").and_then(Value::as_str))
+}
+
+/// Map a non-2xx upstream answer to the proxy envelope, preserving the
+/// upstream message when it has one: 401 means our key is wrong (502, the
+/// browser cannot fix it), 404/`run_not_found` and 409 keep their meaning so
+/// the UI can tell "no such run" from "approval already settled".
+fn map_runs_status(status: reqwest::StatusCode, body: &Value) -> Response {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        tracing::warn!("hermes rejected the configured credentials");
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "HERMES_UNAUTHORIZED",
+            upstream_message(body).unwrap_or("Hermes rejected the configured credentials"),
+        );
+    }
+    if status == reqwest::StatusCode::NOT_FOUND || upstream_code(body) == Some("run_not_found") {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            upstream_message(body).unwrap_or("run not found"),
+        );
+    }
+    if status == reqwest::StatusCode::CONFLICT {
+        return error_response(
+            StatusCode::CONFLICT,
+            "HERMES_APPROVAL_CONFLICT",
+            upstream_message(body).unwrap_or("the approval is no longer pending"),
+        );
+    }
+    tracing::warn!(status = status.as_u16(), "hermes returned an error");
+    error_response(
+        StatusCode::BAD_GATEWAY,
+        "HERMES_UPSTREAM_ERROR",
+        upstream_message(body).unwrap_or("Hermes returned an error"),
+    )
+}
+
+/// A request that never got an answer: silence past the budget is 504, a
+/// refused/dropped connection is 503.
+fn send_error(err: reqwest::Error) -> Response {
     if err.is_timeout() {
         tracing::warn!("hermes upstream timed out");
         error_response(
@@ -697,75 +583,36 @@ fn upstream_send_error(err: &reqwest::Error) -> Response {
     } else {
         tracing::warn!("hermes upstream is unreachable");
         error_response(
-            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
             "HERMES_UNAVAILABLE",
             "Hermes is unreachable",
         )
     }
 }
 
-async fn post_once(
-    cfg: &HermesConfig,
-    session: Option<&HeaderValue>,
-    body_json: &Value,
-) -> Result<reqwest::Response, Response> {
-    upstream_request(&cfg.http, cfg, session, body_json)
-        .send()
-        .await
-        .map_err(|err| upstream_send_error(&err))
-}
-
-/// Forward one user turn, degrading audio once if the upstream rejects it.
-/// Returns the upstream JSON plus any user-facing warnings.
-async fn send_to_hermes(
-    cfg: &HermesConfig,
-    session: Option<&HeaderValue>,
-    turn: &Turn,
-) -> Result<(Value, Vec<String>), Response> {
-    let mut warnings = Vec::new();
-    let mut upstream = post_once(cfg, session, &body_for(turn, false)).await?;
-
+/// Read an upstream JSON answer, mapping transport failures (but not HTTP
+/// statuses: the caller decides those from `status`, with the body kept for
+/// the error mapper).
+async fn read_json_body(upstream: reqwest::Response) -> Result<Value, Response> {
     let status = upstream.status();
-    if status == reqwest::StatusCode::BAD_REQUEST {
-        let body = match upstream.json::<Value>().await {
-            Ok(body) => body,
-            Err(err) if err.is_timeout() => {
-                tracing::warn!("hermes upstream timed out while reading the rejection body");
-                return Err(error_response(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "HERMES_TIMEOUT",
-                    "Hermes did not answer in time",
-                ));
-            }
-            Err(_) => Value::Null,
-        };
-        if upstream_unsupported(&body) {
-            tracing::info!("hermes rejected unsupported content parts; retrying degraded");
-            warnings = degradation_warnings(turn);
-            upstream = post_once(cfg, session, &body_for(turn, true)).await?;
-        } else {
-            return Err(map_upstream_status(status));
-        }
-    } else if !status.is_success() {
-        return Err(map_upstream_status(status));
-    }
-
-    let status = upstream.status();
-    if !status.is_success() {
-        return Err(map_upstream_status(status));
-    }
-
     match upstream.bytes().await {
-        Ok(body) => match serde_json::from_slice::<Value>(&body) {
-            Ok(value) => Ok((value, warnings)),
-            Err(_) => Err(error_response(
-                StatusCode::BAD_GATEWAY,
-                "HERMES_UPSTREAM_ERROR",
-                "Hermes returned an unreadable response",
-            )),
-        },
-        // The client timeout also covers the body: an upstream that sends 200
-        // headers and then stalls must answer 504, not a generic 502.
+        Ok(bytes) => {
+            if bytes.is_empty() {
+                return if status.is_success() {
+                    Ok(Value::Null)
+                } else {
+                    Err(map_runs_status(status, &Value::Null))
+                };
+            }
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) => Ok(value),
+                Err(_) => Err(error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "HERMES_UPSTREAM_ERROR",
+                    "Hermes returned an unreadable response",
+                )),
+            }
+        }
         Err(err) if err.is_timeout() => {
             tracing::warn!("hermes upstream timed out while reading the body");
             Err(error_response(
@@ -782,370 +629,212 @@ async fn send_to_hermes(
     }
 }
 
-
 // ---------------------------------------------------------------------------
-// Streamed turns (SSE)
-//
-// Hermes 0.22.5 speaks OpenAI-style SSE: `data: {"choices":[{"delta":
-// {"reasoning_content"|"content"}}]}`, plus `event: hermes.tool.progress`
-// frames while a tool runs, terminated by `data: [DONE]`. The browser only
-// sees the proxy's own events (`start`, `thinking`, `tool`, `delta`, `done`,
-// `error`) so the upstream wire format stays replaceable.
+// Upstream Runs calls (thin: handlers add auth + ownership, tests fake the
+// gateway with an in-process axum router)
 // ---------------------------------------------------------------------------
 
-/// The browser opts into incremental events with `Accept: text/event-stream`.
-fn wants_stream(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
-}
-
-fn sse_event(name: &str, data: &Value) -> Bytes {
-    // JSON strings never contain raw newlines, so one `data:` line per event
-    // is always a complete frame.
-    Bytes::from(format!("event: {name}\ndata: {data}\n\n"))
-}
-
-fn body_for_stream(turn: &Turn, degrade_audio: bool) -> Value {
-    let mut body = body_for(turn, degrade_audio);
-    body["stream"] = json!(true);
-    body
-}
-
-async fn post_stream(
+/// `POST {base}/v1/runs` with the Bearer credential, the per-user session key
+/// and the scoped session in the body. A 202 becomes the browser envelope
+/// `{runId, sessionId, createdAt}` (ms); anything else goes through the
+/// error mapper.
+pub async fn create_run_upstream(
     cfg: &HermesConfig,
-    session: Option<&HeaderValue>,
-    body_json: &Value,
-) -> Result<reqwest::Response, Response> {
-    upstream_request(&cfg.stream_http, cfg, session, body_json)
+    user_id: Uuid,
+    turn: &Turn,
+) -> Result<Value, Response> {
+    let scoped = scoped_session_id(user_id, &turn.session_id).ok_or_else(|| {
+        error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VALIDATION_ERROR",
+            "sessionId must be a UUID",
+        )
+    })?;
+    let url = format!("{}/v1/runs", api_base(&cfg.api_url));
+    let upstream = cfg
+        .http
+        .post(url)
+        .bearer_auth(&cfg.api_key)
+        .header(SESSION_KEY_HEADER, format!("pd-{user_id}"))
+        .json(&runs_body(turn, &scoped))
         .send()
         .await
-        .map_err(|err| upstream_send_error(&err))
-}
-
-/// Open the upstream stream, degrading unsupported parts once. A 400 still
-/// arrives as JSON even in stream mode (measured), so the same retry applies.
-async fn open_stream(
-    cfg: &HermesConfig,
-    session: Option<&HeaderValue>,
-    turn: &Turn,
-) -> Result<(reqwest::Response, Vec<String>), Response> {
-    let mut warnings = Vec::new();
-    let mut upstream = post_stream(cfg, session, &body_for_stream(turn, false)).await?;
-    if upstream.status() == reqwest::StatusCode::BAD_REQUEST {
-        let body = upstream.json::<Value>().await.unwrap_or(Value::Null);
-        if upstream_unsupported(&body) {
-            tracing::info!("hermes rejected unsupported content parts; retrying degraded stream");
-            warnings = degradation_warnings(turn);
-            upstream = post_stream(cfg, session, &body_for_stream(turn, true)).await?;
-        } else {
-            return Err(map_upstream_status(reqwest::StatusCode::BAD_REQUEST));
-        }
+        .map_err(send_error)?;
+    let status = upstream.status();
+    let value = read_json_body(upstream).await?;
+    if !status.is_success() {
+        return Err(map_runs_status(status, &value));
     }
-    if !upstream.status().is_success() {
-        return Err(map_upstream_status(upstream.status()));
-    }
-    Ok((upstream, warnings))
-}
-
-/// Incomplete SSE frames carried between network chunks.
-#[derive(Default)]
-struct SseFrames {
-    buffer: Vec<u8>,
-}
-
-fn find_frames(buffer: &[u8]) -> Option<usize> {
-    buffer.windows(2).position(|pair| pair == b"\n\n")
-}
-
-impl SseFrames {
-    fn push(&mut self, chunk: &[u8]) -> Vec<String> {
-        // CRLF is valid SSE; JSON strings never carry a raw CR, so dropping
-        // every CR before matching keeps LF framing correct for both dialects.
-        self.buffer.extend(chunk.iter().copied().filter(|byte| *byte != b'\r'));
-        let mut frames = Vec::new();
-        while let Some(index) = find_frames(&self.buffer) {
-            let frame: Vec<u8> = self.buffer.drain(..index + 2).collect();
-            frames.push(String::from_utf8_lossy(&frame).into_owned());
-        }
-        frames
-    }
-}
-
-fn parse_frame(frame: &str) -> (Option<String>, Option<String>) {
-    let mut event = None;
-    let mut data = String::new();
-    for line in frame.lines() {
-        if let Some(rest) = line.strip_prefix("event:") {
-            event = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("data:") {
-            if !data.is_empty() {
-                data.push('\n');
-            }
-            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
-        }
-    }
-    (event, (!data.is_empty()).then_some(data))
-}
-
-const THINK_OPEN: &str = "<thinking>";
-const THINK_CLOSE: &str = "</thinking>";
-
-/// Longest suffix of `text` that is a proper prefix of `tag`: those bytes may
-/// begin a tag split across two chunks and must not be emitted yet.
-fn partial_suffix(text: &str, tag: &str) -> usize {
-    let max = tag.len().min(text.len());
-    // `..=max`: when the whole pending buffer is a prefix of the tag (the
-    // normal start of a content stream) it must be held, not emitted.
-    for len in (1..=max).rev() {
-        if tag.is_char_boundary(len) && text.ends_with(&tag[..len]) {
-            return len;
-        }
-    }
-    0
-}
-
-/// Routes `<thinking>…</thinking>` found in content deltas to the accordion.
-/// `reasoning_content` arrives separately and never passes through here.
-#[derive(Default)]
-struct ThinkingSplitter {
-    pending: String,
-    inside: bool,
-}
-
-impl ThinkingSplitter {
-    fn push(&mut self, chunk: &str) -> (String, String) {
-        let mut visible = String::new();
-        let mut thinking = String::new();
-        self.pending.push_str(chunk);
-        loop {
-            let (marker, sink) = if self.inside {
-                (THINK_CLOSE, &mut thinking)
-            } else {
-                (THINK_OPEN, &mut visible)
-            };
-            if let Some(index) = self.pending.find(marker) {
-                sink.push_str(&self.pending[..index]);
-                self.pending.drain(..index + marker.len());
-                self.inside = !self.inside;
-                continue;
-            }
-            let keep = partial_suffix(&self.pending, marker);
-            let cut = self.pending.len() - keep;
-            sink.push_str(&self.pending[..cut]);
-            self.pending.drain(..cut);
-            break;
-        }
-        (visible, thinking)
-    }
-
-    fn finish(&mut self) -> (String, String) {
-        let rest = std::mem::take(&mut self.pending);
-        if self.inside {
-            (String::new(), rest)
-        } else {
-            (rest, String::new())
-        }
-    }
-}
-
-/// Turn the upstream stream into the browser's event stream. The task owns the
-/// upstream response: the handler returns as soon as the headers are written.
-fn stream_response(upstream: reqwest::Response, timeout_ms: u64, warnings: Vec<String>) -> Response {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
-    let _ = tx.try_send(sse_event("start", &json!({ "timeoutMs": timeout_ms })));
-    tokio::spawn(async move {
-        // Every emit goes through this macro: when the browser aborts (the
-        // banner's "Reintentar"), the receiver is dropped and `send` fails.
-        // Returning here drops `upstream`, which closes the HTTP/1.1 request
-        // before a retry opens a second one: Hermes never runs the same tools
-        // twice.
-        macro_rules! emit {
-            ($event:expr) => {
-                if tx.send($event).await.is_err() {
-                    return;
-                }
-            };
-        }
-        let mut frames = SseFrames::default();
-        let mut splitter = ThinkingSplitter::default();
-        let mut reply = String::new();
-        let mut thinking = String::new();
-        let mut failure: Option<&'static str> = None;
-        let mut saw_done = false;
-        let mut stream = upstream.bytes_stream();
-        'outer: loop {
-            // A silent upstream must not park the task past a browser abort:
-            // race the next chunk with the receiver closing, and drop the
-            // upstream request when the tab goes away.
-            let next = tokio::select! {
-                next = stream.next() => next,
-                _ = tx.closed() => return,
-            };
-            let Some(chunk) = next else { break };
-            let chunk = match chunk {
-                Ok(chunk) => chunk,
-                Err(err) => {
-                    failure = Some(if err.is_timeout() {
-                        "HERMES_TIMEOUT"
-                    } else {
-                        "HERMES_UNAVAILABLE"
-                    });
-                    break;
-                }
-            };
-            for frame in frames.push(&chunk) {
-                let (event, data) = parse_frame(&frame);
-                let Some(data) = data else { continue };
-                if data.trim() == "[DONE]" {
-                    saw_done = true;
-                    break 'outer;
-                }
-                let Ok(value) = serde_json::from_str::<Value>(&data) else {
-                    continue;
-                };
-                // Some gateways report mid-stream failures in-band instead of
-                // a TCP error.
-                if value.get("error").is_some() {
-                    failure = Some("HERMES_UPSTREAM_ERROR");
-                    break 'outer;
-                }
-                if event.as_deref() == Some("hermes.tool.progress") || value.get("tool").is_some() {
-                    emit!(sse_event("tool", &value));
-                    continue;
-                }
-                let Some(delta) = value.pointer("/choices/0/delta") else {
-                    continue;
-                };
-                if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
-                    if !text.is_empty() {
-                        thinking.push_str(text);
-                        emit!(sse_event("thinking", &json!({ "text": text })));
-                    }
-                }
-                if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                    for call in calls {
-                        let name = call
-                            .pointer("/function/name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("herramienta");
-                        let label = call
-                            .pointer("/function/arguments")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        emit!(sse_event(
-                            "tool",
-                            &json!({ "tool": name, "label": label, "status": "running" }),
-                        ));
-                    }
-                }
-                if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                    let (visible, inner) = splitter.push(text);
-                    if !inner.is_empty() {
-                        thinking.push_str(&inner);
-                        emit!(sse_event("thinking", &json!({ "text": inner })));
-                    }
-                    if !visible.is_empty() {
-                        reply.push_str(&visible);
-                        emit!(sse_event("delta", &json!({ "text": visible })));
-                    }
-                }
-            }
-        }
-        let (visible, inner) = splitter.finish();
-        if !inner.is_empty() {
-            thinking.push_str(&inner);
-            emit!(sse_event("thinking", &json!({ "text": inner })));
-        }
-        if !visible.is_empty() {
-            reply.push_str(&visible);
-            emit!(sse_event("delta", &json!({ "text": visible })));
-        }
-        if let Some(code) = failure {
-            emit!(sse_event(
-                "error",
-                &json!({ "code": code, "message": "Hermes did not answer in time" }),
-            ));
-            return;
-        }
-        if reply.trim().is_empty() && thinking.trim().is_empty() {
-            emit!(sse_event(
-                "error",
-                &json!({
-                    "code": "HERMES_UPSTREAM_ERROR",
-                    "message": "Hermes returned an empty stream",
-                }),
-            ));
-            return;
-        }
-        let mut warnings = warnings;
-        if !saw_done && failure.is_none() {
-            // Clean EOF without [DONE]: deliver what arrived, but say so.
-            warnings.push(
-                "La respuesta se cortó antes de terminar; puede estar incompleta.".to_string(),
-            );
-        }
-        let mut envelope = json!({
-            "reply": reply,
-            "artifacts": Vec::<Value>::new(),
-            "warnings": warnings,
-            "reasoning": thinking,
-        });
-        add_media_artifacts(&mut envelope, MediaConfig::current()).await;
-        emit!(sse_event("done", &envelope));
-    });
-
-    let body = Body::from_stream(futures_util::stream::unfold(
-        rx,
-        |mut rx| async move {
-            rx.recv()
-                .await
-                .map(|bytes| (Ok::<Bytes, std::io::Error>(bytes), rx))
-        },
-    ));
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONNECTION, "keep-alive")
-        .header("x-accel-buffering", "no")
-        .body(body)
-        .unwrap_or_else(|_| {
+    let run_id = value
+        .get("run_id")
+        .or_else(|| value.get("runId"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
             error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "could not build the response",
+                StatusCode::BAD_GATEWAY,
+                "HERMES_UPSTREAM_ERROR",
+                "Hermes returned an unreadable response",
             )
+        })?;
+    let session_id = value
+        .get("session_id")
+        .or_else(|| value.get("sessionId"))
+        .and_then(Value::as_str)
+        .unwrap_or(&scoped);
+    Ok(json!({ "runId": run_id, "sessionId": session_id, "createdAt": now_ms() }))
+}
+
+/// `GET {base}/v1/runs/{run_id}`. The id shape is validated before it reaches
+/// a URL; a malformed id is "no such run".
+pub async fn run_status_upstream(
+    cfg: &HermesConfig,
+    run_id: &str,
+) -> Result<Value, Response> {
+    if !valid_run_id(run_id) {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            "run not found",
+        ));
+    }
+    let url = format!("{}/v1/runs/{run_id}", api_base(&cfg.api_url));
+    let upstream = cfg
+        .http
+        .get(url)
+        .bearer_auth(&cfg.api_key)
+        .send()
+        .await
+        .map_err(send_error)?;
+    let status = upstream.status();
+    let value = read_json_body(upstream).await?;
+    if status.is_success() {
+        Ok(value)
+    } else {
+        Err(map_runs_status(status, &value))
+    }
+}
+
+/// `GET {base}/v1/runs/{run_id}/events` over the stream client (per-read
+/// silence budget, no total deadline) with `Accept: text/event-stream`. The
+/// handler re-emits the body verbatim.
+pub async fn run_events_upstream(
+    cfg: &HermesConfig,
+    run_id: &str,
+) -> Result<reqwest::Response, Response> {
+    if !valid_run_id(run_id) {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            "run not found",
+        ));
+    }
+    let url = format!("{}/v1/runs/{run_id}/events", api_base(&cfg.api_url));
+    let upstream = cfg
+        .stream_http
+        .get(url)
+        .bearer_auth(&cfg.api_key)
+        .header(header::ACCEPT, "text/event-stream")
+        .send()
+        .await
+        .map_err(send_error)?;
+    let status = upstream.status();
+    if status.is_success() {
+        Ok(upstream)
+    } else {
+        let value = read_json_body(upstream).await?;
+        Err(map_runs_status(status, &value))
+    }
+}
+
+/// `POST {base}/v1/runs/{run_id}/approval` with the already-shaped forward
+/// body (`choice` plus `request_id`/`execution_generation` when present).
+pub async fn run_approval_upstream(
+    cfg: &HermesConfig,
+    run_id: &str,
+    body: &Value,
+) -> Result<Value, Response> {
+    if !valid_run_id(run_id) {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            "run not found",
+        ));
+    }
+    let url = format!("{}/v1/runs/{run_id}/approval", api_base(&cfg.api_url));
+    let upstream = cfg
+        .http
+        .post(url)
+        .bearer_auth(&cfg.api_key)
+        .json(body)
+        .send()
+        .await
+        .map_err(send_error)?;
+    let status = upstream.status();
+    let value = read_json_body(upstream).await?;
+    if status.is_success() {
+        Ok(value)
+    } else {
+        Err(map_runs_status(status, &value))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handlers: session auth only (`require_session_user_id`, never API tokens),
+// 503 when Hermes is not configured
+// ---------------------------------------------------------------------------
+
+/// Resolve the dashboard caller. Production delegates to
+/// `require_session_user_id` (Postgres session lookup); the test build
+/// accepts `Authorization: Bearer <user-uuid>` without touching a database
+/// so handler-level ownership tests can run with a stubbed caller.
+#[cfg(not(test))]
+async fn authenticate(headers: &HeaderMap, pool: &sqlx::PgPool) -> Result<Uuid, Response> {
+    crate::auth::helper::require_session_user_id(headers, pool)
+        .await
+        .map_err(|err| {
+            use axum::response::IntoResponse as _;
+            err.into_response()
         })
 }
 
-fn map_upstream_status(status: reqwest::StatusCode) -> Response {
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        tracing::warn!("hermes rejected the configured credentials");
-        return error_response(
+#[cfg(test)]
+async fn authenticate(headers: &HeaderMap, _pool: &sqlx::PgPool) -> Result<Uuid, Response> {
+    let token = crate::auth::middleware::extract_bearer(headers).ok_or_else(|| {
+        error_response(
             StatusCode::UNAUTHORIZED,
-            "HERMES_UNAUTHORIZED",
-            "Hermes rejected the configured credentials",
-        );
-    }
-    tracing::warn!(status = status.as_u16(), "hermes returned an error");
-    error_response(
-        StatusCode::BAD_GATEWAY,
-        "HERMES_UPSTREAM_ERROR",
-        "Hermes returned an error",
-    )
+            "UNAUTHORIZED",
+            "authentication required",
+        )
+    })?;
+    Uuid::parse_str(token.trim()).map_err(|_| {
+        error_response(
+            StatusCode::UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "authentication required",
+        )
+    })
 }
 
-/// `POST /api/hermes` — authenticated chat turn (JSON or multipart).
-pub async fn hermes_chat_handler(
+#[derive(Debug, Deserialize)]
+struct CreateRunJson {
+    #[serde(default, rename = "sessionId", alias = "session_id")]
+    session_id: Option<String>,
+    #[serde(default, alias = "content")]
+    message: Option<String>,
+}
+
+/// `POST /api/hermes/runs` — start a run from one user turn (JSON
+/// `{sessionId, message}` or multipart `sessionId` + `message` + `files`).
+/// Answers `202 {runId, sessionId, createdAt}`.
+pub async fn create_run_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     request: Request,
 ) -> Response {
-    if let Err(err) = crate::auth::helper::require_user_id(&headers, &state.pool).await {
-        return err.into_response();
-    }
+    let user_id = match authenticate(&headers, &state.pool).await {
+        Ok(user_id) => user_id,
+        Err(err) => return err.into_response(),
+    };
     let Some(cfg) = state.hermes.as_ref() else {
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1171,7 +860,7 @@ pub async fn hermes_chat_handler(
                 )
             }
         };
-        let body: ChatRequest = match serde_json::from_slice(&bytes) {
+        let body: CreateRunJson = match serde_json::from_slice(&bytes) {
             Ok(body) => body,
             Err(_) => {
                 return error_response(
@@ -1181,12 +870,25 @@ pub async fn hermes_chat_handler(
                 )
             }
         };
-        if let Err(message) = validate(&body) {
-            return error_response(StatusCode::UNPROCESSABLE_ENTITY, "VALIDATION_ERROR", &message);
+        let message = body.message.unwrap_or_default();
+        if message.trim().is_empty() {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "VALIDATION_ERROR",
+                "a message is required",
+            );
+        }
+        if message.len() > MAX_CONTENT_BYTES {
+            return error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "VALIDATION_ERROR",
+                "the message content is too long",
+            );
         }
         Turn {
-            text: body.messages[0].content.clone(),
+            text: message,
             attachments: Vec::new(),
+            session_id: body.session_id.unwrap_or_default(),
         }
     } else if content_type.starts_with("multipart/form-data") {
         let multipart = match Multipart::from_request(request, &state).await {
@@ -1211,61 +913,174 @@ pub async fn hermes_chat_handler(
         );
     };
 
-    let session = headers.get(SESSION_HEADER);
-    if wants_stream(&headers) {
-        return match open_stream(cfg, session, &turn).await {
-            Ok((upstream, warnings)) => stream_response(upstream, cfg.timeout_ms, warnings),
-            Err(response) => response,
-        };
-    }
-    match send_to_hermes(cfg, session, &turn).await {
-        Ok((upstream, warnings)) => {
-            let mut envelope = normalize(&upstream, warnings);
-            add_media_artifacts(&mut envelope, MediaConfig::current()).await;
-            match serde_json::to_vec(&envelope) {
-                Ok(body) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(body))
-                    .unwrap_or_else(|_| error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "INTERNAL_ERROR",
-                        "could not build the response",
-                    )),
-                Err(_) => error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    "could not build the response",
-                ),
-            }
-        }
+    match create_run_upstream(cfg, user_id, &turn).await {
+        Ok(value) => (StatusCode::ACCEPTED, Json(value)).into_response(),
         Err(response) => response,
     }
+}
+
+/// `GET /api/hermes/runs/{runId}` — the whitelisted envelope, but only when
+/// the run's session belongs to the caller. Foreign or missing runs are 404.
+pub async fn run_status_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> Response {
+    let user_id = match authenticate(&headers, &state.pool).await {
+        Ok(user_id) => user_id,
+        Err(err) => return err.into_response(),
+    };
+    let Some(cfg) = state.hermes.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HERMES_NOT_CONFIGURED",
+            "Hermes is not configured",
+        );
+    };
+    if !valid_run_id(&run_id) {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            "run not found",
+        );
+    }
+    let status = match run_status_upstream(cfg, &run_id).await {
+        Ok(status) => status,
+        Err(response) => return response,
+    };
+    if let Err(response) = ensure_owned(&status, user_id) {
+        return response;
+    }
+    Json(status_envelope(&run_id, &status)).into_response()
+}
+
+/// `GET /api/hermes/runs/{runId}/events` — ownership is verified first, then
+/// the upstream SSE body streams through byte-for-byte (`id:` lines and `:`
+/// comments untouched, never re-framed) with the no-buffering headers.
+pub async fn run_events_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> Response {
+    let user_id = match authenticate(&headers, &state.pool).await {
+        Ok(user_id) => user_id,
+        Err(err) => return err.into_response(),
+    };
+    let Some(cfg) = state.hermes.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HERMES_NOT_CONFIGURED",
+            "Hermes is not configured",
+        );
+    };
+    if !valid_run_id(&run_id) {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            "run not found",
+        );
+    }
+    // Ownership before opening the stream: a foreign run never reaches the
+    // gateway's event endpoint through this proxy.
+    let status = match run_status_upstream(cfg, &run_id).await {
+        Ok(status) => status,
+        Err(response) => return response,
+    };
+    if let Err(response) = ensure_owned(&status, user_id) {
+        return response;
+    }
+    let upstream = match run_events_upstream(cfg, &run_id).await {
+        Ok(upstream) => upstream,
+        Err(response) => return response,
+    };
+    // Verbatim passthrough: dropping the browser body drops `upstream`, so
+    // closing the tab cancels the gateway request without a second run.
+    let stream = upstream
+        .bytes_stream()
+        .map(|result| result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
+    let body = Body::from_stream(stream);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("x-accel-buffering", "no")
+        .body(body)
+        .unwrap_or_else(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "could not build the response",
+            )
+        })
+}
+
+/// `POST /api/hermes/runs/{runId}/approval` — `{requestId?,
+/// executionGeneration?, choice}` with `choice` in
+/// `once|deny|session|always`; answers `{runId, choice, resolved}`. Foreign
+/// runs are 404, a settled gate is 409.
+pub async fn run_approval_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let user_id = match authenticate(&headers, &state.pool).await {
+        Ok(user_id) => user_id,
+        Err(err) => return err.into_response(),
+    };
+    let Some(cfg) = state.hermes.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HERMES_NOT_CONFIGURED",
+            "Hermes is not configured",
+        );
+    };
+    if !valid_run_id(&run_id) {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "HERMES_RUN_NOT_FOUND",
+            "run not found",
+        );
+    }
+    let status = match run_status_upstream(cfg, &run_id).await {
+        Ok(status) => status,
+        Err(response) => return response,
+    };
+    if let Err(response) = ensure_owned(&status, user_id) {
+        return response;
+    }
+    let choice = body.get("choice").and_then(Value::as_str).unwrap_or("");
+    if !matches!(choice, "once" | "deny" | "session" | "always") {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VALIDATION_ERROR",
+            "choice must be one of once, deny, session, always",
+        );
+    }
+    let answered = match run_approval_upstream(cfg, &run_id, &approval_forward(&body, choice)).await
+    {
+        Ok(answered) => answered,
+        Err(response) => return response,
+    };
+    Json(approval_envelope(&run_id, choice, &answered)).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
         net::{Ipv4Addr, SocketAddr},
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc, Mutex,
-        },
+        sync::{Arc, Mutex},
+        time::Duration,
     };
 
-    use std::time::Duration;
-
-    use axum::{extract::DefaultBodyLimit, extract::State, routing::post, Router};
+    use axum::{
+        extract::{DefaultBodyLimit, State},
+        routing::{get, post},
+        Router,
+    };
     use serde_json::Value;
 
     use super::*;
-
-    fn message(content: &str) -> ChatMessage {
-        ChatMessage {
-            role: "user".into(),
-            content: content.into(),
-        }
-    }
 
     fn cfg(api_url: String, timeout_ms: u64) -> HermesConfig {
         HermesConfig {
@@ -1283,6 +1098,8 @@ mod tests {
         }
     }
 
+    /// Spawn a fake Hermes gateway; returns its root URL (the proxy derives
+    /// `/v1/*` paths from it via [`api_base`]).
     async fn spawn(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
@@ -1291,37 +1108,23 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve fake upstream");
         });
-        format!("http://{addr}/v1/chat/completions")
+        format!("http://{addr}")
     }
 
-    #[derive(Clone, Default)]
-    struct Seen(Arc<Mutex<Vec<SeenRequest>>>);
-
-    struct SeenRequest {
-        authorization: Option<String>,
-        session: Option<String>,
-        body: Value,
+    fn user_id(seed: u8) -> Uuid {
+        Uuid::parse_str(&format!("11111111-2222-4333-8444-5555555555{seed:02x}"))
+            .expect("fixed test uuid")
     }
 
-    async fn capture(State(seen): State<Seen>, headers: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
-        seen.0.lock().expect("seen lock").push(SeenRequest {
-            authorization: headers
-                .get(header::AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
-            session: headers
-                .get(SESSION_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
-            body,
-        });
-        Json(json!({"choices": [{"message": {"content": "hola"}}]}))
+    fn client_session() -> String {
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".to_string()
     }
 
     fn turn(text: &str) -> Turn {
         Turn {
             text: text.into(),
             attachments: Vec::new(),
+            session_id: client_session(),
         }
     }
 
@@ -1335,61 +1138,117 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn forwards_bearer_session_and_only_the_current_message() {
-        let seen = Seen::default();
-        let app = Router::new()
-            .route("/v1/chat/completions", post(capture))
-            .with_state(seen.clone());
-        let url = spawn(app).await;
+    // -----------------------------------------------------------------
+    // Addressing
+    // -----------------------------------------------------------------
 
-        let session = HeaderValue::from_static("sess-abc-123");
-        let (value, warnings) = send_to_hermes(&cfg(url, 2_000), Some(&session), &turn("¿qué tal?"))
-            .await
-            .expect("upstream success");
-        assert_eq!(value["choices"][0]["message"]["content"], "hola");
-        assert!(warnings.is_empty());
-
-        let calls = seen.0.lock().expect("seen lock");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].authorization.as_deref(), Some("Bearer upstream-secret"));
-        assert_eq!(calls[0].session.as_deref(), Some("sess-abc-123"));
+    #[test]
+    fn api_base_accepts_a_bare_host_and_a_chat_completions_url() {
+        assert_eq!(api_base("http://host:8642"), "http://host:8642");
         assert_eq!(
-            calls[0].body,
-            json!({"messages": [{"role": "user", "content": "¿qué tal?"}]}),
-            "the proxy must forward exactly the current user message"
+            api_base("http://host:8642/v1/chat/completions"),
+            "http://host:8642"
         );
     }
 
-    #[tokio::test]
-    async fn images_travel_as_inline_image_parts_and_text_as_text_part() {
-        let seen = Seen::default();
-        let app = Router::new()
-            .route("/v1/chat/completions", post(capture))
-            .with_state(seen.clone());
-        let url = spawn(app).await;
+    #[test]
+    fn api_base_strips_other_v1_paths_and_keeps_prefixes() {
+        assert_eq!(api_base("http://host:8642/"), "http://host:8642");
+        assert_eq!(
+            api_base("http://host:8642/v1/chat/completions/"),
+            "http://host:8642"
+        );
+        assert_eq!(api_base("http://host:8642/v1"), "http://host:8642");
+        assert_eq!(
+            api_base("http://host:8642/v1/runs"),
+            "http://host:8642"
+        );
+        // A reverse-proxy prefix without a /v1 segment survives verbatim.
+        assert_eq!(
+            api_base("http://host:8642/prefix"),
+            "http://host:8642/prefix"
+        );
+    }
 
+    #[test]
+    fn scoped_session_id_accepts_only_uuids() {
+        let user = user_id(0x01);
+        assert_eq!(
+            scoped_session_id(user, &client_session()),
+            Some(format!("pd-{user}-{}", client_session()))
+        );
+        for bad in ["", "not-a-uuid", "pd-1-2", "12345", &"x".repeat(200)] {
+            assert_eq!(scoped_session_id(user, bad), None, "reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn session_owned_matches_the_user_namespace() {
+        let user = user_id(0x02);
+        let other = user_id(0x03);
+        let own = format!("pd-{user}-{}", client_session());
+        assert!(session_owned(&own, user));
+        assert!(!session_owned(&format!("pd-{other}-{}", client_session()), user));
+        assert!(!session_owned("", user));
+        assert!(!session_owned(&format!("pd-{user}-"), user));
+        assert!(!session_owned("pd-", user));
+    }
+
+    #[test]
+    fn valid_run_id_checks_the_gateway_shape() {
+        assert!(valid_run_id("run_abc123"));
+        assert!(valid_run_id("run_AZ09"));
+        assert!(valid_run_id(&format!("run_{}", "a".repeat(60))));
+        assert!(!valid_run_id("run_"));
+        assert!(!valid_run_id("run_a b"));
+        assert!(!valid_run_id("run_a-b"));
+        assert!(!valid_run_id("foo"));
+        assert!(!valid_run_id(""));
+        assert!(!valid_run_id(&format!("run_{}", "a".repeat(61))));
+    }
+
+    // -----------------------------------------------------------------
+    // Attachment parts and the runs body
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn runs_content_carries_text_first_then_attachment_parts() {
         let mut t = turn("mirá esto");
         t.attachments
             .push(attachment("foto.png", "image/png", &[0x89, 0x50, 0x4e, 0x47]));
-        send_to_hermes(&cfg(url, 2_000), None, &t)
-            .await
-            .expect("upstream success");
-
-        let calls = seen.0.lock().expect("seen lock");
-        let parts = calls[0].body["messages"][0]["content"]
-            .as_array()
-            .expect("content parts");
+        t.attachments
+            .push(attachment("notas.md", "text/markdown", b"# hola"));
+        let parts = runs_content(&t).as_array().expect("parts").clone();
         assert_eq!(parts[0], json!({"type": "text", "text": "mirá esto"}));
         assert_eq!(parts[1]["type"], "image_url");
         assert!(parts[1]["image_url"]["url"]
             .as_str()
             .expect("data url")
             .starts_with("data:image/png;base64,"));
+        assert!(parts[2]["text"].as_str().expect("inline").contains("--- inicio ---"));
+
+        let body = runs_body(&t, "pd-user-session");
+        assert_eq!(
+            body["input"][0],
+            json!({"role": "user", "content": parts})
+        );
+        assert_eq!(body["session_id"], "pd-user-session");
     }
 
-    #[tokio::test]
-    async fn text_files_are_inlined_and_truncated() {
+    #[test]
+    fn audio_is_degraded_to_a_note_never_to_an_audio_part() {
+        let mut t = turn("escuchá");
+        t.attachments
+            .push(attachment("nota.webm", "audio/webm", b"webm-bytes"));
+        let body = runs_body(&t, "pd-user-session");
+        let serialized = body.to_string();
+        assert!(!serialized.contains("input_audio"), "{serialized}");
+        assert!(serialized.contains("Nota de voz adjunta"), "{serialized}");
+        assert!(serialized.contains("nota.webm"), "{serialized}");
+    }
+
+    #[test]
+    fn text_files_are_inlined_and_truncated() {
         let big = "a".repeat(MAX_INLINE_TEXT_BYTES + 10);
         let part = inline_text(&attachment("notas.md", "text/markdown", big.as_bytes()))
             .expect("text inline");
@@ -1398,8 +1257,8 @@ mod tests {
         assert!(part.len() < big.len() + 200);
     }
 
-    #[tokio::test]
-    async fn binary_attachments_become_an_honest_descriptor() {
+    #[test]
+    fn binary_attachments_become_an_honest_descriptor() {
         let part = part_for(&attachment("datos.zip", "application/zip", &[1, 2, 3]));
         assert_eq!(part["type"], "text");
         let text = part["text"].as_str().expect("text");
@@ -1407,255 +1266,17 @@ mod tests {
         assert!(text.contains("no puede leer el contenido binario"));
     }
 
-    #[derive(Clone, Default)]
-    struct RejectAudio {
-        calls: Arc<Mutex<Vec<Value>>>,
-    }
-
-    async fn reject_audio(
-        State(state): State<RejectAudio>,
-        Json(body): Json<Value>,
-    ) -> Response {
-        state.calls.lock().expect("calls").push(body.clone());
-        if body.to_string().contains("input_audio") {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": {"code": "unsupported_content_type", "message": "no audio"}})),
-            )
-                .into_response();
-        }
-        Json(json!({"choices": [{"message": {"content": "ok"}}]})).into_response()
-    }
-
-    #[tokio::test]
-    async fn audio_is_degraded_once_with_a_warning() {
-        let state = RejectAudio::default();
-        let app = Router::new()
-            .route("/v1/chat/completions", post(reject_audio))
-            .with_state(state.clone());
-        let url = spawn(app).await;
-
-        let mut t = turn("escuchá");
-        t.attachments
-            .push(attachment("nota.webm", "audio/webm", b"webm-bytes"));
-        let (value, warnings) = send_to_hermes(&cfg(url, 2_000), None, &t)
-            .await
-            .expect("degraded success");
-
-        assert_eq!(value["choices"][0]["message"]["content"], "ok");
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("nota.webm"));
-
-        let calls = state.calls.lock().expect("calls");
-        assert_eq!(calls.len(), 2, "exactly one retry");
-        assert!(calls[0].to_string().contains("input_audio"));
-        assert!(
-            !calls[1].to_string().contains("input_audio"),
-            "the retry must replace the unsupported part"
-        );
-        assert!(calls[1].to_string().contains("Nota de voz adjunta"));
-    }
-
-    #[tokio::test]
-    async fn maps_upstream_unauthorized_to_401_without_leaking_the_key() {
-        let app = Router::new().route(
-            "/v1/chat/completions",
-            post(|| async { StatusCode::UNAUTHORIZED }),
-        );
-        let url = spawn(app).await;
-        let response = send_to_hermes(&cfg(url, 2_000), None, &turn("hola"))
-            .await
-            .expect_err("401 maps to an error response");
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .expect("error body");
-        let text = String::from_utf8(body.to_vec()).expect("utf8");
-        assert!(text.contains("HERMES_UNAUTHORIZED"));
-        assert!(!text.contains("upstream-secret"));
-    }
-
-    #[tokio::test]
-    async fn maps_upstream_error_to_502() {
-        let app = Router::new().route(
-            "/v1/chat/completions",
-            post(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
-        );
-        let url = spawn(app).await;
-        let response = send_to_hermes(&cfg(url, 2_000), None, &turn("hola"))
-            .await
-            .expect_err("5xx maps to an error response");
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    }
-
-    #[tokio::test]
-    async fn maps_the_outbound_timeout_to_504() {
-        let app = Router::new().route(
-            "/v1/chat/completions",
-            post(|| async {
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                Json(json!({"choices": []}))
-            }),
-        );
-        let url = spawn(app).await;
-        let response = send_to_hermes(&cfg(url, 80), None, &turn("hola"))
-            .await
-            .expect_err("timeout maps to an error response");
-        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .expect("error body");
-        assert!(String::from_utf8_lossy(&body).contains("HERMES_TIMEOUT"));
-    }
-
-    #[tokio::test]
-    async fn a_stalled_body_after_headers_maps_to_504() {
-        use tokio::io::AsyncWriteExt;
-
-        // Raw socket: send a complete header block, then stall, so the error
-        // happens inside `upstream.bytes()` rather than in `send()`.
-        let listener = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-            .await
-            .expect("bind stalling upstream");
-        let addr = listener.local_addr().expect("addr");
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept");
-            socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{",
-                )
-                .await
-                .expect("write headers");
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        });
-
-        let response = send_to_hermes(&cfg(format!("http://{addr}/v1/chat/completions"), 100), None, &turn("hola"))
-            .await
-            .expect_err("body timeout maps to an error response");
-        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
-    }
-
-    #[tokio::test]
-    async fn unreachable_upstream_maps_to_502() {
-        let response = send_to_hermes(
-            &cfg("http://127.0.0.1:1/v1/chat/completions".into(), 300),
-            None,
-            &turn("hola"),
-        )
-        .await
-        .expect_err("connection failure maps to an error response");
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    }
-
     #[test]
-    fn validation_accepts_one_user_turn_and_rejects_history_or_empty_text() {
-        assert!(validate(&ChatRequest {
-            messages: vec![message("hola")]
-        })
-        .is_ok());
-        assert!(validate(&ChatRequest { messages: vec![] }).is_err());
-        assert!(validate(&ChatRequest {
-            messages: vec![message("uno"), message("dos")]
-        })
-        .is_err());
-        assert!(validate(&ChatRequest {
-            messages: vec![ChatMessage {
-                role: "assistant".into(),
-                content: "eco".into()
-            }]
-        })
-        .is_err());
-        assert!(validate(&ChatRequest {
-            messages: vec![message("   ")]
-        })
-        .is_err());
+    fn content_type_and_limits_are_wired() {
+        assert_eq!(MAX_ATTACHMENTS, 20);
+        assert!(is_text_like("text/plain", "nota.weird"));
+        assert!(is_text_like("application/octet-stream", "main.rs"));
+        assert!(!is_text_like("application/zip", "datos.zip"));
     }
 
-    #[test]
-    fn normalize_returns_reply_artifacts_and_warnings() {
-        let upstream = json!({
-            "choices": [{
-                "message": {
-                    "content": "listo",
-                    "artifacts": [
-                        {"name": "grafico.png", "url": "https://example.test/g.png", "mime": "image/png", "size": 12},
-                        {"name": "malo", "url": "javascript:alert(1)"},
-                        {"url": "data:text/plain;base64,aGk=", "mime": "text/plain"}
-                    ]
-                }
-            }]
-        });
-        let envelope = normalize(&upstream, vec!["warn".into()]);
-        assert_eq!(envelope["reply"], "listo");
-        assert_eq!(envelope["warnings"], json!(["warn"]));
-        let artifacts = envelope["artifacts"].as_array().expect("artifacts");
-        assert_eq!(artifacts.len(), 2, "unsafe urls are dropped");
-        assert_eq!(artifacts[0]["name"], "grafico.png");
-        assert_eq!(artifacts[1]["name"], "archivo", "data urls have no filename tail");
-    }
-
-    fn lazy_state() -> AppState {
-        AppState {
-            pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
-                .expect("lazy pool"),
-            session_ttl_hours: 24,
-            rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
-            hermes: None,
-        }
-    }
-
-    fn json_request(body: &str) -> Request {
-        Request::builder()
-            .method("POST")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .expect("request")
-    }
-
-    #[tokio::test]
-    async fn requires_an_authenticated_dashboard_session() {
-        let response = hermes_chat_handler(
-            State(lazy_state()),
-            HeaderMap::new(),
-            json_request(r#"{"messages":[{"role":"user","content":"hola"}]}"#),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn unauthenticated_multipart_is_rejected_before_parsing() {
-        let response = hermes_chat_handler(
-            State(lazy_state()),
-            HeaderMap::new(),
-            Request::builder()
-                .method("POST")
-                .header(header::CONTENT_TYPE, "multipart/form-data; boundary=x")
-                .body(Body::from("--x--"))
-                .expect("request"),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn auth_runs_before_content_type_checks() {
-        let mut state = lazy_state();
-        state.hermes = Some(cfg("http://127.0.0.1:1/v1/chat/completions".into(), 300));
-        let mut headers = HeaderMap::new();
-        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-        let response = hermes_chat_handler(
-            State(state),
-            headers,
-            Request::builder()
-                .method("POST")
-                .body(Body::from("hola"))
-                .expect("request"),
-        )
-        .await;
-        // Auth runs first: without a token the handler stops at 401.
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
+    // -----------------------------------------------------------------
+    // Multipart parsing (sessionId is a field; unknown fields stay ignored)
+    // -----------------------------------------------------------------
 
     const B: &str = "X-TEST-BOUNDARY";
 
@@ -1694,8 +1315,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multipart_message_and_files_are_parsed() {
+    async fn multipart_message_session_and_files_are_parsed() {
+        let session = client_session();
         let turn = parse_body(vec![
+            part_text("sessionId", &session),
             part_text("message", "mirá estos archivos"),
             part_file("files", "foto.png", "image/png", &[0x89, 0x50]),
             part_file("files", "nota.md", "text/markdown", b"# hola"),
@@ -1704,6 +1327,7 @@ mod tests {
         .expect("parsed turn");
 
         assert_eq!(turn.text, "mirá estos archivos");
+        assert_eq!(turn.session_id, session);
         assert_eq!(turn.attachments.len(), 2);
         assert_eq!(turn.attachments[0].filename, "foto.png");
         assert_eq!(turn.attachments[0].mime, "image/png");
@@ -1810,21 +1434,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[test]
-    fn media_paths_reads_media_tokens_only() {
-        let reply = "Listo:\nMEDIA:/opt/data/clip.mp4\n/opt/data/ensayo.docx, y nada más.\n                     una ruta inventada /opt/data/noexiste.pdf y texto /opt/data/sin-extension";
-        assert_eq!(
-            media_paths(reply),
-            vec![
-                "/opt/data/clip.mp4".to_string(),
-                "/opt/data/ensayo.docx".to_string(),
-                "/opt/data/noexiste.pdf".to_string(),
-            ]
-        );
-        assert!(media_paths("sin rutas ni extensiones .zip sueltas").is_empty());
-        assert!(media_paths("MEDIA:/opt/data/x.exe").is_empty());
-    }
-
     #[tokio::test]
     async fn a_huge_text_file_is_truncated_not_buffered() {
         use tower::ServiceExt;
@@ -1863,544 +1472,854 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[test]
-    fn media_paths_supports_spaces_and_markdown_links() {
-        let spaced = "/opt/data/entregas/mi video final.mp4";
-        let reply = format!(
-            "Tomá MEDIA:{spaced} y también [el pdf](/opt/data/entregas/informe final.pdf)."
-        );
-        let found = media_paths(&reply);
-        assert!(found.contains(&spaced.to_string()), "{found:?}");
-        assert!(
-            found.contains(&"/opt/data/entregas/informe final.pdf".to_string()),
-            "{found:?}"
-        );
-    }
-
-    #[test]
-    fn upstream_unsupported_accepts_the_real_top_level_code() {
-        let real = json!({"message": "Unsupported content part type 'input_audio'.", "code": "unsupported_content_type"});
-        let nested = json!({"error": {"code": "unsupported_content_type"}});
-        let other = json!({"error": {"code": "invalid_request"}});
-        assert!(upstream_unsupported(&real));
-        assert!(upstream_unsupported(&nested));
-        assert!(!upstream_unsupported(&other));
-    }
-
-    #[tokio::test]
-    async fn reply_paths_become_signed_artifacts_only_when_the_file_exists() {
-        let dir = std::env::temp_dir().join(format!(
-            "hermes-enrich-{}-{}",
-            std::process::id(),
-            now_secs()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let doc = dir.join("ensayo-celula.docx");
-        std::fs::write(&doc, b"PK\x03\x04docx").unwrap();
-        std::fs::write(dir.join("clip.mp4"), b"video").unwrap();
-
-        let cfg = MediaConfig::new(vec![dir.clone()], b"test".to_vec(), 600);
-        let mut envelope = json!({
-            "reply": format!(
-                "Listo:\nMEDIA:{}\n{}\ny también /opt/data/inventado.pdf",
-                dir.join("clip.mp4").display(),
-                doc.display()
-            ),
-            "artifacts": [],
-            "warnings": [],
-        });
-        add_media_artifacts(&mut envelope, &cfg).await;
-
-        let artifacts = envelope["artifacts"].as_array().expect("artifacts");
-        assert_eq!(artifacts.len(), 2, "{artifacts:?}");
-        assert_eq!(artifacts[0]["name"], "clip.mp4");
-        assert_eq!(artifacts[0]["mime"], "video/mp4");
-        assert_eq!(artifacts[0]["size"], 5);
-        assert_eq!(artifacts[1]["mime"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-        let url = artifacts[0]["url"].as_str().unwrap();
-        assert!(url.starts_with("/api/hermes/media?path="), "{url}");
-        assert!(url.contains("&sig="));
-        assert!(url.contains("&exp="));
-        assert!(artifacts[0]["path"].as_str().unwrap().ends_with("clip.mp4"));
-        assert!(
-            artifacts.iter().all(|a| !a["name"].as_str().unwrap().contains("inventado")),
-            "a missing file must not produce a card"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn a_path_with_spaces_is_signed_and_card_ready() {
-        let dir = std::env::temp_dir().join(format!(
-            "hermes-enrich-space-{}-{}",
-            std::process::id(),
-            now_secs()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("mi video final.mp4");
-        std::fs::write(&file, b"video").unwrap();
-        let cfg = MediaConfig::new(vec![dir.clone()], b"test".to_vec(), 600);
-        let mut envelope = json!({
-            "reply": format!("Tomá MEDIA:{} y contame.", file.display()),
-            "artifacts": [],
-            "warnings": [],
-        });
-        add_media_artifacts(&mut envelope, &cfg).await;
-        let artifacts = envelope["artifacts"].as_array().expect("artifacts");
-        assert_eq!(artifacts.len(), 1, "{artifacts:?}");
-        assert_eq!(artifacts[0]["name"], "mi video final.mp4");
-        assert!(artifacts[0]["path"].as_str().unwrap().ends_with("mi video final.mp4"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-
-    /// Real upstream round trip (network + credentials). Ignored by default:
-    /// run it with `HERMES_API_URL`/`HERMES_API_KEY` exported to record latency.
-    #[tokio::test]
-    #[ignore = "hits the real Hermes upstream; run with HERMES_API_URL/KEY exported"]
-    async fn real_upstream_roundtrip_with_an_image_reports_latency() {
-        let url = std::env::var("HERMES_API_URL").expect("HERMES_API_URL");
-        let key = std::env::var("HERMES_API_KEY").expect("HERMES_API_KEY");
-        let mut turn = turn("Respondé solo: ok");
-        turn.attachments.push(attachment(
-            "pixel.png",
-            "image/png",
-            &[
-                0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
-                0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06,
-                0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44,
-                0x41, 0x54, 0x78, 0xda, 0x63, 0xfc, 0xcf, 0xc0, 0x00, 0x00, 0x03, 0x00, 0x01,
-                0xfe, 0x01, 0x64, 0x03, 0x5c, 0x50, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
-                0x44, 0xae, 0x42, 0x60, 0x82,
-            ],
-        ));
-        let real = HermesConfig {
-            api_url: url,
-            api_key: key,
-            timeout_ms: crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(
-                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-                ))
-                .build()
-                .expect("real client"),
-            stream_http: reqwest::Client::builder()
-                .read_timeout(std::time::Duration::from_millis(
-                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-                ))
-                .build()
-                .expect("real stream client"),
-        };
-        let started = std::time::Instant::now();
-        let (value, warnings) = send_to_hermes(&real, None, &turn)
-            .await
-            .expect("real upstream answered");
-        eprintln!("REAL_UPSTREAM_LATENCY_MS={}", started.elapsed().as_millis());
-        eprintln!("REAL_UPSTREAM_WARNINGS={warnings:?}");
-        assert!(value.pointer("/choices/0/message/content").is_some());
-    }
-
-    /// Proves the real upstream's `unsupported_content_type` shape maps to the
-    /// graceful retry (the whole reason the degradation exists).
-    /// Proves the measured SSE contract end to end: reasoning frames, tool
-    /// progress frames and a final done envelope from the real gateway.
-    #[tokio::test]
-    #[ignore = "hits the real Hermes upstream; run with HERMES_API_URL/KEY exported"]
-    async fn real_upstream_streams_thinking_and_tools() {
-        let url = std::env::var("HERMES_API_URL").expect("HERMES_API_URL");
-        let key = std::env::var("HERMES_API_KEY").expect("HERMES_API_KEY");
-        let real = HermesConfig {
-            api_url: url,
-            api_key: key,
-            timeout_ms: crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_millis(
-                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-                ))
-                .build()
-                .expect("real client"),
-            stream_http: reqwest::Client::builder()
-                .read_timeout(Duration::from_millis(
-                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-                ))
-                .build()
-                .expect("real stream client"),
-        };
-        let turn = turn("Usá una herramienta para contar los archivos de /opt/data. Sé breve.");
-        let started = std::time::Instant::now();
-        let (upstream, warnings) = open_stream(&real, None, &turn)
-            .await
-            .expect("real upstream opened a stream");
-        let body = sse_text(stream_response(upstream, real.timeout_ms, warnings)).await;
-        eprintln!(
-            "REAL_STREAM_MS={} BYTES={}",
-            started.elapsed().as_millis(),
-            body.len()
-        );
-        assert!(body.contains("event: start"), "{body}");
-        assert!(body.contains("event: thinking"), "{body}");
-        assert!(body.contains("event: done"), "{body}");
-        assert!(!body.contains("event: error"), "{body}");
-    }
-
-    #[tokio::test]
-    #[ignore = "hits the real Hermes upstream; run with HERMES_API_URL/KEY exported"]
-    async fn real_upstream_degrades_audio_with_a_warning() {
-        let url = std::env::var("HERMES_API_URL").expect("HERMES_API_URL");
-        let key = std::env::var("HERMES_API_KEY").expect("HERMES_API_KEY");
-        let real = HermesConfig {
-            api_url: url,
-            api_key: key,
-            timeout_ms: crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(
-                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-                ))
-                .build()
-                .expect("real client"),
-            stream_http: reqwest::Client::builder()
-                .read_timeout(std::time::Duration::from_millis(
-                    crate::config::HERMES_DEFAULT_TIMEOUT_MS,
-                ))
-                .build()
-                .expect("real stream client"),
-        };
-        let mut turn = turn("Te mando una nota de voz, respondé solo: recibida");
-        turn.attachments.push(attachment(
-            "nota.webm",
-            "audio/webm",
-            b"\x1a\x45\xdf\xa3not-a-real-recording",
-        ));
-        let started = std::time::Instant::now();
-        let (value, warnings) = send_to_hermes(&real, None, &turn)
-            .await
-            .expect("real upstream answered after degrading");
-        eprintln!(
-            "REAL_AUDIO_LATENCY_MS={} WARNINGS={warnings:?}",
-            started.elapsed().as_millis()
-        );
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("nota.webm"));
-        assert!(value.pointer("/choices/0/message/content").is_some());
-    }
-
-    #[test]
-    fn content_type_and_limits_are_wired() {
-        assert_eq!(MAX_ATTACHMENTS, 20);
-        assert!(is_text_like("text/plain", "nota.weird"));
-        assert!(is_text_like("application/octet-stream", "main.rs"));
-        assert!(!is_text_like("application/zip", "datos.zip"));
-        assert_eq!(audio_format("audio/webm", "nota.webm"), "webm");
-        assert_eq!(audio_format("application/octet-stream", "nota.wav"), "wav");
-        assert_eq!(audio_format("audio/mpeg", "nota.mp3"), "mp3");
-    }
-
     // -----------------------------------------------------------------
-    // SSE
+    // Fake-upstream integration: create / status / approval / events
     // -----------------------------------------------------------------
 
-    async fn fake_upstream(seen: &Seen, headers: &HeaderMap, body: &Value) {
+    #[derive(Clone, Default)]
+    struct Seen(Arc<Mutex<Vec<SeenRequest>>>);
+
+    struct SeenRequest {
+        authorization: Option<String>,
+        session_key: Option<String>,
+        body: Value,
+    }
+
+    async fn runs_create(
+        State(seen): State<Seen>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Response {
         seen.0.lock().expect("seen lock").push(SeenRequest {
             authorization: headers
                 .get(header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string),
-            session: headers
-                .get(SESSION_HEADER)
+            session_key: headers
+                .get(SESSION_KEY_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string),
-            body: body.clone(),
+            body,
         });
-    }
-
-    const SSE_BODY: &str = concat!(
-        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"pienso \"}}]}\n\n",
-        "event: hermes.tool.progress\ndata: {\"tool\":\"terminal\",\"label\":\"ls -A /opt/data\",\"status\":\"running\"}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"content\":\"<thinking>oculto</thinking>Listo: \"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"content\":\"todo bien\"}}]}\n\n",
-        "data: [DONE]\n\n",
-    );
-
-    async fn sse_upstream(State(seen): State<Seen>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
-        fake_upstream(&seen, &headers, &body).await;
         (
-            [(header::CONTENT_TYPE, "text/event-stream")],
-            SSE_BODY,
+            StatusCode::ACCEPTED,
+            Json(json!({"run_id": "run_abc123", "status": "started", "replayed": false})),
         )
             .into_response()
     }
 
-    async fn sse_after_audio_rejection(
-        State(seen): State<Seen>,
-        headers: HeaderMap,
-        Json(body): Json<Value>,
-    ) -> Response {
-        let first = {
-            let mut locked = seen.0.lock().expect("seen lock");
-            locked.push(SeenRequest {
-                authorization: headers
-                    .get(header::AUTHORIZATION)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string),
-                session: None,
-                body: body.clone(),
-            });
-            locked.len() == 1
-        };
-        if first {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": {"code": "unsupported_content_type"}})),
-            )
-                .into_response();
-        }
-        (
-            [(header::CONTENT_TYPE, "text/event-stream")],
-            SSE_BODY,
-        )
-            .into_response()
-    }
-
-    async fn stalled_upstream() -> Response {
-        let first = futures_util::stream::once(async {
-            Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"x\"}}]}\n\n",
-            ))
-        });
-        let body = Body::from_stream(first.chain(futures_util::stream::pending::<
-            Result<Bytes, std::io::Error>,
-        >()));
-        ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
-    }
-
-    async fn sse_text(response: Response) -> String {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read sse body");
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-
     #[tokio::test]
-    async fn streamed_turn_emits_start_thinking_tool_delta_and_done() {
+    async fn create_maps_202_and_sends_bearer_session_key_and_scoped_session() {
         let seen = Seen::default();
         let app = Router::new()
-            .route("/v1/chat/completions", post(sse_upstream))
+            .route("/v1/runs", post(runs_create))
             .with_state(seen.clone());
-        let url = spawn(app).await;
-        let config = cfg(url, 5_000);
-        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
+        let base = spawn(app).await;
+        // The configured URL may still be the legacy chat endpoint: the
+        // proxy must derive the runs path from it.
+        let url = format!("{base}/v1/chat/completions");
+
+        let user = user_id(0x10);
+        let value = create_run_upstream(&cfg(url, 5_000), user, &turn("¿qué tal?"))
             .await
-            .expect("open stream");
-        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
+            .expect("upstream success");
+        let scoped = format!("pd-{user}-{}", client_session());
+        assert_eq!(value["runId"], "run_abc123");
+        assert_eq!(value["sessionId"], scoped);
+        assert!(value["createdAt"].as_u64().expect("createdAt ms") > 0);
 
-        assert!(body.contains("event: start"));
-        assert!(body.contains("\"timeoutMs\":5000"));
-        assert!(body.contains("event: thinking"));
-        assert!(body.contains("pienso "));
-        assert!(body.contains("event: tool"));
-        assert!(body.contains("\"tool\":\"terminal\""));
-        assert!(body.contains("\"label\":\"ls -A /opt/data\""));
-        assert!(body.contains("event: delta"));
-        assert!(body.contains("event: done"));
-        // Tags never reach the browser: thinking is a separate channel.
-        assert!(!body.contains("<thinking>"), "{body}");
-        assert!(body.contains("Listo: "));
-        assert!(body.contains("oculto"));
-        // The upstream was asked for a stream.
-        assert_eq!(seen.0.lock().expect("seen").first().expect("one").body["stream"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn streamed_turn_degrades_an_unsupported_part_once() {
-        let seen = Seen::default();
-        let app = Router::new()
-            .route("/v1/chat/completions", post(sse_after_audio_rejection))
-            .with_state(seen.clone());
-        let url = spawn(app).await;
-        let config = cfg(url, 5_000);
-        let mut turn = turn("te mando una nota");
-        turn.attachments.push(attachment("nota.webm", "audio/webm", b"RIFF"));
-        let (upstream, warnings) = open_stream(&config, None, &turn)
-            .await
-            .expect("open degraded stream");
-        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
-
-        let requests = seen.0.lock().expect("seen");
-        assert_eq!(requests.len(), 2, "one plain attempt and one degraded retry");
-        assert_eq!(requests[0].body["stream"], json!(true));
-        let parts = requests[1].body["messages"][0]["content"]
-            .as_array()
-            .expect("degraded content parts");
-        assert!(parts.iter().all(|part| part["type"] != "input_audio"));
-        assert!(body.contains("event: done"));
-        assert!(body.contains("nota de voz"));
-    }
-
-    #[tokio::test]
-    async fn a_stalled_stream_reports_the_timeout_event() {
-        let app = Router::new().route("/v1/chat/completions", post(stalled_upstream));
-        let url = spawn(app).await;
-        let config = cfg(url, 100);
-        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
-            .await
-            .expect("open stream");
-        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
-        assert!(body.contains("event: error"), "{body}");
-        assert!(body.contains("HERMES_TIMEOUT"));
-    }
-
-    #[test]
-    fn thinking_splitter_keeps_tags_and_their_text_apart() {
-        let mut splitter = ThinkingSplitter::default();
-        let (visible, thinking) = splitter.push("Hola <thin");
-        assert_eq!((visible.as_str(), thinking.as_str()), ("Hola ", ""));
-        let (visible, thinking) = splitter.push("king>dudo</thinking>chau");
-        assert_eq!((visible.as_str(), thinking.as_str()), ("chau", "dudo"));
-        let (visible, thinking) = splitter.finish();
-        assert_eq!((visible.as_str(), thinking.as_str()), ("", ""));
-    }
-
-    #[test]
-    fn thinking_splitter_flushes_an_unterminated_block_as_thinking() {
-        let mut splitter = ThinkingSplitter::default();
-        let (visible, thinking) = splitter.push("a <thinking>b");
-        assert_eq!((visible.as_str(), thinking.as_str()), ("a ", "b"));
-        let (visible, thinking) = splitter.finish();
-        assert_eq!((visible.as_str(), thinking.as_str()), ("", ""));
-    }
-
-    #[test]
-    fn sse_frames_reassemble_split_frames_and_parse_event_names() {
-        let mut frames = SseFrames::default();
-        assert!(frames.push(b"event: hermes.tool.progress\ndata: {\"tool\":\"x\"}\n").is_empty());
-        let ready = frames.push(b"\n");
-        assert_eq!(ready.len(), 1);
-        let (event, data) = parse_frame(&ready[0]);
-        assert_eq!(event.as_deref(), Some("hermes.tool.progress"));
-        assert_eq!(data.as_deref(), Some("{\"tool\":\"x\"}"));
-    }
-
-    #[test]
-    fn sse_frames_accept_crlf_line_endings() {
-        let mut frames = SseFrames::default();
-        let ready = frames.push(b"event: thinking\r\ndata: {\"text\":\"x\"}\r\n\r\n");
-        assert_eq!(ready.len(), 1);
-        let (event, data) = parse_frame(&ready[0]);
-        assert_eq!(event.as_deref(), Some("thinking"));
-        assert_eq!(data.as_deref(), Some("{\"text\":\"x\"}"));
-    }
-
-    /// The browser aborting (banner "Reintentar") drops the receiver; the
-    /// spawned task must stop reading the upstream instead of letting Hermes
-    /// run the same tools twice.
-    #[tokio::test]
-    async fn dropping_the_browser_body_cancels_the_upstream_stream() {
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counted = counter.clone();
-        let app = Router::new().route(
-            "/v1/chat/completions",
-            post(move || {
-                let counted = counted.clone();
-                async move {
-                    let stream = futures_util::stream::unfold(counted, |counted| async move {
-                        tokio::time::sleep(Duration::from_millis(15)).await;
-                        counted.fetch_add(1, Ordering::SeqCst);
-                        Some((
-                            Ok::<Bytes, std::io::Error>(Bytes::from_static(
-                                b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n",
-                            )),
-                            counted,
-                        ))
-                    });
-                    (
-                        [(header::CONTENT_TYPE, "text/event-stream")],
-                        Body::from_stream(stream),
-                    )
-                }
-            }),
-        );
-        let url = spawn(app).await;
-        let config = cfg(url, 5_000);
-        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
-            .await
-            .expect("open stream");
-        let response = stream_response(upstream, config.timeout_ms, warnings);
-        let mut body = response.into_body().into_data_stream();
-        let first = body.next().await.expect("first chunk").expect("chunk");
-        assert!(String::from_utf8_lossy(&first).contains("event: start"));
-        drop(body);
-
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        let settled = counter.load(Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        let calls = seen.0.lock().expect("seen lock");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].authorization.as_deref(), Some("Bearer upstream-secret"));
+        assert_eq!(calls[0].session_key.as_deref(), Some(format!("pd-{user}").as_str()));
+        assert_eq!(calls[0].body["session_id"], scoped);
         assert_eq!(
-            settled,
-            counter.load(Ordering::SeqCst),
-            "the upstream stream must stop after the browser disconnects"
+            calls[0].body["input"][0]["content"][0],
+            json!({"type": "text", "text": "¿qué tal?"}),
+            "the proxy forwards exactly the current user turn"
         );
-    }
-
-    #[test]
-    fn thinking_splitter_holds_a_buffer_that_is_only_a_tag_prefix() {
-        // Judgment Day B (CRITICAL): the whole buffer can be a prefix of the
-        // opening tag; emitting it leaked the reasoning into the answer.
-        let mut splitter = ThinkingSplitter::default();
-        let (visible, thinking) = splitter.push("<thin");
-        assert_eq!((visible.as_str(), thinking.as_str()), ("", ""));
-        let (visible, thinking) = splitter.push("king>secreto</thinking>Listo");
-        assert_eq!((visible.as_str(), thinking.as_str()), ("Listo", "secreto"));
-    }
-
-    #[test]
-    fn thinking_splitter_holds_a_buffer_that_is_only_a_closing_prefix() {
-        let mut splitter = ThinkingSplitter::default();
-        assert_eq!(splitter.push("<thinking>"), (String::new(), String::new()));
-        assert_eq!(splitter.push("</"), (String::new(), String::new()));
-        let (visible, thinking) = splitter.push("thinking>La respuesta final");
-        assert_eq!((visible.as_str(), thinking.as_str()), ("La respuesta final", ""));
     }
 
     #[tokio::test]
-    async fn an_in_band_error_frame_fails_the_stream() {
-        let app = Router::new().route(
-            "/v1/chat/completions",
-            post(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/event-stream")],
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"parcial\"}}]}\n\ndata: {\"error\":{\"message\":\"boom\"}}\n\n",
-                )
-            }),
-        );
-        let url = spawn(app).await;
-        let config = cfg(url, 5_000);
-        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
-            .await
-            .expect("open stream");
-        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
-        assert!(body.contains("event: error"), "{body}");
-        assert!(body.contains("HERMES_UPSTREAM_ERROR"), "{body}");
-        assert!(!body.contains("event: done"), "{body}");
+    async fn create_rejects_a_non_uuid_session_before_touching_the_network() {
+        let user = user_id(0x11);
+        let mut bad = turn("hola");
+        bad.session_id = "free-text-session".into();
+        let response = create_run_upstream(
+            &cfg("http://127.0.0.1:1".into(), 300),
+            user,
+            &bad,
+        )
+        .await
+        .expect_err("non-UUID session is a 422");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
-    async fn a_stream_without_done_warns_that_the_answer_may_be_cut() {
+    async fn status_rejects_a_foreign_session_as_404() {
+        let user = user_id(0x20);
+        let other = user_id(0x21);
         let app = Router::new().route(
-            "/v1/chat/completions",
-            post(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/event-stream")],
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"casi todo\"}}]}\n\n",
-                )
+            "/v1/runs/run_foreign1",
+            get(move || async move {
+                Json(json!({
+                    "run_id": "run_foreign1",
+                    "status": "running",
+                    "session_id": format!("pd-{other}-{}", client_session()),
+                    "created_at": 1,
+                }))
             }),
         );
-        let url = spawn(app).await;
-        let config = cfg(url, 5_000);
-        let (upstream, warnings) = open_stream(&config, None, &turn("hola"))
+        let base = spawn(app).await;
+
+        let value = run_status_upstream(&cfg(base, 5_000), "run_foreign1")
             .await
-            .expect("open stream");
-        let body = sse_text(stream_response(upstream, config.timeout_ms, warnings)).await;
-        assert!(body.contains("event: done"), "{body}");
-        assert!(body.contains("se cortó antes de terminar"), "{body}");
+            .expect("the gateway answers");
+        let response = ensure_owned(&value, user).expect_err("foreign session is 404");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert!(String::from_utf8_lossy(&body).contains("HERMES_RUN_NOT_FOUND"));
+
+        // The caller's own session passes and yields exactly the whitelist.
+        let own = json!({
+            "run_id": "run_mine1",
+            "status": "running",
+            "session_id": format!("pd-{user}-{}", client_session()),
+            "created_at": 10,
+            "updated_at": 11,
+            "execution_generation": 2,
+            "output": "hola",
+            "usage": {"tokens": 3},
+            "completed": false,
+            "partial": true,
+            "interrupted": false,
+            "error": null,
+            "pending_controls": [{"kind": "approval"}],
+            "replayed": true,
+            "internal_debug": "must not leak",
+        });
+        ensure_owned(&own, user).expect("own session passes");
+        let envelope = status_envelope("run_mine1", &own);
+        let mut keys: Vec<&str> = envelope
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "completed",
+                "createdAt",
+                "error",
+                "executionGeneration",
+                "interrupted",
+                "output",
+                "partial",
+                "pendingControls",
+                "runId",
+                "sessionId",
+                "status",
+                "updatedAt",
+                "usage",
+            ]
+        );
+        assert_eq!(envelope["runId"], "run_mine1");
+        assert_eq!(envelope["executionGeneration"], 2);
+        assert_eq!(envelope["pendingControls"], json!([{"kind": "approval"}]));
+        assert!(envelope.get("replayed").is_none());
+        assert!(envelope.get("internal_debug").is_none());
+    }
+
+    #[derive(Clone, Default)]
+    struct ApprovalSeen(Arc<Mutex<Vec<Value>>>);
+
+    #[tokio::test]
+    async fn approval_forwards_ids_and_maps_conflict_to_409() {
+        let seen = ApprovalSeen::default();
+        let app = Router::new()
+            .route(
+                "/v1/runs/{id}/approval",
+                post(|State(seen): State<ApprovalSeen>, Json(body): Json<Value>| async move {
+                    seen.0.lock().expect("calls").push(body);
+                    (
+                        StatusCode::CONFLICT,
+                        Json(json!({"code": "approval_conflict", "message": "already settled"})),
+                    )
+                        .into_response()
+                }),
+            )
+            .route(
+                "/v1/runs/run_ok1",
+                get(|| async {
+                    Json(json!({
+                        "run_id": "run_ok1",
+                        "status": "waiting",
+                        "session_id": "SESSION",
+                    }))
+                }),
+            )
+            .with_state(seen.clone());
+        let base = spawn(app).await;
+
+        let user = user_id(0x30);
+        let forward = approval_forward(
+            &json!({"requestId": "9f82", "executionGeneration": 1, "choice": "once", "extra": true}),
+            "once",
+        );
+        assert_eq!(
+            forward,
+            json!({"request_id": "9f82", "execution_generation": 1, "choice": "once"}),
+            "only the gateway fields travel, renamed to snake_case"
+        );
+        let response = run_approval_upstream(&cfg(base.clone(), 5_000), "run_bad1", &forward)
+            .await
+            .expect_err("settled gate is a 409");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("HERMES_APPROVAL_CONFLICT"), "{text}");
+
+        let calls = seen.0.lock().expect("seen lock");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], forward);
+
+        // A settled answer maps to the browser envelope.
+        let envelope = approval_envelope("run_ok1", "deny", &json!({"resolved": false}));
+        assert_eq!(envelope, json!({"runId": "run_ok1", "choice": "deny", "resolved": false}));
+        let _ = (user, base);
+    }
+
+    #[tokio::test]
+    async fn events_stream_passes_frames_through_verbatim() {
+        const FRAMES: &str = concat!(
+            ": open\n",
+            "\n",
+            "id: 1\n",
+            "data: {\"event\":\"message.delta\",\"run_id\":\"run_ev1\",\"delta\":\"hola\"}\n",
+            "\n",
+            ": keepalive\n",
+            "\n",
+            "id: 2\n",
+            "data: {\"event\":\"run.completed\",\"run_id\":\"run_ev1\"}\n",
+            "\n",
+        );
+        let app = Router::new().route(
+            "/v1/runs/run_ev1/events",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    FRAMES,
+                )
+                    .into_response()
+            }),
+        );
+        let base = spawn(app).await;
+
+        let upstream = run_events_upstream(&cfg(base, 5_000), "run_ev1")
+            .await
+            .expect("events open");
+        assert_eq!(upstream.status(), reqwest::StatusCode::OK);
+        let bytes = upstream
+            .bytes()
+            .await
+            .expect("event bytes")
+            .to_vec();
+        assert_eq!(
+            bytes, FRAMES.as_bytes(),
+            "comments, id: lines and framing pass through untouched"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Error mapping
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn maps_upstream_unauthorized_to_502_without_leaking_the_key() {
+        let app = Router::new().route(
+            "/v1/runs",
+            post(|| async { StatusCode::UNAUTHORIZED }),
+        );
+        let base = spawn(app).await;
+        let response = create_run_upstream(&cfg(base, 5_000), user_id(0x40), &turn("hola"))
+            .await
+            .expect_err("401 maps to an error response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(text.contains("HERMES_UNAUTHORIZED"));
+        assert!(!text.contains("upstream-secret"));
+    }
+
+    #[tokio::test]
+    async fn maps_upstream_error_shapes() {
+        // 404 with a run_not_found code.
+        let app = Router::new().route(
+            "/v1/runs/{id}",
+            get(|| async {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"code": "run_not_found", "message": "no such run"})),
+                )
+                    .into_response()
+            }),
+        );
+        let base = spawn(app).await;
+        let response = run_status_upstream(&cfg(base, 5_000), "run_missing1")
+            .await
+            .expect_err("404 maps to HERMES_RUN_NOT_FOUND");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // Plain 500.
+        let app = Router::new().route(
+            "/v1/runs/{id}",
+            get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        );
+        let base = spawn(app).await;
+        let response = run_status_upstream(&cfg(base, 5_000), "run_err1")
+            .await
+            .expect_err("5xx maps to an error response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert!(String::from_utf8_lossy(&body).contains("HERMES_UPSTREAM_ERROR"));
+    }
+
+    #[tokio::test]
+    async fn maps_the_outbound_timeout_to_504() {
+        let app = Router::new().route(
+            "/v1/runs",
+            post(|| async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Json(json!({"run_id": "run_late"}))
+            }),
+        );
+        let base = spawn(app).await;
+        let response = create_run_upstream(&cfg(base, 80), user_id(0x41), &turn("hola"))
+            .await
+            .expect_err("timeout maps to an error response");
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert!(String::from_utf8_lossy(&body).contains("HERMES_TIMEOUT"));
+    }
+
+    #[tokio::test]
+    async fn unreachable_upstream_maps_to_503() {
+        let response = create_run_upstream(
+            &cfg("http://127.0.0.1:1".into(), 300),
+            user_id(0x42),
+            &turn("hola"),
+        )
+        .await
+        .expect_err("connection failure maps to an error response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert!(String::from_utf8_lossy(&body).contains("HERMES_UNAVAILABLE"));
+    }
+
+    // -----------------------------------------------------------------
+    // Handler auth (no session header: 401 before any I/O, no DB touched)
+    // -----------------------------------------------------------------
+
+    fn lazy_state() -> AppState {
+        AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+                .expect("lazy pool"),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
+        }
+    }
+
+    fn json_request(body: &str) -> Request {
+        Request::builder()
+            .method("POST")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    }
+
+    #[tokio::test]
+    async fn handlers_require_an_authenticated_dashboard_session() {
+        let response = create_run_handler(
+            State(lazy_state()),
+            HeaderMap::new(),
+            json_request(r#"{"sessionId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","message":"hola"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = run_status_handler(
+            State(lazy_state()),
+            HeaderMap::new(),
+            Path("run_abc123".to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = run_events_handler(
+            State(lazy_state()),
+            HeaderMap::new(),
+            Path("run_abc123".to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = run_approval_handler(
+            State(lazy_state()),
+            HeaderMap::new(),
+            Path("run_abc123".to_string()),
+            Json(json!({"choice": "once"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_runs_before_content_type_checks() {
+        let mut state = lazy_state();
+        state.hermes = Some(cfg("http://127.0.0.1:1".into(), 300));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            "text/plain".parse().expect("content type"),
+        );
+        let response = create_run_handler(
+            State(state),
+            headers,
+            Request::builder()
+                .method("POST")
+                .body(Body::from("hola"))
+                .expect("request"),
+        )
+        .await;
+        // Auth runs first: without a token the handler stops at 401.
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // -----------------------------------------------------------------
+    // Handler ownership (JD-B-006): a foreign run is 404 before the
+    // upstream stream/approval endpoint is ever opened. Each test pins
+    // the handler itself (stubbed `Bearer <user-uuid>` caller, reachable
+    // fake upstream) and asserts the endpoint counter, not just the
+    // status, so deleting `ensure_owned` from the handler fails the suite.
+    // -----------------------------------------------------------------
+
+    fn bearer_headers(user: Uuid) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {user}").parse().expect("bearer header"),
+        );
+        headers
+    }
+
+    fn handler_state(base: &str) -> AppState {
+        let mut state = lazy_state();
+        state.hermes = Some(cfg(base.to_string(), 5_000));
+        state
+    }
+
+    #[tokio::test]
+    async fn events_handler_rejects_foreign_run_without_opening_the_stream() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let owner = user_id(0x50);
+        let caller = user_id(0x51);
+        let foreign_session = format!("pd-{owner}-{}", client_session());
+        let events_hits = Arc::new(AtomicUsize::new(0));
+        let events_hits_route = events_hits.clone();
+        let app = Router::new()
+            .route(
+                "/v1/runs/{id}",
+                get(move || {
+                    let foreign_session = foreign_session.clone();
+                    async move {
+                        Json(json!({
+                            "run_id": "run_foreignA",
+                            "status": "running",
+                            "session_id": foreign_session,
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/runs/{id}/events",
+                get(move || {
+                    let events_hits_route = events_hits_route.clone();
+                    async move {
+                        events_hits_route.fetch_add(1, Ordering::SeqCst);
+                        "data: {\"event\":\"message.delta\"}\n\n"
+                    }
+                }),
+            );
+        let base = spawn(app).await;
+
+        let response = run_events_handler(
+            State(handler_state(&base)),
+            bearer_headers(caller),
+            Path("run_foreignA".to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert!(
+            String::from_utf8_lossy(&body).contains("HERMES_RUN_NOT_FOUND"),
+            "foreign run must be indistinguishable from missing"
+        );
+        assert_eq!(
+            events_hits.load(Ordering::SeqCst),
+            0,
+            "the upstream event stream must never be opened for a foreign run"
+        );
+    }
+
+    #[tokio::test]
+    async fn events_handler_reaches_upstream_for_owner_run() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let caller = user_id(0x52);
+        let own_session = format!("pd-{caller}-{}", client_session());
+        let events_hits = Arc::new(AtomicUsize::new(0));
+        let events_hits_route = events_hits.clone();
+        let app = Router::new()
+            .route(
+                "/v1/runs/{id}",
+                get(move || {
+                    let own_session = own_session.clone();
+                    async move {
+                        Json(json!({
+                            "run_id": "run_ownedA",
+                            "status": "running",
+                            "session_id": own_session,
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/runs/{id}/events",
+                get(move || {
+                    let events_hits_route = events_hits_route.clone();
+                    async move {
+                        events_hits_route.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [(header::CONTENT_TYPE, "text/event-stream")],
+                            "data: {\"event\":\"message.delta\"}\n\n",
+                        )
+                            .into_response()
+                    }
+                }),
+            );
+        let base = spawn(app).await;
+
+        let response = run_events_handler(
+            State(handler_state(&base)),
+            bearer_headers(caller),
+            Path("run_ownedA".to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            events_hits.load(Ordering::SeqCst),
+            1,
+            "the owner's stream must reach the upstream exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_handler_rejects_foreign_run_without_calling_upstream() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let owner = user_id(0x53);
+        let caller = user_id(0x54);
+        let foreign_session = format!("pd-{owner}-{}", client_session());
+        let approval_hits = Arc::new(AtomicUsize::new(0));
+        let approval_hits_route = approval_hits.clone();
+        let app = Router::new()
+            .route(
+                "/v1/runs/{id}",
+                get(move || {
+                    let foreign_session = foreign_session.clone();
+                    async move {
+                        Json(json!({
+                            "run_id": "run_foreignB",
+                            "status": "waiting",
+                            "session_id": foreign_session,
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/runs/{id}/approval",
+                post(move |Json(_): Json<Value>| {
+                    let approval_hits_route = approval_hits_route.clone();
+                    async move {
+                        approval_hits_route.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"resolved": true})).into_response()
+                    }
+                }),
+            );
+        let base = spawn(app).await;
+
+        let response = run_approval_handler(
+            State(handler_state(&base)),
+            bearer_headers(caller),
+            Path("run_foreignB".to_string()),
+            Json(json!({"choice": "once"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        assert!(
+            String::from_utf8_lossy(&body).contains("HERMES_RUN_NOT_FOUND"),
+            "foreign run must be indistinguishable from missing"
+        );
+        assert_eq!(
+            approval_hits.load(Ordering::SeqCst),
+            0,
+            "the upstream approval endpoint must never be called for a foreign run"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_handler_reaches_upstream_for_owner_run() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let caller = user_id(0x55);
+        let own_session = format!("pd-{caller}-{}", client_session());
+        let approval_hits = Arc::new(AtomicUsize::new(0));
+        let approval_hits_route = approval_hits.clone();
+        let app = Router::new()
+            .route(
+                "/v1/runs/{id}",
+                get(move || {
+                    let own_session = own_session.clone();
+                    async move {
+                        Json(json!({
+                            "run_id": "run_ownedB",
+                            "status": "waiting",
+                            "session_id": own_session,
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/v1/runs/{id}/approval",
+                post(move |Json(_): Json<Value>| {
+                    let approval_hits_route = approval_hits_route.clone();
+                    async move {
+                        approval_hits_route.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"resolved": true})).into_response()
+                    }
+                }),
+            );
+        let base = spawn(app).await;
+
+        let response = run_approval_handler(
+            State(handler_state(&base)),
+            bearer_headers(caller),
+            Path("run_ownedB".to_string()),
+            Json(json!({"choice": "once"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("response body");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"resolved\":true"), "{text}");
+        assert_eq!(
+            approval_hits.load(Ordering::SeqCst),
+            1,
+            "the owner's approval must reach the upstream exactly once"
+        );
+    }
+
+    /// Live contract check against the real gateway. Outside the CI suite on
+    /// purpose: it needs the production credential and starts a real run.
+    ///
+    /// ```text
+    /// cd backend && set -a && . ../.env && set +a && \
+    ///   cargo test --bin personal-dashboard-backend live_runs_gateway \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "requires the real Hermes gateway"]
+    async fn live_runs_gateway_round_trip() {
+        let endpoint = std::env::var("HERMES_API_URL").expect("HERMES_API_URL");
+        let credential = std::env::var("HERMES_API_KEY").expect("HERMES_API_KEY");
+        let gateway = HermesConfig {
+            api_url: endpoint,
+            api_key: credential,
+            timeout_ms: 120_000,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_millis(120_000))
+                .build()
+                .expect("live client"),
+            stream_http: reqwest::Client::builder()
+                .read_timeout(Duration::from_millis(120_000))
+                .build()
+                .expect("live stream client"),
+        };
+        let user = Uuid::new_v4();
+        let turn = Turn {
+            text: "Responde unicamente: ok".into(),
+            attachments: Vec::new(),
+            session_id: Uuid::new_v4().to_string(),
+        };
+
+        let created = create_run_upstream(&gateway, user, &turn)
+            .await
+            .expect("create run");
+        let run_id = created["runId"].as_str().expect("runId").to_string();
+        assert!(valid_run_id(&run_id), "gateway run id shape: {run_id}");
+        let session = created["sessionId"].as_str().expect("sessionId").to_string();
+        assert!(
+            session_owned(&session, user),
+            "the proxy must scope the session: {session}"
+        );
+
+        // The ownership guard is only sound if the gateway echoes that session
+        // back on the run status; otherwise every run would 404.
+        let status = run_status_upstream(&gateway, &run_id)
+            .await
+            .expect("status");
+        assert_eq!(
+            status.get("session_id").and_then(Value::as_str),
+            Some(session.as_str()),
+            "GET /v1/runs must report the scoped session: {status}"
+        );
+
+        // Subscribe late on purpose: the gateway replays the run backlog, which
+        // is exactly what a page refresh relies on (S5).
+        let upstream = run_events_upstream(&gateway, &run_id)
+            .await
+            .expect("events");
+        let mut stream = upstream.bytes_stream();
+        let mut raw = String::new();
+        while let Some(chunk) = stream.next().await {
+            raw.push_str(&String::from_utf8_lossy(&chunk.expect("stream chunk")));
+            if raw.contains("run.completed") || raw.contains("run.failed") {
+                break;
+            }
+        }
+        assert!(raw.contains("id: "), "SSE ids must reach the browser: {raw}");
+        assert!(raw.contains("data: "), "SSE data must reach the browser: {raw}");
+        assert!(
+            raw.contains("\"event\": \"message.delta\""),
+            "live deltas expected: {raw}"
+        );
+        assert!(raw.contains("run.completed"), "live terminal event: {raw}");
+    }
+
+    /// Live approval round-trip (S7/S8): a dangerous command parks the run, the
+    /// proxy answers `deny` with the event's own identity, and the run resumes.
+    /// Denying keeps the probe harmless: the command never executes.
+    #[tokio::test]
+    #[ignore = "requires the real Hermes gateway"]
+    async fn live_runs_approval_round_trip() {
+        let endpoint = std::env::var("HERMES_API_URL").expect("HERMES_API_URL");
+        let credential = std::env::var("HERMES_API_KEY").expect("HERMES_API_KEY");
+        let gateway = HermesConfig {
+            api_url: endpoint,
+            api_key: credential,
+            timeout_ms: 120_000,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_millis(120_000))
+                .build()
+                .expect("live client"),
+            stream_http: reqwest::Client::builder()
+                .read_timeout(Duration::from_millis(120_000))
+                .build()
+                .expect("live stream client"),
+        };
+        let user = Uuid::new_v4();
+        let turn = Turn {
+            text: "Ejecuta exactamente: rm -rf /tmp/hermes-approval-probe-dir".into(),
+            attachments: Vec::new(),
+            session_id: Uuid::new_v4().to_string(),
+        };
+        let created = create_run_upstream(&gateway, user, &turn)
+            .await
+            .expect("create run");
+        let run_id = created["runId"].as_str().expect("runId").to_string();
+
+        let upstream = run_events_upstream(&gateway, &run_id)
+            .await
+            .expect("events");
+        let mut stream = upstream.bytes_stream();
+        let mut buffer = String::new();
+        let mut approval: Option<Value> = None;
+        while let Some(chunk) = stream.next().await {
+            buffer.push_str(&String::from_utf8_lossy(&chunk.expect("stream chunk")));
+            for line in buffer.lines() {
+                let Some(payload) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                let Ok(event) = serde_json::from_str::<Value>(payload) else {
+                    continue;
+                };
+                if event.get("event").and_then(Value::as_str) == Some("approval.request") {
+                    approval = Some(event);
+                }
+            }
+            if approval.is_some() {
+                break;
+            }
+        }
+        drop(stream);
+        let approval = approval.expect("a dangerous command must park the run");
+        assert!(
+            approval.get("command").and_then(Value::as_str).is_some(),
+            "the card needs the exact command: {approval}"
+        );
+        let prompt_id = approval["prompt_id"].as_str().expect("prompt_id");
+        let generation = approval["execution_generation"].clone();
+
+        let forward = approval_forward(
+            &json!({"requestId": prompt_id, "executionGeneration": generation}),
+            "deny",
+        );
+        let answered = run_approval_upstream(&gateway, &run_id, &forward)
+            .await
+            .expect("the proxy must resolve the pending approval");
+        // 0.22.5 answers `{run_id, status: "resolved", prompt_id}`: a 2xx is the
+        // decision, so the envelope reports `resolved: true` locally.
+        assert_eq!(answered["status"].as_str(), Some("resolved"), "{answered}");
+        assert_eq!(answered["prompt_id"].as_str(), Some(prompt_id));
+
+        // The run resumes on its own after the decision (S8).
+        let resumed = run_events_upstream(&gateway, &run_id)
+            .await
+            .expect("resumed events");
+        let mut stream = resumed.bytes_stream();
+        let mut tail = String::new();
+        while let Some(chunk) = stream.next().await {
+            tail.push_str(&String::from_utf8_lossy(&chunk.expect("stream chunk")));
+            if tail.contains("run.completed") || tail.contains("run.failed") {
+                break;
+            }
+        }
+        assert!(
+            tail.contains("approval.responded") || tail.contains("run.completed"),
+            "the run must resume after the decision: {tail}"
+        );
     }
 }

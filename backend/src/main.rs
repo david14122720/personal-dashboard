@@ -288,9 +288,23 @@ fn assemble(
         // lives in `hermes.rs` next to the attachment guardrails it protects.
         // No body ceiling (owner spec S2): attachment bytes are counted and
         // discarded chunk by chunk, so a huge upload cannot exhaust RAM.
+        // Hermes Runs API (odd/tasks/hermes-runs-aprobaciones.md): exact
+        // outer routes, outside the 15 s `/api` budget — runs outlive it.
         .route(
-            "/api/hermes",
-            post(routes::hermes::hermes_chat_handler).layer(DefaultBodyLimit::disable()),
+            "/api/hermes/runs",
+            post(routes::hermes::create_run_handler).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/hermes/runs/{run_id}",
+            get(routes::hermes::run_status_handler),
+        )
+        .route(
+            "/api/hermes/runs/{run_id}/events",
+            get(routes::hermes::run_events_handler),
+        )
+        .route(
+            "/api/hermes/runs/{run_id}/approval",
+            post(routes::hermes::run_approval_handler),
         )
         // Signed, ranged and streamed file delivery for `MEDIA:` paths. It
         // carries its own short-lived signature because <video>/<img> cannot
@@ -307,7 +321,7 @@ fn assemble(
             post(routes::hermes_media::sign_handler),
         )
         .nest("/api", api_routes);
-    // Same mounting shape as `/api/hermes`: exact outer route, outside the
+    // Same mounting shape as `/api/hermes/runs`: exact outer route, outside the
     // nested router that carries the 15 s budget.
     #[cfg(test)]
     let api = api.route("/api/__test__/outer_slow", get(test_outer_slow_handler));
@@ -547,7 +561,7 @@ mod api_nest_tests {
     #[tokio::test]
     async fn routes_mounted_at_the_outer_level_escape_the_api_budget() {
         // The nested `/api` router gets a 20 ms budget; an exact outer route
-        // (same mounting shape as `/api/hermes`) must run for 150 ms and still
+        // (same mounting shape as `/api/hermes/runs`) must run for 150 ms and still
         // answer 200. A route inside the budget would answer 504.
         let app = assemble(lazy_state(), None, api_routes(), Duration::from_millis(20));
         let started = std::time::Instant::now();
