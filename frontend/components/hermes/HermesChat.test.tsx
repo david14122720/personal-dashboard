@@ -73,8 +73,6 @@ interface SeenCreate {
 const creates: SeenCreate[] = [];
 const statusRequested: string[] = [];
 const approvalSeen: { runId: string; body: unknown }[] = [];
-const signSeen: string[][] = [];
-const SIGN = `${API}/hermes/media/sign`;
 
 interface TestStream {
   push: (payload: Record<string, unknown>) => void;
@@ -113,6 +111,14 @@ const UPLOAD = `${API}/hermes/upload`;
 const uploadedSeen: string[] = [];
 /** Override the stored URL, e.g. to serve a relative one inside a turn. */
 let uploadItemUrl: string | null = null;
+
+/**
+ * File-server probes made by a settled reply before carding a path (B-003).
+ * Hermes prints paths from its own container, so a scanned path becomes a card
+ * only when `HEAD /files/<path>` answers 2xx.
+ */
+const probedFiles: string[] = [];
+let filesProbeStatus = 200;
 
 function stubMultipartFetch() {
   const realFetch = globalThis.fetch;
@@ -258,18 +264,12 @@ const server = setupServer(
     }
     return HttpResponse.json({ runId, choice: (body as { choice?: string }).choice, resolved: true });
   }),
-  http.post(SIGN, async ({ request }) => {
-    const body = (await request.json()) as { paths?: string[] };
-    signSeen.push(body.paths ?? []);
-    return HttpResponse.json({
-      items: (body.paths ?? []).map((path) => ({
-        path,
-        name: path.split("/").pop() ?? "archivo",
-        mime: "image/png",
-        size: 12,
-        url: `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=stub`,
-      })),
-    });
+  // The settled reply probes each scanned path before carding it (B-003). The
+  // default answers 2xx so the card tests keep working; a test overrides the
+  // status to 404 or a network error to assert the path stays as prose.
+  http.head("**/files/**", ({ request }) => {
+    probedFiles.push(new URL(request.url).pathname);
+    return new HttpResponse(null, { status: filesProbeStatus });
   }),
 );
 
@@ -288,9 +288,10 @@ afterEach(async () => {
   streamHarness.pending.length = 0;
   multipartSeen.length = 0;
   uploadedSeen.length = 0;
+  probedFiles.length = 0;
+  filesProbeStatus = 200;
   uploadItemUrl = null;
   failMultipartOnce = false;
-  signSeen.length = 0;
   runSeq = 0;
   createdAtOverride = null;
   failCreateOnce = null;
@@ -431,6 +432,21 @@ describe("HermesChat", () => {
     await screen.findByText("seguro");
     expect(container.querySelector("script")).toBeNull();
     expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
+  });
+
+  it("never turns a model-authored img payload into an element", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    const { container } = render(<HermesChat />);
+    await send("hola");
+    const payload = '<img src=x onerror="alert(1)">';
+    await completeLast(`Miralo: ${payload}`);
+    const markdown = await screen.findByTestId("hermes-markdown");
+
+    // Spec S11: the raw HTML never becomes markup nor an executable node.
+    expect(container.querySelector("[onerror]")).toBeNull();
+    expect(markdown.querySelector("img")).toBeNull();
+    // Spec S11: escaped, not dropped — the text stays readable and inert.
+    expect(markdown).toHaveTextContent('<img src=x onerror="alert(1)">');
   });
 
   it("shows the working indicator until the run completes", async () => {
@@ -793,29 +809,125 @@ describe("HermesChat", () => {
     expect(screen.getByText("Empezá una conversación")).toBeInTheDocument();
   });
 
-  it("signs paths the proxy did not pre-sign and draws a card", async () => {
+  it("draws a `/files` card for a path in the reply and removes it from the prose", async () => {
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
     await send("generá el render");
-    await completeLast("El render quedó acá:\n\n/tmp/render.png");
+    await completeLast("El render quedó acá: /tmp/render.png (recién salido).");
 
     const card = await screen.findByTestId("hermes-artifact");
     expect(card).toHaveTextContent("render.png");
-    expect(signSeen).toEqual([["/tmp/render.png"]]);
+    // Spec S9/S11: the card points at the stable `/files/<path>` address, with
+    // no signing round-trip and no raw path left next to it.
+    const hrefs = within(card).getAllByRole("link").map((link) => link.getAttribute("href"));
+    // `Ver` opens the file; `Descargar` adds the `download=` parameter the Rust
+    // route turns into `Content-Disposition: attachment`.
+    expect(hrefs).toEqual([
+      "/files/tmp/render.png",
+      "/files/tmp/render.png?download=render.png",
+    ]);
     const markdown = screen.getByTestId("hermes-markdown");
     expect(markdown).not.toHaveTextContent("/tmp/render.png");
+    expect(markdown).toHaveTextContent("El render quedó acá: (recién salido).");
   });
 
-  it("keeps the reply when signing a path fails", async () => {
+  it("cards only the scanned paths the file server really serves", async () => {
+    // B-003: a path Hermes prints from its own container (`/tmp/clip.mp4`) or a
+    // deleted file must not become a card that 404s while the prose vanishes.
+    filesProbeStatus = 404;
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
-    server.use(http.post(SIGN, () => HttpResponse.json({ error: { code: "BOOM" } }, { status: 500 })));
+    render(<HermesChat />);
+    await send("pasame el clip");
+    await completeLast("El clip está en /tmp/clip.mp4 pero no lo pude subir.");
+
+    const markdown = await screen.findByTestId("hermes-markdown");
+    await waitFor(() => expect(probedFiles).toEqual(["/files/tmp/clip.mp4"]));
+    expect(screen.queryAllByTestId("hermes-artifact")).toHaveLength(0);
+    expect(markdown).toHaveTextContent("/tmp/clip.mp4");
+  });
+
+  it("keeps the raw path when the existence check fails to answer", async () => {
+    server.use(http.head("**/files/**", () => HttpResponse.error()));
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    await send("pasame el video");
+    await completeLast("Está en /tmp/clip.mp4");
+
+    const markdown = await screen.findByTestId("hermes-markdown");
+    expect(screen.queryAllByTestId("hermes-artifact")).toHaveLength(0);
+    expect(markdown).toHaveTextContent("/tmp/clip.mp4");
+  });
+
+  it("keeps the live bubble optimistic and re-checks the path on settle", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
     await send("generá el render");
-    await completeLast("El render quedó en /tmp/render.png");
+    const entry = await lastStream();
+    entry.stream.push({
+      event: "message.delta",
+      run_id: entry.runId,
+      delta: "Listo: /tmp/render.png",
+    });
 
-    await screen.findByTestId("hermes-markdown");
-    expect(screen.getByTestId("hermes-markdown")).toHaveTextContent("/tmp/render.png");
-    expect(screen.queryByTestId("hermes-artifact")).not.toBeInTheDocument();
+    // Streaming stays optimistic: the card is drawn without asking the server.
+    const card = await screen.findByTestId("hermes-artifact");
+    expect(card.closest('[data-streaming="true"]')).not.toBeNull();
+    expect(probedFiles).toEqual([]);
+
+    filesProbeStatus = 404;
+    entry.stream.push({
+      event: "run.completed",
+      run_id: entry.runId,
+      output: "Listo: /tmp/render.png",
+    });
+    entry.stream.close();
+
+    // The settled bubble is the honest one: the check failed, so the path is
+    // text again and no card points at a file the server does not have.
+    await waitFor(() =>
+      expect(screen.getByTestId("hermes-markdown")).toHaveTextContent("/tmp/render.png"),
+    );
+    expect(probedFiles).toEqual(["/files/tmp/render.png"]);
+    expect(screen.queryAllByTestId("hermes-artifact")).toHaveLength(0);
+  });
+
+  it("shows the path card while the answer is still streaming", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    await send("generá la imagen");
+    const entry = await lastStream();
+    entry.stream.push({
+      event: "message.delta",
+      run_id: entry.runId,
+      delta: "Listo, la imagen: /opt/data/cache/scratch/prueba_hermes.png",
+    });
+
+    // Spec S12.3: the card exists before `run.completed`, inside the live
+    // bubble, and the accumulated text no longer shows the raw path.
+    const card = await screen.findByTestId("hermes-artifact");
+    const live = card.closest('[data-streaming="true"]');
+    expect(live).not.toBeNull();
+    expect(card).toHaveTextContent("prueba_hermes.png");
+    expect(within(card).getAllByRole("link")[0]).toHaveAttribute(
+      "href",
+      "/files/opt/data/cache/scratch/prueba_hermes.png",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Hermes está trabajando");
+    expect(within(live as HTMLElement).getByTestId("hermes-markdown")).not.toHaveTextContent(
+      "/opt/data/cache/scratch/prueba_hermes.png",
+    );
+
+    entry.stream.push({
+      event: "run.completed",
+      run_id: entry.runId,
+      output: "Listo: /opt/data/cache/scratch/prueba_hermes.png",
+    });
+    entry.stream.close();
+
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+    // The settled bubble keeps the same single card: nothing is duplicated.
+    await waitFor(() => expect(screen.getAllByTestId("hermes-artifact")).toHaveLength(1));
+    expect(screen.getByTestId("hermes-artifact").closest('[data-streaming="true"]')).toBeNull();
   });
 
   it("streams reasoning and tools into a collapsed accordion", async () => {

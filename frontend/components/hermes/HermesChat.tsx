@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ApprovalRequestCard, {
   type ApprovalDecision,
@@ -17,7 +17,6 @@ import {
   getHermesRun,
   isHermesRunActive,
   resolveHermesApproval,
-  signHermesMedia,
   streamHermesRun,
   uploadHermesDocuments,
   absoluteMediaUrl,
@@ -26,9 +25,9 @@ import {
   type HermesRunEvent,
   type HermesToolEvent,
 } from "@/lib/api/hermes";
-import { collectArtifacts, type Artifact } from "@/lib/hermes/artifacts";
+import { collectArtifacts, pathArtifacts, type Artifact } from "@/lib/hermes/artifacts";
+import { filesUrl } from "@/lib/hermes/paths";
 import { formatElapsed } from "@/lib/hermes/elapsed";
-import { scanMediaPaths } from "@/lib/hermes/paths";
 import { splitQuestion, type HermesQuestion } from "@/lib/hermes/questions";
 import {
   classifyFile,
@@ -104,6 +103,42 @@ interface QueuedTurn {
   content: string;
   files: File[];
   ids: string[];
+}
+
+/** One scanned absolute path, ready to become a `/files` card. */
+type ScannedPath = ReturnType<typeof pathArtifacts>[number];
+
+/** A probe that hangs must not hold the settled reply hostage. */
+const FILE_PROBE_TIMEOUT_MS = 2_000;
+
+/** Does the file server really serve this path? `HEAD` only, bounded. */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    const response = await fetch(filesUrl(path), {
+      method: "HEAD",
+      signal: AbortSignal.timeout(FILE_PROBE_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    // A rejected request, an aborted timeout or a network error means the file
+    // is not proven: the callers keep the raw path instead of carding it.
+    return false;
+  }
+}
+
+/**
+ * The scanned paths whose file the server can actually serve (B-003).
+ *
+ * Hermes prints absolute paths from its own container (`/tmp/clip.mp4`), can
+ * hallucinate one and files disappear, so a card built blindly points at a 404
+ * while the prose that mentioned it is gone. Only the settled reply pays for
+ * the check; the live bubble stays optimistic.
+ */
+async function verifiedPathArtifacts(output: string): Promise<ScannedPath[]> {
+  const candidates = pathArtifacts(output);
+  if (candidates.length === 0) return [];
+  const checks = await Promise.all(candidates.map((item) => fileExists(item.path)));
+  return candidates.filter((_, index) => checks[index]);
 }
 
 let nextBubbleId = 1;
@@ -436,6 +471,18 @@ export default function HermesChat() {
   const attachmentsRef = useRef<PendingAttachment[]>([]);
   attachmentsRef.current = attachments;
 
+  // The streaming body goes through the same interceptor as a settled one, so
+  // a generated image appears as soon as its path arrives (spec S12.3), not
+  // only when the run ends. Memoized on the accumulated text: every flush
+  // re-renders, the artifact scan must not run for unrelated state.
+  const liveCollected = useMemo(
+    () =>
+      live && live.content.length > 0
+        ? collectArtifacts(live.content, pathArtifacts(live.content))
+        : null,
+    [live?.content],
+  );
+
   // Recover or mint the UUID after mount: the static export prerenders this
   // page, and localStorage does not exist on the server. The settled
   // transcript is restored first so a refresh shows the same conversation;
@@ -588,20 +635,18 @@ export default function HermesChat() {
   }
 
   /** The authoritative output becomes the assistant bubble (cards + split). */
-  async function pushAssistant(output: string, warnings: string[]) {
-    // Universal route interceptor: any path the proxy did not pre-sign is
-    // signed here before the cards are built. Failures only cost the extra
-    // cards, never the reply.
-    const pending = scanMediaPaths(output);
-    let signed: { name: string; url: string; mime?: string; size?: number; path?: string }[] = [];
-    if (pending.length > 0) {
-      try {
-        signed = await signHermesMedia(pending);
-      } catch {
-        signed = [];
-      }
-    }
-    const collected = collectArtifacts(output, signed);
+  async function pushAssistant(
+    output: string,
+    warnings: string[],
+    verified?: ScannedPath[],
+  ) {
+    // Universal path interceptor (spec S9/S11): every absolute path Hermes
+    // prints becomes a stable `/files/<path>` card and leaves the prose, so the
+    // same path is never both a card and raw text — no signing round-trip.
+    // Only paths the file server proves it serves are carded (B-003); the
+    // others stay in the prose, which is the honest state.
+    const delivered = verified ?? (await verifiedPathArtifacts(output));
+    const collected = collectArtifacts(output, delivered);
     const split = splitQuestion(collected.text);
     setMessages((prev) => [
       ...prev,
@@ -818,10 +863,14 @@ export default function HermesChat() {
     if (status.status === "completed" && status.output.trim().length > 0) {
       const output = status.output;
       const last = messagesRef.current[messagesRef.current.length - 1];
-      const prose = splitQuestion(collectArtifacts(output, []).text).text;
+      // Same transformation as `pushAssistant`, so a resumed run whose reply
+      // mentions a path is not appended twice on top of its stored bubble. The
+      // probes are shared: the resumed bubble pays for them once.
+      const delivered = await verifiedPathArtifacts(output);
+      const prose = splitQuestion(collectArtifacts(output, delivered).text).text;
       if (last?.role !== "assistant" || (last.content !== output && last.content !== prose)) {
         thoughtsRef.current = [];
-        await pushAssistant(output, []);
+        await pushAssistant(output, [], delivered);
       }
     } else if (status.error && status.error.trim().length > 0) {
       pushError("upstream", status.error, { content: "", files: [], ids: [] });
@@ -1513,8 +1562,15 @@ export default function HermesChat() {
               <p className="sr-only">{t("hermes.assistant")}</p>
               <ThoughtAccordion entries={live.thoughts} />
               <div data-testid="hermes-markdown">
-                <HermesMessageBody content={live.content} final={false} />
+                <HermesMessageBody content={liveCollected?.text ?? live.content} final={false} />
               </div>
+              {liveCollected && liveCollected.artifacts.length > 0 ? (
+                <div className="mt-3 grid gap-2">
+                  {liveCollected.artifacts.map((artifact) => (
+                    <ArtifactCard key={artifact.id} artifact={artifact} />
+                  ))}
+                </div>
+              ) : null}
               {live.approval ? (
                 <ApprovalRequestCard
                   tool={live.approval.tool}
