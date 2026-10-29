@@ -1,11 +1,17 @@
 /**
- * Hermes chat transport. The browser only ever calls the dashboard backend
- * (`/api/hermes`); `HERMES_API_KEY` never exists in the client bundle, so it
- * cannot leak through devtools or the network panel.
+ * Hermes Runs transport. The browser only ever calls the dashboard backend
+ * (`/api/hermes/runs`); the Hermes gateway key never exists in the client
+ * bundle, so it cannot leak through devtools or the network panel.
  *
- * Turns without attachments stay JSON (the proxy's original contract). Turns
- * with files travel as `multipart/form-data` (`message` + repeated `files`),
- * because file bytes do not belong in a base64 JSON string.
+ * One user turn = one run: `createHermesRun` starts it, `streamHermesRun`
+ * replays its verbatim SSE events live, `getHermesRun` recovers it after a
+ * page refresh, and `resolveHermesApproval` answers a security gate. The
+ * browser never sends `X-Hermes-Session-Id`: the proxy owns the session
+ * namespace (`pd-<user_id>-<uuid>`).
+ *
+ * Turns without attachments stay JSON (`{sessionId, message}`). Turns with
+ * files travel as `multipart/form-data` (`sessionId`, `message`, repeated
+ * `files`), because file bytes do not belong in a base64 JSON string.
  */
 
 import { apiBaseUrl, getToken } from "@/lib/api/client";
@@ -43,18 +49,12 @@ export interface HermesArtifact {
   path?: string;
 }
 
-export interface HermesReply {
-  reply: string;
-  artifacts: HermesArtifact[];
-  warnings: string[];
-}
-
 export interface HermesTurn {
   content: string;
   files?: readonly File[];
 }
 
-/** One `event: hermes.tool.progress` frame, kept opaque for the UI. */
+/** One `tool.started`/`tool.completed` frame, kept opaque for the UI. */
 export interface HermesToolEvent {
   tool: string;
   label?: string;
@@ -63,48 +63,65 @@ export interface HermesToolEvent {
   toolCallId?: string;
 }
 
-export interface HermesStreamHandlers {
-  /** Upstream budget reported by the proxy; the UI uses it for the banner. */
-  onStart?: (timeoutMs: number) => void;
-  onThinking?: (text: string) => void;
-  onTool?: (tool: HermesToolEvent) => void;
-  onDelta?: (text: string) => void;
+export interface HermesRunCreated {
+  runId: string;
+  sessionId: string;
+  /** Proxy clock, milliseconds since the epoch. */
+  createdAt: number;
 }
 
-interface SseFrame {
+export interface HermesRunStatus {
+  runId: string;
+  status: string;
+  createdAt: number;
+  executionGeneration: number;
+  output: string;
+  error: string | null;
+  pendingControls: unknown;
+}
+
+/** A verbatim gateway event payload: dispatch happens on `event`. */
+export interface HermesRunEvent {
   event: string;
-  data: string;
+  [key: string]: unknown;
 }
 
-interface HermesChoice {
-  message?: { content?: unknown };
+export interface HermesRunStreamHandlers {
+  /** Every parsed payload, including terminal ones. */
+  onEvent: (payload: HermesRunEvent) => void;
+  /** Only `run.completed|run.failed|run.cancelled|run.interrupted`. */
+  onTerminal: (payload: HermesRunEvent) => void;
 }
 
-interface HermesResponse {
-  reply?: unknown;
-  artifacts?: unknown;
-  warnings?: unknown;
-  reasoning?: unknown;
-  choices?: HermesChoice[];
+export type HermesApprovalChoice = "once" | "deny" | "session" | "always";
+
+export interface HermesApprovalResolution {
+  requestId: string;
+  executionGeneration: number;
+  choice: HermesApprovalChoice;
 }
 
-function codeForUpstream(upstreamCode: string | undefined): HermesErrorCode {
-  switch (upstreamCode) {
-    case "HERMES_TIMEOUT":
-      return "timeout";
-    case "HERMES_UNAUTHORIZED":
-      return "unauthorized";
-    case "HERMES_UNAVAILABLE":
-      return "unavailable";
-    case "HERMES_UPSTREAM_ERROR":
-      return "upstream";
-    case "TOO_MANY_ATTACHMENTS":
-      return "too_many_attachments";
-    case "PAYLOAD_TOO_LARGE":
-      return "too_large";
-    default:
-      return "upstream";
-  }
+/** Run states where re-subscribing to the SSE stream is still useful. */
+const ACTIVE_RUN_STATUSES = new Set([
+  "queued",
+  "running",
+  "waiting_for_approval",
+  "stopping",
+]);
+
+export function isHermesRunActive(status: string): boolean {
+  return ACTIVE_RUN_STATUSES.has(status);
+}
+
+const TERMINAL_RUN_EVENTS = new Set([
+  "run.completed",
+  "run.failed",
+  "run.cancelled",
+  "run.interrupted",
+]);
+
+export function isHermesRunTerminalEvent(event: string): boolean {
+  return TERMINAL_RUN_EVENTS.has(event);
 }
 
 function codeForStatus(status: number, upstreamCode?: string): HermesErrorCode {
@@ -128,7 +145,7 @@ function codeForStatus(status: number, upstreamCode?: string): HermesErrorCode {
   return "upstream";
 }
 
-function artifactsOf(raw: unknown): HermesArtifact[] {
+export function artifactsOf(raw: unknown): HermesArtifact[] {
   if (!Array.isArray(raw)) return [];
   const out: HermesArtifact[] = [];
   for (const item of raw) {
@@ -146,34 +163,23 @@ function artifactsOf(raw: unknown): HermesArtifact[] {
   return out;
 }
 
-function warningsOf(raw: unknown): string[] {
+export function warningsOf(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === "string");
 }
 
-/** Headers and body shared by the JSON and the stream transports. */
-function buildTurn(
-  sessionId: string,
-  turn: HermesTurn,
-  accept?: string,
-): { headers: Record<string, string>; body: BodyInit } {
-  const token = getToken();
-  const headers: Record<string, string> = { "X-Hermes-Session-Id": sessionId };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (accept) headers.Accept = accept;
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    (error as { name?: unknown }).name === "AbortError"
+  );
+}
 
-  const files = turn.files ?? [];
-  let body: BodyInit;
-  if (files.length === 0) {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify({ messages: [{ role: "user", content: turn.content }] });
-  } else {
-    const form = new FormData();
-    form.append("message", turn.content);
-    for (const file of files) form.append("files", file, file.name);
-    body = form;
-  }
-  return { headers, body };
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function errorFromResponse(status: number, text: string): HermesError {
@@ -191,78 +197,196 @@ function errorFromResponse(status: number, text: string): HermesError {
   );
 }
 
-function parseSseFrame(raw: string): SseFrame {
-  let event = "message";
-  const data: string[] = [];
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+function errorText(raw: unknown): string | null {
+  if (typeof raw === "string" && raw.trim().length > 0) return raw;
+  if (raw && typeof raw === "object") {
+    const message = (raw as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim().length > 0) return message;
   }
-  return { event, data: data.join("\n") };
-}
-
-function replyFromEnvelope(data: string): HermesReply {
-  let parsed: HermesResponse;
-  try {
-    parsed = JSON.parse(data) as HermesResponse;
-  } catch {
-    throw new HermesError("invalid_response", "hermes returned an unreadable event");
-  }
-  const reply = typeof parsed.reply === "string" ? parsed.reply : "";
-  const artifacts = artifactsOf(parsed.artifacts);
-  // A thinking-only turn is still a valid answer: the accordion carries it.
-  const reasoned = typeof parsed.reasoning === "string" && parsed.reasoning.trim().length > 0;
-  if (reply.trim().length === 0 && artifacts.length === 0 && !reasoned) {
-    throw new HermesError("invalid_response", "hermes returned no message content");
-  }
-  return { reply, artifacts, warnings: warningsOf(parsed.warnings) };
+  return null;
 }
 
 /**
- * Send exactly the current user turn. History is intentionally NOT sent: the
- * Hermes server keeps the conversation memory under `sessionId`.
+ * Start exactly the current user turn as a run. History is intentionally NOT
+ * sent: the Hermes server keeps the conversation memory under `sessionId`.
+ * Resolves fast (`202`) with the run identity; the answer arrives over
+ * [`streamHermesRun`].
  */
-export async function sendHermesTurn(
+export async function createHermesRun(
   sessionId: string,
   turn: HermesTurn,
-): Promise<HermesReply> {
-  const { headers, body } = buildTurn(sessionId, turn);
+): Promise<HermesRunCreated> {
+  const headers = authHeaders();
+  const files = turn.files ?? [];
+  let body: BodyInit;
+  if (files.length === 0) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify({ sessionId, message: turn.content });
+  } else {
+    const form = new FormData();
+    form.append("sessionId", sessionId);
+    form.append("message", turn.content);
+    for (const file of files) form.append("files", file, file.name);
+    body = form;
+  }
+
   let res: Response;
   try {
-    res = await fetch(`${apiBaseUrl()}/hermes`, { method: "POST", headers, body });
+    res = await fetch(`${apiBaseUrl()}/hermes/runs`, { method: "POST", headers, body });
   } catch {
     throw new HermesError("network", "network error");
   }
+  if (!res.ok) throw errorFromResponse(res.status, await res.text());
 
-  const text = await res.text();
-  if (!res.ok) throw errorFromResponse(res.status, text);
-
-  let data: HermesResponse;
+  let data: Record<string, unknown>;
   try {
-    data = JSON.parse(text) as HermesResponse;
+    data = (await res.json()) as Record<string, unknown>;
   } catch {
     throw new HermesError("invalid_response", "hermes returned a non-JSON response");
   }
-
-  // Envelope from the Rust proxy, with the legacy upstream shape as fallback.
-  const reply =
-    typeof data.reply === "string"
-      ? data.reply
-      : isLegacyContent(data.choices?.[0]?.message?.content)
-        ? data.choices![0].message!.content
-        : undefined;
-
-  const artifacts = artifactsOf(data.artifacts);
-  const replyText = typeof reply === "string" ? reply : "";
-  if (replyText.trim().length === 0 && artifacts.length === 0) {
-    throw new HermesError("invalid_response", "hermes returned no message content");
+  if (typeof data.runId !== "string" || data.runId.length === 0) {
+    throw new HermesError("invalid_response", "hermes returned no run id");
   }
-
-  return { reply: replyText, artifacts, warnings: warningsOf(data.warnings) };
+  return {
+    runId: data.runId,
+    sessionId: typeof data.sessionId === "string" ? data.sessionId : sessionId,
+    createdAt: typeof data.createdAt === "number" ? data.createdAt : Date.now(),
+  };
 }
 
-function isLegacyContent(value: unknown): value is string {
-  return typeof value === "string";
+/**
+ * Follow one run live. The proxy reemits the gateway frames verbatim, so the
+ * parser works on the payload, not on an `event:` line:
+ *
+ * - frames split on a blank line (CRLF normalized to LF first, so a
+ *   CRLF-framed upstream cannot buffer the whole stream);
+ * - every line starting with `:` is a comment (`: keepalive`, `: open`,
+ *   `: stream closed`) and is ignored silently;
+ * - `id:` lines are the server cursor and are ignored;
+ * - `data:` lines are concatenated with `\n`, parsed as JSON, and dispatched
+ *   on the payload's `event` field.
+ *
+ * No timeout of its own: a heavy run may legitimately take minutes. The
+ * caller owns the `AbortController`.
+ */
+export async function streamHermesRun(
+  runId: string,
+  handlers: HermesRunStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${apiBaseUrl()}/hermes/runs/${runId}/events`, {
+      headers: { ...authHeaders(), Accept: "text/event-stream" },
+      signal,
+    });
+  } catch (error) {
+    // A DOMException is not an Error subclass: match the abort by name so a
+    // caller-initiated cancel never surfaces as a network failure.
+    if (isAbortError(error)) throw error;
+    throw new HermesError("network", "network error");
+  }
+
+  if (!res.ok) throw errorFromResponse(res.status, await res.text());
+  if (!res.body) throw new HermesError("invalid_response", "hermes returned no stream");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const dispatch = (raw: string): void => {
+    const data: string[] = [];
+    for (const line of raw.split("\n")) {
+      if (line.startsWith(":")) continue;
+      else if (line.startsWith("id:")) continue;
+      else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (data.length === 0) return;
+    let payload: HermesRunEvent;
+    try {
+      payload = JSON.parse(data.join("\n")) as HermesRunEvent;
+    } catch {
+      // Skip unreadable frames instead of killing the run.
+      return;
+    }
+    if (!payload || typeof payload.event !== "string") return;
+    handlers.onEvent(payload);
+    if (isHermesRunTerminalEvent(payload.event)) handlers.onTerminal(payload);
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // A CRLF-framed upstream (or intermediary) would otherwise never
+      // contain `\n\n`: normalize before splitting so frames dispatch.
+      if (buffer.includes("\r")) buffer = buffer.replace(/\r\n/g, "\n");
+      let index = buffer.indexOf("\n\n");
+      while (index >= 0) {
+        dispatch(buffer.slice(0, index));
+        buffer = buffer.slice(index + 2);
+        index = buffer.indexOf("\n\n");
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.includes("\r")) buffer = buffer.replace(/\r\n/g, "\n");
+    if (buffer.trim()) dispatch(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** Read back one run: used to re-attach after a page refresh. */
+export async function getHermesRun(runId: string): Promise<HermesRunStatus> {
+  let res: Response;
+  try {
+    res = await fetch(`${apiBaseUrl()}/hermes/runs/${runId}`, {
+      headers: authHeaders(),
+    });
+  } catch {
+    throw new HermesError("network", "network error");
+  }
+  if (!res.ok) throw errorFromResponse(res.status, await res.text());
+
+  let data: Record<string, unknown>;
+  try {
+    data = (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new HermesError("invalid_response", "hermes returned a non-JSON response");
+  }
+  return {
+    runId: typeof data.runId === "string" ? data.runId : runId,
+    status: typeof data.status === "string" ? data.status : "unknown",
+    createdAt: typeof data.createdAt === "number" ? data.createdAt : Date.now(),
+    executionGeneration:
+      typeof data.executionGeneration === "number" ? data.executionGeneration : 0,
+    output: typeof data.output === "string" ? data.output : "",
+    error: errorText(data.error),
+    pendingControls: data.pendingControls ?? null,
+  };
+}
+
+/**
+ * Answer a security gate. `requestId` carries the `prompt_id` of the
+ * `approval.request` event and `executionGeneration` is copied from the same
+ * event; the card only offers `once`/`deny`. The run resumes on its own.
+ */
+export async function resolveHermesApproval(
+  runId: string,
+  approval: HermesApprovalResolution,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${apiBaseUrl()}/hermes/runs/${runId}/approval`, {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(approval),
+    });
+  } catch {
+    throw new HermesError("network", "network error");
+  }
+  if (!res.ok) throw errorFromResponse(res.status, await res.text());
 }
 
 /**
@@ -276,8 +400,8 @@ export async function signHermesMedia(
   timeoutMs = 5_000,
 ): Promise<HermesArtifact[]> {
   if (paths.length === 0) return [];
-  const token = getToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   // The reply is already streamed; an unanswered sign request must cost the
   // extra cards, never the turn. The timer covers the body too: a proxy that
@@ -307,117 +431,4 @@ export async function signHermesMedia(
   } finally {
     clearTimeout(timer);
   }
-}
-
-/**
- * Same turn, incremental: the proxy answers `text/event-stream` with
- * `start`/`thinking`/`tool`/`delta`/`done`/`error`. Resolves with the final
- * envelope, exactly like [`sendHermesTurn`], so callers keep one shape.
- *
- * No timeout of its own: a heavy Hermes turn may legitimately run for minutes.
- * The caller owns the `AbortController` (the banner's "Reintentar" aborts it).
- */
-export async function sendHermesTurnStream(
-  sessionId: string,
-  turn: HermesTurn,
-  handlers: HermesStreamHandlers = {},
-  signal?: AbortSignal,
-): Promise<HermesReply> {
-  const { headers, body } = buildTurn(sessionId, turn, "text/event-stream");
-  let res: Response;
-  try {
-    res = await fetch(`${apiBaseUrl()}/hermes`, { method: "POST", headers, body, signal });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") throw error;
-    throw new HermesError("network", "network error");
-  }
-
-  if (!res.ok) throw errorFromResponse(res.status, await res.text());
-  if (!res.body) throw new HermesError("invalid_response", "hermes returned no stream");
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result: HermesReply | null = null;
-
-  const handle = (raw: string): void => {
-    if (!raw.trim()) return;
-    const { event, data } = parseSseFrame(raw);
-    switch (event) {
-      case "start": {
-        try {
-          const parsed = JSON.parse(data) as { timeoutMs?: unknown };
-          if (typeof parsed.timeoutMs === "number") handlers.onStart?.(parsed.timeoutMs);
-        } catch {
-          // A malformed start frame only costs the banner threshold.
-        }
-        return;
-      }
-      case "thinking": {
-        try {
-          const parsed = JSON.parse(data) as { text?: unknown };
-          if (typeof parsed.text === "string" && parsed.text) handlers.onThinking?.(parsed.text);
-        } catch {
-          // Skip unreadable frames instead of killing the turn.
-        }
-        return;
-      }
-      case "tool": {
-        try {
-          const parsed = JSON.parse(data) as HermesToolEvent;
-          if (typeof parsed.tool === "string") handlers.onTool?.(parsed);
-        } catch {
-          // Same: a broken progress frame is cosmetic.
-        }
-        return;
-      }
-      case "delta": {
-        try {
-          const parsed = JSON.parse(data) as { text?: unknown };
-          if (typeof parsed.text === "string" && parsed.text) handlers.onDelta?.(parsed.text);
-        } catch {
-          // Ignore.
-        }
-        return;
-      }
-      case "done":
-        result = replyFromEnvelope(data);
-        return;
-      case "error": {
-        let code: string | undefined;
-        try {
-          const parsed = JSON.parse(data) as { code?: unknown };
-          if (typeof parsed.code === "string") code = parsed.code;
-        } catch {
-          // Fall through with the generic code.
-        }
-        throw new HermesError(codeForUpstream(code), "hermes stream error");
-      }
-      default:
-        return;
-    }
-  };
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let index = buffer.indexOf("\n\n");
-      while (index >= 0) {
-        handle(buffer.slice(0, index));
-        buffer = buffer.slice(index + 2);
-        index = buffer.indexOf("\n\n");
-      }
-    }
-    buffer += decoder.decode();
-    if (buffer.trim()) handle(buffer);
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (!result) {
-    throw new HermesError("invalid_response", "hermes closed the stream without a reply");
-  }
-  return result;
 }
