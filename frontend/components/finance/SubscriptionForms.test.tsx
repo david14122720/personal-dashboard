@@ -129,6 +129,45 @@ describe("SubscriptionRow pay flow", () => {
     expect(payBodies[0]).toEqual({ account_id: "a1" });
   });
 
+  it("offers only accounts in the subscription's currency (F-05 residual)", async () => {
+    server.use(
+      http.get("http://test.local/api/accounts", () =>
+        HttpResponse.json([
+          { id: "a1", name: "Cuenta COP", type: "bank", currency: "COP", balance: "1.00" },
+          { id: "a2", name: "Cuenta USD", type: "bank", currency: "USD", balance: "1.00" },
+        ]),
+      ),
+    );
+    render(<Harness row={sub("s1", { name: "Streaming", currency: "COP" })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pagar" }));
+    await screen.findByRole("dialog", { name: "Pagar suscripción" });
+
+    const picker = screen.getByLabelText("Elige una cuenta");
+    await waitFor(() => expect(picker.querySelector("option[value=a1]")).not.toBeNull());
+    // A cross-currency pay is a 422 on the server, so the picker must not
+    // offer it in the first place (the backend guard is the second barrier).
+    expect(picker.querySelector("option[value=a2]")).toBeNull();
+  });
+
+  it("explains the currency rule when no account can pay the row", async () => {
+    server.use(
+      http.get("http://test.local/api/accounts", () =>
+        HttpResponse.json([
+          { id: "a2", name: "Cuenta USD", type: "bank", currency: "USD", balance: "1.00" },
+        ]),
+      ),
+    );
+    render(<Harness row={sub("s1", { name: "Streaming", currency: "COP" })} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pagar" }));
+    await screen.findByRole("dialog", { name: "Pagar suscripción" });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Necesitás una cuenta en COP para pagar esta suscripción."),
+      ).toBeDefined(),
+    );
+  });
+
   it("tras pagar, revalida también la lectura con rango (F1)", async () => {
     render(<RangedHarness row={sub("s1", { name: "Streaming" })} />);
     // The ranged key is already in the cache before the payment.

@@ -43,6 +43,16 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
+describe("login screen copy", () => {
+  it("never claims encryption the deployment does not provide (audit F-01)", () => {
+    render(<LoginPage />);
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/cifrad/i);
+    expect(text).not.toMatch(/extremo a extremo/i);
+    expect(text).toContain("Sesión privada guardada sólo en este navegador");
+  });
+});
+
 describe("login screen auth flow", () => {
   it("signs in, stores the token, and routes to the dashboard", async () => {
     render(<LoginPage />);
@@ -154,7 +164,10 @@ describe("login screen control deck visuals", () => {
     expect(screen.queryByRole("link", { name: "¿Olvidaste tu contraseña?" })).toBeNull();
 
     expect(
-      screen.getByText("Conexión segura cifrada de extremo a extremo"),
+      // Audit F-01: the LAN deployment is plain HTTP, so the old
+      // "end-to-end encryption" claim was untrue; the note now states where
+      // the session lives instead.
+      screen.getByText("Sesión privada guardada sólo en este navegador"),
     ).toBeInTheDocument();
     expect(
       screen.getByText("Control Deck • Panel de administración y gestión privada"),

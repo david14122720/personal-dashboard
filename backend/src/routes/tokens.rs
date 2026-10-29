@@ -134,6 +134,17 @@ pub fn validate_expires_in_days(raw: Option<i64>) -> Result<Option<i64>, AppErro
     }
 }
 
+/// Lifetime applied when the caller omits `expires_in_days`.
+///
+/// Audit F-01/A6: a credential that never expires turns one stolen session into
+/// permanent access. Omitted now means 90 days, and the response still reports
+/// the resulting `expires_at`.
+const DEFAULT_EXPIRES_IN_DAYS: i64 = 90;
+
+pub fn effective_lifetime_days(raw: Option<i64>) -> Result<i64, AppError> {
+    Ok(validate_expires_in_days(raw)?.unwrap_or(DEFAULT_EXPIRES_IN_DAYS))
+}
+
 /// Mint a raw secret: `"pd_"` + 256-bit base64url randomness. Only its
 /// SHA-256 hash is stored; the raw value is shown to the caller once.
 pub fn mint_raw_token() -> String {
@@ -162,7 +173,7 @@ pub async fn create_token_handler(
     // Session-only (JD-A-001/JD-B-001): API tokens must never mint new credentials.
     let user_id = require_session_user_id(&headers, &state.pool).await?;
     let name = validate_token_name(&body.name)?;
-    let lifetime_days = validate_expires_in_days(body.expires_in_days)?;
+    let lifetime_days = effective_lifetime_days(body.expires_in_days)?;
     // T6/J-01: per-user mint budget (10 successful mints/hour, in-process
     // like the login limiter). The slot is reserved atomically with the
     // budget check, before the awaited insert, so concurrent creates from one
@@ -176,7 +187,7 @@ pub async fn create_token_handler(
     let raw = mint_raw_token();
     let hash = token_crypto::hash_token(&raw);
     let prefix = token_prefix(&raw);
-    let expires_at = lifetime_days.map(|days| Utc::now() + Duration::days(days));
+    let expires_at = Some(Utc::now() + Duration::days(lifetime_days));
     let row = sqlx::query_as::<_, (Uuid, String, String, serde_json::Value, Option<DateTime<Utc>>, DateTime<Utc>)>(
         CREATE_TOKEN_SQL,
     )
@@ -403,6 +414,16 @@ mod tokens_tests {
         assert_422(validate_token_name("").unwrap_err());
         assert_422(validate_token_name("   ").unwrap_err());
         assert_422(validate_token_name(&"z".repeat(81)).unwrap_err());
+    }
+
+    #[test]
+    fn an_omitted_lifetime_still_expires() {
+        // Audit F-01/A6: no caller-supplied value must not mean "forever".
+        assert_eq!(effective_lifetime_days(None).unwrap(), 90);
+        assert_eq!(effective_lifetime_days(Some(30)).unwrap(), 30);
+        assert_eq!(effective_lifetime_days(Some(3650)).unwrap(), 3650);
+        assert_422(effective_lifetime_days(Some(0)).unwrap_err());
+        assert_422(effective_lifetime_days(Some(3651)).unwrap_err());
     }
 
     #[test]
