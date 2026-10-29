@@ -1,8 +1,12 @@
-//! Media streaming for files Hermes leaves on disk.
+//! Media streaming and uploads for the files Hermes exchanges with the chat.
 //!
-//! The agent answers with `MEDIA:/opt/data/x.mp4` for videos and a plain
-//! `/opt/data/x.pdf` for documents. Those paths live in the Hermes container,
-//! so the dashboard mounts the same directory read-only and serves it here.
+//! Hermes mentions absolute paths in its replies;
+//! `/opt/data/documentos_generados/entrega.pdf` and
+//! `/opt/data/cache/scratch/render.png` are the measured cases. Those paths
+//! live in the Hermes container, so the dashboard mounts the same directories
+//! (read-only for the stream) and serves them here. The `MEDIA:` prefix
+//! Telegram uses is not part of this contract: the reply text carries the path
+//! and the chat proxy turns it into a signed card URL.
 //!
 //! `path` alone would be an arbitrary-file-read (`.env`, credentials, the DB
 //! dump). Every URL therefore carries a short-lived HMAC signature minted by
@@ -13,16 +17,23 @@
 //!
 //! Responses stream from disk (`ReaderStream`) and support `Range`, so a
 //! multi-gigabyte video seeks without buffering it in RAM.
+//!
+//! The same module stores inbound documents (`UPLOAD_ROUTE`): a browser cannot
+//! put bytes in the Runs API, so they land in `HERMES_UPLOAD_DIR` and the turn
+//! text names their signed URL instead.
 
 use std::{
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     body::Body,
-    extract::{Extension, Query, State},
+    extract::{Extension, Multipart, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -30,15 +41,27 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tokio::io::{AsyncSeekExt, AsyncReadExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 
 pub const MEDIA_ROUTE: &str = "/api/hermes/media";
 
-/// `/tmp` is allowed by default too: the owner spec names it explicitly, and
-/// the agent writes scratch renders there. Access still requires the signed
-/// URL plus the canonicalized-root check.
-const DEFAULT_ROOTS: &[&str] = &["/opt/data", "/tmp"];
+/// Allowlisted directories (owner spec S6 + measured reality).
+///
+/// `/opt/data` itself is deliberately **not** a root: the agent's home holds
+/// `.env`, `auth.json` and `config.yaml`, so a signed link for any file there
+/// would be a credential leak. `documentos_generados` was measured on the real
+/// gateway (2026-10-29) as the directory where Hermes writes the Word/Excel/PDF
+/// deliverables; without it the download cards would never resolve.
+/// `/tmp` is named by the spec and used for scratch renders.
+const DEFAULT_ROOTS: &[&str] = &[
+    "/opt/data/cache/scratch",
+    "/opt/data/cache/documents",
+    "/opt/data/entregables",
+    "/opt/data/uploads",
+    "/opt/data/documentos_generados",
+    "/tmp",
+];
 /// One sign request may carry the paths of a single reply.
 const MAX_SIGN_PATHS: usize = 32;
 // Cards live in the transcript: a page open for a day must still play its
@@ -478,6 +501,402 @@ pub async fn sign_handler(
         }
     }
     Json(serde_json::json!({ "items": items })).into_response()
+}
+
+
+// --- Uploads (owner spec S8) ----------------------------------------------
+
+/// Authenticated endpoint that stores a user document for the agent.
+pub const UPLOAD_ROUTE: &str = "/api/hermes/upload";
+
+/// The directory the agent can read, created on the first upload.
+const DEFAULT_UPLOAD_DIR: &str = "/opt/data/uploads";
+/// One request may carry this many files; the runs endpoint uses the same cap.
+const MAX_UPLOAD_FILES: usize = 20;
+/// Per-file ceiling. The body itself is streamed, so this bounds disk, not RAM.
+const MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+/// Long names are truncated (extension kept) so the path stays predictable.
+const MAX_UPLOAD_NAME: usize = 80;
+/// Prefix of an in-flight upload. `sanitize_upload_name` strips leading dots,
+/// so no real upload can match it and the startup sweep cannot delete one.
+const LEFTOVER_PREFIX: &str = ".partial-";
+
+static UPLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Where uploads land, and the base the agent-facing URL is built from.
+#[derive(Clone, Debug)]
+pub struct UploadConfig {
+    pub dir: PathBuf,
+    /// `HERMES_PUBLIC_BASE_URL` when the owner sets it; otherwise the request's
+    /// own scheme/host (the LAN address the browser used) is the fallback.
+    pub public_base: Option<String>,
+}
+
+impl UploadConfig {
+    pub fn from_env() -> Self {
+        let dir = std::env::var("HERMES_UPLOAD_DIR")
+            .ok()
+            .map(|raw| raw.trim().to_string())
+            .filter(|raw| !raw.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_UPLOAD_DIR));
+        let public_base = std::env::var("HERMES_PUBLIC_BASE_URL")
+            .ok()
+            .map(|raw| raw.trim().trim_end_matches('/').to_string())
+            .filter(|raw| !raw.is_empty());
+        Self { dir, public_base }
+    }
+
+    pub fn current() -> &'static UploadConfig {
+        static CONFIG: OnceLock<UploadConfig> = OnceLock::new();
+        CONFIG.get_or_init(UploadConfig::from_env)
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UploadedFile {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub mime: String,
+    pub url: String,
+}
+
+/// Last path segment only, restricted to `[A-Za-z0-9._-]`, no leading dots.
+///
+/// This is what stops `../../etc/passwd` and Windows-style separators from
+/// choosing the destination, and it keeps the agent-facing URL guessable.
+pub fn sanitize_upload_name(raw: &str) -> Option<String> {
+    let last = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if last.is_empty() || last == "." || last == ".." {
+        return None;
+    }
+    let mut clean: String = last
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while clean.starts_with('.') {
+        clean.remove(0);
+    }
+    if clean.is_empty() {
+        return None;
+    }
+    if clean.len() > MAX_UPLOAD_NAME {
+        let extension = clean
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_string())
+            .filter(|ext| !ext.is_empty() && ext.len() <= 16);
+        let budget = MAX_UPLOAD_NAME - extension.as_ref().map(|ext| ext.len() + 1).unwrap_or(0);
+        let stem: String = clean.chars().take(budget).collect();
+        clean = match extension {
+            Some(ext) => format!("{stem}.{ext}"),
+            None => stem,
+        };
+    }
+    Some(clean)
+}
+
+/// Collision-free stored name: a monotonic suffix keeps two uploads of the same
+/// document from overwriting each other (`create_new` would otherwise fail).
+pub fn unique_upload_name(name: &str) -> String {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let seq = UPLOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let raw = format!("{stamp:x}{seq:x}");
+    let tail = &raw[raw.len().saturating_sub(12)..];
+    format!("{tail}-{name}")
+}
+
+fn upload_error(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({"error": {"code": code, "message": message}})),
+    )
+        .into_response()
+}
+
+fn upload_unavailable() -> Response {
+    upload_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "HERMES_UPLOAD_UNAVAILABLE",
+        "the upload directory is not writable",
+    )
+}
+
+/// Scheme + host for the URL the agent will fetch. Reverse proxies set
+/// `X-Forwarded-*`; direct LAN access keeps `Host`.
+fn public_base(headers: &HeaderMap, configured: Option<&str>, trust_forwarded: bool) -> String {
+    if let Some(base) = configured {
+        return base.to_string();
+    }
+    // Forwarded headers are a hint from a *trusted* proxy only. Honouring them
+    // unconditionally lets an authenticated caller mint the agent-facing URL as
+    // `http://attacker/...` with a valid signature for the real file, and the
+    // agent would then fetch the bait host. Off unless `HERMES_TRUST_FORWARDED=1`
+    // declares that the dashboard sits behind Dokploy's Traefik.
+    let trusted_proxy = trust_forwarded;
+    let host = if trusted_proxy {
+        headers.get("x-forwarded-host")
+    } else {
+        None
+    }
+    .or_else(|| headers.get(header::HOST))
+    .and_then(|value| value.to_str().ok())
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .unwrap_or("localhost");
+    let proto = if trusted_proxy {
+        headers.get("x-forwarded-proto")
+    } else {
+        None
+    }
+    .and_then(|value| value.to_str().ok())
+    .map(str::trim)
+    .filter(|value| matches!(*value, "http" | "https"))
+    .unwrap_or("http");
+    format!("{proto}://{host}")
+}
+
+/// Backstop for one multipart body: the per-file budget times the file cap plus
+/// room for part headers, so a rejected batch is cut off before it can stream
+/// unbounded bytes into the container's network stack.
+pub const fn upload_body_limit() -> usize {
+    (MAX_UPLOAD_FILES as u64 * MAX_UPLOAD_BYTES + 1024 * 1024) as usize
+}
+
+/// Whether proxy headers may set the agent-facing URL (`HERMES_TRUST_FORWARDED=1`).
+fn trust_forwarded_env() -> bool {
+    matches!(std::env::var("HERMES_TRUST_FORWARDED").as_deref(), Ok("1"))
+}
+
+/// Store every `files` field of one multipart body.
+///
+/// Each field is written chunk by chunk (`field.chunk()`), so a 25 MB document
+/// costs disk and network time but never 25 MB of RAM; exceeding `limit` aborts
+/// that file and removes the partial byte stream from disk.
+///
+/// A rejected batch leaves **nothing** behind: a file that was already written
+/// when a later field fails would be an orphan on the Hermes volume that no URL
+/// ever points to, so every path recorded in `written` is removed on error.
+pub async fn store_uploads(
+    config: &UploadConfig,
+    media: &MediaConfig,
+    base: &str,
+    limit: u64,
+    multipart: Multipart,
+) -> Result<Vec<UploadedFile>, Response> {
+    let mut written: Vec<PathBuf> = Vec::new();
+    let result = collect_uploads(config, media, base, limit, multipart, &mut written).await;
+    if result.is_err() {
+        for path in &written {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    result
+}
+
+pub async fn collect_uploads(
+    config: &UploadConfig,
+    media: &MediaConfig,
+    base: &str,
+    limit: u64,
+    mut multipart: Multipart,
+    written: &mut Vec<PathBuf>,
+) -> Result<Vec<UploadedFile>, Response> {
+    if tokio::fs::create_dir_all(&config.dir).await.is_err() {
+        return Err(upload_unavailable());
+    }
+    let mut stored: Vec<UploadedFile> = Vec::new();
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(err) => {
+                return Err(multipart_failure(
+                    err.status(),
+                    "the multipart body could not be parsed",
+                ))
+            }
+        };
+        if field.name() != Some("files") {
+            continue;
+        }
+        if stored.len() >= MAX_UPLOAD_FILES {
+            return Err(upload_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "TOO_MANY_FILES",
+                "too many files in one upload",
+            ));
+        }
+        let raw_name = field.file_name().unwrap_or_default().to_string();
+        let Some(name) = sanitize_upload_name(&raw_name) else {
+            return Err(upload_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "VALIDATION_ERROR",
+                "the uploaded file has no usable name",
+            ));
+        };
+        let stored_name = unique_upload_name(&name);
+        let final_path = config.dir.join(&stored_name);
+        // `.partial-<unique>` until the last chunk arrives. An aborted connection
+        // drops this future without running any cleanup code, so bytes written
+        // straight to the final name would survive as a file no URL points at
+        // and nothing deletes; the rename below is what publishes the file.
+        // The leading dot matters: `sanitize_upload_name` strips those, so a user
+        // file can never be named like a partial and the startup sweep can never
+        // delete a real upload.
+        let part_path = config.dir.join(format!("{LEFTOVER_PREFIX}{stored_name}"));
+        let mut file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part_path)
+            .await
+        {
+            Ok(file) => file,
+            Err(_) => return Err(upload_unavailable()),
+        };
+        let mut size: u64 = 0;
+        let mut too_large = false;
+        let mut field = field;
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    size += chunk.len() as u64;
+                    if size > limit {
+                        too_large = true;
+                        break;
+                    }
+                    if file.write_all(&chunk).await.is_err() {
+                        drop(file);
+                        let _ = tokio::fs::remove_file(&part_path).await;
+                        return Err(upload_unavailable());
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    return Err(multipart_failure(
+                        err.status(),
+                        "the multipart body could not be read",
+                    ));
+                }
+            }
+        }
+        drop(file);
+        if too_large {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(upload_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "PAYLOAD_TOO_LARGE",
+                "the file is larger than the upload budget",
+            ));
+        }
+        if tokio::fs::rename(&part_path, &final_path).await.is_err() {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(upload_unavailable());
+        }
+        // Record it before building the entry: from here on, a failure in a
+        // later field must delete this file along with the ones already stored.
+        written.push(final_path.clone());
+        let mime = mime_for(&final_path).to_string();
+        let path_string = final_path.to_string_lossy().to_string();
+        let url = format!("{base}{}", media.signed_url(&path_string, unix_now()));
+        stored.push(UploadedFile {
+            path: path_string,
+            name: stored_name,
+            size,
+            mime,
+            url,
+        });
+    }
+    if stored.is_empty() {
+        return Err(upload_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VALIDATION_ERROR",
+            "no files were uploaded",
+        ));
+    }
+    Ok(stored)
+}
+
+/// Translate a multipart failure into the response the client sees.
+///
+/// The status comes from the error itself: a body past the route's
+/// `DefaultBodyLimit` is a 413, and reporting it as the 400 a malformed body
+/// gets would tell the user their request was invalid instead of too large.
+fn multipart_failure(status: StatusCode, message: &str) -> Response {
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        upload_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "PAYLOAD_TOO_LARGE",
+            "the upload body is larger than the configured limit",
+        )
+    } else {
+        upload_error(StatusCode::BAD_REQUEST, "INVALID_MULTIPART", message)
+    }
+}
+
+/// Remove `.partial-*` files an interrupted upload left behind.
+///
+/// A dropped handler future cannot run its cleanup, so the partial file stays
+/// on the Hermes volume until the next start. It is safe to delete: the final
+/// name only exists after a successful rename, so nothing ever pointed at the
+/// partial, and no real upload can carry this prefix because
+/// `sanitize_upload_name` strips leading dots. Called once at startup, never
+/// per request.
+pub fn sweep_partial_uploads(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_partial = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(LEFTOVER_PREFIX));
+        if is_partial && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// `POST /api/hermes/upload` — session-only, like the rest of `/api/hermes`.
+pub async fn upload_handler(
+    State(state): State<crate::state::AppState>,
+    Extension(config): Extension<UploadConfig>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Response {
+    // Auth before the body is read: an anonymous caller never gets a parse
+    // error that describes the shape of the request.
+    if let Err(err) = crate::auth::helper::require_session_user_id(&headers, &state.pool).await {
+        return err.into_response();
+    }
+    let media = MediaConfig::current();
+    let base = public_base(&headers, config.public_base.as_deref(), trust_forwarded_env());
+    match store_uploads(&config, media, &base, MAX_UPLOAD_BYTES, multipart).await {
+        Ok(items) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "items": items })),
+        )
+            .into_response(),
+        Err(response) => response,
+    }
 }
 
 pub async fn media_handler(
@@ -968,5 +1387,512 @@ mod tests {
             .unwrap();
         assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
         assert!(body_bytes(second).await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        extract::{DefaultBodyLimit, FromRequest},
+        http::Request,
+        routing::post,
+        Router,
+    };
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hermes-upload-{label}-{}-{}",
+            std::process::id(),
+            unix_now()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn stored_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// Production-shaped state: the pool never connects, which is exactly what
+    /// the "auth runs before the body" path needs.
+    fn lazy_state() -> crate::state::AppState {
+        use std::sync::Arc;
+        crate::state::AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost:1/unused")
+                .expect("lazy pool construction must succeed"),
+            session_ttl_hours: 24,
+            rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::new()),
+            hermes: None,
+        }
+    }
+
+    /// The upload route's layer stack, copied from `main.rs::assemble`.
+    ///
+    /// `assemble` also nests the other ~60 routes and carries the `/api`
+    /// timeout, so this copy keeps the test hermetic while preserving the two
+    /// things that matter here: the session-only handler and the whole-body
+    /// `DefaultBodyLimit` layer in front of it. `limit` is a parameter because
+    /// the production cap is ~501 MB (pinned by
+    /// `the_upload_body_cap_is_the_production_one`).
+    fn upload_app(state: crate::state::AppState, dir: PathBuf, limit: usize) -> Router {
+        Router::new()
+            .route(
+                UPLOAD_ROUTE,
+                post(upload_handler)
+                    .layer::<_, std::convert::Infallible>(DefaultBodyLimit::max(limit))
+                    .layer::<_, std::convert::Infallible>(Extension(UploadConfig {
+                        dir,
+                        public_base: None,
+                    })),
+            )
+            .with_state(state)
+    }
+
+    /// `store_uploads` without the session lookup: reaching `upload_handler`
+    /// past auth needs a live `sessions` row (and this suite never touches the
+    /// database), and the subject of the test below is the route's body cap,
+    /// not auth — which `an_anonymous_upload_never_reaches_the_disk` covers.
+    async fn store_without_auth(
+        Extension(config): Extension<UploadConfig>,
+        Extension(media): Extension<MediaConfig>,
+        multipart: Multipart,
+    ) -> Response {
+        match store_uploads(&config, &media, "http://lan", MAX_UPLOAD_BYTES, multipart).await {
+            Ok(items) => (
+                StatusCode::CREATED,
+                Json(serde_json::json!({ "items": items })),
+            )
+                .into_response(),
+            Err(response) => response,
+        }
+    }
+
+    fn multipart_body(parts: &[(&str, &str, &[u8])], boundary: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (field, filename, bytes) in parts {
+            out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            out.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{field}\"; filename=\"{filename}\"\r\n"
+                )
+                .as_bytes(),
+            );
+            out.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+            out.extend_from_slice(bytes);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        out
+    }
+
+    async fn multipart_request(parts: &[(&str, &str, &[u8])]) -> Multipart {
+        let boundary = "BOUNDARY";
+        let body = multipart_body(parts, boundary);
+        let request = Request::builder()
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .expect("multipart request");
+        Multipart::from_request(request, &())
+            .await
+            .expect("multipart extractor")
+    }
+
+    fn query_value(url: &str, key: &str) -> String {
+        let query = url.split_once('?').expect("query").1;
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("missing {key} in {url}"))
+            .to_string()
+    }
+
+    #[test]
+    fn the_allowlist_excludes_the_hermes_home() {
+        // `/opt/data` holds .env, auth.json and config.yaml: a signed link for
+        // any file directly under it would be a credential leak.
+        assert!(!DEFAULT_ROOTS.contains(&"/opt/data"));
+        for root in [
+            "/opt/data/cache/scratch",
+            "/opt/data/cache/documents",
+            "/opt/data/entregables",
+            "/opt/data/uploads",
+            "/opt/data/documentos_generados",
+            "/tmp",
+        ] {
+            assert!(DEFAULT_ROOTS.contains(&root), "missing root {root}");
+        }
+    }
+
+    /// The constant alone proves nothing: what matters is that `resolve` refuses
+    /// a file that exists *next to* an allowed root (the `/opt/data/.env` case,
+    /// reproduced with a temp tree because the real one needs root).
+    #[tokio::test]
+    async fn resolving_refuses_a_file_beside_an_allowed_root() {
+        let base = temp_dir("roots");
+        let allowed = base.join("cache").join("scratch");
+        tokio::fs::create_dir_all(&allowed).await.expect("allowed root");
+        let inside = allowed.join("render.png");
+        tokio::fs::write(&inside, b"png").await.expect("inside file");
+        let secret = base.join(".env");
+        tokio::fs::write(&secret, b"SECRET=1").await.expect("secret file");
+
+        let config = MediaConfig::new(vec![allowed.clone()], b"k".to_vec(), 600);
+        assert!(
+            config.resolve(inside.to_str().unwrap()).is_some(),
+            "a file inside an allowed root must resolve"
+        );
+        assert!(
+            config.resolve(secret.to_str().unwrap()).is_none(),
+            "a file beside the root must not resolve"
+        );
+    }
+
+    #[test]
+    fn sanitizes_names_and_rejects_traversal_only_input() {
+        assert_eq!(
+            sanitize_upload_name("../../etc/passwd").as_deref(),
+            Some("passwd")
+        );
+        assert_eq!(
+            sanitize_upload_name("C:\\Users\\ana\\informe.docx").as_deref(),
+            Some("informe.docx")
+        );
+        assert_eq!(sanitize_upload_name("mi informe (1).pdf").as_deref(), Some("mi_informe__1_.pdf"));
+        assert_eq!(sanitize_upload_name(".."), None);
+        assert_eq!(sanitize_upload_name("."), None);
+        assert_eq!(sanitize_upload_name(""), None);
+        assert_eq!(sanitize_upload_name("/"), None);
+        // A leading dot would create a hidden file; it is stripped.
+        assert_eq!(sanitize_upload_name(".env").as_deref(), Some("env"));
+    }
+
+    #[test]
+    fn truncates_long_names_and_keeps_the_extension() {
+        let long = format!("{}.pdf", "a".repeat(200));
+        let name = sanitize_upload_name(&long).expect("name");
+        assert!(name.len() <= MAX_UPLOAD_NAME);
+        assert!(name.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn unique_names_never_collide() {
+        let first = unique_upload_name("informe.pdf");
+        let second = unique_upload_name("informe.pdf");
+        assert_ne!(first, second);
+        assert!(first.ends_with("-informe.pdf"));
+    }
+
+    #[test]
+    fn the_upload_body_cap_is_the_production_one() {
+        // `main.rs::assemble` mounts this exact number on the route. Axum's
+        // 2 MiB default would reject a legitimate document and leave the
+        // per-file 25 MB budget unreachable.
+        assert_eq!(
+            upload_body_limit(),
+            MAX_UPLOAD_FILES * MAX_UPLOAD_BYTES as usize + 1024 * 1024
+        );
+        assert!(upload_body_limit() > 2 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn the_mounted_router_requires_a_session_for_uploads() {
+        use tower::ServiceExt;
+        // The real assembler from `main.rs`: proves the route is mounted at
+        // `/api/hermes/upload` and that its handler authenticates.
+        let app = crate::build_router(lazy_state(), None);
+        let body = multipart_body(&[("files", "a.pdf", b"%PDF-1.7")], "BOUNDARY");
+        let request = Request::post(UPLOAD_ROUTE)
+            .header("content-type", "multipart/form-data; boundary=BOUNDARY")
+            .body(Body::from(body))
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_upload_never_reaches_the_disk() {
+        use tower::ServiceExt;
+        let dir = temp_dir("router-anon");
+        let app = upload_app(lazy_state(), dir.clone(), upload_body_limit());
+        let body = multipart_body(&[("files", "a.pdf", b"%PDF-1.7")], "BOUNDARY");
+        let request = Request::post(UPLOAD_ROUTE)
+            .header("content-type", "multipart/form-data; boundary=BOUNDARY")
+            .body(Body::from(body))
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // The handler answers before `next_field()`. A parsed body would have
+        // created the directory and written the file.
+        let leftover = stored_names(&dir);
+        assert!(leftover.is_empty(), "anonymous upload wrote {leftover:?}");
+    }
+
+    #[tokio::test]
+    async fn a_body_over_the_configured_limit_is_413_not_a_parse_error() {
+        use tower::ServiceExt;
+        let dir = temp_dir("router-limit");
+        let media = MediaConfig::new(vec![dir.clone()], b"k".to_vec(), 600);
+        // Same layer stack as `upload_app`, with a 64-byte cap: the production
+        // cap is half a gigabyte (see `the_upload_body_cap_is_the_production_one`).
+        let app = Router::new().route(
+            UPLOAD_ROUTE,
+            post(store_without_auth)
+                .layer::<_, std::convert::Infallible>(DefaultBodyLimit::max(64))
+                .layer::<_, std::convert::Infallible>(Extension(UploadConfig {
+                    dir: dir.clone(),
+                    public_base: None,
+                }))
+                .layer::<_, std::convert::Infallible>(Extension(media)),
+        );
+        let payload = [b'A'; 512];
+        let body = multipart_body(&[("files", "grande.zip", &payload[..])], "BOUNDARY");
+        let request = Request::post(UPLOAD_ROUTE)
+            .header("content-type", "multipart/form-data; boundary=BOUNDARY")
+            .body(Body::from(body))
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let leftover = stored_names(&dir);
+        assert!(leftover.is_empty(), "an over-limit body left {leftover:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unfinished_upload_is_written_under_a_part_name() {
+        let dir = temp_dir("inflight");
+        let config = UploadConfig {
+            dir: dir.clone(),
+            public_base: None,
+        };
+        let media = MediaConfig::new(vec![dir.clone()], b"k".to_vec(), 600);
+        let boundary = "BOUNDARY";
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+        let request = Request::builder()
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from_stream(ReaderStream::new(reader)))
+            .expect("streaming request");
+        let multipart = Multipart::from_request(request, &())
+            .await
+            .expect("multipart extractor");
+        let handle = tokio::spawn(async move {
+            store_uploads(&config, &media, "http://lan", MAX_UPLOAD_BYTES, multipart).await
+        });
+
+        // Part headers plus the first half of the file, then the connection
+        // goes quiet: the state a browser upload leaves when it is aborted.
+        writer
+            .write_all(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"informe.pdf\"\r\nContent-Type: application/pdf\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("part headers");
+        writer
+            .write_all(b"%PDF-1.7 primera mitad")
+            .await
+            .expect("first chunk");
+        writer.flush().await.expect("flush");
+
+        let mut seen = Vec::new();
+        for _ in 0..400 {
+            seen = stored_names(&dir);
+            if !seen.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(seen.len(), 1, "expected one in-flight file, saw {seen:?}");
+        assert!(
+            seen[0].starts_with(".partial-"),
+            "an unfinished upload must not carry its final name yet: {seen:?}"
+        );
+
+        writer
+            .write_all(b" y la segunda\r\n")
+            .await
+            .expect("second chunk");
+        writer
+            .write_all(format!("--{boundary}--\r\n").as_bytes())
+            .await
+            .expect("closing boundary");
+        drop(writer);
+
+        let items = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("upload finished")
+            .expect("task did not panic")
+            .expect("stored");
+        assert_eq!(items.len(), 1);
+        let final_name = Path::new(&items[0].path)
+            .file_name()
+            .expect("stored name")
+            .to_string_lossy()
+            .to_string();
+        assert!(dir.join(&final_name).exists(), "the part must be renamed");
+        assert_eq!(
+            stored_names(&dir),
+            vec![final_name],
+            "the in-flight file must not survive the completed upload"
+        );
+    }
+
+    #[tokio::test]
+    async fn stores_each_file_with_a_verifiable_signed_url() {
+        let dir = temp_dir("store");
+        let config = UploadConfig {
+            dir: dir.clone(),
+            public_base: None,
+        };
+        let media = MediaConfig::new(vec![dir.clone()], b"test-secret".to_vec(), 600);
+        let multipart = multipart_request(&[
+            ("files", "../../etc/informe.pdf", b"%PDF-1.7 hola"),
+            ("files", "notas.txt", b"contenido"),
+        ])
+        .await;
+
+        let items = store_uploads(&config, &media, "http://192.168.50.120:8055", MAX_UPLOAD_BYTES, multipart)
+            .await
+            .expect("stored");
+
+        assert_eq!(items.len(), 2);
+        let canonical_dir = std::fs::canonicalize(&dir).expect("canonical dir");
+        for item in &items {
+            // Canonical parents, not string prefixes: `<dir>/../../x.pdf`
+            // also starts with `<dir>`.
+            let stored = std::fs::canonicalize(&item.path).expect("stored file");
+            assert_eq!(stored.parent(), Some(canonical_dir.as_path()), "{}", item.path);
+            assert!(Path::new(&item.path).exists());
+            assert!(item.name.ends_with(".pdf") || item.name.ends_with(".txt"));
+            assert!(!item.name.contains("etc"));
+            assert!(item.url.starts_with("http://192.168.50.120:8055/api/hermes/media?"));
+            let exp: i64 = query_value(&item.url, "exp").parse().expect("exp");
+            let sig = query_value(&item.url, "sig");
+            assert!(media.verify(&item.path, exp, &sig, unix_now()));
+        }
+        // Control: the prefix assertion this replaced accepted an escaping
+        // path that the parent comparison rejects.
+        let escaping = format!("{}/../escape.pdf", dir.display());
+        assert!(escaping.starts_with(dir.to_str().expect("utf8")));
+        assert_ne!(Path::new(&escaping).parent(), Some(canonical_dir.as_path()));
+        assert_eq!(items[0].size, 13);
+        assert_eq!(items[0].mime, "application/pdf");
+        assert_eq!(items[1].mime, "text/plain; charset=utf-8");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_file_over_the_budget_and_leaves_nothing_behind() {
+        let dir = temp_dir("too-big");
+        let config = UploadConfig {
+            dir: dir.clone(),
+            public_base: None,
+        };
+        let media = MediaConfig::new(vec![dir.clone()], b"k".to_vec(), 600);
+        let multipart = multipart_request(&[("files", "grande.zip", b"0123456789")]).await;
+
+        let response = store_uploads(&config, &media, "http://lan", 8, multipart)
+            .await
+            .expect_err("must be rejected");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let leftover: Vec<_> = std::fs::read_dir(&dir).expect("dir").flatten().collect();
+        assert!(leftover.is_empty(), "partial file left on disk");
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_stale_parts_and_keeps_real_files() {
+        let dir = temp_dir("sweep");
+        std::fs::write(dir.join(".partial-011114311d41-informe.pdf"), b"half").expect("part");
+        std::fs::write(dir.join("011114311d41-informe.pdf"), b"%PDF").expect("final");
+        // A user is allowed to upload a file literally called `informe.part`
+        // (JD-B-002 edge): it is stored as `<hex>-informe.part` and must survive.
+        std::fs::write(dir.join("011114311d41-informe.part"), b"real").expect("real part upload");
+        std::fs::write(dir.join("part-not-an-extension.pdf"), b"x").expect("other");
+
+        assert_eq!(sweep_partial_uploads(&dir), 1);
+        assert!(!dir.join(".partial-011114311d41-informe.pdf").exists());
+        assert!(dir.join("011114311d41-informe.pdf").exists());
+        assert!(dir.join("011114311d41-informe.part").exists());
+        assert!(dir.join("part-not-an-extension.pdf").exists());
+        // Idempotent, and a directory that was never created is not an error.
+        assert_eq!(sweep_partial_uploads(&dir), 0);
+        assert_eq!(sweep_partial_uploads(&dir.join("missing")), 0);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_batch_leaves_no_orphan_behind() {
+        let dir = temp_dir("multi-orphan");
+        let config = UploadConfig {
+            dir: dir.clone(),
+            public_base: None,
+        };
+        let media = MediaConfig::new(vec![dir.clone()], b"k".to_vec(), 600);
+        // The first file fits, the second one blows the per-file budget. The
+        // batch is rejected, so the file that was already written must not
+        // survive as an orphan that no URL ever points to (JD-A-001).
+        let multipart = multipart_request(&[
+            ("files", "primero.txt", b"ok"),
+            ("files", "segundo.zip", b"0123456789"),
+        ])
+        .await;
+
+        let response = store_uploads(&config, &media, "http://lan", 8, multipart)
+            .await
+            .expect_err("must be rejected");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let leftover = stored_names(&dir);
+        assert!(
+            leftover.iter().all(|name| !name.ends_with(".part")),
+            "a rejected batch left a partial file: {leftover:?}"
+        );
+        assert!(leftover.is_empty(), "orphan left on disk: {leftover:?}");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_body_without_files() {
+        let dir = temp_dir("empty");
+        let config = UploadConfig {
+            dir: dir.clone(),
+            public_base: None,
+        };
+        let media = MediaConfig::new(vec![dir], b"k".to_vec(), 600);
+        let multipart = multipart_request(&[("message", "", b"hola")]).await;
+        let response = store_uploads(&config, &media, "http://lan", MAX_UPLOAD_BYTES, multipart)
+            .await
+            .expect_err("must be rejected");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn builds_the_public_base_from_the_request_when_not_configured() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("192.168.50.120:8055"));
+        assert_eq!(public_base(&headers, None, false), "http://192.168.50.120:8055");
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert("x-forwarded-host", HeaderValue::from_static("panel.test"));
+        // JD-A-003: without an explicitly trusted proxy the forwarded host is
+        // ignored, so a caller cannot choose the URL Hermes will fetch.
+        assert_eq!(public_base(&headers, None, false), "http://192.168.50.120:8055");
+        assert_eq!(public_base(&headers, None, true), "https://panel.test");
+        assert_eq!(
+            public_base(&headers, Some("https://fijo.test"), true),
+            "https://fijo.test"
+        );
     }
 }

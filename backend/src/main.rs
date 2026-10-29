@@ -320,6 +320,21 @@ fn assemble(
             "/api/hermes/media/sign",
             post(routes::hermes_media::sign_handler),
         )
+        // Documents the user attaches travel to disk first (owner spec S8):
+        // the Runs API cannot carry binary parts, so the agent fetches the
+        // stored file through its signed media URL instead.
+        .route(
+            routes::hermes_media::UPLOAD_ROUTE,
+            post(routes::hermes_media::upload_handler)
+                // `Infallible` is the router's error type here; naming it keeps
+                // `layer` from having to guess among the `From<Infallible>` impls.
+                // A bounded cap instead of `disable()`: the per-file budget is
+                // enforced while streaming, this is the whole-body backstop.
+                .layer::<_, std::convert::Infallible>(DefaultBodyLimit::max(
+                    routes::hermes_media::upload_body_limit(),
+                ))
+                .layer(Extension(routes::hermes_media::UploadConfig::current().clone())),
+        )
         .nest("/api", api_routes);
     // Same mounting shape as `/api/hermes/runs`: exact outer route, outside the
     // nested router that carries the 15 s budget.
@@ -397,6 +412,31 @@ fn build_router(state: AppState, static_dir: Option<String>) -> Router {
     assemble(state, static_dir, api_routes(), API_TIMEOUT)
 }
 
+/// Resolve the `--create-user` password without ever reading it from argv.
+///
+/// Environment first (unattended provisioning), then one line of stdin (the
+/// interactive path). An empty or missing value is a usage error, never an
+/// empty password.
+fn resolve_create_user_password(
+    env_value: Option<String>,
+    stdin_value: Option<String>,
+) -> Result<String, &'static str> {
+    let from_env = env_value
+        .map(|value| value.trim_end_matches(['\n', '\r']).to_string())
+        // A whitespace-only value is not a password: it would silently become
+        // "   ". Only the line ending is stripped from the value itself.
+        .filter(|value| !value.trim().is_empty());
+    if let Some(value) = from_env {
+        return Ok(value);
+    }
+    let from_stdin = stdin_value
+        .map(|value| value.trim_end_matches(['\n', '\r']).to_string())
+        .filter(|value| !value.trim().is_empty());
+    from_stdin.ok_or(
+        "a password is required: set PERSONAL_DASHBOARD_NEW_USER_PASSWORD or pipe it on stdin",
+    )
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -410,16 +450,38 @@ async fn main() {
 
     let pool = db::create_pool(&config.database_url).expect("failed to create pool");
 
-    // One-shot CLI: --create-user <email> <password> <display_name>
+    // One-shot CLI: --create-user <email> <display_name>
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 && args[1] == "--create-user" {
-        if args.len() != 5 {
-            eprintln!("usage: --create-user <email> <password> <display_name>");
+        // Audit F-07: a password in argv is visible to `ps`, the shell history
+        // and the system logs. It now comes from the environment or stdin, and
+        // the legacy four-argument form is rejected instead of accepted.
+        if args.len() != 4 {
+            eprintln!(
+                "usage: --create-user <email> <display_name>  (password via PERSONAL_DASHBOARD_NEW_USER_PASSWORD or stdin)"
+            );
             std::process::exit(2);
         }
         let email = args[2].clone();
-        let password = args[3].clone();
-        let display_name = args[4].clone();
+        let display_name = args[3].clone();
+        let password = {
+            let mut stdin_line = String::new();
+            let stdin_value = if std::io::stdin().read_line(&mut stdin_line).is_ok() {
+                Some(stdin_line)
+            } else {
+                None
+            };
+            match resolve_create_user_password(
+                std::env::var("PERSONAL_DASHBOARD_NEW_USER_PASSWORD").ok(),
+                stdin_value,
+            ) {
+                Ok(password) => password,
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(2);
+                }
+            }
+        };
         let hash = auth::password::hash_password(&password).unwrap_or_else(|e| {
             eprintln!("hash error: {e}");
             std::process::exit(1);
@@ -448,6 +510,23 @@ async fn main() {
                 eprintln!("create user failed: {e}");
                 std::process::exit(1);
             }
+        }
+    }
+
+    // One-shot sweep of interrupted uploads. A connection dropped mid-file
+    // leaves `<unique>.part` behind because a dropped handler future cannot run
+    // its cleanup; the final name only exists after a successful rename, so
+    // nothing ever pointed at the partial. Per-request cleanup covers every
+    // other error path, so this is the only place the leftovers are collected.
+    {
+        let upload_dir = routes::hermes_media::UploadConfig::current().dir.clone();
+        let removed = routes::hermes_media::sweep_partial_uploads(&upload_dir);
+        if removed > 0 {
+            tracing::info!(
+                removed,
+                dir = %upload_dir.display(),
+                "removed uploads interrupted before completion"
+            );
         }
     }
 
@@ -1224,5 +1303,37 @@ mod api_nest_tests {
             .unwrap();
         assert!(String::from_utf8(bytes.to_vec()).unwrap().contains("spa-shell"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod create_user_password_tests {
+    use super::resolve_create_user_password;
+
+    #[test]
+    fn prefers_the_environment_and_trims_the_newline() {
+        assert_eq!(
+            resolve_create_user_password(Some("s3cret\n".to_string()), Some("otra".to_string()))
+                .unwrap(),
+            "s3cret"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_stdin() {
+        assert_eq!(
+            resolve_create_user_password(None, Some("desde-stdin\r\n".to_string())).unwrap(),
+            "desde-stdin"
+        );
+        assert_eq!(
+            resolve_create_user_password(Some("   ".to_string()), Some("x".to_string())).unwrap(),
+            "x"
+        );
+    }
+
+    #[test]
+    fn refuses_an_empty_password() {
+        assert!(resolve_create_user_password(None, None).is_err());
+        assert!(resolve_create_user_password(Some(String::new()), Some("\n".to_string())).is_err());
     }
 }
