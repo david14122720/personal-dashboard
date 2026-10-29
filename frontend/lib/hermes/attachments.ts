@@ -1,10 +1,12 @@
 /**
  * Pending chat attachments: classification and preview URLs.
  *
- * There is no byte ceiling (owner spec S2): the proxy counts and discards
+ * The runs proxy has no byte ceiling (owner spec S2): it counts and discards
  * non-image bytes chunk by chunk and streams back whatever Hermes delivers.
  * Only the attachment *count* stays bounded, because each chip is a separate
- * multipart part.
+ * multipart part. Binary files that go through `POST /api/hermes/upload` are
+ * bounded separately by that route's 25 MB per-file budget (see
+ * `MAX_UPLOAD_DOCUMENT_BYTES`).
  */
 
 export type AttachmentKind = "image" | "audio" | "text" | "other";
@@ -125,4 +127,35 @@ export function voiceFileName(mime: string, stamp = Date.now()): string {
         ? "wav"
         : "webm";
   return `nota-de-voz-${new Date(stamp).toISOString().replace(/[:.]/g, "-")}.${extension}`;
+}
+
+/**
+ * The line the agent reads when a document was stored server-side (spec S8).
+ * It names the exact URL so Hermes can fetch it with its own tools instead of
+ * guessing a path inside its container.
+ */
+export function attachmentReference(url: string): string {
+  return `[archivo adjunto: ${url}]`;
+}
+
+/** Append the stored-file references to the user's text, in upload order. */
+export function composeTurnText(content: string, urls: readonly string[]): string {
+  const refs = urls.map((url) => attachmentReference(url));
+  if (refs.length === 0) return content;
+  return [content.trim(), ...refs].filter((part) => part.length > 0).join("\n\n");
+}
+
+/**
+ * Which attachment kinds travel to `/api/hermes/upload`.
+ *
+ * Only non-text binaries do. The runs proxy still inlines text-like files into
+ * the prompt (`backend/src/routes/hermes.rs`, 16 000-byte truncation), so
+ * `.md/.txt/.csv/.json` reach the agent without a URL fetch; uploading them
+ * would make a large CSV that used to arrive truncated fail hard with 413 and
+ * would turn every readable document into a dependency on the agent's fetch
+ * tools. Images keep the inline data-URL path and audio keeps its degraded
+ * note.
+ */
+export function isUploadedDocument(kind: AttachmentKind): boolean {
+  return kind === "other";
 }

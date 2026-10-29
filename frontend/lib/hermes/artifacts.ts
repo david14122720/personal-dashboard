@@ -267,6 +267,9 @@ function fromMarkdown(reply: string, target: Artifact[], seen: Set<string>) {
   const links = /!?\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
   for (const match of reply.matchAll(links)) {
     const [, label, url] = match;
+    // A `data:` payload is drawn inline by the message body (see
+    // `inline-images.ts`); carding it too would show every picture twice.
+    if (url.startsWith("data:")) continue;
     if (!isFileUrl(url)) continue;
     pushArtifact(target, seen, {
       id: url,

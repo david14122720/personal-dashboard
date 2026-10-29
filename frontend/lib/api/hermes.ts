@@ -432,3 +432,102 @@ export async function signHermesMedia(
     clearTimeout(timer);
   }
 }
+
+/** One file already stored on the Rust side. */
+export interface HermesUploadedFile {
+  name: string;
+  path: string;
+  url: string;
+  size?: number;
+  mime?: string;
+}
+
+/**
+ * Upload non-image attachments before the run (spec S8).
+ *
+ * Hermes cannot read binary parts of the Runs API, so a document travels to
+ * disk first and the run carries an explicit reference the agent can fetch with
+ * its own tools. Images keep the inline `image_url` path and never come here.
+ */
+export async function uploadHermesDocuments(files: File[]): Promise<HermesUploadedFile[]> {
+  if (files.length === 0) return [];
+  const headers = authHeaders();
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+
+  let res: Response;
+  try {
+    res = await fetch(`${apiBaseUrl()}/hermes/upload`, { method: "POST", headers, body: form });
+  } catch {
+    throw new HermesError("network", "network error");
+  }
+  if (!res.ok) throw errorFromResponse(res.status, await res.text());
+
+  let data: Record<string, unknown>;
+  try {
+    data = (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new HermesError("invalid_response", "hermes returned a non-JSON upload response");
+  }
+  const raw = Array.isArray(data.items) ? data.items : [];
+  const uploaded: HermesUploadedFile[] = [];
+  for (const item of raw) {
+    const entry = item as Record<string, unknown>;
+    const name = typeof entry.name === "string" ? entry.name : "";
+    const path = typeof entry.path === "string" ? entry.path : "";
+    const url = typeof entry.url === "string" ? entry.url : "";
+    if (!name || !path || !url) continue;
+    uploaded.push({
+      name,
+      path,
+      url,
+      size: typeof entry.size === "number" ? entry.size : undefined,
+      mime: typeof entry.mime === "string" ? entry.mime : undefined,
+    });
+  }
+  if (uploaded.length !== files.length) {
+    throw new HermesError("invalid_response", "hermes stored fewer files than were sent");
+  }
+  return uploaded;
+}
+
+/**
+ * Per-document ceiling of `POST /api/hermes/upload`.
+ *
+ * Mirrors `MAX_UPLOAD_BYTES` in `backend/src/routes/hermes_media.rs`; keeping
+ * the check here turns a rejected 25 MB stream into an immediate error instead
+ * of a "connection lost" message after the upload already failed.
+ */
+export const MAX_UPLOAD_DOCUMENT_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Make the signed media URL absolute: the agent fetches it from outside the
+ * browser, so it must be reachable and must carry the API mount.
+ *
+ * The upload posts to `apiBaseUrl()`, so a URL relative to that base belongs to
+ * the same origin and prefix: `window.location.origin` would hand the agent
+ * `http://<page>/...`, which is unreachable when `NEXT_PUBLIC_API_URL` points
+ * at another host.
+ */
+export function absoluteMediaUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  const path = url.startsWith("/") ? url : `/${url}`;
+  const base = apiBaseUrl();
+  if (!/^https?:\/\//i.test(base)) {
+    // Same-origin mount (`/api`): the URL already carries its prefix.
+    if (typeof window === "undefined") return url;
+    return `${window.location.origin}${path}`;
+  }
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(base);
+  } catch {
+    return url;
+  }
+  const mount = baseUrl.pathname.replace(/\/+$/, "");
+  // The media route lives under the `/api` mount; swap that prefix for the
+  // configured one instead of hard-coding the browser's own path.
+  const underMount =
+    path === "/api" ? "" : path.startsWith("/api/") ? path.slice("/api".length) : null;
+  return `${baseUrl.origin}${mount}${underMount ?? path}`;
+}

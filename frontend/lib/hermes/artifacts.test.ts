@@ -11,6 +11,17 @@ import {
   isSafeArtifactUrl,
 } from "./artifacts";
 
+describe("embedded payloads", () => {
+  const payload =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+  it("never cards a data payload: the message body draws it inline", () => {
+    const collected = collectArtifacts(`![x](data:image/png;base64,${payload})`);
+    expect(collected.artifacts).toHaveLength(0);
+    expect(collected.text).toContain("data:image/png;base64,");
+  });
+});
+
 describe("hermes artifacts", () => {
   it("reads the extension and file name from a url", () => {
     expect(extensionOf("https://example.test/reportes/ventas.PDF?v=2")).toBe("pdf");
@@ -135,9 +146,13 @@ describe("hermes artifacts", () => {
     expect(text).toBe("Tomá:\nContame.");
   });
 
-  it("classifies the gateway's inline data image as an image", () => {
-    const { artifacts } = collectArtifacts("![image](data:image/png;base64,iVBORw0KGgo=)");
-    expect(artifacts[0]?.kind).toBe("image");
+  it("leaves the gateway's inline data image to the message body", () => {
+    // Spec S4: the payload is drawn inline by `HermesMessageBody`, so carding
+    // it here would duplicate every generated picture.
+    const reply = "![image](data:image/png;base64,iVBORw0KGgo=";
+    const { artifacts, text } = collectArtifacts(reply);
+    expect(artifacts).toHaveLength(0);
+    expect(text).toContain("data:image/png;base64,");
   });
 
   it("leaves a delivered path inside a fenced code block untouched", () => {

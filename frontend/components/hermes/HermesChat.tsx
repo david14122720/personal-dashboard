@@ -7,7 +7,7 @@ import ApprovalRequestCard, {
 } from "@/components/hermes/ApprovalRequestCard";
 import ArtifactCard from "@/components/hermes/ArtifactCard";
 import AttachmentBar from "@/components/hermes/AttachmentBar";
-import HermesMarkdown from "@/components/hermes/HermesMarkdown";
+import HermesMessageBody from "@/components/hermes/HermesMessageBody";
 import InteractiveQuestionCard from "@/components/hermes/InteractiveQuestionCard";
 import MicButton from "@/components/hermes/MicButton";
 import ThoughtAccordion, { type ThoughtEntry } from "@/components/hermes/ThoughtAccordion";
@@ -19,6 +19,9 @@ import {
   resolveHermesApproval,
   signHermesMedia,
   streamHermesRun,
+  uploadHermesDocuments,
+  absoluteMediaUrl,
+  MAX_UPLOAD_DOCUMENT_BYTES,
   type HermesErrorCode,
   type HermesRunEvent,
   type HermesToolEvent,
@@ -28,6 +31,9 @@ import { formatElapsed } from "@/lib/hermes/elapsed";
 import { scanMediaPaths } from "@/lib/hermes/paths";
 import { splitQuestion, type HermesQuestion } from "@/lib/hermes/questions";
 import {
+  classifyFile,
+  composeTurnText,
+  isUploadedDocument,
   planAttachments,
   releaseAttachment,
   type AttachmentKind,
@@ -984,9 +990,41 @@ export default function HermesChat() {
       window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
     }
+    // Spec S8: a binary document is stored by the Rust side first and then
+    // referenced by URL in the turn, because the Runs API cannot carry binary
+    // files. Text-like files keep the inline multipart path (the runs proxy
+    // still inlines up to 16 KB into the prompt), images keep the inline
+    // data-URL path and audio keeps its degraded note.
+    let turnText = content;
+    let turnFiles = files;
+    const documents = files.filter((file) => isUploadedDocument(classifyFile(file)));
+    // Past the server's per-file budget the stream is rejected only after the
+    // last byte, which surfaces as "connection lost". Reject it before sending.
+    if (documents.some((file) => file.size > MAX_UPLOAD_DOCUMENT_BYTES)) {
+      syncStarting(false);
+      pushError("too_large", null, { content, files, ids: [...sentIds] });
+      pumpQueue();
+      return;
+    }
+    if (documents.length > 0) {
+      try {
+        const uploaded = await uploadHermesDocuments(documents);
+        turnText = composeTurnText(
+          content,
+          uploaded.map((item) => absoluteMediaUrl(item.url)),
+        );
+        turnFiles = files.filter((file) => !documents.includes(file));
+      } catch (error) {
+        syncStarting(false);
+        const code = error instanceof HermesError ? error.code : "network";
+        pushError(code, null, { content, files, ids: [...sentIds] });
+        pumpQueue();
+        return;
+      }
+    }
     let created: { runId: string; createdAt: number };
     try {
-      created = await createHermesRun(session, { content, files });
+      created = await createHermesRun(session, { content: turnText, files: turnFiles });
     } catch (error) {
       syncStarting(false);
       const code = error instanceof HermesError ? error.code : "network";
@@ -1435,7 +1473,7 @@ export default function HermesChat() {
                   <>
                     <ThoughtAccordion entries={message.thoughts} />
                     <div data-testid="hermes-markdown">
-                      <HermesMarkdown>{message.content}</HermesMarkdown>
+                      <HermesMessageBody content={message.content} final />
                     </div>
                     {message.warnings.length > 0 ? (
                       <ul
@@ -1475,7 +1513,7 @@ export default function HermesChat() {
               <p className="sr-only">{t("hermes.assistant")}</p>
               <ThoughtAccordion entries={live.thoughts} />
               <div data-testid="hermes-markdown">
-                <HermesMarkdown>{live.content}</HermesMarkdown>
+                <HermesMessageBody content={live.content} final={false} />
               </div>
               {live.approval ? (
                 <ApprovalRequestCard

@@ -103,11 +103,39 @@ interface MultipartSeen {
 const multipartSeen: MultipartSeen[] = [];
 let failMultipartOnce = false;
 
+/**
+ * Documents no longer travel inside the run (spec S8): binary files are stored
+ * by the Rust side first (`POST /api/hermes/upload`) and the turn text names
+ * their signed URL. The spy answers that call so the flow can be asserted end
+ * to end.
+ */
+const UPLOAD = `${API}/hermes/upload`;
+const uploadedSeen: string[] = [];
+/** Override the stored URL, e.g. to serve a relative one inside a turn. */
+let uploadItemUrl: string | null = null;
+
 function stubMultipartFetch() {
   const realFetch = globalThis.fetch;
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     const body = init?.body;
+    if (url === UPLOAD && body instanceof FormData) {
+      const items = body.getAll("files").map((value) => {
+        const file = value as File;
+        const path = `/opt/data/uploads/${file.name}`;
+        uploadedSeen.push(file.name);
+        return {
+          name: file.name,
+          path,
+          url:
+            uploadItemUrl ??
+            `http://lan.local/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=test`,
+          size: file.size,
+          mime: file.type,
+        };
+      });
+      return HttpResponse.json({ items });
+    }
     if (url === RUNS && body instanceof FormData) {
       if (failMultipartOnce) {
         failMultipartOnce = false;
@@ -259,6 +287,8 @@ afterEach(async () => {
   streamHarness.manual = false;
   streamHarness.pending.length = 0;
   multipartSeen.length = 0;
+  uploadedSeen.length = 0;
+  uploadItemUrl = null;
   failMultipartOnce = false;
   signSeen.length = 0;
   runSeq = 0;
@@ -551,7 +581,7 @@ describe("HermesChat", () => {
     fireEvent.change(fileInput(), { target: { files } });
   }
 
-  it("sends several attachments in one multipart turn", async () => {
+  it("stores only binaries and keeps text and images inline in one turn", async () => {
     stubMultipartFetch();
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
@@ -559,19 +589,69 @@ describe("HermesChat", () => {
     attach([
       new File(["png"], "foto.png", { type: "image/png" }),
       new File(["# nota"], "nota.md", { type: "text/markdown" }),
+      new File(["pdf"], "informe.pdf", { type: "application/pdf" }),
     ]);
-    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(2);
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(3);
 
     fireEvent.change(input(), { target: { value: "mirá esto" } });
     fireEvent.click(sendButton());
     await waitFor(() => expect(multipartSeen).toHaveLength(1));
 
+    // Only the binary goes to disk first. The Markdown note keeps the inline
+    // multipart path the runs proxy still inlines into the prompt, and the
+    // picture keeps its data-URL part.
+    expect(uploadedSeen).toEqual(["informe.pdf"]);
     expect(multipartSeen[0].sessionId).toBe(SESSION);
-    expect(multipartSeen[0].message).toBe("mirá esto");
     expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["foto.png", "nota.md"]);
+    expect(String(multipartSeen[0].message)).toContain("mirá esto");
+    expect(String(multipartSeen[0].message)).toContain(
+      "[archivo adjunto: http://lan.local/api/hermes/media?path=%2Fopt%2Fdata%2Fuploads%2Finforme.pdf&",
+    );
+    expect(String(multipartSeen[0].message)).not.toContain("nota.md");
     await completeLast("ok");
     await screen.findByTestId("hermes-markdown");
     expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
+  });
+
+  it("resolves a relative stored url against the configured api base", async () => {
+    stubMultipartFetch();
+    // The Rust side may answer with a path relative to the API mount; the
+    // agent fetches it from outside, so the turn text needs the configured
+    // origin instead of the page's.
+    uploadItemUrl = "/api/hermes/media?path=%2Fopt%2Fdata%2Fuploads%2Finforme.pdf&exp=1&sig=test";
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    attach([new File(["pdf"], "informe.pdf", { type: "application/pdf" })]);
+    fireEvent.change(input(), { target: { value: "adjunto" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(creates).toHaveLength(1));
+    expect(String(creates[0].message)).toContain(
+      "[archivo adjunto: http://test.local/api/hermes/media?path=%2Fopt%2Fdata%2Fuploads%2Finforme.pdf&exp=1&sig=test]",
+    );
+    await completeLast("ok");
+    await screen.findByTestId("hermes-markdown");
+  });
+
+  it("rejects an oversized document locally instead of reporting a lost connection", async () => {
+    stubMultipartFetch();
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    // 26 MB: one megabyte past the server's per-file budget. Streaming it
+    // would end in a 413 the UI reports as a lost connection.
+    const oversized = new File(["x"], "grande.zip", { type: "application/zip" });
+    Object.defineProperty(oversized, "size", { value: 26 * 1024 * 1024 });
+    attach([oversized]);
+    fireEvent.change(input(), { target: { value: "adjunto" } });
+    fireEvent.click(sendButton());
+
+    expect(
+      await screen.findByText("Hermes rechazó el tamaño del envío."),
+    ).toBeInTheDocument();
+    expect(uploadedSeen).toEqual([]);
+    expect(creates).toHaveLength(0);
+    expect(multipartSeen).toHaveLength(0);
+    // The chip stays so the user can drop the file and retry without it.
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
   });
 
   it("removes a single attachment before sending", async () => {
@@ -587,8 +667,12 @@ describe("HermesChat", () => {
 
     fireEvent.change(input(), { target: { value: "solo dos" } });
     fireEvent.click(sendButton());
+    // A text file rides the run inline, so the turn is multipart and nothing
+    // is stored server-side.
     await waitFor(() => expect(multipartSeen).toHaveLength(1));
+    expect(uploadedSeen).toEqual([]);
     expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["dos.txt"]);
+    expect(String(multipartSeen[0].message)).toContain("solo dos");
     await completeLast("ok");
     await screen.findByTestId("hermes-markdown");
   });
@@ -650,7 +734,8 @@ describe("HermesChat", () => {
 
   it("keeps the attachments when the turn fails and retries with them", async () => {
     stubMultipartFetch();
-    failMultipartOnce = true;
+    // A document-only turn is JSON, so the failure is injected on the create.
+    failCreateOnce = { status: 502, body: { error: { code: "HERMES_UPSTREAM_ERROR" } } };
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
     attach([new File(["pdf"], "reporte.pdf", { type: "application/pdf" })]);
@@ -662,7 +747,10 @@ describe("HermesChat", () => {
     expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
-    await waitFor(() => expect(multipartSeen).toHaveLength(1));
+    await waitFor(() => expect(creates).toHaveLength(1));
+    // The retry stores the document again before creating the run.
+    expect(uploadedSeen.filter((name) => name === "reporte.pdf")).toHaveLength(2);
+    expect(String(creates[0].message)).toContain("reporte.pdf");
     await completeLast("ok");
     await screen.findByTestId("hermes-markdown");
     expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
@@ -670,7 +758,7 @@ describe("HermesChat", () => {
 
   it("keeps a file added after the failure when the retry succeeds", async () => {
     stubMultipartFetch();
-    failMultipartOnce = true;
+    failCreateOnce = { status: 502, body: { error: { code: "HERMES_UPSTREAM_ERROR" } } };
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
 
@@ -681,11 +769,12 @@ describe("HermesChat", () => {
 
     attach([new File(["dos"], "segundo.txt", { type: "text/plain" })]);
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
-    await waitFor(() => expect(multipartSeen).toHaveLength(1));
+    await waitFor(() => expect(creates).toHaveLength(1));
 
     // The retry re-sends the failed turn only; the chip added after the
     // failure stays pending in the composer.
-    expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["primero.pdf"]);
+    expect(String(creates[0].message)).toContain("primero.pdf");
+    expect(String(creates[0].message)).not.toContain("segundo.txt");
     await completeLast("ok");
     await screen.findByTestId("hermes-markdown");
     const chips = screen.getAllByTestId("attachment-chip");

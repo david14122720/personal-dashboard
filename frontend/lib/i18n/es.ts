@@ -94,6 +94,8 @@ export const es = {
     open: "Ver",
     downloadNamed: "Descargar {name}",
     artifactLabel: "Archivo entregado por Hermes",
+    imagePending: "Preparando imagen…",
+    imageTooLarge: "Imagen omitida: supera el tamaño que el chat puede mostrar",
     warningsLabel: "Avisos de Hermes",
     thought: "Pensamiento",
     callingTool: "Llamando a {tool}",
@@ -117,7 +119,9 @@ export const es = {
     submit: "Iniciar sesión",
     pending: "Iniciando sesión…",
     error: "No se pudo iniciar sesión. Inténtalo de nuevo.",
-    secureNote: "Conexión segura cifrada de extremo a extremo",
+    // Honest copy (audit F-01): the session token travels over plain HTTP on
+    // the LAN, so the old "end-to-end encryption" claim was false.
+    secureNote: "Sesión privada guardada sólo en este navegador",
     footerNote: "Control Deck • Panel de administración y gestión privada",
   },
   dashboard: {

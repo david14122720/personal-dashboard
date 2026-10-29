@@ -8,6 +8,8 @@ import {
   isHermesRunTerminalEvent,
   resolveHermesApproval,
   streamHermesRun,
+  uploadHermesDocuments,
+  absoluteMediaUrl,
   type HermesRunEvent,
 } from "./hermes";
 
@@ -413,5 +415,70 @@ describe("resolveHermesApproval", () => {
         choice: "deny",
       }),
     ).rejects.toBeInstanceOf(HermesError);
+  });
+});
+
+describe("document uploads", () => {
+  const UPLOAD = "http://test.local/api/hermes/upload";
+
+  it("posts every file as multipart with the session bearer", async () => {
+    localStorage.setItem("dashboard-token", "pd_test_token");
+    const calls: Array<{ url: string; body: unknown; headers: unknown }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, body: init.body, headers: init.headers });
+      return jsonResponse({
+        items: [
+          { name: "informe.pdf", path: "/opt/data/uploads/abc-informe.pdf", url: "/api/hermes/media?path=x&exp=1&sig=y", size: 10, mime: "application/pdf" },
+        ],
+      }, 201);
+    });
+    const file = new File(["hola"], "informe.pdf", { type: "application/pdf" });
+    const items = await uploadHermesDocuments([file]);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("informe.pdf");
+    expect(calls[0].url).toBe(UPLOAD);
+    expect(calls[0].body).toBeInstanceOf(FormData);
+    expect((calls[0].body as FormData).getAll("files")).toHaveLength(1);
+    // The route is session-only: without this header production answers 401,
+    // so dropping `authHeaders()` from the upload must fail here.
+    expect((calls[0].headers as Record<string, string>).Authorization).toBe(
+      "Bearer pd_test_token",
+    );
+    localStorage.removeItem("dashboard-token");
+  });
+
+  it("never invents a result when the response is incomplete", async () => {
+    vi.stubGlobal("fetch", async () => jsonResponse({ items: [] }, 201));
+    const file = new File(["x"], "a.docx");
+    await expect(uploadHermesDocuments([file])).rejects.toBeInstanceOf(HermesError);
+  });
+
+  it("maps an upstream failure to a HermesError code", async () => {
+    vi.stubGlobal("fetch", async () =>
+      jsonResponse({ error: { code: "HERMES_UPLOAD_UNAVAILABLE", message: "no dir" } }, 503),
+    );
+    await expect(uploadHermesDocuments([new File(["x"], "a.docx")])).rejects.toMatchObject({
+      code: "unavailable",
+    });
+  });
+
+  it("makes a relative signed url absolute against the configured api base", () => {
+    expect(absoluteMediaUrl("http://192.168.50.120:8055/x")).toBe("http://192.168.50.120:8055/x");
+    // NEXT_PUBLIC_API_URL is `http://test.local/api`: a URL served under the
+    // API mount belongs to that origin, not to the page that rendered the chat.
+    expect(absoluteMediaUrl("/api/hermes/media?path=a")).toBe(
+      "http://test.local/api/hermes/media?path=a",
+    );
+
+    // Same-origin mount: the URL already carries the `/api` prefix.
+    const previous = process.env.NEXT_PUBLIC_API_URL;
+    process.env.NEXT_PUBLIC_API_URL = "/api";
+    try {
+      expect(absoluteMediaUrl("/api/hermes/media?path=b")).toBe(
+        `${window.location.origin}/api/hermes/media?path=b`,
+      );
+    } finally {
+      process.env.NEXT_PUBLIC_API_URL = previous;
+    }
   });
 });
