@@ -48,14 +48,23 @@ describe("hermes markdown", () => {
     expect(container.querySelector("[data-token]")).toBeNull();
   });
 
-  it("neutralises model-authored html", () => {
+  it("shows model-authored html as inert text instead of dropping it", () => {
     const container = html('<script>alert(1)</script>\n\n<img src=x onerror="alert(1)">');
+    // Nothing becomes an element: no script, no image, no handler attribute.
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("img")).toBeNull();
-    // No raw-HTML pipeline is enabled: the tag never becomes markup and never
-    // survives as an executable node, whatever the renderer does with the text.
-    expect(container.innerHTML).not.toContain("<script>");
-    expect(container.innerHTML).not.toContain("onerror");
+    expect(container.querySelector("[onerror]")).toBeNull();
+    // Spec S11: the markup is escaped and stays readable, so the model's text
+    // is not silently lost.
+    expect(container.textContent).toContain("<script>alert(1)</script>");
+    expect(container.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(container.innerHTML).toContain("&lt;script&gt;");
+  });
+
+  it("keeps an html-looking payload inside a fence byte for byte", () => {
+    const container = html('```\n<img src=x onerror="alert(1)">\n```');
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain('<img src=x onerror="alert(1)">');
   });
 
   it("renders only the proxy's signed media URL as an image", () => {

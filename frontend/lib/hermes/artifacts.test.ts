@@ -8,7 +8,9 @@ import {
   extensionOf,
   fileNameOf,
   isFileUrl,
+  isFilesUrl,
   isSafeArtifactUrl,
+  pathArtifacts,
 } from "./artifacts";
 
 describe("embedded payloads", () => {
@@ -224,6 +226,95 @@ describe("hermes artifacts", () => {
     expect(text).toContain(`    ${path}`);
   });
 
+  it("cards a mid-sentence image path with the stable /files url and removes it", () => {
+    // Spec S9/S11: the scanned path becomes `<img src="/files/<path>">`, so the
+    // card points at the stable file server and the prose keeps no raw path.
+    const path = "/opt/data/cache/scratch/prueba_hermes.png";
+    const reply = `Listo, ya generé la prueba: ${path} (mirala arriba) y quedó guardada.`;
+    const { artifacts, text } = collectArtifacts(reply, pathArtifacts(reply));
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      name: "prueba_hermes.png",
+      url: "/files/opt/data/cache/scratch/prueba_hermes.png",
+      path,
+      kind: "image",
+    });
+    expect(text).not.toContain(path);
+    expect(text).toBe("Listo, ya generé la prueba: (mirala arriba) y quedó guardada.");
+  });
+
+  it("cards a mid-sentence document path as a document", () => {
+    // The backend forces `Content-Disposition: attachment` for documents; the
+    // client only has to draw the card and point it at `/files/<path>`.
+    const path = "/opt/data/cache/scratch/prueba_hermes.docx";
+    const reply = `Acá va el Word: ${path} descargalo cuando quieras.`;
+    const { artifacts, text } = collectArtifacts(reply, pathArtifacts(reply));
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      name: "prueba_hermes.docx",
+      url: "/files/opt/data/cache/scratch/prueba_hermes.docx",
+      kind: "document",
+    });
+    expect(text).not.toContain(path);
+    expect(text).toBe("Acá va el Word: descargalo cuando quieras.");
+  });
+
+  it("accepts a same-origin /files url but rejects traversal", () => {
+    expect(isSafeArtifactUrl("/files/opt/data/cache/scratch/prueba_hermes.png")).toBe(true);
+    expect(isSafeArtifactUrl("/files/opt/data/../../etc/passwd")).toBe(false);
+    expect(isSafeArtifactUrl("/files/opt/data/..%2F..%2Fetc/passwd")).toBe(false);
+  });
+
+  it("leaves a delivered path inside a fenced block untouched", () => {
+    const path = "/opt/data/cache/scratch/prueba_hermes.png";
+    const reply = `Corré:\n\n\`\`\`bash\ncp ${path} .\n\`\`\`\n\nY después mirá ${path} cuando quieras.`;
+    const { artifacts, text } = collectArtifacts(reply, pathArtifacts(reply));
+
+    expect(artifacts).toHaveLength(1);
+    expect(text).toContain(`cp ${path} .`);
+    expect(text).not.toContain(`mirá ${path}`);
+  });
+
+  it("never eats the shared prefix of a longer token", () => {
+    // B-008: `split(path).join("")` also deleted the prefix of
+    // `/tmp/render.png.bak`, corrupting the text around the card.
+    const reply = "Guarde /tmp/render.png y /tmp/render.png.bak";
+    const { artifacts, text } = collectArtifacts(reply, pathArtifacts(reply));
+
+    expect(artifacts.map((item) => item.url)).toEqual(["/files/tmp/render.png"]);
+    expect(text).toBe("Guarde y /tmp/render.png.bak");
+  });
+
+  it("keeps the app's own upload reference intact", () => {
+    // B-008: the reference the chat inserts is a URL; deleting its `path=`
+    // value left `…?path=]`, a broken link and a lost pointer.
+    const path = "/opt/data/uploads/informe.pdf";
+    const reference = `[archivo adjunto: http://192.168.50.120:8080/api/hermes/media?path=${path}]`;
+    const reply = `Listo, lo adjunté: ${reference}`;
+    const signed = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
+    const { text } = collectArtifacts(reply, [
+      { name: "informe.pdf", url: signed, mime: "application/pdf", size: 2048, path },
+    ]);
+
+    expect(text).toContain(`?path=${path}]`);
+    expect(text).not.toContain("?path=]");
+    // The scanned payload agrees: a path inside a URL is not a bare path.
+    expect(pathArtifacts(reply)).toEqual([]);
+  });
+
+  it("leaves an inline code span untouched", () => {
+    // PRESERVE: the path stripper only rewrites prose; a command the agent
+    // shows inline stays byte for byte, next to the card it also produced.
+    const path = "/opt/data/cache/scratch/prueba_hermes.png";
+    const reply = `Copiá con \`cp ${path} .\` y después mirá ${path} de nuevo.`;
+    const { artifacts, text } = collectArtifacts(reply, pathArtifacts(reply));
+
+    expect(artifacts).toHaveLength(1);
+    expect(text).toBe(`Copiá con \`cp ${path} .\` y después mirá de nuevo.`);
+  });
+
   it("drops titled, angle-bracket and image links whose destination is delivered", () => {
     const path = "/opt/data/entregas/informe.pdf";
     const url = `/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=abc`;
@@ -236,5 +327,63 @@ describe("hermes artifacts", () => {
       const { text } = collectArtifacts(reply, payload);
       expect(text).toBe("Listo: y nada más.");
     }
+  });
+});
+
+describe("files url", () => {
+  it("recognises a safe /files address and rejects traversal", () => {
+    expect(isFilesUrl("/files/opt/data/cache/scratch/a.png")).toBe(true);
+    expect(isFilesUrl("/files/opt/data/../../etc/passwd")).toBe(false);
+    expect(isFilesUrl("/files//etc/passwd")).toBe(false);
+    expect(isFilesUrl("https://evil.test/files/a.png")).toBe(false);
+  });
+
+  it("accepts a file name that merely contains two dots", () => {
+    // B-006: `..` is traversal as a whole segment, not as a substring.
+    expect(isFilesUrl("/files/opt/data/cache/scratch/v1..png")).toBe(true);
+    expect(isFilesUrl("/files/opt/data/a..b/c..d.pdf")).toBe(true);
+    expect(isSafeArtifactUrl("/files/opt/data/cache/scratch/v1..png")).toBe(true);
+  });
+
+  it("still rejects a whole .. segment wherever it appears", () => {
+    expect(isFilesUrl("/files/opt/data/../etc/passwd")).toBe(false);
+    expect(isFilesUrl("/files/..")).toBe(false);
+    expect(isFilesUrl("/files/opt/data/..%2F..%2Fetc/passwd")).toBe(false);
+    expect(isSafeArtifactUrl("/files/opt/data/../etc/passwd")).toBe(false);
+  });
+
+  it("encodes the card url but keeps the name from the raw path", () => {
+    // B-007: the raw `#` must not truncate the URL, and the label must never
+    // come out of the encoded URL as `informe%231.pdf`.
+    const path = "/opt/data/cache/scratch/informe#1.pdf";
+    const reply = `Listo: ${path}`;
+    const { artifacts, text } = collectArtifacts(reply, pathArtifacts(reply));
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      url: "/files/opt/data/cache/scratch/informe%231.pdf",
+      name: "informe#1.pdf",
+    });
+    expect(text).toBe("Listo:");
+  });
+
+  it("keeps a file name with a question mark as one name", () => {
+    const path = "/tmp/a?b.png";
+    const { artifacts } = collectArtifacts(`Mirá ${path}`, pathArtifacts(`Mirá ${path}`));
+
+    expect(artifacts[0]).toMatchObject({
+      url: "/files/tmp/a%3Fb.png",
+      name: "a?b.png",
+      kind: "image",
+    });
+  });
+
+  it("appends the download name to either url shape", () => {
+    expect(downloadUrl("/files/opt/data/x.docx", "informe x.docx")).toBe(
+      "/files/opt/data/x.docx?download=informe%20x.docx",
+    );
+    expect(downloadUrl("/api/hermes/media?path=/opt/data/a&sig=1", "a.png")).toBe(
+      "/api/hermes/media?path=/opt/data/a&sig=1&download=a.png",
+    );
   });
 });

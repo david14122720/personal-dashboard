@@ -12,6 +12,8 @@
  * bearer. Everything else keeps the explicit open/download behaviour.
  */
 
+import { filesUrl, removeWholePath, scanMediaPaths } from "./paths";
+
 export type ArtifactKind = "image" | "audio" | "video" | "code" | "document" | "file";
 
 /** Icon/badge family, derived from the extension the agent delivered. */
@@ -42,15 +44,49 @@ export interface CollectedArtifacts {
 }
 
 const MEDIA_URL_PREFIX = "/api/hermes/media?";
+/** Same-origin file server (spec S9/S11): `/files/<absolute path>`. */
+const FILES_URL_PREFIX = "/files/";
 
 export function isMediaUrl(url: string): boolean {
   return url.startsWith(MEDIA_URL_PREFIX);
 }
 
+/**
+ * A same-origin `/files/<absolute path>` address (owner spec S9/S11).
+ *
+ * The Rust proxy serves it from the allowlisted roots. A `..` *segment* is
+ * refused here too, so a crafted path never becomes a link or an image;
+ * `v1..png` is a file name, not traversal (B-006).
+ */
+export function isFilesUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed.startsWith(FILES_URL_PREFIX)) return false;
+  // `/files//etc/passwd` would resolve outside the mount.
+  if (trimmed.startsWith(`${FILES_URL_PREFIX}/`)) return false;
+  return !hasTraversalSegment(trimmed.split(/[?#]/, 1)[0]);
+}
+
+/** A whole `..` segment is traversal; `v1..png` is just a file name. */
+function hasTraversalSegment(pathname: string): boolean {
+  let decoded = pathname;
+  try {
+    // `..%2F..` hides the separators inside one segment: decode before splitting.
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    // A malformed escape cannot smuggle a whole `..` segment past the split.
+  }
+  return decoded.split(/[/\\]/).some((segment) => segment === "..");
+}
+
 /** Add the `download=` parameter that makes the proxy force an attachment. */
 export function downloadUrl(url: string, name: string): string {
-  if (!isMediaUrl(url)) return url;
-  return `${url}&download=${encodeURIComponent(name)}`;
+  const trimmed = url.trim();
+  if (isMediaUrl(trimmed)) return `${trimmed}&download=${encodeURIComponent(name)}`;
+  if (isFilesUrl(trimmed)) {
+    const separator = trimmed.includes("?") ? "&" : "?";
+    return `${trimmed}${separator}download=${encodeURIComponent(name)}`;
+  }
+  return url;
 }
 
 const EXTENSION_KIND: Record<string, ArtifactKind> = {
@@ -98,6 +134,9 @@ export function isEmbeddedUrl(url: string): boolean {
 export function isSafeArtifactUrl(url: string): boolean {
   const trimmed = url.trim();
   if (isMediaUrl(trimmed)) return true;
+  // The Rust file server is same-origin and allowlisted; a `..` segment never
+  // becomes a card (the backend rejects it before touching disk as well).
+  if (isFilesUrl(trimmed)) return true;
   return SAFE_SCHEMES.some((prefix) => trimmed.startsWith(prefix));
 }
 
@@ -111,9 +150,28 @@ function pathOf(url: string): string {
   }
 }
 
+/**
+ * `true` when the value carries address syntax, so `#`/`?` open a fragment or
+ * a query. A raw filesystem path is not an address: `a#b.png` is one file
+ * name (B-007). The same-origin mounts count as addresses because a signed
+ * media link keeps its path in the query string.
+ */
+function isAddress(value: string): boolean {
+  return (
+    /^[a-z][a-z0-9+.-]*:/i.test(value) ||
+    value.startsWith("//") ||
+    value.startsWith("/api/") ||
+    value.startsWith("/files/")
+  );
+}
+
+/** The last segment: an address drops its query/fragment first, a path not. */
+function lastSegment(value: string): string {
+  return (isAddress(value) ? pathOf(value) : value).split("/").pop() ?? "";
+}
+
 export function extensionOf(url: string): string {
-  const path = pathOf(url);
-  const tail = path.split("/").pop() ?? "";
+  const tail = lastSegment(url);
   const dot = tail.lastIndexOf(".");
   return dot === -1 ? "" : tail.slice(dot + 1).toLowerCase();
 }
@@ -135,13 +193,33 @@ export function artifactExtension(artifact: Pick<Artifact, "url" | "path">): str
 
 export function fileNameOf(url: string, fallback = "archivo"): string {
   if (url.startsWith("data:")) return fallback;
-  const tail = pathOf(url).split("/").pop() ?? "";
+  // The name comes from the raw path, never from the encoded URL (B-007):
+  // `informe#1.pdf` is one file name, not `informe` plus a fragment.
+  const tail = lastSegment(url);
   if (!tail) return fallback;
   try {
     return decodeURIComponent(tail);
   } catch {
     return tail;
   }
+}
+
+/**
+ * Payload items for the absolute paths a reply mentions (spec S9/S11).
+ *
+ * Each card points at the stable `/files/<path>` address the Rust file server
+ * serves, so it survives a reload and works without a signing round-trip.
+ * Registering the `path` also makes `collectArtifacts` remove it from the prose
+ * wherever it appears, so no raw `/opt/data/...` survives next to its card.
+ */
+export function pathArtifacts(
+  text: string,
+): { name: string; url: string; path: string }[] {
+  return scanMediaPaths(text).map((path) => ({
+    name: fileNameOf(path),
+    url: filesUrl(path),
+    path,
+  }));
 }
 
 export function artifactKind(mime: string | undefined, url: string): ArtifactKind {
@@ -183,15 +261,39 @@ function pushArtifact(target: Artifact[], seen: Set<string>, artifact: Artifact)
 }
 
 /**
- * Replace the references the proxy already turned into cards.
+ * Rewrite the delivered paths `collectArtifacts` already turned into cards.
  *
- * Only two shapes are rewritten: a Markdown link/image whose destination is a
- * delivered file, and a whole line that is exactly the delivered path (with or
- * without the `MEDIA:` prefix) — that is how the gateway prints them. Everything
- * else, including any mention of the same path inside code (fenced with ```,
- * ~~~, four backticks or four spaces), is left byte for byte: it is
- * documentation, not a duplicate of the card.
+ * Three shapes disappear: a Markdown link/image whose destination is a
+ * delivered file, a whole line that is exactly the delivered path (with or
+ * without the `MEDIA:` prefix), and any other occurrence — Hermes prints paths
+ * mid-sentence too (owner decision L3). Code is documentation, not a duplicate
+ * of the card: fenced blocks (```, ~~~, four backticks), indented blocks and
+ * inline backtick spans stay byte for byte.
  */
+function stripPathsFromLine(line: string, delivered: Map<string, Artifact>): string {
+  // Without a delivered path the line is untouched, byte for byte.
+  if (delivered.size === 0) return line;
+  // Odd indexes are the code spans captured by the split: leave them alone.
+  const pieces = line.split(/(`+[^`]*`+)/g);
+  const stripped = pieces.map((piece, index) => {
+    if (index % 2 === 1) return piece;
+    let prose = piece;
+    for (const path of delivered.keys()) {
+      // Only whole tokens go (B-008): `split/join` also deleted the shared
+      // prefix of a longer file name (`/tmp/render.png.bak`) and of the
+      // `path=` value in the app's own upload reference. The same boundary
+      // rule `scanMediaPaths` applies decides which occurrence is a path.
+      // The protocol prefix travels with the path it announces.
+      prose = removeWholePath(prose, `MEDIA:${path}`);
+      prose = removeWholePath(prose, path);
+    }
+    // Removing a mid-sentence path leaves the two halves' padding behind.
+    return prose.replace(/[ \t]{2,}/g, " ");
+  });
+  return stripped.join("").trimEnd();
+}
+
+/** Line walker: fence tracking, whole-line cards and prose rewriting. */
 function stripDeliveredPaths(reply: string, delivered: Map<string, Artifact>): string {
   // A link whose destination contains a delivered path loses its whole shape,
   // including titles, angle brackets, images and query strings.
@@ -226,9 +328,9 @@ function stripDeliveredPaths(reply: string, delivered: Map<string, Artifact>): s
     if (delivered.has(bare)) return [];
     // An uncarded MEDIA line keeps the honest path without the protocol prefix.
     if (trimmed.startsWith("MEDIA:") && bare.startsWith("/")) {
-      return [line.replace("MEDIA:", "")];
+      return [stripPathsFromLine(line.replace("MEDIA:", ""), delivered)];
     }
-    return [line];
+    return [stripPathsFromLine(line, delivered)];
   });
 
   let text = lines.join("\n").trim();

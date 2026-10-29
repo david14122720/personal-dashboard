@@ -28,6 +28,53 @@ describe("ArtifactCard", () => {
     );
   });
 
+  it("previews a same-origin /files image inline", () => {
+    const { container } = render(
+      <ArtifactCard
+        artifact={{
+          id: "f",
+          name: "prueba_hermes.png",
+          url: "/files/opt/data/cache/scratch/prueba_hermes.png",
+          kind: "image",
+          mime: "image/png",
+        }}
+      />,
+    );
+    const image = container.querySelector("img");
+    expect(image).not.toBeNull();
+    expect(image).toHaveAttribute("src", "/files/opt/data/cache/scratch/prueba_hermes.png");
+    expect(image).toHaveAttribute("referrerpolicy", "no-referrer");
+    expect(screen.getByRole("link", { name: "Descargar: prueba_hermes.png" })).toHaveAttribute(
+      "href",
+      "/files/opt/data/cache/scratch/prueba_hermes.png?download=prueba_hermes.png",
+    );
+  });
+
+  it("refuses a /files traversal, and a document never previews", () => {
+    const { container } = render(
+      <>
+        <ArtifactCard
+          artifact={{
+            id: "t",
+            name: "secreto.png",
+            url: "/files/opt/data/cache/scratch/../../auth.png",
+            kind: "image",
+          }}
+        />
+        <ArtifactCard
+          artifact={{
+            id: "d",
+            name: "prueba_hermes.docx",
+            url: "/files/opt/data/cache/scratch/prueba_hermes.docx",
+            kind: "document",
+            mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          }}
+        />
+      </>,
+    );
+    expect(container.querySelectorAll("img")).toHaveLength(0);
+  });
+
   it("previews an embedded payload without a network request", () => {
     const { container } = render(
       <ArtifactCard

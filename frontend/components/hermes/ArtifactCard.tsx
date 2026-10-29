@@ -6,6 +6,7 @@ import {
   documentFamily,
   downloadUrl,
   isEmbeddedUrl,
+  isFilesUrl,
   isMediaUrl,
   type Artifact,
   type DocumentFamily,
@@ -70,7 +71,8 @@ export default function ArtifactCard({ artifact }: { artifact: Artifact }) {
   // signed URL is scoped to this one file and the backend forces SVG to
   // download instead of rendering in this origin.
   const preview =
-    isEmbeddedUrl(artifact.url) || (isMediaUrl(artifact.url) && artifact.kind === "image");
+    isEmbeddedUrl(artifact.url) ||
+    (artifact.kind === "image" && (isMediaUrl(artifact.url) || isFilesUrl(artifact.url)));
   const family = documentFamily(artifact);
   const extension = artifactExtension(artifact).toUpperCase();
   const isDocument = artifact.kind === "document" || artifact.kind === "code";

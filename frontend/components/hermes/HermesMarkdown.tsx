@@ -16,6 +16,27 @@ import { highlight, normalizeLanguage, type TokenKind } from "@/lib/hermes/highl
  * `safeImageSource`: a validated raster payload or the proxy's signed media
  * URL, never a remote host the model picked.
  */
+type MdNode = { type: string; value?: string; children?: MdNode[] };
+
+/**
+ * Render the model's raw HTML as plain text instead of dropping it.
+ *
+ * react-markdown turns raw HTML into `html` nodes and, without `rehype-raw`,
+ * never renders them: the tags vanished from the bubble along with any text
+ * between them. Rewriting the node to `text` keeps the message readable and
+ * inert, because React escapes text nodes and `rehype-sanitize` still guards
+ * link and attribute URLs. Nothing here ever builds an HTML string.
+ */
+function htmlAsText() {
+  return (tree: MdNode) => {
+    const walk = (node: MdNode) => {
+      if (node.type === "html") node.type = "text";
+      node.children?.forEach(walk);
+    };
+    walk(tree);
+  };
+}
+
 const TOKEN_CLASS: Record<TokenKind, string> = {
   plain: "",
   comment: "text-slate-500 italic",
@@ -163,7 +184,7 @@ const components: Components = {
 function HermesMarkdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
+      remarkPlugins={[remarkGfm, remarkBreaks, htmlAsText]}
       rehypePlugins={[rehypeSanitize]}
       components={components}
     >
