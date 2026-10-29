@@ -320,6 +320,15 @@ fn assemble(
             "/api/hermes/media/sign",
             post(routes::hermes_media::sign_handler),
         )
+        // Plain, pasteable download route (`/files/opt/data/...`). Mounted at
+        // the outer level on purpose: it is not under `/api`, so the SPA
+        // fallback would otherwise answer a missing file with `index.html` and
+        // a 200 instead of a real 404. Same allowlist as the signed route.
+        .route(
+            routes::hermes_media::FILES_ROUTE,
+            get(routes::hermes_media::files_handler)
+                .layer(Extension(routes::hermes_media::MediaConfig::current().clone())),
+        )
         // Documents the user attaches travel to disk first (owner spec S8):
         // the Runs API cannot carry binary parts, so the agent fetches the
         // stored file through its signed media URL instead.
@@ -1186,6 +1195,76 @@ mod api_nest_tests {
             .await
             .unwrap();
         assert_eq!(bytes.as_ref(), b"fast".as_slice());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The flagship property of `/files` (owner spec S9): a missing file is a
+    /// real 404, never the static build's `index.html` with a 200.
+    ///
+    /// The handler-level tests mount a bare router, which cannot tell whether
+    /// `assemble` really keeps this route out of `ServeDir`'s fallback. This
+    /// one mounts the production shape — static dir plus SPA shell — so moving
+    /// `/files` under the `/api` nest or into the fallback turns it red.
+    #[tokio::test]
+    async fn files_route_answers_a_real_404_instead_of_the_spa_shell() {
+        let dir = std::env::temp_dir().join(format!("files-404-spa-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<html>spa-shell</html>").unwrap();
+        std::fs::write(dir.join("asset.txt"), "static-body").unwrap();
+
+        let app = build_router(lazy_state(), Some(dir.to_string_lossy().into_owned()));
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/files/opt/data/cache/scratch/no-existe.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let content_type = missing
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            !content_type.contains("text/html"),
+            "the SPA must not answer /files: {content_type}"
+        );
+        let body = axum::body::to_bytes(missing.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body).to_lowercase();
+        assert!(!body.contains("spa-shell"), "SPA html leaked: {body}");
+
+        // The fallback still serves the shell and the static assets, so this
+        // test cannot pass by breaking `ServeDir` altogether.
+        let shell = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/hermes/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shell.status(), StatusCode::OK);
+        let asset = app
+            .oneshot(
+                Request::builder()
+                    .uri("/asset.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(asset.status(), StatusCode::OK);
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -46,6 +46,31 @@ use tokio_util::io::ReaderStream;
 
 pub const MEDIA_ROUTE: &str = "/api/hermes/media";
 
+/// Stable, signature-free download route for the files the chat mentions.
+///
+/// The signed URL above is what `<img>`/`<video>` consume inside the dashboard;
+/// this route is the plain, pasteable address (`/files/opt/data/...`) the spec
+/// asks for, so a card link survives a reload and an agent can fetch it with
+/// its own tools. The allowlist and canonicalization are the same ones.
+pub const FILES_ROUTE: &str = "/files/{*path}";
+
+/// Resolve each configured root once, refusing the ones we cannot trust.
+///
+/// A root that is itself a symlink defeats the allowlist: `canonicalize` would
+/// resolve it to its target — the shared volume, or even `/opt/data` — and
+/// every file under that target would then pass the `starts_with` check. A
+/// missing root serves nothing, so it is dropped instead of kept as a promise.
+fn canonical_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    roots
+        .into_iter()
+        .filter_map(|root| match std::fs::symlink_metadata(&root) {
+            Ok(meta) if meta.file_type().is_symlink() => None,
+            Ok(_) => std::fs::canonicalize(&root).ok(),
+            Err(_) => None,
+        })
+        .collect()
+}
+
 /// Allowlisted directories (owner spec S6 + measured reality).
 ///
 /// `/opt/data` itself is deliberately **not** a root: the agent's home holds
@@ -94,7 +119,7 @@ impl MediaConfig {
     pub fn new(roots: Vec<PathBuf>, secret: Vec<u8>, ttl_secs: i64) -> Self {
         let ttl_secs = ttl_secs.clamp(30, MAX_TTL_SECS);
         Self {
-            roots,
+            roots: canonical_roots(roots),
             secret,
             ttl_secs,
         }
@@ -153,11 +178,7 @@ impl MediaConfig {
             return None;
         }
         let canonical = std::fs::canonicalize(path).ok()?;
-        let allowed = self.roots.iter().any(|root| {
-            std::fs::canonicalize(root)
-                .map(|root| canonical.starts_with(&root))
-                .unwrap_or_else(|_| canonical.starts_with(root))
-        });
+        let allowed = self.roots.iter().any(|root| canonical.starts_with(root));
         allowed.then_some(canonical)
     }
 
@@ -921,15 +942,76 @@ pub async fn media_handler(
         // Covers missing files, directories, `..` escapes and symlink escapes.
         return plain_error(StatusCode::NOT_FOUND, "file not available");
     };
-    let metadata = match tokio::fs::metadata(&resolved).await {
-        Ok(metadata) if metadata.is_file() => metadata,
-        _ => return plain_error(StatusCode::NOT_FOUND, "file not available"),
+    let requested_name = requested_download_name(&query);
+    serve_resolved(resolved, requested_name, query.download.is_some(), headers).await
+}
+
+/// Serve a path-under-a-root endpoint (`GET /files/*path`).
+///
+/// The links the chat puts in front of a user must survive a page reload and
+/// be pasteable into a browser or `curl`, so this route is addressed by path
+/// alone. Three guarantees keep that from becoming an arbitrary-file-read:
+///
+/// * the path is rejected when any component is `..`, before touching disk;
+/// * `MediaConfig::resolve` canonicalizes what is left and requires the result
+///   to stay inside an allowlisted root, which also stops symlink escapes;
+/// * a miss answers a real `404` with a small body, never the static build's
+///   `index.html` (that would hand a JSON consumer an HTML page with 200).
+pub async fn files_handler(
+    Extension(cfg): Extension<MediaConfig>,
+    axum::extract::Path(raw): axum::extract::Path<String>,
+    Query(query): Query<MediaQuery>,
+    headers: HeaderMap,
+) -> Response {
+    // DNS rebinding points an attacker hostname at this server, so a forged
+    // `Host` is the only signal left that the caller is not the dashboard. The
+    // guard activates with `HERMES_PUBLIC_BASE_URL`; unset keeps the route as
+    // declared in D-A2.
+    if !host_is_expected(&headers, std::env::var("HERMES_PUBLIC_BASE_URL").ok().as_deref()) {
+        return plain_error(StatusCode::FORBIDDEN, "unexpected host");
+    }
+    if raw.is_empty() || raw.split(['/', '\\']).any(|segment| segment == "..") {
+        return plain_error(StatusCode::NOT_FOUND, "file not available");
+    }
+    let path = format!("/{}", raw.trim_start_matches('/'));
+    let Some(resolved) = cfg.resolve(&path) else {
+        return plain_error(StatusCode::NOT_FOUND, "file not available");
     };
-    let len = metadata.len();
-    let mime = mime_for(&resolved);
-    // `download=1` is the boolean form used by the cards; `download=<name>` is
-    // accepted when the caller wants an explicit file name.
-    let requested_name = query
+    let requested_name = requested_download_name(&query);
+    serve_resolved(resolved, requested_name, query.download.is_some(), headers).await
+}
+
+/// Does the request target the configured public base?
+///
+/// `<img src>` and a pasted link cannot carry a bearer, so `/files` is
+/// addressed by path alone. When the operator states the public base, a request
+/// naming another `Host` is refused: after a DNS rebind the browser still sends
+/// the attacker's hostname, which is the one fact the attacker cannot rewrite.
+fn host_is_expected(headers: &HeaderMap, configured: Option<&str>) -> bool {
+    let Some(configured) = configured.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let Some((_, after_scheme)) = configured.split_once("://") else {
+        return true;
+    };
+    let expected = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if expected.is_empty() {
+        return true;
+    }
+    match headers.get(header::HOST).and_then(|value| value.to_str().ok()) {
+        Some(host) => host.eq_ignore_ascii_case(expected),
+        None => false,
+    }
+}
+
+/// `download=1` is the boolean form used by the cards; `download=<name>` is
+/// accepted when the caller wants an explicit file name.
+fn requested_download_name(query: &MediaQuery) -> Option<String> {
+    query
         .download
         .as_deref()
         .map(str::trim)
@@ -940,7 +1022,22 @@ pub async fn media_handler(
                 "1" | "true" | "yes"
             )
         })
-        .map(str::to_string);
+        .map(str::to_string)
+}
+
+/// Serve one resolved file: MIME, ranges, validators and disposition.
+async fn serve_resolved(
+    resolved: PathBuf,
+    requested_name: Option<String>,
+    download: bool,
+    headers: HeaderMap,
+) -> Response {
+    let metadata = match tokio::fs::metadata(&resolved).await {
+        Ok(metadata) if metadata.is_file() => metadata,
+        _ => return plain_error(StatusCode::NOT_FOUND, "file not available"),
+    };
+    let len = metadata.len();
+    let mime = mime_for(&resolved);
     let name = requested_name.unwrap_or_else(|| file_name(&resolved));
 
     let modified = metadata.modified().ok();
@@ -1005,11 +1102,12 @@ pub async fn media_handler(
         .header(header::CONTENT_LENGTH, length.to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, etag)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CACHE_CONTROL, "private, max-age=60");
     builder = builder.header(
         header::CONTENT_DISPOSITION,
         disposition(
-            if streamable(mime) && query.download.is_none() {
+            if streamable(mime) && !download {
                 "inline"
             } else {
                 "attachment"
@@ -1387,6 +1485,172 @@ mod tests {
             .unwrap();
         assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
         assert!(body_bytes(second).await.is_empty());
+    }
+
+    fn files_app(cfg: MediaConfig) -> Router {
+        Router::new()
+            .route(FILES_ROUTE, get(files_handler))
+            .layer(Extension(cfg))
+    }
+
+    fn files_url(dir: &Path, name: &str) -> String {
+        // The wildcard arrives without its leading slash; the temp dir is the
+        // configured root, so the URL mirrors a real `/opt/data/...` path.
+        format!("/files{}/{name}", dir.to_str().unwrap())
+    }
+
+    #[tokio::test]
+    async fn files_route_serves_bytes_with_the_real_mime() {
+        let dir = temp_dir("files-png");
+        let file = dir.join("prueba_hermes.png");
+        let payload = b"\x89PNG\r\n\x1a\n-fake-png".to_vec();
+        std::fs::write(&file, &payload).unwrap();
+        let response = files_app(config(&dir))
+            .oneshot(Request::get(files_url(&dir, "prueba_hermes.png")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH].to_str().unwrap(),
+            payload.len().to_string()
+        );
+        assert_eq!(body_bytes(response).await, payload);
+    }
+
+    #[tokio::test]
+    async fn files_route_answers_a_real_404_without_the_spa_html() {
+        let dir = temp_dir("files-404");
+        let response = files_app(config(&dir))
+            .oneshot(Request::get(files_url(&dir, "no-existe.png")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(!content_type.contains("text/html"), "must not be the SPA: {content_type}");
+        let body = String::from_utf8(body_bytes(response).await).unwrap();
+        assert!(!body.to_lowercase().contains("<!doctype html"), "SPA html leaked: {body}");
+    }
+
+    #[tokio::test]
+    async fn files_route_refuses_traversal_and_paths_outside_the_roots() {
+        let dir = temp_dir("files-traversal");
+        let outside = dir.join("..").join("secreto.txt");
+        std::fs::write(&outside, b"do not serve").unwrap();
+        let inside = dir.join("ok.png");
+        std::fs::write(&inside, b"png").unwrap();
+        let app = files_app(config(&dir));
+        // A `..` that stays inside the root is served by the filesystem if the
+        // explicit segment guard is removed, so this case can only pass for the
+        // reason the spec names ("rechazar peticiones con ..").
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("nota.txt"), b"sub").unwrap();
+        for url in [
+            format!("/files{}/../secreto.txt", dir.to_str().unwrap()),
+            format!("/files{}/%2e%2e/secreto.txt", dir.to_str().unwrap()),
+            format!("/files{}/sub/../ok.png", dir.to_str().unwrap()),
+            format!("/files{}/sub/%2e%2e/ok.png", dir.to_str().unwrap()),
+            "/files/etc/passwd".to_string(),
+            "/files/opt/data/auth.json".to_string(),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(&url).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{url} must not be served");
+        }
+        let ok = app
+            .oneshot(Request::get(files_url(&dir, "ok.png")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn a_symlinked_root_is_refused_instead_of_resolved_to_its_target() {
+        let dir = temp_dir("files-symlink-root");
+        let target = dir.join("shared");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("auth.json"), b"secret").unwrap();
+        let link = dir.join("scratch");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let cfg = MediaConfig::new(vec![link.clone()], b"k".to_vec(), 600);
+        // Without the guard, `canonicalize(link)` is the target and a file under
+        // it would pass `starts_with`.
+        assert!(
+            cfg.resolve(target.join("auth.json").to_str().unwrap()).is_none(),
+            "a symlinked root must not become an allowlist entry"
+        );
+        assert!(cfg.resolve(link.join("auth.json").to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn the_host_guard_activates_only_with_a_configured_public_base() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("panel.test:8055"));
+        assert!(host_is_expected(&headers, None));
+        assert!(host_is_expected(&headers, Some("https://panel.test:8055")));
+        assert!(!host_is_expected(&headers, Some("https://otro.test")));
+        assert!(!host_is_expected(&headers, Some("http://panel.test")));
+
+        let mut rebind = HeaderMap::new();
+        rebind.insert(header::HOST, HeaderValue::from_static("evil.test:8055"));
+        assert!(!host_is_expected(&rebind, Some("https://panel.test:8055")));
+
+        let empty = HeaderMap::new();
+        assert!(!host_is_expected(&empty, Some("https://panel.test")));
+        // A malformed configuration must not lock the owner out.
+        assert!(host_is_expected(&empty, Some("panel.test")));
+    }
+
+    #[tokio::test]
+    async fn files_route_forces_attachment_for_documents() {
+        let dir = temp_dir("files-docx");
+        let payload = b"PK\x03\x04docx-bytes".to_vec();
+        std::fs::write(dir.join("prueba_hermes.docx"), &payload).unwrap();
+        let response = files_app(config(&dir))
+            .oneshot(Request::get(files_url(&dir, "prueba_hermes.docx")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        let disposition = response.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(disposition.starts_with("attachment;"), "{disposition}");
+        assert!(disposition.contains("prueba_hermes.docx"), "{disposition}");
+        assert_eq!(body_bytes(response).await, payload);
+    }
+
+    #[tokio::test]
+    async fn files_route_streams_partial_content() {
+        let dir = temp_dir("files-range");
+        let payload: Vec<u8> = (0..64u8).collect();
+        std::fs::write(dir.join("clip.mp4"), &payload).unwrap();
+        let request = Request::get(files_url(&dir, "clip.mp4"))
+            .header(header::RANGE, "bytes=10-19")
+            .body(Body::empty())
+            .unwrap();
+        let response = files_app(config(&dir)).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers()[header::CONTENT_RANGE].to_str().unwrap(),
+            "bytes 10-19/64"
+        );
+        assert_eq!(body_bytes(response).await, payload[10..20].to_vec());
     }
 }
 
@@ -1895,4 +2159,5 @@ mod upload_tests {
             "https://fijo.test"
         );
     }
+
 }
