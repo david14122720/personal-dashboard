@@ -28,8 +28,16 @@ import {
   ListToolsRequestSchema,
   isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
+import { pathToFileURL } from "node:url";
 import type { RequestToken } from "./client.js";
-import { dispatchTool, recordAudit, tokenPrefixForLog, toolDefinitions } from "./tools.js";
+import { SessionRegistry } from "./sessions.js";
+import {
+  dispatchTool,
+  principalForToken,
+  recordAudit,
+  tokenPrefixForLog,
+  toolDefinitions,
+} from "./tools.js";
 
 const DEFAULT_PORT = 3101;
 const UUID_RE =
@@ -124,6 +132,7 @@ function buildServer(): Server {
     // the outcome are logged — never the raw token, never args/bodies.
     const requestId = randomUUID();
     const tokenPrefix = tokenPrefixForLog(tokenStore.getStore());
+    const principal = principalForToken(tokenStore.getStore());
     const occurredAt = new Date().toISOString();
     try {
       const text = await dispatchTool(name, args, tokenStore.getStore());
@@ -134,6 +143,7 @@ function buildServer(): Server {
         error_code: null,
         token_prefix: tokenPrefix,
         request_id: requestId,
+        principal,
       });
       return {
         content: [{ type: "text" as const, text }],
@@ -147,6 +157,7 @@ function buildServer(): Server {
         error_code: message.startsWith("unknown tool") ? "UNKNOWN_TOOL" : "TOOL_ERROR",
         token_prefix: tokenPrefix,
         request_id: requestId,
+        principal,
       });
       return {
         content: [{ type: "text" as const, text: message }],
@@ -166,12 +177,31 @@ function readSessionId(req: Request): string | null | undefined {
   return UUID_RE.test(sid) ? sid : null;
 }
 
-async function main(): Promise<void> {
+export interface AppOptions {
+  /** Hard cap on concurrent MCP sessions (audit F-02). */
+  maxSessions?: number;
+  /** Idle lifetime of a session before it is evicted (audit F-02). */
+  ttlMs?: number;
+  /** Injectable clock so the TTL is testable without sleeping. */
+  now?: () => number;
+}
+
+export interface McpApp {
+  app: express.Express;
+  sessions: SessionRegistry<StreamableHTTPServerTransport>;
+}
+
+export function createApp(options: AppOptions = {}): McpApp {
   const app = express();
   app.use(express.json());
 
-  // Session routing state only: transport per MCP session (no credentials here).
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  // Session routing state only: transport per MCP session (no credentials
+  // here). Bounded by a cap and an idle TTL (audit F-02).
+  const sessions = new SessionRegistry<StreamableHTTPServerTransport>(
+    options.maxSessions ?? 64,
+    options.ttlMs ?? 30 * 60 * 1000,
+    options.now,
+  );
 
   app.get("/healthz", (_req: Request, res: Response) => {
     res.status(200).json({ ok: true });
@@ -189,23 +219,45 @@ async function main(): Promise<void> {
       });
       return;
     }
+    // Audit F-02/F-03: every MCP request needs a credential. Without one the
+    // reply is 401 before any session, dispatch or audit entry exists.
     const token = extractRequestToken(req);
+    if (token === undefined) {
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "Unauthorized: Bearer token required" },
+        id: null,
+      });
+      return;
+    }
     try {
       let transport: StreamableHTTPServerTransport | undefined;
-      if (sessionId) transport = transports.get(sessionId);
+      if (sessionId) transport = sessions.get(sessionId);
       if (transport) {
         await tokenStore.run(token, () => transport.handleRequest(req, res, req.body));
         return;
       }
       if (!sessionId && isInitializeRequest(req.body)) {
+        if (!sessions.canOpen()) {
+          // Never evict a live session to admit a new one: the caller waits.
+          res.status(503).json({
+            jsonrpc: "2.0",
+            error: { code: -32002, message: "Server busy: too many active sessions" },
+            id: null,
+          });
+          return;
+        }
         const fresh = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid) => {
-            transports.set(sid, fresh);
+            if (!sessions.open(sid, fresh)) {
+              // Lost a race for the last slot; never leak a second session.
+              fresh.close();
+            }
           },
         });
         fresh.onclose = () => {
-          if (fresh.sessionId) transports.delete(fresh.sessionId);
+          if (fresh.sessionId) sessions.close(fresh.sessionId);
         };
         const server = buildServer();
         await server.connect(fresh);
@@ -230,8 +282,12 @@ async function main(): Promise<void> {
   });
 
   app.get("/mcp", async (req: Request, res: Response) => {
+    if (extractRequestToken(req) === undefined) {
+      res.status(401).send("Unauthorized: Bearer token required");
+      return;
+    }
     const sessionId = readSessionId(req);
-    const transport = sessionId ? transports.get(sessionId) : undefined;
+    const transport = sessionId ? sessions.get(sessionId) : undefined;
     if (!transport) {
       res.status(400).send("No valid session: missing or unknown mcp-session-id");
       return;
@@ -245,8 +301,12 @@ async function main(): Promise<void> {
   });
 
   app.delete("/mcp", async (req: Request, res: Response) => {
+    if (extractRequestToken(req) === undefined) {
+      res.status(401).send("Unauthorized: Bearer token required");
+      return;
+    }
     const sessionId = readSessionId(req);
-    const transport = sessionId ? transports.get(sessionId) : undefined;
+    const transport = sessionId ? sessions.get(sessionId) : undefined;
     if (!transport) {
       res.status(400).send("No valid session: missing or unknown mcp-session-id");
       return;
@@ -257,9 +317,34 @@ async function main(): Promise<void> {
       console.error(`[personal-dashboard-mcp] DELETE /mcp error: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) res.status(500).send("Internal server error");
     } finally {
-      if (sessionId) transports.delete(sessionId);
+      if (sessionId) sessions.close(sessionId);
     }
   });
+
+  return { app, sessions };
+}
+
+/** Positive number from the environment, or the default. */
+function positiveFromEnv(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+export async function main(): Promise<void> {
+  const ttlMs = positiveFromEnv(process.env.MCP_SESSION_TTL_MS, 30 * 60 * 1000);
+  const { app, sessions } = createApp({
+    maxSessions: Math.floor(positiveFromEnv(process.env.MCP_MAX_SESSIONS, 64)),
+    ttlMs,
+  });
+  // Evict idle sessions on a timer; `unref` keeps the sweeper from pinning the
+  // process open on shutdown.
+  const sweeper = setInterval(() => {
+    const closed = sessions.sweep();
+    if (closed.length > 0) {
+      console.error(`[personal-dashboard-mcp] evicted ${closed.length} idle session(s)`);
+    }
+  }, Math.min(ttlMs, 60_000));
+  sweeper.unref();
 
   const port = resolvePort();
   app.listen(port, () => {
@@ -267,7 +352,11 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  console.error(`[personal-dashboard-mcp] fatal: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-});
+// Only auto-start when this file is the process entry: importing it from a
+// test must not bind a port.
+if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  main().catch((err) => {
+    console.error(`[personal-dashboard-mcp] fatal: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}

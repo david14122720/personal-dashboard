@@ -5,6 +5,7 @@
 // (taken from the incoming MCP request's `Authorization` header, with env
 // fallback resolved in client.ts) to every backend call. No global state.
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   apiDelete,
@@ -1142,12 +1143,12 @@ const entries: ToolEntry[] = [
     def: {
       name: "create_token",
       description:
-        "POST /api/tokens. Creates a personal API token. SESSION AUTH ONLY: call with a session Bearer token from login, never with an existing `pd_...` token (backend is 401 otherwise). Returns the raw `pd_...` secret EXACTLY ONCE (Cache-Control: no-store) — copy it now, it is never stored nor shown again. SENSITIVE: never log, commit, or share the raw value. Optional expires_in_days (1-3650); omitted means no expiry. Duplicate names per user are 409.",
+        "POST /api/tokens. Creates a personal API token. SESSION AUTH ONLY: call with a session Bearer token from login, never with an existing `pd_...` token (backend is 401 otherwise). Returns the raw `pd_...` secret EXACTLY ONCE (Cache-Control: no-store) — copy it now, it is never stored nor shown again. SENSITIVE: never log, commit, or share the raw value. Optional expires_in_days (1-3650); omitted means 90 days (audit F-01/A6). Duplicate names per user are 409.",
       inputSchema: {
         type: "object",
         properties: {
           name: strProp("Token name, 1-80 chars (trimmed)"),
-          expires_in_days: intProp("Lifetime in whole days, 1-3650; omitted means no expiry"),
+          expires_in_days: intProp("Lifetime in whole days, 1-3650; omitted means 90 days"),
         },
         required: ["name"],
       },
@@ -1234,7 +1235,7 @@ const entries: ToolEntry[] = [
     def: {
       name: "list_audit_log",
       description:
-        "Read-only view of the in-memory MCP audit log (T7). Returns recent tools/call entries newest-first: occurred_at, tool, success, error_code, token_prefix (masked display prefix only, never a secret), request_id. No arguments required; optional limit (1-200, default 50). The log is a ring buffer of the last 200 calls and resets on server restart — it is a demo, not durable storage (durable table design is pending owner decision, see backend/migrations/0017_mcp_audit_log.sql).",
+        "Read-only view of YOUR OWN in-memory MCP audit entries (T7, scoped per caller since audit F-04). Returns recent tools/call entries newest-first: occurred_at, tool, success, error_code, token_prefix (masked display prefix only, never a secret), request_id. Requires the same Bearer credential as every other tool. Optional limit (1-200, default 50). The log is a ring buffer of the last 200 calls and resets on server restart — it is a demo, not durable storage (durable table design is pending owner decision, see backend/migrations/0017_mcp_audit_log.sql).",
       inputSchema: {
         type: "object",
         properties: {
@@ -1243,7 +1244,16 @@ const entries: ToolEntry[] = [
       },
     },
     schema: ListAuditLogSchema,
-    run: async (args) => fmt(readAuditLog(args.limit)),
+    run: async (args, token) => {
+      // Audit F-04: scoping needs an identity. A defined-but-blank credential
+      // has none, so it must be rejected instead of falling back to the whole
+      // buffer (readAuditLog returns everything when no principal is given).
+      const principal = principalForToken(token);
+      if (principal === undefined) {
+        throw new Error("list_audit_log requires an authenticated caller");
+      }
+      return fmt(readAuditLog(args.limit, principal));
+    },
   },
 ];
 
@@ -1264,11 +1274,41 @@ export interface AuditEntry {
   error_code: string | null;
   token_prefix: string;
   request_id: string;
+  /** Non-reversible caller id; entries are only served back to their owner. */
+  principal?: string;
 }
 
 const MAX_AUDIT_ENTRIES = 200;
+const MAX_TOOL_NAME_LEN = 64;
+const TOOL_NAME_SAFE = /^[A-Za-z0-9_.-]+$/;
 
 const auditLog: AuditEntry[] = [];
+
+/**
+ * Bound what goes into the log (audit F-03). A tool name is attacker-controlled
+ * — the call may name a tool that does not exist — so anything outside the
+ * identifier allowlist, or longer than 64 characters, is stored as a fixed
+ * placeholder instead of as free text an agent would later read.
+ */
+export function sanitizeToolName(raw: unknown): string {
+  const value = typeof raw === "string" ? raw : "";
+  if (value.length === 0) return "invalid_name";
+  if (value.length > MAX_TOOL_NAME_LEN) return "invalid_name";
+  if (!TOOL_NAME_SAFE.test(value)) return "invalid_name";
+  return value;
+}
+
+/**
+ * Stable, non-reversible caller id: shortened SHA-256 of the credential. The
+ * raw token is never stored, and two different tokens cannot collide in the
+ * buffer's 200 entries by accident.
+ */
+export function principalForToken(token?: RequestToken): string | undefined {
+  if (token === undefined) return undefined;
+  const trimmed = token.trim();
+  if (trimmed.length === 0) return undefined;
+  return createHash("sha256").update(trimmed).digest("hex").slice(0, 16);
+}
 
 /**
  * Mask a request token for the audit log. `pd_` API tokens contribute
@@ -1286,17 +1326,25 @@ export function tokenPrefixForLog(token?: RequestToken): string {
 
 /** Append an entry, evicting the oldest once the buffer is full. */
 export function recordAudit(entry: AuditEntry): void {
-  auditLog.push(entry);
+  auditLog.push({ ...entry, tool: sanitizeToolName(entry.tool) });
   if (auditLog.length > MAX_AUDIT_ENTRIES) {
     auditLog.splice(0, auditLog.length - MAX_AUDIT_ENTRIES);
   }
 }
 
-/** Recent entries newest-first, capped to the buffer size. */
-export function readAuditLog(limit?: number): AuditEntry[] {
+/**
+ * Recent entries newest-first, capped to the buffer size.
+ *
+ * With a `principal`, only that caller's entries are returned (audit F-04);
+ * without one the whole buffer is visible, which is only reachable from code
+ * that already holds the process, never from a request without a credential.
+ */
+export function readAuditLog(limit?: number, principal?: string): AuditEntry[] {
   const n =
     limit === undefined ? 50 : Math.max(1, Math.min(Math.floor(limit), MAX_AUDIT_ENTRIES));
-  return auditLog.slice(-n).reverse();
+  const scoped =
+    principal === undefined ? auditLog : auditLog.filter((entry) => entry.principal === principal);
+  return scoped.slice(-n).reverse();
 }
 
 export const toolDefinitions: McpToolDef[] = entries.map((e) => e.def);
@@ -1308,7 +1356,8 @@ export async function dispatchTool(
 ): Promise<string> {
   const entry = entries.find((e) => e.def.name === name);
   if (!entry) {
-    throw new Error(`unknown tool: ${name}`);
+    // Never echo an unknown name back (audit F-03): it is model-supplied text.
+    throw new Error("unknown tool");
   }
   const parsed = entry.schema.parse(rawArgs ?? {});
   return entry.run(parsed, token);
