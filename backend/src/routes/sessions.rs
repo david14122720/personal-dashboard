@@ -122,7 +122,6 @@ mod tests {
             pool,
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
-            hermes: None,
         }
     }
 

@@ -313,7 +313,6 @@ mod tokens_tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
-            hermes: None,
         }
     }
 
@@ -366,7 +365,6 @@ mod tokens_tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: limiter,
-            hermes: None,
         };
         (state, headers_for(&raw), user_id)
     }

@@ -9,7 +9,6 @@ mod state;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    extract::{DefaultBodyLimit, Extension},
     http::{HeaderName, HeaderValue, StatusCode},
     routing::{delete, get, patch, post},
     Json, Router,
@@ -57,7 +56,7 @@ async fn test_fast_handler() -> &'static str {
     "fast"
 }
 
-/// Test-only handler mounted at the OUTER level (like `/api/hermes`), used to
+/// Test-only handler mounted at the OUTER level (like `/health`), used to
 /// prove that exact routes there escape the nested `/api` timeout budget.
 #[cfg(test)]
 async fn test_outer_slow_handler() -> &'static str {
@@ -278,64 +277,12 @@ fn assemble(
         StatusCode::GATEWAY_TIMEOUT,
         api_timeout,
     ));
-    // The Hermes proxy is an exact route at this level, NOT inside the
-    // 15 s `/api` budget: upstream answers may take up to HERMES_TIMEOUT
-    // (10 min by default), so it must outlive SEC-003's default API budget.
     let api: Router<AppState> = Router::new()
         .route("/health", get(routes::health::health_handler))
         .route("/ready", get(routes::ready::ready_handler))
-        // Multipart uploads need more than axum's 2 MiB default: the limit
-        // lives in `hermes.rs` next to the attachment guardrails it protects.
-        // No body ceiling (owner spec S2): attachment bytes are counted and
-        // discarded chunk by chunk, so a huge upload cannot exhaust RAM.
-        // Hermes Runs API (odd/tasks/hermes-runs-aprobaciones.md): exact
-        // outer routes, outside the 15 s `/api` budget — runs outlive it.
-        .route(
-            "/api/hermes/runs",
-            post(routes::hermes::create_run_handler).layer(DefaultBodyLimit::disable()),
-        )
-        .route(
-            "/api/hermes/runs/{run_id}",
-            get(routes::hermes::run_status_handler),
-        )
-        .route(
-            "/api/hermes/runs/{run_id}/events",
-            get(routes::hermes::run_events_handler),
-        )
-        .route(
-            "/api/hermes/runs/{run_id}/approval",
-            post(routes::hermes::run_approval_handler),
-        )
-        // User attachments for the Hermes input (owner spec S4): one file per
-        // request, validated server-side and stored under HERMES_UPLOAD_DIR.
-        // Mounted at the outer level, exactly where the previous upload route
-        // lived, so a 100 MB video is not cut off by the nested `/api` budget.
-        .route(
-            routes::hermes_uploads::UPLOAD_ROUTE,
-            post(routes::hermes_uploads::upload_handler)
-                // `Infallible` is the router's error type here; naming it keeps
-                // `layer` from having to guess among the `From<Infallible>` impls.
-                // A bounded cap instead of `disable()`: the per-type budget is
-                // enforced while streaming, this is the whole-body backstop.
-                .layer::<_, std::convert::Infallible>(DefaultBodyLimit::max(
-                    routes::hermes_uploads::upload_body_limit(),
-                ))
-                .layer(Extension(
-                    routes::hermes_uploads::UploadConfig::current().clone(),
-                )),
-        )
-        // Returns the caller's own attachment (declared deviation D-B2) so the
-        // transcript can repaint images/video/audio after a reload. It serves
-        // user input, never Hermes output: S2 forbids serving deliverables.
-        .route(
-            routes::hermes_uploads::SERVE_ROUTE,
-            get(routes::hermes_uploads::serve_upload_handler).layer(Extension(
-                routes::hermes_uploads::UploadConfig::current().clone(),
-            )),
-        )
         .nest("/api", api_routes);
-    // Same mounting shape as `/api/hermes/runs`: exact outer route, outside the
-    // nested router that carries the 15 s budget.
+    // Exact outer route, outside the nested router that carries the 15 s
+    // budget: it exists to prove SEC-003's budget is not applied out there.
     #[cfg(test)]
     let api = api.route("/api/__test__/outer_slow", get(test_outer_slow_handler));
     let api = api.with_state(state);
@@ -511,28 +458,10 @@ async fn main() {
         }
     }
 
-    // One-shot sweep of interrupted uploads. A connection dropped mid-file
-    // leaves `<unique>.part` behind because a dropped handler future cannot run
-    // its cleanup; the final name only exists after a successful rename, so
-    // nothing ever pointed at the partial. Per-request cleanup covers every
-    // other error path, so this is the only place the leftovers are collected.
-    {
-        let upload_dir = routes::hermes_uploads::UploadConfig::current().dir.clone();
-        let removed = routes::hermes_uploads::sweep_partial_uploads(&upload_dir);
-        if removed > 0 {
-            tracing::info!(
-                removed,
-                dir = %upload_dir.display(),
-                "removed uploads interrupted before completion"
-            );
-        }
-    }
-
     let state = AppState {
         pool,
         session_ttl_hours: config.session_ttl_hours,
         rate_limiter: Arc::new(auth::rate_limit::LoginRateLimiter::new()),
-        hermes: config.hermes.clone(),
     };
 
     // Layer order outermost -> innermost: RequestId -> Trace -> CORS -> routes
@@ -560,7 +489,7 @@ async fn main() {
 mod api_nest_tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
     use tower::ServiceExt;
 
     fn lazy_state() -> AppState {
@@ -570,8 +499,58 @@ mod api_nest_tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(auth::rate_limit::LoginRateLimiter::new()),
-            hermes: None,
         }
+    }
+
+    /// S4 (odd/tasks/hermes-purge.md): the Hermes module is gone, so every route
+    /// it used to own must fall through to the `/api` JSON 404 instead of hitting
+    /// a leftover handler, and the outer `/health` route must keep answering.
+    /// The assertion is on the body too: a 404 that leaked the SPA shell would
+    /// still leave the browser on a dead page.
+    #[tokio::test]
+    async fn purged_hermes_routes_answer_the_json_404() {
+        let app = assemble(lazy_state(), None, api_routes(), Duration::from_secs(15));
+        let purged = [
+            (Method::POST, "/api/hermes/runs"),
+            (Method::GET, "/api/hermes/runs/run-1"),
+            (Method::GET, "/api/hermes/runs/run-1/events"),
+            (Method::POST, "/api/hermes/runs/run-1/approval"),
+            (Method::POST, "/api/uploads"),
+            (Method::GET, "/api/uploads/file-1"),
+            (Method::GET, "/api/hermes/media/file-1"),
+        ];
+        for (method, uri) in purged {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("infallible");
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{method} {uri} must be gone");
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let body = String::from_utf8_lossy(&body).to_lowercase();
+            assert!(
+                body.contains("not_found"),
+                "{method} {uri} must answer the API JSON 404, got: {body}"
+            );
+        }
+        let health = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(health.status(), StatusCode::OK);
     }
 
     /// SEC-006: the four app-owned headers must be present with exactly these
@@ -638,7 +617,7 @@ mod api_nest_tests {
     #[tokio::test]
     async fn routes_mounted_at_the_outer_level_escape_the_api_budget() {
         // The nested `/api` router gets a 20 ms budget; an exact outer route
-        // (same mounting shape as `/api/hermes/runs`) must run for 150 ms and still
+        // (same mounting shape as `/health`) must run for 150 ms and still
         // answer 200. A route inside the budget would answer 504.
         let app = assemble(lazy_state(), None, api_routes(), Duration::from_millis(20));
         let started = std::time::Instant::now();
@@ -940,7 +919,6 @@ mod api_nest_tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: limiter,
-            hermes: None,
         };
 
         let app = build_router(state.clone(), None);
@@ -1244,7 +1222,7 @@ mod api_nest_tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/dashboard/hermes/")
+                    .uri("/dashboard/")
                     .body(Body::empty())
                     .unwrap(),
             )

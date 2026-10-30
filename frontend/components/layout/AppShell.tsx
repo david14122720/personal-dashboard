@@ -150,26 +150,6 @@ function UserIcon({ className }: IconProps) {
   );
 }
 
-/** Owner-provided Hermes mark: helmet/shield with a cross, stroke-only. */
-function HermesIcon({ className }: IconProps) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      className={className}
-    >
-      <path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" opacity="0.2" />
-      <path d="M12 6l-5 3v3c0 3.5 2.5 6.8 5 7.5 2.5-.7 5-4 5-7.5V9l-5-3z" />
-      <path d="M9 12h6M12 9v6" />
-    </svg>
-  );
-}
-
 type NavItem = {
   href: string;
   labelKey: EsKey;
@@ -184,7 +164,6 @@ const PRIMARY_NAV: NavItem[] = [
   { href: "/dashboard/finance/", labelKey: "nav.finance", Icon: WalletIcon },
   { href: "/dashboard/productivity/", labelKey: "nav.productivity", Icon: BoardIcon },
   { href: "/dashboard/habitos/", labelKey: "nav.habits", Icon: CheckCircleIcon, chip: "activeHabits" },
-  { href: "/dashboard/hermes/", labelKey: "nav.hermes", Icon: HermesIcon },
 ];
 
 // SISTEMA is a single destination: the unified Ajustes hub owns its tabs.
@@ -197,13 +176,7 @@ const SETTINGS_NAV: NavItem[] = [
  * and `Sesiones` leave the bar and stay reachable as tabs of the Ajustes hub
  * (DESIGN-SPEC IA: five tabs, the settings children live under Ajustes).
  */
-// The mobile bar keeps the design's five destinations. Hermes is a desktop
-// rail destination (its chat page is still responsive and deep-linkable);
-// squeezing a sixth tab into 390 px merged the first four labels.
-const TAB_NAV: NavItem[] = [
-  ...PRIMARY_NAV.filter((item) => item.href !== "/dashboard/hermes/"),
-  SETTINGS_NAV[0],
-];
+const TAB_NAV: NavItem[] = [...PRIMARY_NAV, SETTINGS_NAV[0]];
 
 /* Shell chrome recipes (canonical: dashboard-desktop.html L72-232). They live
  * here because the shell is their only consumer; cross-surface recipes are
@@ -575,31 +548,16 @@ function TopBar() {
   );
 }
 
-/**
- * `fill` pins the shell to the viewport and makes `<main>` the flex track a
- * full-height page needs (the chat composer must stay at the bottom and the
- * message list must own the only scrollbar). Every other route keeps the
- * document flow: adding `h-[100dvh] overflow-hidden` globally would trap
- * long pages.
- */
-export default function AppShell({
-  children,
-  fill = false,
-}: {
-  children: React.ReactNode;
-  fill?: boolean;
-}) {
+/** The shell keeps the document flow on every route: pinning it to the
+ * viewport would trap long pages. */
+export default function AppShell({ children }: { children: React.ReactNode }) {
   // The shell owns the single notification surface on every route (the
   // prototype puts it in the topbar, `dashboard-desktop.html:210-219`): one
   // desktop branch and one mobile branch, exactly one visible at a time.
   const { collapsed, toggle } = useCollapsedSidebar();
   return (
     <div
-      className={
-        fill
-          ? "h-[100dvh] overflow-hidden bg-deck text-instrument"
-          : "min-h-screen bg-deck text-instrument"
-      }
+      className="min-h-screen bg-deck text-instrument"
     >
       <a
         href="#main-content"
@@ -608,7 +566,7 @@ export default function AppShell({
         {t("nav.skipToContent")}
       </a>
       <MobileChrome />
-      <div className={fill ? "flex h-full min-h-0" : "flex min-h-screen"}>
+      <div className="flex min-h-screen">
         <aside
           id="app-sidebar"
           className={`sticky top-0 z-30 hidden h-screen shrink-0 flex-col justify-between border-r border-hair bg-panel transition-[width] duration-200 md:flex ${
@@ -663,11 +621,7 @@ export default function AppShell({
           <TopBar />
           <main
             id="main-content"
-            className={
-              fill
-                ? "flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] pt-[calc(3.5rem+env(safe-area-inset-top,0px))] md:px-6 md:pb-6 md:pt-6 xl:px-8"
-                : "flex-1 px-4 pb-32 pt-[calc(3.5rem+env(safe-area-inset-top,0px))] md:px-6 md:pb-10 md:pt-6 xl:px-8"
-            }
+            className="flex-1 px-4 pb-32 pt-[calc(3.5rem+env(safe-area-inset-top,0px))] md:px-6 md:pb-10 md:pt-6 xl:px-8"
           >
             {children}
           </main>

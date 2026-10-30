@@ -270,7 +270,6 @@ mod preferences_tests {
                 .expect("lazy pool construction must succeed"),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
-            hermes: None,
         }
     }
 
@@ -307,7 +306,6 @@ mod preferences_tests {
             pool: pool.clone(),
             session_ttl_hours: 24,
             rate_limiter: Arc::new(LoginRateLimiter::new()),
-            hermes: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(

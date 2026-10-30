@@ -91,13 +91,8 @@ describe("AppShell rail", () => {
       "Finanzas",
       "Productividad",
       "Hábitos",
-      "Hermes",
       "Ajustes",
     ]);
-    const hermes = within(railNav()).getByRole("link", { name: "Hermes" });
-    expect(hermes.previousElementSibling?.textContent?.trim()).toBe("Hábitos");
-    expect(hermes.getAttribute("href")).toBe("/dashboard/hermes/");
-    expect(hermes.querySelector("svg path")).not.toBeNull();
   });
 
   it("paints the active rail item with the deck recipe and marks it for assistive tech", () => {
@@ -162,10 +157,8 @@ describe("AppShell mobile chrome", () => {
       "page",
       null,
     ]);
-    // Hermes stays a desktop rail destination: a sixth tab merged the labels
-    // at 390 px (Judgment Day MAJOR). The page itself remains responsive.
-    expect(within(tabs).queryByRole("link", { name: "Hermes" })).toBeNull();
-    expect(within(railNav()).getByRole("link", { name: "Hermes" })).toBeInTheDocument();
+    // Five destinations at 390 px: a sixth merged the labels, so the bottom
+    // bar carries exactly the primary nav plus the Ajustes hub.
     expect(links[0].className).toContain("min-w-[56px]");
     expect(links[3].className).toContain("text-signal");
     expect(within(tabs).queryByRole("link", { name: "Tokens de API" })).toBeNull();
