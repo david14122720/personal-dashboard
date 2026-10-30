@@ -143,7 +143,7 @@ en esta spec, con el mensaje exacto de §6.
 - [x] T6 Frontend: burbujas del usuario con `<img>`, `<video>`, `<audio>` y tarjetas. — worker — commit: §6.
 - [x] T7 e2e con Playwright y capturas revisadas (multilínea, arrastre, pegado, varios adjuntos, ✕, mensaje vacío con adjuntos). — inline — commit: §6.
 - [x] T8 Judgment Day: dos jueces ciegos y ledger con veredicto. — subagentes — commit: §6.
-- [ ] T9 Commit y push con el mensaje exacto de S6. — inline — commit: §6.
+- [x] T9 Commit y push con el mensaje exacto de S6. — inline — commit: §6.
 
 ## Log
 
@@ -162,3 +162,7 @@ en esta spec, con el mensaje exacto de §6.
 **L7** e2e en navegador real (T7, 2026-10-29): export estático reconstruido con el código actual —el anterior era de antes de T6 y hacía pasar los specs contra un build viejo—, backend en `:3100` con la DB de producción y un usuario descartable (borrado al final). Resultado: **10/10** (`hermes-composer` 6, `hermes-markdown` 4), con capturas revisadas por el padre: miniatura real, pesos, `Enviar` activo sin texto, burbuja con la imagen decodificada (`naturalWidth > 0`, incluso tras recargar) y la tarjeta del PDF. El e2e probó lo que el unitario no puede: `onPaste` y `drop` reales, transiciones de estado bajo red real, y que el multipart lleva solo la imagen mientras el PDF viaja como referencia de texto.
 
 **L8** Judgment Day (T8, 2026-10-29): dos jueces ciegos sobre el mismo árbol. A: **APPROVED** con 1 MEDIUM y 3 LOW. B: **CHANGES_REQUESTED** con 2 HIGH, 4 MEDIUM y 3 LOW. Ninguno encontró un CRITICAL. Las dos HIGH se resolvieron por vías distintas a propósito: **B-001** era un defecto real de código —los chips de un turno fallido se reenviaban con el mensaje siguiente— y se corrigió con tests; **B-002** se verificó contra Dokploy (`mounts: []`), no se puede arreglar en código y quedó como **D-B7** con acción del dueño, sin declarar S4 cumplido. Se corrigieron además B-004 (nota de voz como audio), B-005 (relectura innecesaria de medios), B-006 (imagen inline con el MIME del servidor) y B-009 (plazo proporcional al tamaño). Se declararon A-001/B-008 (sin GC), A-002/B-003 (sin dueño por adjunto) y A-004 (rama de auth de producción sin test); B-007 se registró como evidencia en L7. Detalle en `odd/judgment-ledger-hermes-entrada-multimodal.md`.
+
+**L9** Cierre (2026-10-29): gates finales tras las correcciones del juez B — backend **524 + 43** (0 fallos), frontend **896/896** en 70 archivos, `tsc --noEmit` exit 0. Commit único con el mensaje exacto de S6: **`cd47a53`**, `85c96d6..cd47a53` en `main`, árbol limpio y local igual a `origin/main`. El commit incluye 31 archivos (3801 inserciones, 5224 eliminaciones): la limpieza pesa más que lo nuevo.
+
+**L10** Lo que **no** está verificado y no se declara como verificado: (1) que el agente Hermes pueda abrir el `local_path` que se le pasa —Dokploy devuelve `mounts: []`, ver D-B7—; (2) `<video>` y `<audio>` en burbujas de un historial recargado: cubiertos por unitarios, no por e2e; (3) la rama de autenticación de producción de `/api/uploads` contra Postgres real (A-004); (4) la limpieza de huérfanos (D-B8) no existe: es manual.
