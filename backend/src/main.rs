@@ -306,43 +306,32 @@ fn assemble(
             "/api/hermes/runs/{run_id}/approval",
             post(routes::hermes::run_approval_handler),
         )
-        // Signed, ranged and streamed file delivery for `MEDIA:` paths. It
-        // carries its own short-lived signature because <video>/<img> cannot
-        // send the session bearer.
+        // User attachments for the Hermes input (owner spec S4): one file per
+        // request, validated server-side and stored under HERMES_UPLOAD_DIR.
+        // Mounted at the outer level, exactly where the previous upload route
+        // lived, so a 100 MB video is not cut off by the nested `/api` budget.
         .route(
-            "/api/hermes/media",
-            get(routes::hermes_media::media_handler)
-                .layer(Extension(routes::hermes_media::MediaConfig::current().clone())),
-        )
-        // Authenticated signing for paths the reply text still mentions but
-        // the proxy did not pre-sign (e.g. a `/tmp` render).
-        .route(
-            "/api/hermes/media/sign",
-            post(routes::hermes_media::sign_handler),
-        )
-        // Plain, pasteable download route (`/files/opt/data/...`). Mounted at
-        // the outer level on purpose: it is not under `/api`, so the SPA
-        // fallback would otherwise answer a missing file with `index.html` and
-        // a 200 instead of a real 404. Same allowlist as the signed route.
-        .route(
-            routes::hermes_media::FILES_ROUTE,
-            get(routes::hermes_media::files_handler)
-                .layer(Extension(routes::hermes_media::MediaConfig::current().clone())),
-        )
-        // Documents the user attaches travel to disk first (owner spec S8):
-        // the Runs API cannot carry binary parts, so the agent fetches the
-        // stored file through its signed media URL instead.
-        .route(
-            routes::hermes_media::UPLOAD_ROUTE,
-            post(routes::hermes_media::upload_handler)
+            routes::hermes_uploads::UPLOAD_ROUTE,
+            post(routes::hermes_uploads::upload_handler)
                 // `Infallible` is the router's error type here; naming it keeps
                 // `layer` from having to guess among the `From<Infallible>` impls.
-                // A bounded cap instead of `disable()`: the per-file budget is
+                // A bounded cap instead of `disable()`: the per-type budget is
                 // enforced while streaming, this is the whole-body backstop.
                 .layer::<_, std::convert::Infallible>(DefaultBodyLimit::max(
-                    routes::hermes_media::upload_body_limit(),
+                    routes::hermes_uploads::upload_body_limit(),
                 ))
-                .layer(Extension(routes::hermes_media::UploadConfig::current().clone())),
+                .layer(Extension(
+                    routes::hermes_uploads::UploadConfig::current().clone(),
+                )),
+        )
+        // Returns the caller's own attachment (declared deviation D-B2) so the
+        // transcript can repaint images/video/audio after a reload. It serves
+        // user input, never Hermes output: S2 forbids serving deliverables.
+        .route(
+            routes::hermes_uploads::SERVE_ROUTE,
+            get(routes::hermes_uploads::serve_upload_handler).layer(Extension(
+                routes::hermes_uploads::UploadConfig::current().clone(),
+            )),
         )
         .nest("/api", api_routes);
     // Same mounting shape as `/api/hermes/runs`: exact outer route, outside the
@@ -528,8 +517,8 @@ async fn main() {
     // nothing ever pointed at the partial. Per-request cleanup covers every
     // other error path, so this is the only place the leftovers are collected.
     {
-        let upload_dir = routes::hermes_media::UploadConfig::current().dir.clone();
-        let removed = routes::hermes_media::sweep_partial_uploads(&upload_dir);
+        let upload_dir = routes::hermes_uploads::UploadConfig::current().dir.clone();
+        let removed = routes::hermes_uploads::sweep_partial_uploads(&upload_dir);
         if removed > 0 {
             tracing::info!(
                 removed,
@@ -1199,15 +1188,17 @@ mod api_nest_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The flagship property of `/files` (owner spec S9): a missing file is a
-    /// real 404, never the static build's `index.html` with a 200.
+    /// The flagship property of the API 404: a missing upload is a real JSON
+    /// 404, never the static build's `index.html` with a 200.
     ///
     /// The handler-level tests mount a bare router, which cannot tell whether
     /// `assemble` really keeps this route out of `ServeDir`'s fallback. This
     /// one mounts the production shape — static dir plus SPA shell — so moving
-    /// `/files` under the `/api` nest or into the fallback turns it red.
+    /// `/api/uploads` under the nest's fallback turns it red. The bearer is a
+    /// test-build credential (the handler tests never touch a database); the
+    /// id is a well-formed UUID nobody uploaded.
     #[tokio::test]
-    async fn files_route_answers_a_real_404_instead_of_the_spa_shell() {
+    async fn uploads_route_answers_a_real_json_404_instead_of_the_spa_shell() {
         let dir = std::env::temp_dir().join(format!("files-404-spa-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("index.html"), "<html>spa-shell</html>").unwrap();
@@ -1219,7 +1210,11 @@ mod api_nest_tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/files/opt/data/cache/scratch/no-existe.png")
+                    .uri("/api/uploads/00000000-0000-0000-0000-000000000000")
+                    .header(
+                        axum::http::header::AUTHORIZATION,
+                        "Bearer 11111111-1111-1111-1111-111111111111",
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1233,14 +1228,15 @@ mod api_nest_tests {
             .unwrap_or("")
             .to_string();
         assert!(
-            !content_type.contains("text/html"),
-            "the SPA must not answer /files: {content_type}"
+            content_type.contains("application/json"),
+            "an upload miss must be JSON, not the SPA: {content_type}"
         );
         let body = axum::body::to_bytes(missing.into_body(), usize::MAX)
             .await
             .unwrap();
         let body = String::from_utf8_lossy(&body).to_lowercase();
         assert!(!body.contains("spa-shell"), "SPA html leaked: {body}");
+        assert!(body.contains("not_found"), "expected JSON 404: {body}");
 
         // The fallback still serves the shell and the static assets, so this
         // test cannot pass by breaking `ServeDir` altogether.

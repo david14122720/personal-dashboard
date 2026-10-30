@@ -1,15 +1,12 @@
 /**
- * Pending chat attachments: classification and preview URLs.
+ * Pending chat attachments: type rules, previews and the line Hermes reads.
  *
- * The runs proxy has no byte ceiling (owner spec S2): it counts and discards
- * non-image bytes chunk by chunk and streams back whatever Hermes delivers.
- * Only the attachment *count* stays bounded, because each chip is a separate
- * multipart part. Binary files that go through `POST /api/hermes/upload` are
- * bounded separately by that route's 25 MB per-file budget (see
- * `MAX_UPLOAD_DOCUMENT_BYTES`).
+ * Owner spec S3 fixes one allowlist and one ceiling per family; owner spec S4
+ * fixes the reference the agent sees once the Rust side stored the file. Both
+ * live here so the composer, the upload and the tests cannot drift apart.
  */
 
-export type AttachmentKind = "image" | "audio" | "text" | "other";
+export type AttachmentKind = "image" | "video" | "audio" | "document";
 
 export interface PendingAttachment {
   id: string;
@@ -19,58 +16,131 @@ export interface PendingAttachment {
   previewUrl: string | null;
 }
 
-export type AttachmentRejection = "too_many";
+export type AttachmentRejectionCode = "type" | "size" | "count";
+
+/**
+ * Per-file upload state the composer draws while a turn is in flight.
+ *
+ * Owner spec S3 asks for a status bar per card; declared deviation D-B4 rules
+ * out a percentage (`fetch` exposes no upload progress), so the four real
+ * states are what the chip shows.
+ */
+export type AttachmentUploadStatus = "queued" | "uploading" | "ready" | "error";
+
+export interface AttachmentRejection {
+  code: AttachmentRejectionCode;
+  filename: string;
+  /** Human hint for the notice: the allowed extensions or the ceiling. */
+  detail?: string;
+}
 
 export interface AttachmentPlan {
   accepted: PendingAttachment[];
-  rejection: { code: AttachmentRejection; filename?: string } | null;
+  rejections: AttachmentRejection[];
 }
 
 export const MAX_ATTACHMENTS = 20;
 
-const TEXT_EXTENSIONS = new Set([
-  "txt", "md", "markdown", "json", "csv", "tsv", "xml", "yaml", "yml", "log",
-  "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "rb",
-  "php", "sh", "bash", "toml", "ini", "cfg", "conf", "sql", "html", "htm",
-  "css", "scss", "svelte", "vue", "patch", "diff", "env",
-]);
+const MB = 1024 * 1024;
 
-const TEXT_MIME = new Set([
-  "application/json",
-  "application/xml",
-  "application/yaml",
-  "application/x-yaml",
-  "application/toml",
-  "application/javascript",
-  "application/typescript",
-]);
+interface Rule {
+  kind: AttachmentKind;
+  /** Ceiling in bytes, exactly as S3 states it per family. */
+  max: number;
+}
 
-let nextId = 1;
+/**
+ * S3 allowlist. The extension is what decides the family: a `.png` renamed to
+ * `.mp4` is caught server-side by the magic-byte check, which is the only place
+ * that can honestly claim the real type.
+ */
+const RULES: Record<string, Rule> = {
+  png: { kind: "image", max: 5 * MB },
+  jpg: { kind: "image", max: 5 * MB },
+  jpeg: { kind: "image", max: 5 * MB },
+  webp: { kind: "image", max: 5 * MB },
+  gif: { kind: "image", max: 5 * MB },
+  mp4: { kind: "video", max: 100 * MB },
+  webm: { kind: "video", max: 100 * MB },
+  mov: { kind: "video", max: 100 * MB },
+  mp3: { kind: "audio", max: 20 * MB },
+  wav: { kind: "audio", max: 20 * MB },
+  m4a: { kind: "audio", max: 20 * MB },
+  ogg: { kind: "audio", max: 20 * MB },
+  pdf: { kind: "document", max: 50 * MB },
+  docx: { kind: "document", max: 50 * MB },
+  xlsx: { kind: "document", max: 50 * MB },
+  pptx: { kind: "document", max: 50 * MB },
+  txt: { kind: "document", max: 50 * MB },
+  md: { kind: "document", max: 50 * MB },
+  csv: { kind: "document", max: 50 * MB },
+  zip: { kind: "document", max: 50 * MB },
+};
 
-export function classifyFile(file: File): AttachmentKind {
-  const mime = (file.type || "").toLowerCase();
-  if (mime.startsWith("image/")) return "image";
-  if (mime.startsWith("audio/")) return "audio";
-  if (mime.startsWith("text/")) return "text";
-  if (TEXT_MIME.has(mime)) return "text";
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return TEXT_EXTENSIONS.has(extension) ? "text" : "other";
+/** Extensions grouped for the rejection message, in the order S3 lists them. */
+const ALLOWED_LABEL = Object.keys(RULES).join(", ");
+
+export function extensionOf(file: File): string {
+  const dot = file.name.lastIndexOf(".");
+  if (dot <= 0 || dot === file.name.length - 1) return "";
+  return file.name.slice(dot + 1).toLowerCase();
+}
+
+/** Audio another family's extension can carry: webm, mp4 and ogg are both. */
+const AUDIO_IN_VIDEO_CONTAINER = 20 * MB;
+
+/**
+ * `null` when S3 does not allow the extension at all.
+ *
+ * JD-B-004: `webm` and `mp4` are also audio containers — the microphone records
+ * `audio/webm` and `audio/mp4`. The declared MIME decides that ambiguity, so a
+ * voice note stays audio (20 MB ceiling, audio bubble) instead of becoming a
+ * 100 MB video.
+ */
+export function ruleFor(file: File): Rule | null {
+  const base = RULES[extensionOf(file)] ?? null;
+  if (base === null) return null;
+  const declared = (file.type || "").toLowerCase();
+  if (base.kind === "video" && declared.startsWith("audio/")) {
+    return { kind: "audio", max: AUDIO_IN_VIDEO_CONTAINER };
+  }
+  if (base.kind === "audio" && declared.startsWith("video/")) {
+    return { kind: "video", max: 100 * MB };
+  }
+  return base;
+}
+
+/**
+ * The family the composer draws, or `null` for a file S3 rejects.
+ *
+ * The declared MIME is only a hint: a `.md` sent as `text/markdown` and a `.md`
+ * sent as `application/octet-stream` are the same document, and the server
+ * still sniffs the bytes.
+ */
+export function classifyFile(file: File): AttachmentKind | null {
+  return ruleFor(file)?.kind ?? null;
+}
+
+/** S3's ceiling for this file, or `null` when the type is not allowed. */
+export function maxBytesFor(file: File): number | null {
+  return ruleFor(file)?.max ?? null;
 }
 
 export function previewUrlFor(file: File, kind: AttachmentKind): string | null {
-  if (kind !== "image" && kind !== "audio") return null;
+  if (kind !== "image" && kind !== "video" && kind !== "audio") return null;
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
   try {
     return URL.createObjectURL(file);
   } catch {
     // Some test environments expose a shim that only accepts host Blobs; a
-    // missing thumbnail must never block attaching the file itself.
+    // missing preview must never block attaching the file itself.
     return null;
   }
 }
 
-export function makeAttachment(file: File): PendingAttachment {
-  const kind = classifyFile(file);
+let nextId = 1;
+
+export function makeAttachment(file: File, kind: AttachmentKind): PendingAttachment {
   const id = `att-${nextId}`;
   nextId += 1;
   return { id, file, kind, previewUrl: previewUrlFor(file, kind) };
@@ -83,25 +153,47 @@ export function releaseAttachment(attachment: PendingAttachment): void {
 }
 
 /**
- * Decide which incoming files fit. It never silently truncates a valid batch:
- * the first file that breaks the count is reported so the UI can name it.
+ * Decide which incoming files fit, one verdict per file.
+ *
+ * A valid file is never dropped because a sibling was rejected, and the count
+ * cap names the file that crossed it, so the notice can be specific instead of
+ * a generic "some files failed".
  */
 export function planAttachments(
   existing: readonly PendingAttachment[],
   incoming: readonly File[],
 ): AttachmentPlan {
   const accepted: PendingAttachment[] = [];
+  const rejections: AttachmentRejection[] = [];
   let count = existing.length;
 
   for (const file of incoming) {
-    if (count >= MAX_ATTACHMENTS) {
-      return { accepted, rejection: { code: "too_many", filename: file.name } };
+    const rule = ruleFor(file);
+    if (rule === null) {
+      rejections.push({ code: "type", filename: file.name, detail: ALLOWED_LABEL });
+      continue;
     }
-    accepted.push(makeAttachment(file));
+    if (file.size > rule.max) {
+      rejections.push({
+        code: "size",
+        filename: file.name,
+        detail: formatBytes(rule.max),
+      });
+      continue;
+    }
+    if (count >= MAX_ATTACHMENTS) {
+      rejections.push({
+        code: "count",
+        filename: file.name,
+        detail: String(MAX_ATTACHMENTS),
+      });
+      continue;
+    }
+    accepted.push(makeAttachment(file, rule.kind));
     count += 1;
   }
 
-  return { accepted, rejection: null };
+  return { accepted, rejections };
 }
 
 export function formatBytes(bytes: number): string {
@@ -129,33 +221,41 @@ export function voiceFileName(mime: string, stamp = Date.now()): string {
   return `nota-de-voz-${new Date(stamp).toISOString().replace(/[:.]/g, "-")}.${extension}`;
 }
 
+/** What the Rust side stored: exactly the JSON keys of spec S4. */
+export interface StoredUpload {
+  id: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  url: string;
+  local_path: string;
+}
+
 /**
- * The line the agent reads when a document was stored server-side (spec S8).
- * It names the exact URL so Hermes can fetch it with its own tools instead of
- * guessing a path inside its container.
+ * The line Hermes reads for a file it must open with its own tools (S4).
+ *
+ * The path is the one the Rust side chose inside the shared volume, so the
+ * agent never has to guess where the browser put the bytes.
  */
-export function attachmentReference(url: string): string {
-  return `[archivo adjunto: ${url}]`;
+export function attachmentReference(upload: StoredUpload): string {
+  return `[archivo adjunto: ${upload.name} (${upload.mime_type}, ${formatBytes(upload.size)}), ruta: ${upload.local_path}]`;
 }
 
 /** Append the stored-file references to the user's text, in upload order. */
-export function composeTurnText(content: string, urls: readonly string[]): string {
-  const refs = urls.map((url) => attachmentReference(url));
+export function composeTurnText(content: string, uploads: readonly StoredUpload[]): string {
+  const refs = uploads.map((upload) => attachmentReference(upload));
   if (refs.length === 0) return content;
   return [content.trim(), ...refs].filter((part) => part.length > 0).join("\n\n");
 }
 
 /**
- * Which attachment kinds travel to `/api/hermes/upload`.
+ * Which attachments still travel inline to the model.
  *
- * Only non-text binaries do. The runs proxy still inlines text-like files into
- * the prompt (`backend/src/routes/hermes.rs`, 16 000-byte truncation), so
- * `.md/.txt/.csv/.json` reach the agent without a URL fetch; uploading them
- * would make a large CSV that used to arrive truncated fail hard with 413 and
- * would turn every readable document into a dependency on the agent's fetch
- * tools. Images keep the inline data-URL path and audio keeps its degraded
- * note.
+ * Owner spec S4: an image ≤ 5 MB becomes an `image_url` part, so its bytes go
+ * to the runs proxy. Everything else — documents, audio, video, archives — is
+ * uploaded once and referenced by path, which is what lets Hermes open a 100 MB
+ * video without the Runs API ever seeing it.
  */
-export function isUploadedDocument(kind: AttachmentKind): boolean {
-  return kind === "other";
+export function travelsInline(kind: AttachmentKind): boolean {
+  return kind === "image";
 }

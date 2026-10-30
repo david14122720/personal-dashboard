@@ -6,7 +6,7 @@ pub mod goals;
 pub mod habits;
 pub mod health;
 pub mod hermes;
-pub mod hermes_media;
+pub mod hermes_uploads;
 pub mod login;
 pub mod logout;
 pub mod me;

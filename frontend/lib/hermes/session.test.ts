@@ -19,7 +19,6 @@ function assistantBubble(id: number, content: string): StoredBubble {
     id,
     role: "assistant",
     content,
-    artifacts: [],
     warnings: [],
     thoughts: [],
     question: null,
@@ -83,6 +82,82 @@ describe("message transcript storage", () => {
     expect(loaded[loaded.length - 1].id).toBe(3);
     const bytes = new TextEncoder().encode(localStorage.getItem(HERMES_MESSAGES_KEY)!).length;
     expect(bytes).toBeLessThanOrEqual(HERMES_MAX_STORED_BYTES);
+  });
+
+  it("round-trips the stored upload metadata of an attachment (S5)", () => {
+    saveMessages([
+      {
+        id: 1,
+        role: "user",
+        content: "",
+        attachments: [
+          {
+            name: "foto.png",
+            size: 12,
+            kind: "image",
+            url: "/api/uploads/up-1",
+            mime_type: "image/png",
+            local_path: "/opt/data/uploads/up-1.png",
+          },
+        ],
+        queued: false,
+      },
+    ]);
+
+    expect(loadMessages()[0]).toMatchObject({
+      role: "user",
+      attachments: [
+        {
+          name: "foto.png",
+          size: 12,
+          kind: "image",
+          url: "/api/uploads/up-1",
+          mime_type: "image/png",
+          local_path: "/opt/data/uploads/up-1.png",
+        },
+      ],
+    });
+  });
+
+  it("restores a bubble written before this change (legacy artifacts, no attachment url)", () => {
+    // A transcript saved by the previous build: assistant bubbles carried an
+    // `artifacts[]` array and user attachments had no stored url. Both must
+    // load as plain text instead of being dropped or crashing the chat.
+    localStorage.setItem(
+      HERMES_MESSAGES_KEY,
+      JSON.stringify([
+        {
+          id: 1,
+          role: "user",
+          content: "mirá esto",
+          queued: false,
+          attachments: [{ name: "viejo.pdf", size: 1024, kind: "document" }],
+        },
+        {
+          id: 2,
+          role: "assistant",
+          content: "listo",
+          artifacts: [
+            { id: "a1", name: "grafico.png", url: "/files/tmp/grafico.png", kind: "image" },
+          ],
+          warnings: [],
+          thoughts: [],
+          question: null,
+          answered: null,
+        },
+      ]),
+    );
+
+    const loaded = loadMessages();
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0]).toMatchObject({
+      role: "user",
+      content: "mirá esto",
+      attachments: [{ name: "viejo.pdf", size: 1024, kind: "document" }],
+    });
+    expect(loaded[1]).toMatchObject({ role: "assistant", content: "listo" });
+    // Output rendering is gone (S2): the legacy field is simply not kept.
+    expect(JSON.stringify(loaded)).not.toContain("artifacts");
   });
 
   it("never throws when storage is unavailable", () => {

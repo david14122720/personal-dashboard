@@ -8,8 +8,8 @@ import {
   isHermesRunTerminalEvent,
   resolveHermesApproval,
   streamHermesRun,
-  uploadHermesDocuments,
-  absoluteMediaUrl,
+  fetchHermesUpload,
+  uploadHermesFile,
   type HermesRunEvent,
 } from "./hermes";
 
@@ -418,67 +418,138 @@ describe("resolveHermesApproval", () => {
   });
 });
 
-describe("document uploads", () => {
-  const UPLOAD = "http://test.local/api/hermes/upload";
+describe("uploadHermesFile (S4 · POST /api/uploads)", () => {
+  const UPLOADS = "http://test.local/api/uploads";
+  const RECEIPT = {
+    id: "3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a",
+    name: "informe.docx",
+    mime_type:
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    size: 4,
+    url: "/api/uploads/3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a",
+    local_path:
+      "/opt/data/uploads/3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a.docx",
+  };
 
-  it("posts every file as multipart with the session bearer", async () => {
-    localStorage.setItem("dashboard-token", "pd_test_token");
+  beforeEach(() => localStorage.setItem("dashboard-token", "pd_test_token"));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it("posts exactly one file under the `file` field with the session bearer", async () => {
     const calls: Array<{ url: string; body: unknown; headers: unknown }> = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
       calls.push({ url, body: init.body, headers: init.headers });
-      return jsonResponse({
-        items: [
-          { name: "informe.pdf", path: "/opt/data/uploads/abc-informe.pdf", url: "/api/hermes/media?path=x&exp=1&sig=y", size: 10, mime: "application/pdf" },
-        ],
-      }, 201);
+      return jsonResponse(RECEIPT, 201);
     });
-    const file = new File(["hola"], "informe.pdf", { type: "application/pdf" });
-    const items = await uploadHermesDocuments([file]);
-    expect(items).toHaveLength(1);
-    expect(items[0].name).toBe("informe.pdf");
-    expect(calls[0].url).toBe(UPLOAD);
+
+    const uploaded = await uploadHermesFile(
+      new File(["hola"], "informe.docx", { type: RECEIPT.mime_type }),
+    );
+
+    expect(uploaded).toEqual(RECEIPT);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(UPLOADS);
     expect(calls[0].body).toBeInstanceOf(FormData);
-    expect((calls[0].body as FormData).getAll("files")).toHaveLength(1);
-    // The route is session-only: without this header production answers 401,
-    // so dropping `authHeaders()` from the upload must fail here.
+    const form = calls[0].body as FormData;
+    expect(form.getAll("file")).toHaveLength(1);
+    expect(form.getAll("files")).toHaveLength(0);
+    expect((form.get("file") as File).name).toBe("informe.docx");
+    // The route is session-only: without this header production answers 401.
     expect((calls[0].headers as Record<string, string>).Authorization).toBe(
       "Bearer pd_test_token",
     );
-    localStorage.removeItem("dashboard-token");
   });
 
-  it("never invents a result when the response is incomplete", async () => {
-    vi.stubGlobal("fetch", async () => jsonResponse({ items: [] }, 201));
-    const file = new File(["x"], "a.docx");
-    await expect(uploadHermesDocuments([file])).rejects.toBeInstanceOf(HermesError);
+  it("surfaces the server's 400 message verbatim", async () => {
+    vi.stubGlobal("fetch", async () =>
+      jsonResponse(
+        {
+          error: {
+            code: "FILE_TYPE_NOT_ALLOWED",
+            message:
+              "the file foo.exe is not allowed: .exe is not an accepted file type",
+          },
+        },
+        400,
+      ),
+    );
+
+    await expect(uploadHermesFile(new File(["x"], "foo.exe"))).rejects.toMatchObject({
+      name: "HermesError",
+      status: 400,
+      message: "the file foo.exe is not allowed: .exe is not an accepted file type",
+    });
   });
 
-  it("maps an upstream failure to a HermesError code", async () => {
+  it("maps an unavailable upload route to a typed error", async () => {
     vi.stubGlobal("fetch", async () =>
       jsonResponse({ error: { code: "HERMES_UPLOAD_UNAVAILABLE", message: "no dir" } }, 503),
     );
-    await expect(uploadHermesDocuments([new File(["x"], "a.docx")])).rejects.toMatchObject({
+    await expect(uploadHermesFile(new File(["x"], "a.docx"))).rejects.toMatchObject({
       code: "unavailable",
     });
   });
 
-  it("makes a relative signed url absolute against the configured api base", () => {
-    expect(absoluteMediaUrl("http://192.168.50.120:8055/x")).toBe("http://192.168.50.120:8055/x");
-    // NEXT_PUBLIC_API_URL is `http://test.local/api`: a URL served under the
-    // API mount belongs to that origin, not to the page that rendered the chat.
-    expect(absoluteMediaUrl("/api/hermes/media?path=a")).toBe(
-      "http://test.local/api/hermes/media?path=a",
+  it("never invents a receipt when the answer is incomplete", async () => {
+    vi.stubGlobal("fetch", async () => jsonResponse({ id: "only-an-id" }, 201));
+    await expect(uploadHermesFile(new File(["x"], "a.docx"))).rejects.toBeInstanceOf(
+      HermesError,
     );
+  });
 
-    // Same-origin mount: the URL already carries the `/api` prefix.
-    const previous = process.env.NEXT_PUBLIC_API_URL;
-    process.env.NEXT_PUBLIC_API_URL = "/api";
-    try {
-      expect(absoluteMediaUrl("/api/hermes/media?path=b")).toBe(
-        `${window.location.origin}/api/hermes/media?path=b`,
-      );
-    } finally {
-      process.env.NEXT_PUBLIC_API_URL = previous;
-    }
+  it("maps a refused connection to a network error", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(uploadHermesFile(new File(["x"], "a.docx"))).rejects.toMatchObject({
+      code: "network",
+    });
+  });
+});
+
+describe("fetchHermesUpload (D-B2 · authenticated read-back)", () => {
+  const RECEIPT_URL = "/api/uploads/3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it("reads the stored bytes with the session bearer from the api origin", async () => {
+    localStorage.setItem("dashboard-token", "pd_test_token");
+    const calls: Array<{ url: string; headers: unknown }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, headers: init.headers });
+      return new Response("bytes", { status: 200 });
+    });
+
+    const blob = await fetchHermesUpload(RECEIPT_URL);
+
+    expect(await blob.text()).toBe("bytes");
+    // The receipt carries an absolute path that already includes `/api`; the
+    // configured base supplies the origin, never a hard-coded host.
+    expect(calls[0].url).toBe(`http://test.local/api/uploads/3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a`);
+    expect((calls[0].headers as Record<string, string>).Authorization).toBe(
+      "Bearer pd_test_token",
+    );
+  });
+
+  it("keeps an absolute url untouched", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      calls.push(url);
+      return new Response("bytes", { status: 200 });
+    });
+    await fetchHermesUpload("http://lan.local/api/uploads/abc");
+    expect(calls[0]).toBe("http://lan.local/api/uploads/abc");
+  });
+
+  it("maps a 401 to the typed error the chat's fallback relies on", async () => {
+    vi.stubGlobal("fetch", async () => jsonResponse({ error: { code: "UNAUTHORIZED" } }, 401));
+    await expect(fetchHermesUpload(RECEIPT_URL)).rejects.toMatchObject({
+      code: "session_expired",
+    });
   });
 });

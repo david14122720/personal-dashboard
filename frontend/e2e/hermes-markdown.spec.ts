@@ -3,31 +3,44 @@ import { test, expect, type Page } from "@playwright/test";
 import { loginViaApi } from "./helpers";
 
 /**
- * Hermes Markdown, inline base64 pictures and document uploads
- * (ODD `hermes-markdown-media-uploads`, S2/S3/S4/S7/S8/S10.1-S10.6).
+ * Hermes clean Markdown replies (ODD `hermes-entrada-multimodal`, S2/S4/S7).
  *
- * The Runs transport is stubbed at the network boundary exactly like
- * `hermes-artifacts.spec.ts`: `POST /api/hermes/runs` answers `202`, the events
- * endpoint answers verbatim gateway frames (`data:` + `id:`, no `event:` line)
- * and `POST /api/hermes/upload` answers the Rust contract `{items:[…]}`. So the
- * real UI contract is exercised without a live Hermes server or `/opt/data`:
+ * Owner spec S2 removed the output-file pipeline: no `/api/hermes/media`, no
+ * `/api/hermes/media/sign`, no `/files/*`, no `MEDIA:` parsing and no inline
+ * base64 rendering. A reply is text plus sanitized Markdown, every `![](…)`
+ * collapses to its caption, and a document the user attached is sent to Hermes
+ * as the structured S4 reference instead of travelling inline.
+ *
+ * The Runs transport is stubbed at the network boundary: `POST
+ * /api/hermes/runs` answers `202`, the events endpoint answers verbatim gateway
+ * frames (`id:` + `data:`, no `event:` line) and `POST /api/uploads` answers the
+ * exact S4 object (`{id,name,mime_type,size,url,local_path}`), so a regression
+ * of the reference line is caught without a live Hermes server:
  *
  *   E2E_HERMES_LIVE=1 E2E_BASE_URL=http://localhost:3100 npx playwright test hermes-markdown
  *
- * Document download cards are covered by `hermes-artifacts.spec.ts`
- * (acceptance 2); this spec proves the inline image (acceptance 1), rich
- * Markdown (acceptance 5), XSS neutralisation (acceptance 6) and the document
- * upload reference (acceptance 4).
+ * This spec proves the clean-Markdown output (S2: acceptance 1), rich Markdown
+ * rendering, XSS neutralisation, and the document reference of S4 (acceptance
+ * 5). The composer itself — clip, drag & drop, paste, per-file state, bubbles —
+ * is covered against the real backend by `hermes-composer.spec.ts`.
  */
 const live = process.env.E2E_HERMES_LIVE === "1";
 
 const SESSION_ID = "7f3c1d2e-2222-4aaa-9bbb-00000000e2e1";
 const RUN_1 = "run_e2e_md_1";
 
-/** A 1×1 transparent PNG, small enough to be a real payload. */
-const PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
-const DATA_URL = `data:image/png;base64,${PNG}`;
+/**
+ * The exact receipt the Rust route answers for an uploaded document. A fixed
+ * id keeps the asserted reference line literal instead of pattern-shaped.
+ */
+const UPLOAD = {
+  id: "0b9f7c1e-6a44-4a9c-8f2d-6c1a2f0d7e11",
+  name: "informe.pdf",
+  mime_type: "application/pdf",
+  size: 2048,
+  url: "/api/uploads/0b9f7c1e-6a44-4a9c-8f2d-6c1a2f0d7e11",
+  local_path: "/opt/data/uploads/0b9f7c1e-6a44-4a9c-8f2d-6c1a2f0d7e11.pdf",
+};
 
 let frameId = 0;
 
@@ -35,10 +48,6 @@ let frameId = 0;
 function frame(payload: Record<string, unknown>): string {
   frameId += 1;
   return `id: ${frameId}\ndata: ${JSON.stringify(payload)}\n\n`;
-}
-
-function delta(text: string): string {
-  return frame({ event: "message.delta", delta: text });
 }
 
 function completed(output: string): string {
@@ -76,35 +85,53 @@ async function installRuns(page: Page, body: string): Promise<void> {
       });
       return;
     }
+    if (req.method() === "GET") {
+      // Clean-EOF confirmation only: the streamed terminal already settles it.
+      const runId = url.pathname.split("/").pop() ?? RUN_1;
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runId,
+          status: "completed",
+          sessionId: SESSION_ID,
+          createdAt: Date.now(),
+          executionGeneration: 0,
+          output: "",
+          usage: {},
+          completed: true,
+          partial: false,
+          interrupted: false,
+          error: null,
+          pendingControls: null,
+        }),
+      });
+      return;
+    }
     await route.fallback();
   });
 }
 
-/** Stub `POST /api/hermes/upload` with the Rust contract, signed URL included. */
-async function installUpload(page: Page): Promise<void> {
-  await page.route("**/api/hermes/upload", async (route) => {
-    let names: string[] = [];
-    const raw = route.request().postDataBuffer();
-    if (raw) {
-      // multipart/form-data: the filename appears in each part header.
-      names = [...raw.toString("latin1").matchAll(/filename="([^"]+)"/g)].map((m) => m[1]);
+/**
+ * Stub `POST /api/uploads` with the exact S4 object. The old single-shot
+ * `/api/hermes/upload` contract (`{items:[…]}`) is gone, so a regression to it
+ * fails here instead of silently passing.
+ */
+async function installUploads(page: Page): Promise<{ posts: number }> {
+  const calls = { posts: 0 };
+  await page.route("**/api/uploads**", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fallback();
+      return;
     }
-    const items = names.map((name) => {
-      const path = `/opt/data/uploads/${name}`;
-      return {
-        name,
-        path,
-        url: `http://192.168.50.120:8055/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=stub`,
-        size: 1024,
-        mime: "application/pdf",
-      };
-    });
+    calls.posts += 1;
     await route.fulfill({
-      status: 200,
+      status: 201,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify(UPLOAD),
     });
   });
+  return calls;
 }
 
 /** The JSON body of the run the UI created (null when it sent multipart). */
@@ -134,39 +161,11 @@ async function sendMessage(page: Page, text: string): Promise<void> {
   await page.getByRole("button", { name: "Enviar" }).click();
 }
 
-test.describe("Hermes Markdown and media", () => {
+test.describe("Hermes Markdown output", () => {
   test.skip(!live, "Set E2E_HERMES_LIVE=1 with a dashboard server to run.");
 
   test.beforeEach(() => {
     frameId = 0;
-  });
-
-  test("draws a completed base64 payload as a real inline picture", async ({ page }) => {
-    const output = ["Listo, acá está la imagen:", "", `![prueba](${DATA_URL})`].join("\n");
-    await installRuns(page, completed(output));
-    await openChat(page);
-    await sendMessage(page, "generá una imagen de prueba");
-
-    const picture = page.locator('[data-testid="hermes-inline-image"]');
-    await expect(picture).toHaveCount(1);
-    await expect(picture).toHaveAttribute("src", DATA_URL);
-    // The rounded/shadow framing the spec asks for, and the alt text survives.
-    await expect(picture).toHaveClass(/rounded-lg/);
-    await expect(picture).toHaveAttribute("alt", "prueba");
-    // The raw payload must never leak into the prose.
-    await expect(page.locator('[data-testid="hermes-markdown"]').first()).not.toContainText("base64");
-  });
-
-  test("hides a half-received payload instead of printing base64", async ({ page }) => {
-    // Stream stops mid-payload: no closing paren, no terminal event (S4).
-    const partial = `![prueba](${DATA_URL.slice(0, 40)}`;
-    await installRuns(page, delta(partial));
-    await openChat(page);
-    await sendMessage(page, "generá una imagen de prueba");
-
-    await expect(page.locator('[data-testid="hermes-pending-image"]')).toBeVisible();
-    await expect(page.locator('[data-testid="hermes-inline-image"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="hermes-log"]')).not.toContainText("iVBORw0KGgo");
   });
 
   test("renders bold, lists, tables, links and highlighted code fences", async ({ page }) => {
@@ -207,6 +206,32 @@ test.describe("Hermes Markdown and media", () => {
     await expect(link).toHaveText("documentación");
   });
 
+  test("draws a model-authored remote picture as its caption and loads nothing", async ({ page }) => {
+    const remote: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("evil.test")) remote.push(request.url());
+    });
+    const output = [
+      "Listo, acá va el gráfico:",
+      "",
+      "![gráfico](https://evil.test/x.png)",
+      "",
+      "El entregable pesado lo mandé por Telegram.",
+    ].join("\n");
+    await installRuns(page, completed(output));
+    await openChat(page);
+    await sendMessage(page, "generá un gráfico");
+
+    const reply = page.locator('[data-testid="hermes-markdown"]').first();
+    // S2: the caption is prose; the image is never built and never fetched.
+    await expect(reply).toContainText("gráfico");
+    await expect(reply).toContainText("El entregable pesado lo mandé por Telegram.");
+    // The shell's own logo is an `img`, so the claim is scoped to the reply.
+    await expect(reply.locator("img")).toHaveCount(0);
+    await expect(reply).not.toContainText("evil.test");
+    expect(remote).toEqual([]);
+  });
+
   test("neutralises injected script and onerror payloads", async ({ page }) => {
     const output = [
       "Antes",
@@ -228,9 +253,9 @@ test.describe("Hermes Markdown and media", () => {
     expect(await page.evaluate(() => (window as unknown as { __hermesPwned?: number }).__hermesPwned)).toBeUndefined();
   });
 
-  test("uploads a document and names its LAN URL in the turn text", async ({ page }) => {
+  test("sends a document as the S4 path reference, never as inline bytes", async ({ page }) => {
     await installRuns(page, completed("Gracias, ya lo leí."));
-    await installUpload(page);
+    const uploads = await installUploads(page);
     await openChat(page);
 
     await page.locator('[data-testid="hermes-file-input"]').setInputFiles({
@@ -244,11 +269,18 @@ test.describe("Hermes Markdown and media", () => {
 
     const body = await runRequest;
     expect(body).not.toBeNull();
-    // The reference is explicit and signed, so Hermes can fetch it with curl.
-    expect(body?.message).toContain("resumí este informe");
-    expect(body?.message).toContain("[archivo adjunto: http://192.168.50.120:8055/api/hermes/media?path=");
-    expect(body?.message).toContain("%2Fopt%2Fdata%2Fuploads%2Finforme.pdf");
+    // One file, one `POST /api/uploads` (S4/D-B1), and the turn carries the
+    // literal reference Hermes reads — the whole line, not a substring.
+    expect(uploads.posts).toBe(1);
+    expect(body?.message).toBe(
+      [
+        "resumí este informe",
+        "[archivo adjunto: informe.pdf (application/pdf, 2 KB), ruta: /opt/data/uploads/0b9f7c1e-6a44-4a9c-8f2d-6c1a2f0d7e11.pdf]",
+      ].join("\n\n"),
+    );
+    expect(body?.message).toContain("ruta: /opt/data/uploads/");
     // A document must never travel as an inline data URL.
+    expect(body?.message).not.toContain("base64");
     expect(body?.message).not.toContain("data:application/pdf");
   });
 });

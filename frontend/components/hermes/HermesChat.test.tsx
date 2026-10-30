@@ -90,66 +90,102 @@ let statusFor: ((runId: string) => Record<string, unknown>) | null = null;
 
 // msw's fetch interceptor cannot serialize jsdom's FormData (it expects the
 // undici implementation and throws while recording the request). Multipart
-// turns are asserted through a fetch spy instead: the spy answers the create
-// call and delegates everything else (events, sign) to the patched fetch so
-// msw still serves those.
+// requests are asserted through a fetch spy instead: the spy answers
+// `POST /api/uploads` and the multipart run, and delegates everything else
+// (JSON runs, events) to the patched fetch so msw still serves those.
 interface MultipartSeen {
   sessionId: string;
   message: string;
   files: { name: string; size: number; type: string }[];
 }
 const multipartSeen: MultipartSeen[] = [];
-let failMultipartOnce = false;
 
 /**
- * Documents no longer travel inside the run (spec S8): binary files are stored
- * by the Rust side first (`POST /api/hermes/upload`) and the turn text names
- * their signed URL. The spy answers that call so the flow can be asserted end
- * to end.
+ * Owner spec S4: `POST /api/uploads` stores one file per request (D-B1) and
+ * answers `{ id, name, mime_type, size, url, local_path }` with `201`.
+ * `uploadGate` parks an upload so the per-file statuses can be asserted.
  */
-const UPLOAD = `${API}/hermes/upload`;
+const UPLOADS = `${API}/uploads`;
 const uploadedSeen: string[] = [];
-/** Override the stored URL, e.g. to serve a relative one inside a turn. */
-let uploadItemUrl: string | null = null;
+let uploadGate: Promise<void> | null = null;
+let failUploadOnce: { status: number; body: unknown } | null = null;
+/** Fail one named file, so a batch keeps a deterministic failure order. */
+let failUploadFor: { name: string; status: number; body: unknown } | null = null;
+/** The signal each upload was given, to prove the batch aborts its siblings. */
+const uploadSignals: (AbortSignal | undefined)[] = [];
+/** Park only this file's upload, so the batch can fail while it is in flight. */
+let gateUploadFor: string | null = null;
 
 /**
- * File-server probes made by a settled reply before carding a path (B-003).
- * Hermes prints paths from its own container, so a scanned path becomes a card
- * only when `HEAD /files/<path>` answers 2xx.
+ * Reads of a stored attachment (D-B2). The route is session-authenticated, so
+ * an element cannot point at it: the chat fetches the bytes with the bearer
+ * and draws an object URL. The list records the auth proof per read.
  */
-const probedFiles: string[] = [];
-let filesProbeStatus = 200;
+const storedMedia: { id: string; authorization: string | null }[] = [];
+let storedMediaStatus = 200;
+
+/** The MIME the Rust side would report for these bytes, by extension. */
+function sniffedMime(file: File): string {
+  const dot = file.name.lastIndexOf(".");
+  const extension = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : "";
+  const table: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+    pdf: "application/pdf",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    txt: "text/plain",
+    md: "text/markdown",
+    csv: "text/csv",
+    webm: file.type.startsWith("audio/") ? "audio/webm" : "video/webm",
+    mp4: file.type.startsWith("audio/") ? "audio/mp4" : "video/mp4",
+  };
+  return table[extension] ?? (file.type || "application/octet-stream");
+}
+
+function uploadReceipt(sequence: number, file: File) {
+  const dot = file.name.lastIndexOf(".");
+  const extension = dot >= 0 ? file.name.slice(dot + 1) : "bin";
+  return {
+    id: `up-${sequence}`,
+    name: file.name,
+    mime_type: sniffedMime(file),
+    size: file.size,
+    url: `/api/uploads/up-${sequence}`,
+    local_path: `/opt/data/uploads/up-${sequence}.${extension}`,
+  };
+}
 
 function stubMultipartFetch() {
   const realFetch = globalThis.fetch;
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     const body = init?.body;
-    if (url === UPLOAD && body instanceof FormData) {
-      const items = body.getAll("files").map((value) => {
-        const file = value as File;
-        const path = `/opt/data/uploads/${file.name}`;
-        uploadedSeen.push(file.name);
-        return {
-          name: file.name,
-          path,
-          url:
-            uploadItemUrl ??
-            `http://lan.local/api/hermes/media?path=${encodeURIComponent(path)}&exp=1&sig=test`,
-          size: file.size,
-          mime: file.type,
-        };
-      });
-      return HttpResponse.json({ items });
+    if (url === UPLOADS && body instanceof FormData) {
+      const file = body.get("file") as File;
+      uploadedSeen.push(file.name);
+      uploadSignals.push(init?.signal ?? undefined);
+      if (uploadGate && (gateUploadFor === null || file.name === gateUploadFor)) {
+        await uploadGate;
+      }
+      if (failUploadFor !== null && file.name === failUploadFor.name) {
+        const failure = failUploadFor;
+        return HttpResponse.json(failure.body as Record<string, unknown>, {
+          status: failure.status,
+        });
+      }
+      if (failUploadOnce) {
+        const failure = failUploadOnce;
+        failUploadOnce = null;
+        return HttpResponse.json(failure.body as Record<string, unknown>, {
+          status: failure.status,
+        });
+      }
+      return HttpResponse.json(uploadReceipt(uploadedSeen.length, file), { status: 201 });
     }
     if (url === RUNS && body instanceof FormData) {
-      if (failMultipartOnce) {
-        failMultipartOnce = false;
-        return HttpResponse.json(
-          { error: { code: "HERMES_UPSTREAM_ERROR", message: "boom" } },
-          { status: 502 },
-        );
-      }
       runSeq += 1;
       multipartSeen.push({
         sessionId: String(body.get("sessionId") ?? ""),
@@ -264,12 +300,23 @@ const server = setupServer(
     }
     return HttpResponse.json({ runId, choice: (body as { choice?: string }).choice, resolved: true });
   }),
-  // The settled reply probes each scanned path before carding it (B-003). The
-  // default answers 2xx so the card tests keep working; a test overrides the
-  // status to 404 or a network error to assert the path stays as prose.
-  http.head("**/files/**", ({ request }) => {
-    probedFiles.push(new URL(request.url).pathname);
-    return new HttpResponse(null, { status: filesProbeStatus });
+  // D-B2: the stored attachment is only served with the session bearer. The
+  // chat reads it through the transport and hands the element an object URL.
+  http.get(`${API}/uploads/:id`, ({ params, request }) => {
+    storedMedia.push({
+      id: params.id as string,
+      authorization: request.headers.get("authorization"),
+    });
+    if (storedMediaStatus !== 200) {
+      return HttpResponse.json(
+        { error: { code: "NOT_FOUND", message: "Not found" } },
+        { status: storedMediaStatus },
+      );
+    }
+    return new HttpResponse("bytes", {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    });
   }),
 );
 
@@ -288,10 +335,13 @@ afterEach(async () => {
   streamHarness.pending.length = 0;
   multipartSeen.length = 0;
   uploadedSeen.length = 0;
-  probedFiles.length = 0;
-  filesProbeStatus = 200;
-  uploadItemUrl = null;
-  failMultipartOnce = false;
+  uploadSignals.length = 0;
+  failUploadFor = null;
+  gateUploadFor = null;
+  storedMedia.length = 0;
+  storedMediaStatus = 200;
+  uploadGate = null;
+  failUploadOnce = null;
   runSeq = 0;
   createdAtOverride = null;
   failCreateOnce = null;
@@ -346,6 +396,36 @@ async function completeLast(output: string) {
 }
 
 beforeEach(() => setAuth());
+
+/**
+ * jsdom implements neither object-URL method. The composer previews local
+ * files and the user bubble draws stored attachments this way (D-B2), so the
+ * two methods are stubbed once and their calls tracked for the assertions.
+ */
+const createdObjectUrls: string[] = [];
+const revokedObjectUrls: string[] = [];
+beforeAll(() => {
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    writable: true,
+    value: () => {
+      const url = `blob:http://test.local/object-${createdObjectUrls.length + 1}`;
+      createdObjectUrls.push(url);
+      return url;
+    },
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    writable: true,
+    value: (url: string) => {
+      revokedObjectUrls.push(url);
+    },
+  });
+});
+beforeEach(() => {
+  createdObjectUrls.length = 0;
+  revokedObjectUrls.length = 0;
+});
 
 describe("HermesChat", () => {
   it("mints and persists a UUID v4 when no session exists", async () => {
@@ -533,7 +613,9 @@ describe("HermesChat", () => {
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
     fireEvent.change(input(), { target: { value: "con enter" } });
-    fireEvent.keyDown(input(), { key: "Enter", shiftKey: true });
+    // Shift+Enter is left to the browser (no preventDefault): the textarea
+    // inserts the newline itself and no run starts.
+    expect(fireEvent.keyDown(input(), { key: "Enter", shiftKey: true })).toBe(true);
     expect(creates).toHaveLength(0);
     fireEvent.keyDown(input(), { key: "Enter" });
     await waitFor(() => expect(creates).toHaveLength(1));
@@ -597,77 +679,178 @@ describe("HermesChat", () => {
     fireEvent.change(fileInput(), { target: { files } });
   }
 
-  it("stores only binaries and keeps text and images inline in one turn", async () => {
+  function chipStatus() {
+    return screen.getByTestId("attachment-status");
+  }
+
+  it("uploads every attachment, keeps only images inline and references the documents", async () => {
     stubMultipartFetch();
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
     await waitFor(() => expect(input()).toBeEnabled());
     attach([
       new File(["png"], "foto.png", { type: "image/png" }),
-      new File(["# nota"], "nota.md", { type: "text/markdown" }),
-      new File(["pdf"], "informe.pdf", { type: "application/pdf" }),
+      new File(["docx"], "informe.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }),
     ]);
-    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(3);
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(2);
 
     fireEvent.change(input(), { target: { value: "mirá esto" } });
     fireEvent.click(sendButton());
     await waitFor(() => expect(multipartSeen).toHaveLength(1));
 
-    // Only the binary goes to disk first. The Markdown note keeps the inline
-    // multipart path the runs proxy still inlines into the prompt, and the
-    // picture keeps its data-URL part.
-    expect(uploadedSeen).toEqual(["informe.pdf"]);
+    // Owner spec S4 + D-B1: one POST /api/uploads per file, before the run.
+    expect(uploadedSeen).toEqual(["foto.png", "informe.docx"]);
+    // Only the image travels inline; the docx is referenced in the turn text.
     expect(multipartSeen[0].sessionId).toBe(SESSION);
-    expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["foto.png", "nota.md"]);
+    expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["foto.png"]);
     expect(String(multipartSeen[0].message)).toContain("mirá esto");
     expect(String(multipartSeen[0].message)).toContain(
-      "[archivo adjunto: http://lan.local/api/hermes/media?path=%2Fopt%2Fdata%2Fuploads%2Finforme.pdf&",
+      "[archivo adjunto: informe.docx (application/vnd.openxmlformats-officedocument.wordprocessingml.document, 4 B), ruta: /opt/data/uploads/up-2.docx]",
     );
-    expect(String(multipartSeen[0].message)).not.toContain("nota.md");
+    expect(String(multipartSeen[0].message)).not.toContain("foto.png");
+
+    // S5: the bubble draws the image from the stored upload and the document
+    // card. D-B2: the stored url is session-authenticated, so the bubble asks
+    // the transport for the bytes and hands the element a blob URL.
+    const bubble = screen.getByText("mirá esto").closest('[data-role="user"]') as HTMLElement;
+    const image = await within(bubble).findByRole("img", { name: "foto.png" });
+    expect(image.getAttribute("src")).toMatch(/^blob:http:\/\/test\.local\//);
+    // JD-B-005: the bytes are already here as a local preview, so the bubble
+    // does not download them again; the stored url is only for a later mount.
+    expect(storedMedia).toEqual([]);
+    const card = within(bubble).getByTestId("user-attachment-card");
+    expect(card).toHaveTextContent("informe.docx");
+    expect(card).toHaveTextContent("4 B");
+
     await completeLast("ok");
     await screen.findByTestId("hermes-markdown");
     expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
   });
 
-  it("resolves a relative stored url against the configured api base", async () => {
+  it("shows the server's message when an upload is rejected and sends nothing", async () => {
     stubMultipartFetch();
-    // The Rust side may answer with a path relative to the API mount; the
-    // agent fetches it from outside, so the turn text needs the configured
-    // origin instead of the page's.
-    uploadItemUrl = "/api/hermes/media?path=%2Fopt%2Fdata%2Fuploads%2Finforme.pdf&exp=1&sig=test";
+    failUploadOnce = {
+      status: 400,
+      body: {
+        error: {
+          code: "CONTENT_TYPE_MISMATCH",
+          message: "the content of informe.pdf does not match the extension .pdf",
+        },
+      },
+    };
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
     attach([new File(["pdf"], "informe.pdf", { type: "application/pdf" })]);
     fireEvent.change(input(), { target: { value: "adjunto" } });
     fireEvent.click(sendButton());
-    await waitFor(() => expect(creates).toHaveLength(1));
-    expect(String(creates[0].message)).toContain(
-      "[archivo adjunto: http://test.local/api/hermes/media?path=%2Fopt%2Fdata%2Fuploads%2Finforme.pdf&exp=1&sig=test]",
-    );
+
+    expect(
+      await screen.findByText(
+        "the content of informe.pdf does not match the extension .pdf",
+      ),
+    ).toBeInTheDocument();
+    // Nothing is sent: no run, no multipart body, and a retry is offered.
+    expect(creates).toHaveLength(0);
+    expect(multipartSeen).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Reintentar" })).toBeInTheDocument();
+    // JD-B-001: the rejected turn takes its chips with it. Keeping them would
+    // make the next message re-upload the same file; Retry re-sends from the
+    // error bubble, which is where the turn's files live now.
+    expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
+  });
+
+  it("aborts the sibling uploads when one file is rejected", async () => {
+    stubMultipartFetch();
+    failUploadFor = {
+      name: "foto.png",
+      status: 400,
+      body: { error: { code: "UNSUPPORTED_TYPE", message: "foto.png is not an allowed type" } },
+    };
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    // The document rides behind a gate so it is still in flight when the image
+    // is refused: its request must be aborted, not left to finish into a turn
+    // that will never be sent.
+    let release: () => void = () => {};
+    gateUploadFor = "informe.docx";
+    uploadGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    attach([
+      new File(["png"], "foto.png", { type: "image/png" }),
+      new File(["docx"], "informe.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }),
+    ]);
+    fireEvent.change(input(), { target: { value: "adjunto" } });
+    fireEvent.click(sendButton());
+
+    expect(await screen.findByText("foto.png is not an allowed type")).toBeInTheDocument();
+    expect(uploadSignals).toHaveLength(2);
+    expect(uploadSignals[1]?.aborted).toBe(true);
+    expect(creates).toHaveLength(0);
+    release();
+  });
+
+  it("marks each chip subiendo while its upload is in flight and listo once stored", async () => {
+    stubMultipartFetch();
+    let release: () => void = () => {};
+    uploadGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    attach([new File(["png"], "foto.png", { type: "image/png" })]);
+    fireEvent.click(sendButton());
+
+    await waitFor(() => expect(chipStatus()).toHaveAttribute("data-status", "uploading"));
+    expect(chipStatus()).toHaveTextContent("subiendo");
+
+    release();
+    await waitFor(() => expect(chipStatus()).toHaveAttribute("data-status", "ready"));
+    expect(chipStatus()).toHaveTextContent("listo");
     await completeLast("ok");
     await screen.findByTestId("hermes-markdown");
   });
 
-  it("rejects an oversized document locally instead of reporting a lost connection", async () => {
+  it("keeps a queued turn's chips en cola until that turn starts uploading", async () => {
     stubMultipartFetch();
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
-    // 26 MB: one megabyte past the server's per-file budget. Streaming it
-    // would end in a 413 the UI reports as a lost connection.
-    const oversized = new File(["x"], "grande.zip", { type: "application/zip" });
-    Object.defineProperty(oversized, "size", { value: 26 * 1024 * 1024 });
-    attach([oversized]);
-    fireEvent.change(input(), { target: { value: "adjunto" } });
+    await send("uno");
+    await lastStream();
+    attach([new File(["png"], "segundo.png", { type: "image/png" })]);
     fireEvent.click(sendButton());
 
-    expect(
-      await screen.findByText("Hermes rechazó el tamaño del envío."),
-    ).toBeInTheDocument();
+    const queued = await screen.findByTestId("attachment-status");
+    expect(queued).toHaveAttribute("data-status", "queued");
+    expect(queued).toHaveTextContent("en cola");
+
+    await completeLast("uno listo");
+    await waitFor(() => expect(creates).toHaveLength(2));
+    await completeLast("dos listo");
+    await waitFor(() => expect(screen.getAllByTestId("hermes-markdown")).toHaveLength(2));
+  });
+
+  it("rejects a file past its family ceiling without uploading or sending", async () => {
+    stubMultipartFetch();
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    const oversized = new File(["x"], "informe.pdf", { type: "application/pdf" });
+    Object.defineProperty(oversized, "size", { value: 60 * 1024 * 1024 });
+    attach([oversized]);
+
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent("informe.pdf");
+    expect(notice).toHaveTextContent("50 MB");
+    // S3/D-B5: the client refuses before spending network; nothing is queued.
+    expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
+    expect(sendButton()).toBeDisabled();
     expect(uploadedSeen).toEqual([]);
     expect(creates).toHaveLength(0);
     expect(multipartSeen).toHaveLength(0);
-    // The chip stays so the user can drop the file and retry without it.
-    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
   });
 
   it("removes a single attachment before sending", async () => {
@@ -683,27 +866,107 @@ describe("HermesChat", () => {
 
     fireEvent.change(input(), { target: { value: "solo dos" } });
     fireEvent.click(sendButton());
-    // A text file rides the run inline, so the turn is multipart and nothing
-    // is stored server-side.
-    await waitFor(() => expect(multipartSeen).toHaveLength(1));
-    expect(uploadedSeen).toEqual([]);
-    expect(multipartSeen[0].files.map((file) => file.name)).toEqual(["dos.txt"]);
-    expect(String(multipartSeen[0].message)).toContain("solo dos");
+    // A document no longer rides the run: it is stored once and referenced.
+    await waitFor(() => expect(creates).toHaveLength(1));
+    expect(uploadedSeen).toEqual(["dos.txt"]);
+    expect(String(creates[0].message)).toContain("solo dos");
+    expect(String(creates[0].message)).toContain(
+      "[archivo adjunto: dos.txt (text/plain, 1 B), ruta: /opt/data/uploads/up-1.txt]",
+    );
+    expect(multipartSeen).toHaveLength(0);
     await completeLast("ok");
     await screen.findByTestId("hermes-markdown");
   });
 
-  it("accepts files dropped on the chat", async () => {
+  it("accepts several dropped files and shows the hint while dragging", async () => {
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
-    fireEvent.drop(screen.getByTestId("hermes-dropzone"), {
+    const zone = screen.getByTestId("hermes-dropzone");
+    expect(screen.queryByTestId("hermes-drop-hint")).toBeNull();
+
+    fireEvent.dragOver(zone, { dataTransfer: { types: ["Files"] } });
+    expect(screen.getByTestId("hermes-drop-hint")).toHaveTextContent(/Arrastrá y soltá/);
+
+    fireEvent.drop(zone, {
       dataTransfer: {
-        files: [new File(["x"], "drop.zip", { type: "application/zip" })],
+        files: [
+          new File(["x"], "drop.zip", { type: "application/zip" }),
+          new File(["y"], "nota.docx"),
+        ],
         types: ["Files"],
       },
     });
+    expect(screen.queryByTestId("hermes-drop-hint")).toBeNull();
+    const chips = screen.getAllByTestId("attachment-chip");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("drop.zip");
+    expect(chips[1]).toHaveTextContent("nota.docx");
+  });
+
+  it("attaches a file pasted from the clipboard and still sends it with no text", async () => {
+    stubMultipartFetch();
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    fireEvent.paste(input(), {
+      clipboardData: {
+        files: [new File(["png"], "captura.png", { type: "image/png" })],
+        types: ["Files"],
+      },
+    });
+
     const chip = await screen.findByTestId("attachment-chip");
-    expect(chip).toHaveTextContent("drop.zip");
+    expect(chip).toHaveTextContent("captura.png");
+    // S3: attachments keep the send button active with an empty message.
+    expect(sendButton()).toBeEnabled();
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(multipartSeen).toHaveLength(1));
+    expect(multipartSeen[0]).toMatchObject({
+      message: "",
+      files: [{ name: "captura.png", size: 3, type: "image/png" }],
+    });
+    await completeLast("ok");
+    await screen.findByTestId("hermes-markdown");
+  });
+
+  it("still pastes plain text into the textarea without attaching anything", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    fireEvent.paste(input(), {
+      clipboardData: {
+        files: [],
+        types: ["text/plain"],
+        getData: () => "texto pegado",
+      },
+    });
+    expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
+    fireEvent.change(input(), { target: { value: "texto pegado" } });
+    expect(input()).toHaveValue("texto pegado");
+  });
+
+  it("grows the textarea with its content up to max-h-40 and resets it after sending", async () => {
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    const box = input() as HTMLTextAreaElement;
+    let measured = 120;
+    Object.defineProperty(box, "scrollHeight", {
+      configurable: true,
+      get: () => measured,
+    });
+
+    fireEvent.change(box, { target: { value: "uno\ndos\ntres" } });
+    expect(box.style.height).toBe("120px");
+
+    // Past the `max-h-40` cap the box stops growing and scrolls instead.
+    measured = 400;
+    fireEvent.change(box, { target: { value: "uno\ndos\ntres\ncuatro\ncinco\nseis\nsiete" } });
+    expect(box.style.height).toBe("160px");
+
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(creates).toHaveLength(1));
+    // Back to one row: the inline height is dropped, `rows=1` governs again.
+    expect(box.style.height).toBe("");
+    await completeLast("ok");
+    await screen.findByTestId("hermes-markdown");
   });
 
   it("sends a turn with attachments and no text", async () => {
@@ -734,21 +997,44 @@ describe("HermesChat", () => {
     expect(screen.getAllByTestId("attachment-chip")).toHaveLength(20);
   });
 
-  it("turns file links written by Hermes into artifact cards", async () => {
+  it("does not carry a failed turn's files into the next message", async () => {
+    stubMultipartFetch();
+    failCreateOnce = { status: 502, body: { error: { code: "HERMES_UPSTREAM_ERROR" } } };
     localStorage.setItem(HERMES_SESSION_KEY, SESSION);
     render(<HermesChat />);
-    await send("graficame");
-    await completeLast("Te dejo el gráfico: [grafico.png](https://example.test/grafico.png)");
+    attach([new File(["pdf"], "reporte.pdf", { type: "application/pdf" })]);
+    fireEvent.change(input(), { target: { value: "adjunto" } });
+    fireEvent.click(sendButton());
+    expect(await screen.findByText(/No se pudo conectar/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0));
 
-    const card = await screen.findByTestId("hermes-artifact");
-    expect(within(card).getByText("grafico.png")).toBeInTheDocument();
-    expect(within(card).getByRole("link", { name: "Descargar: grafico.png" })).toHaveAttribute(
-      "href",
-      "https://example.test/grafico.png",
-    );
+    // A brand-new message after the failure is clean: no chip, no upload and no
+    // reference to the file that belonged to the turn that failed.
+    fireEvent.change(input(), { target: { value: "otra pregunta" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(creates).toHaveLength(1));
+    expect(uploadedSeen).toEqual(["reporte.pdf"]);
+    expect(String(creates[0].message)).toBe("otra pregunta");
+    expect(String(creates[0].message)).not.toContain("archivo adjunto");
   });
 
-  it("keeps the attachments when the turn fails and retries with them", async () => {
+  it("inlines an image with the type the server sniffed, not the browser guess", async () => {
+    stubMultipartFetch();
+    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+    render(<HermesChat />);
+    await waitFor(() => expect(input()).toBeEnabled());
+    // No declared type: the browser would send octet-stream and the proxy's
+    // `part_for` would degrade the picture to a text descriptor (JD-B-006).
+    attach([new File(["png"], "foto.png")]);
+    fireEvent.change(input(), { target: { value: "mirá" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(multipartSeen).toHaveLength(1));
+    expect(multipartSeen[0].files).toEqual([
+      { name: "foto.png", size: 3, type: "image/png" },
+    ]);
+  });
+
+  it("keeps the attachments when the run fails and re-uploads them on retry", async () => {
     stubMultipartFetch();
     // A document-only turn is JSON, so the failure is injected on the create.
     failCreateOnce = { status: 502, body: { error: { code: "HERMES_UPSTREAM_ERROR" } } };
@@ -759,8 +1045,11 @@ describe("HermesChat", () => {
     fireEvent.click(sendButton());
 
     expect(await screen.findByText(/No se pudo conectar/)).toBeInTheDocument();
-    // The failed turn keeps its chips for the retry.
-    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(1);
+    // JD-B-001: the failed turn's chips leave the composer. Keeping them made
+    // the next message re-upload and re-reference the same files; the retry
+    // data lives in the error bubble instead.
+    expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
+    expect(uploadedSeen).toEqual(["reporte.pdf"]);
 
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
     await waitFor(() => expect(creates).toHaveLength(1));
@@ -807,127 +1096,6 @@ describe("HermesChat", () => {
     fireEvent.click(screen.getByRole("button", { name: "➕ Nueva conversación" }));
     expect(screen.queryAllByTestId("attachment-chip")).toHaveLength(0);
     expect(screen.getByText("Empezá una conversación")).toBeInTheDocument();
-  });
-
-  it("draws a `/files` card for a path in the reply and removes it from the prose", async () => {
-    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
-    render(<HermesChat />);
-    await send("generá el render");
-    await completeLast("El render quedó acá: /tmp/render.png (recién salido).");
-
-    const card = await screen.findByTestId("hermes-artifact");
-    expect(card).toHaveTextContent("render.png");
-    // Spec S9/S11: the card points at the stable `/files/<path>` address, with
-    // no signing round-trip and no raw path left next to it.
-    const hrefs = within(card).getAllByRole("link").map((link) => link.getAttribute("href"));
-    // `Ver` opens the file; `Descargar` adds the `download=` parameter the Rust
-    // route turns into `Content-Disposition: attachment`.
-    expect(hrefs).toEqual([
-      "/files/tmp/render.png",
-      "/files/tmp/render.png?download=render.png",
-    ]);
-    const markdown = screen.getByTestId("hermes-markdown");
-    expect(markdown).not.toHaveTextContent("/tmp/render.png");
-    expect(markdown).toHaveTextContent("El render quedó acá: (recién salido).");
-  });
-
-  it("cards only the scanned paths the file server really serves", async () => {
-    // B-003: a path Hermes prints from its own container (`/tmp/clip.mp4`) or a
-    // deleted file must not become a card that 404s while the prose vanishes.
-    filesProbeStatus = 404;
-    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
-    render(<HermesChat />);
-    await send("pasame el clip");
-    await completeLast("El clip está en /tmp/clip.mp4 pero no lo pude subir.");
-
-    const markdown = await screen.findByTestId("hermes-markdown");
-    await waitFor(() => expect(probedFiles).toEqual(["/files/tmp/clip.mp4"]));
-    expect(screen.queryAllByTestId("hermes-artifact")).toHaveLength(0);
-    expect(markdown).toHaveTextContent("/tmp/clip.mp4");
-  });
-
-  it("keeps the raw path when the existence check fails to answer", async () => {
-    server.use(http.head("**/files/**", () => HttpResponse.error()));
-    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
-    render(<HermesChat />);
-    await send("pasame el video");
-    await completeLast("Está en /tmp/clip.mp4");
-
-    const markdown = await screen.findByTestId("hermes-markdown");
-    expect(screen.queryAllByTestId("hermes-artifact")).toHaveLength(0);
-    expect(markdown).toHaveTextContent("/tmp/clip.mp4");
-  });
-
-  it("keeps the live bubble optimistic and re-checks the path on settle", async () => {
-    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
-    render(<HermesChat />);
-    await send("generá el render");
-    const entry = await lastStream();
-    entry.stream.push({
-      event: "message.delta",
-      run_id: entry.runId,
-      delta: "Listo: /tmp/render.png",
-    });
-
-    // Streaming stays optimistic: the card is drawn without asking the server.
-    const card = await screen.findByTestId("hermes-artifact");
-    expect(card.closest('[data-streaming="true"]')).not.toBeNull();
-    expect(probedFiles).toEqual([]);
-
-    filesProbeStatus = 404;
-    entry.stream.push({
-      event: "run.completed",
-      run_id: entry.runId,
-      output: "Listo: /tmp/render.png",
-    });
-    entry.stream.close();
-
-    // The settled bubble is the honest one: the check failed, so the path is
-    // text again and no card points at a file the server does not have.
-    await waitFor(() =>
-      expect(screen.getByTestId("hermes-markdown")).toHaveTextContent("/tmp/render.png"),
-    );
-    expect(probedFiles).toEqual(["/files/tmp/render.png"]);
-    expect(screen.queryAllByTestId("hermes-artifact")).toHaveLength(0);
-  });
-
-  it("shows the path card while the answer is still streaming", async () => {
-    localStorage.setItem(HERMES_SESSION_KEY, SESSION);
-    render(<HermesChat />);
-    await send("generá la imagen");
-    const entry = await lastStream();
-    entry.stream.push({
-      event: "message.delta",
-      run_id: entry.runId,
-      delta: "Listo, la imagen: /opt/data/cache/scratch/prueba_hermes.png",
-    });
-
-    // Spec S12.3: the card exists before `run.completed`, inside the live
-    // bubble, and the accumulated text no longer shows the raw path.
-    const card = await screen.findByTestId("hermes-artifact");
-    const live = card.closest('[data-streaming="true"]');
-    expect(live).not.toBeNull();
-    expect(card).toHaveTextContent("prueba_hermes.png");
-    expect(within(card).getAllByRole("link")[0]).toHaveAttribute(
-      "href",
-      "/files/opt/data/cache/scratch/prueba_hermes.png",
-    );
-    expect(screen.getByRole("status")).toHaveTextContent("Hermes está trabajando");
-    expect(within(live as HTMLElement).getByTestId("hermes-markdown")).not.toHaveTextContent(
-      "/opt/data/cache/scratch/prueba_hermes.png",
-    );
-
-    entry.stream.push({
-      event: "run.completed",
-      run_id: entry.runId,
-      output: "Listo: /opt/data/cache/scratch/prueba_hermes.png",
-    });
-    entry.stream.close();
-
-    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
-    // The settled bubble keeps the same single card: nothing is duplicated.
-    await waitFor(() => expect(screen.getAllByTestId("hermes-artifact")).toHaveLength(1));
-    expect(screen.getByTestId("hermes-artifact").closest('[data-streaming="true"]')).toBeNull();
   });
 
   it("streams reasoning and tools into a collapsed accordion", async () => {
@@ -1344,6 +1512,107 @@ describe("HermesChat", () => {
       await waitFor(() =>
         expect(screen.getAllByTestId("hermes-markdown")).toHaveLength(2),
       );
+    });
+
+    it("repaints a stored image from its persisted url through the authenticated fetch", async () => {
+      localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+      localStorage.setItem(
+        HERMES_MESSAGES_KEY,
+        JSON.stringify([
+          {
+            id: 5,
+            role: "user",
+            content: "mirá",
+            queued: false,
+            attachments: [
+              {
+                name: "foto.png",
+                size: 12,
+                kind: "image",
+                url: "/api/uploads/up-9",
+                mime_type: "image/png",
+                local_path: "/opt/data/uploads/up-9.png",
+              },
+            ],
+          },
+        ]),
+      );
+      const { unmount } = render(<HermesChat />);
+
+      // D-B2: the element never points at the protected route; the bytes are
+      // fetched with the session bearer and drawn through an object URL.
+      const image = await screen.findByRole("img", { name: "foto.png" });
+      expect(image.getAttribute("src")).toMatch(/^blob:http:\/\/test\.local\//);
+      expect(storedMedia).toEqual([{ id: "up-9", authorization: "Bearer pd_test_token" }]);
+
+      // The blob URL is owned by the bubble and released with it.
+      const blobUrl = image.getAttribute("src")!;
+      unmount();
+      expect(revokedObjectUrls).toContain(blobUrl);
+    });
+
+    it("draws stored video and audio with their native controls", async () => {
+      localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+      localStorage.setItem(
+        HERMES_MESSAGES_KEY,
+        JSON.stringify([
+          {
+            id: 7,
+            role: "user",
+            content: "",
+            queued: false,
+            attachments: [
+              { name: "clip.mp4", size: 2048, kind: "video", url: "/api/uploads/up-v" },
+              { name: "voz.mp3", size: 1024, kind: "audio", url: "/api/uploads/up-a" },
+            ],
+          },
+        ]),
+      );
+      const { container } = render(<HermesChat />);
+
+      const video = await waitFor(() => {
+        const element = container.querySelector("video");
+        expect(element).not.toBeNull();
+        return element as HTMLVideoElement;
+      });
+      expect(video).toHaveAttribute("controls");
+      expect(video.getAttribute("src")).toMatch(/^blob:/);
+
+      const audio = await waitFor(() => {
+        const element = container.querySelector("audio");
+        expect(element).not.toBeNull();
+        return element as HTMLAudioElement;
+      });
+      expect(audio).toHaveAttribute("controls");
+      expect(audio.getAttribute("src")).toMatch(/^blob:/);
+      expect(storedMedia.map((entry) => entry.id)).toEqual(["up-v", "up-a"]);
+    });
+
+    it("falls back to the document card when the stored attachment cannot be read", async () => {
+      storedMediaStatus = 404;
+      localStorage.setItem(HERMES_SESSION_KEY, SESSION);
+      localStorage.setItem(
+        HERMES_MESSAGES_KEY,
+        JSON.stringify([
+          {
+            id: 6,
+            role: "user",
+            content: "mirá",
+            queued: false,
+            attachments: [
+              { name: "foto.png", size: 12, kind: "image", url: "/api/uploads/up-broken" },
+            ],
+          },
+        ]),
+      );
+      render(<HermesChat />);
+
+      // A 401/404 never breaks the bubble: the attachment degrades to its card.
+      const card = await screen.findByTestId("user-attachment-card");
+      expect(card).toHaveTextContent("foto.png");
+      expect(card).toHaveTextContent("12 B");
+      expect(screen.queryByRole("img", { name: "foto.png" })).toBeNull();
+      expect(storedMedia.map((entry) => entry.id)).toEqual(["up-broken"]);
     });
 
     it("persists settled bubbles but never live streaming text", async () => {

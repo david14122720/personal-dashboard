@@ -1,52 +1,31 @@
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import HermesMessageBody from "./HermesMessageBody";
 
-const B64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
-
 describe("hermes message body", () => {
-  it("renders a settled base64 picture inline", () => {
+  it("renders the reply as sanitized Markdown", () => {
     const { container } = render(
-      <HermesMessageBody content={`Mirá:\n![render](data:image/png;base64,${B64})`} final />,
+      <HermesMessageBody content={"**fuerte**\n\n- uno\n- dos"} final />,
     );
-    const image = screen.getByTestId("hermes-inline-image");
-    expect(image.getAttribute("src")).toBe(`data:image/png;base64,${B64}`);
-    expect(image.getAttribute("alt")).toBe("render");
-    expect(image.className).toContain("max-w-full");
-    expect(image.className).toContain("rounded-lg");
-    expect(image.className).toContain("shadow-md");
-    expect(container.textContent).not.toContain("base64");
+    expect(container.querySelector("strong")?.textContent).toBe("fuerte");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
   });
 
-  it("shows the picture while the reply is still streaming", () => {
+  it("never turns a model-authored image into an element", () => {
     const { container } = render(
-      <HermesMessageBody content={`![x](data:image/webp;base64,${B64})`} final={false} />,
+      <HermesMessageBody content={"Mirá:\n![render](https://evil.test/x.png)"} final />,
     );
-    expect(container.querySelector('[data-testid="hermes-inline-image"]')).not.toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("render");
+    expect(container.textContent).not.toContain("evil.test");
   });
 
-  it("hides a half-received payload behind a placeholder", () => {
-    const { container } = render(
-      <HermesMessageBody
-        content={`Procesando\n![x](data:image/png;base64,${B64.slice(0, 30)}`}
-        final={false}
-      />,
-    );
-    expect(screen.queryByTestId("hermes-inline-image")).toBeNull();
-    expect(screen.getByTestId("hermes-pending-image")).not.toBeNull();
-    expect(container.textContent).not.toContain("iVBORw0");
-  });
-
-  it("keeps the prose when a payload is too large to draw", () => {
-    const huge = "A".repeat(8 * 1024 * 1024 + 16);
-    const { container } = render(
-      <HermesMessageBody content={`Antes\n![x](data:image/png;base64,${huge})\nDespués`} final />,
-    );
-    expect(screen.getByTestId("hermes-oversized-image")).not.toBeNull();
-    expect(container.textContent).toContain("Antes");
-    expect(container.textContent).toContain("Después");
-    expect(container.textContent).not.toContain("AAAA");
+  it("renders the same body while streaming and once settled", () => {
+    const source = "**hola**\n\n```js\nconst x = 1;\n```";
+    const streaming = render(<HermesMessageBody content={source} final={false} />).container;
+    const settled = render(<HermesMessageBody content={source} final />).container;
+    expect(streaming.innerHTML).toBe(settled.innerHTML);
+    expect(streaming.querySelector("pre code")?.textContent).toContain("const x = 1;");
   });
 
   it("still renders markdown and never raw html", () => {

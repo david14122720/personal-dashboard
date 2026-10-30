@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ApprovalRequestCard, {
   type ApprovalDecision,
 } from "@/components/hermes/ApprovalRequestCard";
-import ArtifactCard from "@/components/hermes/ArtifactCard";
-import AttachmentBar from "@/components/hermes/AttachmentBar";
+import AttachmentBar, { KindIcon } from "@/components/hermes/AttachmentBar";
 import HermesMessageBody from "@/components/hermes/HermesMessageBody";
 import InteractiveQuestionCard from "@/components/hermes/InteractiveQuestionCard";
 import MicButton from "@/components/hermes/MicButton";
@@ -14,28 +13,29 @@ import ThoughtAccordion, { type ThoughtEntry } from "@/components/hermes/Thought
 import {
   HermesError,
   createHermesRun,
+  fetchHermesUpload,
   getHermesRun,
   isHermesRunActive,
   resolveHermesApproval,
   streamHermesRun,
-  uploadHermesDocuments,
-  absoluteMediaUrl,
-  MAX_UPLOAD_DOCUMENT_BYTES,
+  uploadHermesFile,
   type HermesErrorCode,
   type HermesRunEvent,
   type HermesToolEvent,
+  type HermesUploadedFile,
 } from "@/lib/api/hermes";
-import { collectArtifacts, pathArtifacts, type Artifact } from "@/lib/hermes/artifacts";
-import { filesUrl } from "@/lib/hermes/paths";
 import { formatElapsed } from "@/lib/hermes/elapsed";
 import { splitQuestion, type HermesQuestion } from "@/lib/hermes/questions";
 import {
   classifyFile,
   composeTurnText,
-  isUploadedDocument,
+  formatBytes,
   planAttachments,
   releaseAttachment,
+  travelsInline,
   type AttachmentKind,
+  type AttachmentRejection,
+  type AttachmentUploadStatus,
   type PendingAttachment,
 } from "@/lib/hermes/attachments";
 import {
@@ -53,10 +53,136 @@ import {
 import { t } from "@/lib/i18n";
 
 interface SentAttachment {
+  /** Runtime key of the pending chip; never persisted. */
+  key: string;
   name: string;
   size: number;
   kind: AttachmentKind;
+  /** Blob URL captured at send time; only valid while the chip lives. */
+  previewUrl?: string | null;
+  /** What `POST /api/uploads` answered (S4); the reload-safe source. */
+  url?: string;
+  mime_type?: string;
+  local_path?: string;
 }
+
+/**
+ * Absolute blob URL for one stored attachment, memoized per url and revoked
+ * when the bubble unmounts or the url changes.
+ *
+ * Declared deviation D-B2: `GET /api/uploads/{id}` is session-authenticated
+ * and an `<img>`/`<video>`/`<audio>` element cannot send the bearer, so the
+ * bytes are read once through the authenticated transport and handed to the
+ * element as an object URL. That is also why nothing here ever points the
+ * element at a model-authored address: the source is always a receipt URL.
+ */
+type StoredMediaStatus = "idle" | "loading" | "ready" | "failed";
+
+function useStoredMediaUrl(url: string | undefined): {
+  src: string | null;
+  status: StoredMediaStatus;
+} {
+  const [state, setState] = useState<{ src: string | null; status: StoredMediaStatus }>({
+    src: null,
+    status: url ? "loading" : "idle",
+  });
+
+  useEffect(() => {
+    if (!url) {
+      setState({ src: null, status: "idle" });
+      return;
+    }
+    let cancelled = false;
+    let owned: string | null = null;
+    setState({ src: null, status: "loading" });
+    void fetchHermesUpload(url).then(
+      (blob) => {
+        if (cancelled) return;
+        owned = URL.createObjectURL(blob);
+        setState({ src: owned, status: "ready" });
+      },
+      () => {
+        // An unreadable attachment falls back to its card in the caller.
+        if (!cancelled) setState({ src: null, status: "failed" });
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (owned && typeof URL.revokeObjectURL === "function") {
+        URL.revokeObjectURL(owned);
+      }
+    };
+  }, [url]);
+
+  return state;
+}
+
+/**
+ * One sent attachment inside a user bubble (S5).
+ *
+ * Images, video and audio draw their real element from a blob URL; a document
+ * — and any media whose bytes cannot be read (401/404) — degrades to the card
+ * with name, weight and family icon, so a failed read never breaks the bubble.
+ */
+const UserAttachment = memo(function UserAttachment({
+  attachment,
+}: {
+  attachment: SentAttachment;
+}) {
+  // JD-B-005: while the local preview is alive the bytes are already in memory,
+  // so reading them back would download a 100 MB video a second time.
+  const stored = useStoredMediaUrl(
+    attachment.kind === "document" || attachment.previewUrl ? undefined : attachment.url,
+  );
+  // A stored url is the only reload-safe source; the chip's blob URL covers
+  // the frame before the upload receipt lands and never outlives the chip. A
+  // failed read (401/404) drops straight to the card.
+  const src =
+    stored.status === "failed"
+      ? null
+      : (stored.src ?? attachment.previewUrl ?? null);
+
+  if (src && attachment.kind === "image") {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={src}
+        alt={attachment.name}
+        loading="lazy"
+        className="max-h-48 max-w-full rounded-lg border border-hair object-contain"
+      />
+    );
+  }
+  if (src && attachment.kind === "video") {
+    return (
+      <video
+        controls
+        src={src}
+        aria-label={attachment.name}
+        className="max-h-56 max-w-full rounded-lg border border-hair"
+      />
+    );
+  }
+  if (src && attachment.kind === "audio") {
+    return <audio controls src={src} aria-label={attachment.name} className="w-full min-w-[12rem]" />;
+  }
+  return (
+    <span
+      data-testid="user-attachment-card"
+      className="flex min-w-0 max-w-full items-center gap-2 rounded-md bg-deck/60 px-2 py-1 text-[11px] text-slate-200"
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-sky-500/10">
+        <KindIcon kind={attachment.kind} />
+      </span>
+      <span className="min-w-0">
+        <span className="block max-w-[12rem] truncate" title={attachment.name}>
+          {attachment.name}
+        </span>
+        <span className="block text-[10px] text-muted">{formatBytes(attachment.size)}</span>
+      </span>
+    </span>
+  );
+});
 
 /** A security gate the run is parked on, copied off the `approval.request`. */
 interface ApprovalRequest {
@@ -81,7 +207,6 @@ type Bubble =
       id: number;
       role: "assistant";
       content: string;
-      artifacts: Artifact[];
       warnings: string[];
       thoughts: ThoughtEntry[];
       question: HermesQuestion | null;
@@ -103,42 +228,6 @@ interface QueuedTurn {
   content: string;
   files: File[];
   ids: string[];
-}
-
-/** One scanned absolute path, ready to become a `/files` card. */
-type ScannedPath = ReturnType<typeof pathArtifacts>[number];
-
-/** A probe that hangs must not hold the settled reply hostage. */
-const FILE_PROBE_TIMEOUT_MS = 2_000;
-
-/** Does the file server really serve this path? `HEAD` only, bounded. */
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    const response = await fetch(filesUrl(path), {
-      method: "HEAD",
-      signal: AbortSignal.timeout(FILE_PROBE_TIMEOUT_MS),
-    });
-    return response.ok;
-  } catch {
-    // A rejected request, an aborted timeout or a network error means the file
-    // is not proven: the callers keep the raw path instead of carding it.
-    return false;
-  }
-}
-
-/**
- * The scanned paths whose file the server can actually serve (B-003).
- *
- * Hermes prints absolute paths from its own container (`/tmp/clip.mp4`), can
- * hallucinate one and files disappear, so a card built blindly points at a 404
- * while the prose that mentioned it is gone. Only the settled reply pays for
- * the check; the live bubble stays optimistic.
- */
-async function verifiedPathArtifacts(output: string): Promise<ScannedPath[]> {
-  const candidates = pathArtifacts(output);
-  if (candidates.length === 0) return [];
-  const checks = await Promise.all(candidates.map((item) => fileExists(item.path)));
-  return candidates.filter((_, index) => checks[index]);
 }
 
 let nextBubbleId = 1;
@@ -167,7 +256,16 @@ function toStoredBubble(bubble: Bubble): StoredBubble {
         id: bubble.id,
         role: "user",
         content: bubble.content,
-        attachments: bubble.attachments.map((item) => ({ ...item })),
+        // The runtime key and the chip's blob URL never reach storage: the
+        // next load must repaint from the upload receipt alone (S5).
+        attachments: bubble.attachments.map((item) => ({
+          name: item.name,
+          size: item.size,
+          kind: item.kind,
+          ...(item.url ? { url: item.url } : {}),
+          ...(item.mime_type ? { mime_type: item.mime_type } : {}),
+          ...(item.local_path ? { local_path: item.local_path } : {}),
+        })),
         queued: false,
       };
     case "assistant":
@@ -175,7 +273,6 @@ function toStoredBubble(bubble: Bubble): StoredBubble {
         id: bubble.id,
         role: "assistant",
         content: bubble.content,
-        artifacts: bubble.artifacts.map((item) => ({ ...item })),
         warnings: [...bubble.warnings],
         thoughts: bubble.thoughts.map((entry) => ({ ...entry })),
         question: bubble.question ? { ...bubble.question } : null,
@@ -201,9 +298,14 @@ function fromStoredBubble(stored: StoredBubble): Bubble {
         role: "user",
         content: stored.content,
         attachments: stored.attachments.map((item) => ({
+          key: "",
           name: item.name,
           size: item.size,
           kind: item.kind as AttachmentKind,
+          previewUrl: null,
+          url: item.url,
+          mime_type: item.mime_type,
+          local_path: item.local_path,
         })),
         queued: false,
       };
@@ -212,10 +314,6 @@ function fromStoredBubble(stored: StoredBubble): Bubble {
         id: stored.id,
         role: "assistant",
         content: stored.content,
-        artifacts: stored.artifacts.map((item) => ({
-          ...item,
-          kind: item.kind as Artifact["kind"],
-        })),
         warnings: [...stored.warnings],
         thoughts: stored.thoughts.map(
           (entry): ThoughtEntry => ({
@@ -314,8 +412,17 @@ const UNMAPPABLE_APPROVAL_NOTICE =
  * is still held, so the user sees this instead of a frozen chat. Hardcoded
  * Spanish on purpose (i18n is out of scope for this fix).
  */
+/** A single upload that never settles must not hold the turn hostage. */
+const UPLOAD_TIMEOUT_MS = 120_000;
+
 const STREAM_LOST_STATUS =
   "Se perdi\u00f3 el stream, reconectando\u2026 Pod\u00e9s reintentar el mensaje o empezar una nueva conversaci\u00f3n.";
+
+/**
+ * Tailwind `max-h-40` in pixels: S3's auto-growing composer grows with its
+ * content up to ten rems and then scrolls.
+ */
+const COMPOSER_MAX_HEIGHT = 160;
 
 /**
  * Single mapper for both approval paths so they cannot drift (MEDIUM-2 +
@@ -408,6 +515,10 @@ export default function HermesChat() {
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  /** Per-chip upload state for the turn in flight (S3/D-B4). */
+  const [uploadStatus, setUploadStatus] = useState<
+    Record<string, AttachmentUploadStatus>
+  >({});
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   // `live` spans the whole run (create → terminal): the clock, the streamed
@@ -470,18 +581,6 @@ export default function HermesChat() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<PendingAttachment[]>([]);
   attachmentsRef.current = attachments;
-
-  // The streaming body goes through the same interceptor as a settled one, so
-  // a generated image appears as soon as its path arrives (spec S12.3), not
-  // only when the run ends. Memoized on the accumulated text: every flush
-  // re-renders, the artifact scan must not run for unrelated state.
-  const liveCollected = useMemo(
-    () =>
-      live && live.content.length > 0
-        ? collectArtifacts(live.content, pathArtifacts(live.content))
-        : null,
-    [live?.content],
-  );
 
   // Recover or mint the UUID after mount: the static export prerenders this
   // page, and localStorage does not exist on the server. The settled
@@ -570,15 +669,38 @@ export default function HermesChat() {
     [],
   );
 
+  // Composer auto-growth (S3). The box is collapsed to `auto` and its
+  // `scrollHeight` measured once per keystroke, then capped at the CSS
+  // `max-h-40` (`COMPOSER_MAX_HEIGHT`) so it never eats the transcript. The
+  // effect depends on `input` only — never on `live` — so streaming a reply
+  // cannot re-measure and thrash the layout. Emptying the box (a send) drops
+  // the inline height so `rows={1}` governs again.
+  useEffect(() => {
+    const box = inputRef.current;
+    if (!box) return;
+    if (input.length === 0) {
+      box.style.height = "";
+      return;
+    }
+    box.style.height = "auto";
+    box.style.height = `${Math.min(box.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+  }, [input]);
+
   function clearAttachments() {
     attachmentsRef.current.forEach(releaseAttachment);
     setAttachments([]);
+    setUploadStatus({});
   }
 
   /** Drop only the chips that travelled with the successful turn. */
   function clearSentAttachments(ids: readonly string[]) {
     if (ids.length === 0) return;
     const sent = new Set(ids);
+    setUploadStatus((prev) => {
+      const next = { ...prev };
+      sent.forEach((id) => delete next[id]);
+      return next;
+    });
     setAttachments((prev) => {
       const keep: PendingAttachment[] = [];
       prev.forEach((item) => {
@@ -590,6 +712,12 @@ export default function HermesChat() {
   }
 
   function removeAttachment(id: string) {
+    setUploadStatus((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setAttachments((prev) => {
       const target = prev.find((item) => item.id === id);
       if (target) releaseAttachment(target);
@@ -597,21 +725,28 @@ export default function HermesChat() {
     });
   }
 
+  /**
+   * Composer copy for a rejected file. The planner already names the exact
+   * rule that failed; `hermes.errorTooManyAttachments` stays the count message
+   * because it is the one the i18n catalog already carries.
+   */
+  function rejectionNotice(rejection: AttachmentRejection): string {
+    if (rejection.code === "count") return t(REJECTION_KEY);
+    if (rejection.code === "size") {
+      return `“${rejection.filename}” supera el límite de ${rejection.detail ?? ""} para su tipo.`;
+    }
+    return `“${rejection.filename}” no es un tipo de archivo admitido.`;
+  }
+
   function addFiles(files: File[]) {
     if (files.length === 0) return;
-    const { accepted, rejection } = planAttachments(attachmentsRef.current, files);
+    const { accepted, rejections } = planAttachments(attachmentsRef.current, files);
     if (accepted.length > 0) {
       setAttachments((prev) => [...prev, ...accepted]);
     }
-    if (rejection) {
-      setNotice(
-        t(REJECTION_KEY, {
-          name: rejection.filename ?? "",
-        }),
-      );
-    } else {
-      setNotice(null);
-    }
+    setNotice(
+      rejections.length > 0 ? rejections.map(rejectionNotice).join(" ") : null,
+    );
   }
 
   function pushError(
@@ -634,27 +769,18 @@ export default function HermesChat() {
     ]);
   }
 
-  /** The authoritative output becomes the assistant bubble (cards + split). */
-  async function pushAssistant(
-    output: string,
-    warnings: string[],
-    verified?: ScannedPath[],
-  ) {
-    // Universal path interceptor (spec S9/S11): every absolute path Hermes
-    // prints becomes a stable `/files/<path>` card and leaves the prose, so the
-    // same path is never both a card and raw text — no signing round-trip.
-    // Only paths the file server proves it serves are carded (B-003); the
-    // others stay in the prose, which is the honest state.
-    const delivered = verified ?? (await verifiedPathArtifacts(output));
-    const collected = collectArtifacts(output, delivered);
-    const split = splitQuestion(collected.text);
+  /** The authoritative output becomes the assistant bubble. */
+  function pushAssistant(output: string, warnings: string[]) {
+    // Owner spec S2: a reply is text and clean Markdown. Paths, `MEDIA:`
+    // prefixes and `data:` payloads are no longer intercepted, so what Hermes
+    // wrote is exactly what the bubble shows.
+    const split = splitQuestion(output);
     setMessages((prev) => [
       ...prev,
       {
         id: bubbleId(),
         role: "assistant",
         content: split.text,
-        artifacts: collected.artifacts,
         warnings,
         thoughts: thoughtsRef.current,
         question: split.question,
@@ -793,10 +919,18 @@ export default function HermesChat() {
       const output =
         typeof payload.output === "string" ? payload.output : contentRef.current;
       clearSentAttachments(sentIds);
-      void pushAssistant(output, []).finally(() => pumpQueue());
+      // `pushAssistant` is synchronous now that output rendering is gone (S2):
+      // draw the settled bubble, then release the queued turn.
+      pushAssistant(output, []);
+      pumpQueue();
     } else {
       // The failed turn itself is retryable; the queue still releases.
       if (!clearRunState(runId)) return;
+      // JD-B-001: the chips belong to the turn that failed. Leaving them in the
+      // composer made the next message re-upload and re-reference the same
+      // files, so the follow-up carried the previous turn's attachments. The
+      // error bubble keeps `retryFiles`, which is what Retry needs.
+      clearSentAttachments(sentIds);
       pushError("upstream", terminalMessage(payload), { ...lastTurnRef.current });
       pumpQueue();
     }
@@ -863,14 +997,12 @@ export default function HermesChat() {
     if (status.status === "completed" && status.output.trim().length > 0) {
       const output = status.output;
       const last = messagesRef.current[messagesRef.current.length - 1];
-      // Same transformation as `pushAssistant`, so a resumed run whose reply
-      // mentions a path is not appended twice on top of its stored bubble. The
-      // probes are shared: the resumed bubble pays for them once.
-      const delivered = await verifiedPathArtifacts(output);
-      const prose = splitQuestion(collectArtifacts(output, delivered).text).text;
+      // Same transformation as `pushAssistant`, so a resumed run is not
+      // appended twice on top of the bubble that was already stored.
+      const prose = splitQuestion(output).text;
       if (last?.role !== "assistant" || (last.content !== output && last.content !== prose)) {
         thoughtsRef.current = [];
-        await pushAssistant(output, [], delivered);
+        pushAssistant(output, []);
       }
     } else if (status.error && status.error.trim().length > 0) {
       pushError("upstream", status.error, { content: "", files: [], ids: [] });
@@ -1025,6 +1157,36 @@ export default function HermesChat() {
     startSubscription(controller.signal, 0);
   }
 
+  /**
+   * Persist the receipt of every uploaded attachment into the waiting user
+   * bubble, keyed by the pending chip id. This is what lets the transcript
+   * repaint an image or a video after a reload (S5): `url`, `mime_type` and
+   * `local_path` come only from S4's `/api/uploads` answer.
+   */
+  function recordStoredUploads(stored: ReadonlyMap<string, HermesUploadedFile>) {
+    if (stored.size === 0) return;
+    setMessages((prev) =>
+      prev.map((bubble) => {
+        if (bubble.role !== "user") return bubble;
+        if (!bubble.attachments.some((item) => stored.has(item.key))) return bubble;
+        return {
+          ...bubble,
+          attachments: bubble.attachments.map((item) => {
+            const upload = stored.get(item.key);
+            return upload
+              ? {
+                  ...item,
+                  url: upload.url,
+                  mime_type: upload.mime_type,
+                  local_path: upload.local_path,
+                }
+              : item;
+          }),
+        };
+      }),
+    );
+  }
+
   async function startRun(content: string, files: File[], sentIds: readonly string[]) {
     const session = sessionRef.current;
     if (!session) {
@@ -1039,44 +1201,87 @@ export default function HermesChat() {
       window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
     }
-    // Spec S8: a binary document is stored by the Rust side first and then
-    // referenced by URL in the turn, because the Runs API cannot carry binary
-    // files. Text-like files keep the inline multipart path (the runs proxy
-    // still inlines up to 16 KB into the prompt), images keep the inline
-    // data-URL path and audio keeps its degraded note.
-    let turnText = content;
-    let turnFiles = files;
-    const documents = files.filter((file) => isUploadedDocument(classifyFile(file)));
-    // Past the server's per-file budget the stream is rejected only after the
-    // last byte, which surfaces as "connection lost". Reject it before sending.
-    if (documents.some((file) => file.size > MAX_UPLOAD_DOCUMENT_BYTES)) {
+    // S4 + D-B1: every attachment goes to `/api/uploads` first, one request
+    // per file, all in flight at once. The receipt is the only source of the
+    // path Hermes reads and of the url the transcript repaints from.
+    const items = sentIds.flatMap((id, index) => {
+      const file = files[index];
+      if (!(file instanceof File)) return [];
+      const kind: AttachmentKind =
+        attachmentsRef.current.find((item) => item.id === id)?.kind ??
+        classifyFile(file) ??
+        "document";
+      return [{ id, file, kind }];
+    });
+    let uploaded: { id: string; kind: AttachmentKind; file: File; receipt: HermesUploadedFile }[];
+    // One batch, one abort: a rejected file must stop its siblings instead of
+    // letting a 100 MB video finish uploading into a turn that will never be
+    // sent. The timer bounds a stalled request, so a chip cannot stay on
+    // "uploading" forever while the error bubble already retried the turn.
+    const batch = new AbortController();
+    // JD-B-009: a fixed two minutes fails a 100 MB video on any uplink slower
+    // than ~6.7 Mbit/s. The deadline follows the largest file, keeping a floor
+    // for small ones and a generous 4 s/MB budget for the ceiling of S3.
+    const budget = Math.max(
+      UPLOAD_TIMEOUT_MS,
+      ...items.map((item) => Math.ceil(item.file.size / (1024 * 1024)) * 4_000),
+    );
+    const timeout = AbortSignal.timeout(budget);
+    const signal =
+      typeof AbortSignal.any === "function" ? AbortSignal.any([batch.signal, timeout]) : batch.signal;
+    try {
+      uploaded = await Promise.all(
+        items.map(async (item) => {
+          setUploadStatus((prev) => ({ ...prev, [item.id]: "uploading" }));
+          try {
+            const receipt = await uploadHermesFile(item.file, signal);
+            setUploadStatus((prev) => ({ ...prev, [item.id]: "ready" }));
+            return { ...item, receipt };
+          } catch (error) {
+            setUploadStatus((prev) => ({ ...prev, [item.id]: "error" }));
+            batch.abort();
+            throw error;
+          }
+        }),
+      );
+    } catch (error) {
+      // A rejected upload sends nothing: the error bubble keeps the turn and
+      // its chips for a retry, and the server's own message is what it shows.
       syncStarting(false);
-      pushError("too_large", null, { content, files, ids: [...sentIds] });
+      const code = error instanceof HermesError ? error.code : "network";
+      const message = error instanceof HermesError ? error.message : null;
+      // JD-B-001 applies to this failure too: the chips travelled with the turn
+      // that just failed, so they must not ride along with the next message.
+      clearSentAttachments(sentIds);
+      pushError(code, message, { content, files, ids: [...sentIds] });
       pumpQueue();
       return;
     }
-    if (documents.length > 0) {
-      try {
-        const uploaded = await uploadHermesDocuments(documents);
-        turnText = composeTurnText(
-          content,
-          uploaded.map((item) => absoluteMediaUrl(item.url)),
-        );
-        turnFiles = files.filter((file) => !documents.includes(file));
-      } catch (error) {
-        syncStarting(false);
-        const code = error instanceof HermesError ? error.code : "network";
-        pushError(code, null, { content, files, ids: [...sentIds] });
-        pumpQueue();
-        return;
-      }
-    }
+    recordStoredUploads(new Map(uploaded.map((item) => [item.id, item.receipt])));
+    // S4: an image ≤ 5 MB travels inline as an `image_url` part; everything
+    // else is uploaded once and referenced by the path the server chose, so a
+    // 100 MB video never enters the Runs payload.
+    const turnText = composeTurnText(
+      content,
+      uploaded.filter((item) => !travelsInline(item.kind)).map((item) => item.receipt),
+    );
+    // JD-B-006: the runs proxy decides `image_url` by the part's MIME, and the
+    // browser's guess is not evidence. Relabel each inline image with the type
+    // the server sniffed, or a `.png` sent as octet-stream would degrade to a
+    // text descriptor and the model would never see the picture.
+    const turnFiles = uploaded
+      .filter((item) => travelsInline(item.kind))
+      .map(
+        (item) =>
+          new File([item.file], item.file.name, { type: item.receipt.mime_type || item.file.type }),
+      );
     let created: { runId: string; createdAt: number };
     try {
       created = await createHermesRun(session, { content: turnText, files: turnFiles });
     } catch (error) {
       syncStarting(false);
       const code = error instanceof HermesError ? error.code : "network";
+      clearSentAttachments(sentIds);
       pushError(code, null, { content, files, ids: [...sentIds] });
       pumpQueue();
       return;
@@ -1165,9 +1370,20 @@ export default function HermesChat() {
     attachStream(runId, createdMs, [], initialApproval, initialUnmappable);
   }
 
+  /** Mark the turn's chips as waiting, before the first upload starts. */
+  function markQueued(ids: readonly string[]) {
+    if (ids.length === 0) return;
+    setUploadStatus((prev) => {
+      const next = { ...prev };
+      for (const id of ids) next[id] = "queued";
+      return next;
+    });
+  }
+
   /** Push a user bubble and start now, or queue behind the active run. */
   function sendTurn(content: string, files: File[], sentIds: readonly string[]) {
-    const pending = sentIds.length > 0 ? attachmentsRef.current : [];
+    const sent = new Set(sentIds);
+    const pending = attachmentsRef.current.filter((item) => sent.has(item.id));
     const queued = startingRef.current || activeRunRef.current !== null;
     const id = bubbleId();
     setMessages((prev) => [
@@ -1177,13 +1393,16 @@ export default function HermesChat() {
         role: "user",
         content,
         attachments: pending.map<SentAttachment>((item) => ({
+          key: item.id,
           name: item.file.name,
           size: item.file.size,
           kind: item.kind,
+          previewUrl: item.previewUrl,
         })),
         queued,
       },
     ]);
+    markQueued(sentIds);
     queueOrStart(content, files, sentIds, id);
   }
 
@@ -1295,6 +1514,7 @@ export default function HermesChat() {
     inputRef.current?.focus();
     // The user bubble is already on screen: re-send without drawing it twice.
     // Like any send, it queues behind a running run instead of aborting it.
+    markQueued(message.retryIds);
     queueOrStart(message.retryContent, message.retryFiles, message.retryIds, null);
   }
 
@@ -1398,6 +1618,15 @@ export default function HermesChat() {
         </button>
       </header>
 
+      {dragging ? (
+        <p
+          data-testid="hermes-drop-hint"
+          className="border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs font-medium text-sky-200 sm:px-6"
+        >
+          {t("hermes.dropHint")}
+        </p>
+      ) : null}
+
       <div
         ref={logRef}
         role="log"
@@ -1495,19 +1724,14 @@ export default function HermesChat() {
                     {message.attachments.length > 0 ? (
                       <ul
                         aria-label={t("hermes.attachmentsLabel")}
-                        className={`flex w-full min-w-0 flex-wrap gap-1.5 ${message.content ? "mt-2" : ""}`}
+                        className={`flex w-full min-w-0 flex-wrap items-start gap-1.5 ${message.content ? "mt-2" : ""}`}
                       >
                         {message.attachments.map((item, index) => (
                           <li
                             key={`${message.id}-attachment-${index}`}
-                            className="flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-deck/60 px-2 py-1 text-[11px] text-slate-200"
+                            className="flex min-w-0 max-w-full"
                           >
-                            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-3.5 w-3.5 text-sky-300">
-                              <path d="M7.5 11.5l4-4a2.5 2.5 0 013.5 3.5l-5 5a4 4 0 01-5.5-5.5l5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                            </svg>
-                            <span className="max-w-[10rem] truncate" title={item.name}>
-                              {item.name}
-                            </span>
+                            <UserAttachment attachment={item} />
                           </li>
                         ))}
                       </ul>
@@ -1535,13 +1759,6 @@ export default function HermesChat() {
                         ))}
                       </ul>
                     ) : null}
-                    {message.artifacts.length > 0 ? (
-                      <div className="mt-3 grid gap-2">
-                        {message.artifacts.map((artifact) => (
-                          <ArtifactCard key={artifact.id} artifact={artifact} />
-                        ))}
-                      </div>
-                    ) : null}
                     {message.question ? (
                       <InteractiveQuestionCard
                         question={message.question}
@@ -1562,15 +1779,8 @@ export default function HermesChat() {
               <p className="sr-only">{t("hermes.assistant")}</p>
               <ThoughtAccordion entries={live.thoughts} />
               <div data-testid="hermes-markdown">
-                <HermesMessageBody content={liveCollected?.text ?? live.content} final={false} />
+                <HermesMessageBody content={live.content} final={false} />
               </div>
-              {liveCollected && liveCollected.artifacts.length > 0 ? (
-                <div className="mt-3 grid gap-2">
-                  {liveCollected.artifacts.map((artifact) => (
-                    <ArtifactCard key={artifact.id} artifact={artifact} />
-                  ))}
-                </div>
-              ) : null}
               {live.approval ? (
                 <ApprovalRequestCard
                   tool={live.approval.tool}
@@ -1666,7 +1876,12 @@ export default function HermesChat() {
           </p>
         ) : null}
 
-        <AttachmentBar items={attachments} onRemove={removeAttachment} />
+        <AttachmentBar
+          items={attachments}
+          onRemove={removeAttachment}
+          disabled={starting}
+          statusOf={(id) => uploadStatus[id]}
+        />
 
         <div className="flex items-end gap-2">
           <button
@@ -1712,6 +1927,13 @@ export default function HermesChat() {
             rows={1}
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onPaste={(event) => {
+              // S3: a screenshot pasted with Ctrl+V / Cmd+V becomes an
+              // attachment through the same planner as the clip and the drop.
+              // Plain text paste is untouched: the default is never prevented.
+              const pasted = Array.from(event.clipboardData?.files ?? []);
+              if (pasted.length > 0) addFiles(pasted);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();

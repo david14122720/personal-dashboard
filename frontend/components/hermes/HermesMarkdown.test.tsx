@@ -2,9 +2,6 @@ import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import HermesMarkdown from "./HermesMarkdown";
 
-const B64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
-
 function html(source: string) {
   return render(<HermesMarkdown>{source}</HermesMarkdown>).container;
 }
@@ -67,26 +64,47 @@ describe("hermes markdown", () => {
     expect(container.textContent).toContain('<img src=x onerror="alert(1)">');
   });
 
-  it("renders only the proxy's signed media URL as an image", () => {
-    const signed =
-      "/api/hermes/media?path=%2Fopt%2Fdata%2Fcache%2Fscratch%2Fa.png&exp=999&sig=abc";
-    const container = html(`![vista](${signed})`);
-    const img = container.querySelector("img");
-    expect(img?.getAttribute("src")).toBe(signed);
-    expect(img?.getAttribute("referrerpolicy")).toBe("no-referrer");
-    expect(img?.className).toContain("max-w-full");
-    expect(img?.className).toContain("rounded-lg");
-  });
+  it("renders a model-authored image as its caption and never loads the url", () => {
+    const container = html(
+      [
+        "Antes",
+        "",
+        "![](https://evil.test/x.png)",
+        "![vista de prueba](https://evil.test/y.webp)",
+        "",
+        "**fuerte**",
+        "",
+        "- uno",
+        "- dos",
+        "",
+        "```js",
+        "const x = 1;",
+        "```",
+      ].join("\n"),
+    );
 
-  it("refuses remote hosts and svg payloads", () => {
-    const remote = html("![x](https://evil.test/a.png)");
-    expect(remote.querySelector("img")).toBeNull();
-    const svg = html(`![x](data:image/svg+xml;base64,${B64})`);
-    expect(svg.querySelector("img")).toBeNull();
-  });
-
-  it("does not render an unsigned media path", () => {
-    const container = html("![x](/api/hermes/media?path=/opt/data/cache/scratch/a.png)");
+    // Owner spec S2: a reply is clean Markdown. The caption survives as prose,
+    // the remote url is never fetched and never reaches the DOM.
     expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("vista de prueba");
+    expect(container.textContent).not.toContain("evil.test");
+    // The rest of the Markdown still renders around the collapsed image.
+    expect(container.querySelector("strong")?.textContent).toBe("fuerte");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+    expect(container.querySelector("pre code")?.textContent).toContain("const x = 1;");
+  });
+
+  it("renders no image for any source, including a same-origin path or a data url", () => {
+    const sources = [
+      "/api/uploads/3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a",
+      "/api/hermes/media?path=%2Fopt%2Fdata%2Fu.png&exp=1&sig=x",
+      "data:image/png;base64,iVBORw0KGgo=",
+      "blob:http://lan.local/abc",
+    ];
+    for (const src of sources) {
+      const container = html(`![captura](${src})`);
+      expect(container.querySelector("img"), src).toBeNull();
+      expect(container.textContent).toContain("captura");
+    }
   });
 });

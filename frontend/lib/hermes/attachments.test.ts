@@ -1,54 +1,126 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ATTACHMENTS, classifyFile, formatBytes, makeAttachment, planAttachments, voiceFileName, composeTurnText, isUploadedDocument } from "./attachments";
+
+import {
+  maxBytesFor,
+  MAX_ATTACHMENTS,
+  attachmentReference,
+  classifyFile,
+  composeTurnText,
+  formatBytes,
+  makeAttachment,
+  planAttachments,
+  travelsInline,
+  voiceFileName,
+  type StoredUpload,
+} from "./attachments";
+
+const MB = 1024 * 1024;
 
 function file(name: string, size: number, type = ""): File {
   return new File([new Uint8Array(size)], name, { type });
 }
 
-describe("hermes attachments", () => {
-  it("classifies by mime first and by extension as fallback", () => {
-    expect(classifyFile(file("foto.png", 4, "image/png"))).toBe("image");
-    expect(classifyFile(file("nota.webm", 4, "audio/webm"))).toBe("audio");
-    expect(classifyFile(file("notas.md", 4, "text/markdown"))).toBe("text");
-    expect(classifyFile(file("datos.json", 4))).toBe("text");
-    expect(classifyFile(file("codigo.rs", 4))).toBe("text");
-    expect(classifyFile(file("backup.zip", 4))).toBe("other");
-    expect(classifyFile(file("sin-extension", 4))).toBe("other");
-  });
+/** A File that reports `size` without allocating megabytes in the test heap. */
+function sizedFile(name: string, size: number, type = ""): File {
+  const created = file(name, 1, type);
+  Object.defineProperty(created, "size", { value: size });
+  return created;
+}
 
-  it("accepts a mixed batch and keeps the order", () => {
+function uploaded(overrides: Partial<StoredUpload> = {}): StoredUpload {
+  const id = "3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a";
+  return {
+    id,
+    name: "informe.docx",
+    mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    size: 2048,
+    url: `/api/uploads/${id}`,
+    local_path: `/opt/data/uploads/${id}.docx`,
+    ...overrides,
+  };
+}
+
+describe("hermes attachments — S3 allowlist and ceilings", () => {
+  it("accepts each allowed family exactly at its ceiling", () => {
     const plan = planAttachments([], [
-      file("a.png", 10, "image/png"),
-      file("b.pdf", 20, "application/pdf"),
-      file("c.webm", 30, "audio/webm"),
+      sizedFile("foto.png", 5 * MB, "image/png"),
+      sizedFile("clip.mp4", 100 * MB, "video/mp4"),
+      sizedFile("voz.mp3", 20 * MB, "audio/mpeg"),
+      sizedFile("informe.docx", 50 * MB, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
     ]);
-    expect(plan.rejection).toBeNull();
-    expect(plan.accepted.map((item) => item.file.name)).toEqual(["a.png", "b.pdf", "c.webm"]);
+
+    expect(plan.rejections).toEqual([]);
+    expect(plan.accepted.map((item) => [item.file.name, item.kind])).toEqual([
+      ["foto.png", "image"],
+      ["clip.mp4", "video"],
+      ["voz.mp3", "audio"],
+      ["informe.docx", "document"],
+    ]);
   });
 
-  it("accepts files of any size, including a 60 MB archive", () => {
+  it("rejects foo.exe as a type and keeps the valid files of the same batch", () => {
     const plan = planAttachments([], [
-      file("ok.txt", 10),
-      file("grande.zip", 60 * 1024 * 1024, "application/zip"),
+      file("foo.exe", 10, "application/x-msdownload"),
+      file("informe.pdf", 10, "application/pdf"),
     ]);
-    expect(plan.rejection).toBeNull();
-    expect(plan.accepted.map((item) => item.file.name)).toEqual(["ok.txt", "grande.zip"]);
+
+    expect(plan.accepted.map((item) => item.file.name)).toEqual(["informe.pdf"]);
+    expect(plan.rejections).toEqual([
+      { code: "type", filename: "foo.exe", detail: expect.stringContaining("pdf") },
+    ]);
   });
 
-  it("rejects the 21st file", () => {
-    const existing = Array.from({ length: MAX_ATTACHMENTS }, (_, index) =>
-      makeAttachment(file(`f${index}.txt`, 1)),
+  it("rejects a 6 MB png as a size violation and keeps the valid files of the same batch", () => {
+    const plan = planAttachments([], [
+      sizedFile("captura.png", 6 * MB, "image/png"),
+      file("nota.txt", 10, "text/plain"),
+    ]);
+
+    expect(plan.accepted.map((item) => item.file.name)).toEqual(["nota.txt"]);
+    expect(plan.rejections).toEqual([
+      { code: "size", filename: "captura.png", detail: "5 MB" },
+    ]);
+  });
+
+  it("rejects the 21st file as a count overflow and keeps the valid sibling", () => {
+    const existing = Array.from({ length: MAX_ATTACHMENTS - 1 }, (_, index) =>
+      makeAttachment(file(`f${index}.txt`, 1), "document"),
     );
-    const plan = planAttachments(existing, [file("extra.txt", 1)]);
-    expect(plan.accepted).toHaveLength(0);
-    expect(plan.rejection).toEqual({ code: "too_many", filename: "extra.txt" });
+    const plan = planAttachments(existing, [file("bueno.txt", 1), file("extra.txt", 1)]);
+
+    expect(plan.accepted.map((item) => item.file.name)).toEqual(["bueno.txt"]);
+    expect(plan.rejections).toEqual([
+      { code: "count", filename: "extra.txt", detail: String(MAX_ATTACHMENTS) },
+    ]);
   });
 
-  it("has no total byte budget either", () => {
-    const existing = [makeAttachment(file("previo.bin", 500 * 1024 * 1024))];
-    const plan = planAttachments(existing, [file("resto.bin", 600 * 1024 * 1024)]);
-    expect(plan.rejection).toBeNull();
-    expect(plan.accepted).toHaveLength(1);
+  it("classifies the four families by extension, never by the declared mime", () => {
+    expect(classifyFile(file("foto.png", 4, "application/octet-stream"))).toBe("image");
+    expect(classifyFile(file("clip.mov", 4, ""))).toBe("video");
+    expect(classifyFile(file("nota.ogg", 4, "audio/ogg"))).toBe("audio");
+    expect(classifyFile(file("planilla.xlsx", 4))).toBe("document");
+    expect(classifyFile(file("backup.zip", 4))).toBe("document");
+    expect(classifyFile(file("foo.exe", 4))).toBeNull();
+    expect(classifyFile(file("sin-extension", 4))).toBeNull();
+  });
+
+  // JD-B-004: `webm` and `mp4` are also audio containers. The microphone
+  // records `audio/webm`; classifying by extension alone turned a voice note
+  // into a 100 MB video and a video bubble.
+  it("keeps a recorded voice note in the audio family", () => {
+    expect(classifyFile(new File(["x"], "nota.webm", { type: "audio/webm" }))).toBe("audio");
+    expect(classifyFile(new File(["x"], "nota.mp4", { type: "audio/mp4" }))).toBe("audio");
+    expect(maxBytesFor(new File(["x"], "nota.webm", { type: "audio/webm" }))).toBe(20 * 1024 * 1024);
+    // The same containers declared as video keep the video ceiling.
+    expect(classifyFile(new File(["x"], "clip.webm", { type: "video/webm" }))).toBe("video");
+    expect(maxBytesFor(new File(["x"], "clip.webm", { type: "video/webm" }))).toBe(100 * 1024 * 1024);
+  });
+
+  it("keeps only images on the inline path (S4)", () => {
+    expect(travelsInline("image")).toBe(true);
+    expect(travelsInline("video")).toBe(false);
+    expect(travelsInline("audio")).toBe(false);
+    expect(travelsInline("document")).toBe(false);
   });
 
   it("formats sizes for the chip label", () => {
@@ -67,38 +139,37 @@ describe("hermes attachments", () => {
   });
 });
 
-describe("document turn composition", () => {
-  it("appends one reference per stored file, in order", () => {
-    const text = composeTurnText("Mirá esto", [
-      "http://lan/api/hermes/media?path=/opt/data/uploads/a.pdf",
-      "http://lan/api/hermes/media?path=/opt/data/uploads/b.docx",
-    ]);
-    expect(text.split("\n\n")).toEqual([
-      "Mirá esto",
-      "[archivo adjunto: http://lan/api/hermes/media?path=/opt/data/uploads/a.pdf]",
-      "[archivo adjunto: http://lan/api/hermes/media?path=/opt/data/uploads/b.docx]",
-    ]);
+describe("attachmentReference — the S4 line Hermes reads", () => {
+  it("writes the exact structured reference for a stored docx", () => {
+    const upload = uploaded();
+    expect(attachmentReference(upload)).toBe(
+      "[archivo adjunto: informe.docx (application/vnd.openxmlformats-officedocument.wordprocessingml.document, 2 KB), ruta: /opt/data/uploads/3f0f0a4e-6a4b-4c3d-8f2e-0b1c2d3e4f5a.docx]",
+    );
   });
+});
+
+describe("composeTurnText", () => {
+  const first = uploaded({ name: "uno.pdf", local_path: "/opt/data/uploads/a.pdf", size: 10 });
+  const second = uploaded({ name: "dos.docx", local_path: "/opt/data/uploads/b.docx", size: 20 });
 
   it("leaves the text untouched when there is nothing stored", () => {
     expect(composeTurnText("solo texto", [])).toBe("solo texto");
-    expect(composeTurnText("", ["http://lan/a.pdf"])).toBe(
-      "[archivo adjunto: http://lan/a.pdf]",
+    expect(composeTurnText("", [])).toBe("");
+  });
+
+  it("appends exactly one reference for one upload", () => {
+    expect(composeTurnText("mirá esto", [first])).toBe(
+      `mirá esto\n\n${attachmentReference(first)}`,
     );
   });
 
-  it("uploads only binaries, keeping text on the inline prompt path", () => {
-    expect(isUploadedDocument(classifyFile(new File(["x"], "a.pdf", { type: "application/pdf" })))).toBe(true);
-    expect(isUploadedDocument(classifyFile(new File(["x"], "a.zip", { type: "application/zip" })))).toBe(true);
-    expect(isUploadedDocument(classifyFile(new File(["x"], "a.docx")))).toBe(true);
-    // Text-like files used to be uploaded too, which made the agent fetch a
-    // URL for content the runs proxy already inlines (16 000-byte truncation)
-    // and turned a large CSV into a hard 413 instead of a truncated inline.
-    expect(isUploadedDocument(classifyFile(new File(["x"], "a.txt", { type: "text/plain" })))).toBe(false);
-    expect(isUploadedDocument(classifyFile(new File(["x"], "notas.md", { type: "text/markdown" })))).toBe(false);
-    expect(isUploadedDocument(classifyFile(new File(["x"], "datos.csv", { type: "text/csv" })))).toBe(false);
-    expect(isUploadedDocument(classifyFile(new File(["x"], "datos.json")))).toBe(false);
-    expect(isUploadedDocument(classifyFile(new File(["x"], "a.png", { type: "image/png" })))).toBe(false);
-    expect(isUploadedDocument(classifyFile(new File(["x"], "a.webm", { type: "audio/webm" })))).toBe(false);
+  it("appends one reference per upload, in upload order", () => {
+    expect(composeTurnText("mirá esto", [first, second])).toBe(
+      ["mirá esto", attachmentReference(first), attachmentReference(second)].join("\n\n"),
+    );
+  });
+
+  it("starts with the reference when the user wrote no text", () => {
+    expect(composeTurnText("", [first])).toBe(attachmentReference(first));
   });
 });

@@ -40,15 +40,6 @@ export class HermesError extends Error {
   }
 }
 
-export interface HermesArtifact {
-  name: string;
-  url: string;
-  mime?: string;
-  size?: number;
-  /** Absolute server path, present for signed `/api/hermes/media` URLs. */
-  path?: string;
-}
-
 export interface HermesTurn {
   content: string;
   files?: readonly File[];
@@ -145,24 +136,6 @@ function codeForStatus(status: number, upstreamCode?: string): HermesErrorCode {
   return "upstream";
 }
 
-export function artifactsOf(raw: unknown): HermesArtifact[] {
-  if (!Array.isArray(raw)) return [];
-  const out: HermesArtifact[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const candidate = item as Record<string, unknown>;
-    if (typeof candidate.url !== "string") continue;
-    out.push({
-      url: candidate.url,
-      name: typeof candidate.name === "string" ? candidate.name : candidate.url,
-      mime: typeof candidate.mime === "string" ? candidate.mime : undefined,
-      size: typeof candidate.size === "number" ? candidate.size : undefined,
-      path: typeof candidate.path === "string" ? candidate.path : undefined,
-    });
-  }
-  return out;
-}
-
 export function warningsOf(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === "string");
@@ -195,6 +168,29 @@ function errorFromResponse(status: number, text: string): HermesError {
     `hermes status ${status}`,
     status,
   );
+}
+
+/**
+ * The server's user-facing prose, when the error body carries one.
+ *
+ * Upload rejections (S4) explain which file was refused and why, so they are
+ * shown verbatim instead of a generic status line.
+ */
+function serverMessageOf(text: string): string | null {
+  try {
+    const parsed = JSON.parse(text) as {
+      error?: { message?: unknown };
+      message?: unknown;
+    };
+    const nested = parsed.error?.message;
+    if (typeof nested === "string" && nested.trim().length > 0) return nested;
+    if (typeof parsed.message === "string" && parsed.message.trim().length > 0) {
+      return parsed.message;
+    }
+  } catch {
+    // Non-JSON body: fall back to the mapped message.
+  }
+  return null;
 }
 
 function errorText(raw: unknown): string | null {
@@ -389,145 +385,110 @@ export async function resolveHermesApproval(
   if (!res.ok) throw errorFromResponse(res.status, await res.text());
 }
 
-/**
- * Ask the proxy to sign paths the reply still mentions. Authenticated with the
- * dashboard session (unlike the media route itself, which uses the signature).
- * Unknown or unreadable paths are dropped by the backend, so the caller gets
- * only cards that can actually download.
- */
-export async function signHermesMedia(
-  paths: readonly string[],
-  timeoutMs = 5_000,
-): Promise<HermesArtifact[]> {
-  if (paths.length === 0) return [];
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  // The reply is already streamed; an unanswered sign request must cost the
-  // extra cards, never the turn. The timer covers the body too: a proxy that
-  // sends headers and then stalls is as bad as one that never answers.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    let res: Response;
-    try {
-      res = await fetch(`${apiBaseUrl()}/hermes/media/sign`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ paths: [...paths] }),
-        signal: controller.signal,
-      });
-    } catch {
-      throw new HermesError("network", "network error");
-    }
-    if (!res.ok) throw errorFromResponse(res.status, await res.text());
-    let data: { items?: unknown };
-    try {
-      data = (await res.json()) as { items?: unknown };
-    } catch {
-      throw new HermesError("invalid_response", "hermes returned an unreadable response");
-    }
-    return artifactsOf(data.items);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** One file already stored on the Rust side. */
+/** One file the Rust side stored: exactly the JSON keys of owner spec S4. */
 export interface HermesUploadedFile {
+  id: string;
   name: string;
-  path: string;
+  mime_type: string;
+  size: number;
   url: string;
-  size?: number;
-  mime?: string;
+  local_path: string;
 }
 
 /**
- * Upload non-image attachments before the run (spec S8).
+ * `POST /api/uploads` — one request per file, so the response is the single
+ * object S4 names (declared deviation D-B1).
  *
- * Hermes cannot read binary parts of the Runs API, so a document travels to
- * disk first and the run carries an explicit reference the agent can fetch with
- * its own tools. Images keep the inline `image_url` path and never come here.
+ * The server decides the real type by sniffing the bytes and answers 400 for a
+ * forbidden extension or an altered MIME; those messages are user-facing, so
+ * they travel back verbatim through `HermesError.message`.
  */
-export async function uploadHermesDocuments(files: File[]): Promise<HermesUploadedFile[]> {
-  if (files.length === 0) return [];
+export async function uploadHermesFile(
+  file: File,
+  signal?: AbortSignal,
+): Promise<HermesUploadedFile> {
   const headers = authHeaders();
   const form = new FormData();
-  for (const file of files) form.append("files", file, file.name);
+  form.append("file", file, file.name);
 
   let res: Response;
   try {
-    res = await fetch(`${apiBaseUrl()}/hermes/upload`, { method: "POST", headers, body: form });
-  } catch {
-    throw new HermesError("network", "network error");
+    res = await fetch(`${apiBaseUrl()}/uploads`, { method: "POST", headers, body: form, signal });
+  } catch (error) {
+    if (signal?.aborted) throw new HermesError("network", "upload aborted");
+    throw error instanceof Error && error.name === "AbortError"
+      ? new HermesError("network", "upload timed out")
+      : new HermesError("network", "network error");
   }
-  if (!res.ok) throw errorFromResponse(res.status, await res.text());
-
+  if (!res.ok) {
+    const text = await res.text();
+    const mapped = errorFromResponse(res.status, text);
+    // D-B5: the server re-validates extension, MIME and size, and its 400 says
+    // which file failed; that message is the one the user must read.
+    const message = serverMessageOf(text);
+    throw message ? new HermesError(mapped.code, message, res.status) : mapped;
+  }
   let data: Record<string, unknown>;
   try {
     data = (await res.json()) as Record<string, unknown>;
   } catch {
     throw new HermesError("invalid_response", "hermes returned a non-JSON upload response");
   }
-  const raw = Array.isArray(data.items) ? data.items : [];
-  const uploaded: HermesUploadedFile[] = [];
-  for (const item of raw) {
-    const entry = item as Record<string, unknown>;
-    const name = typeof entry.name === "string" ? entry.name : "";
-    const path = typeof entry.path === "string" ? entry.path : "";
-    const url = typeof entry.url === "string" ? entry.url : "";
-    if (!name || !path || !url) continue;
-    uploaded.push({
-      name,
-      path,
-      url,
-      size: typeof entry.size === "number" ? entry.size : undefined,
-      mime: typeof entry.mime === "string" ? entry.mime : undefined,
-    });
-  }
-  if (uploaded.length !== files.length) {
-    throw new HermesError("invalid_response", "hermes stored fewer files than were sent");
+  const text = (key: string) => (typeof data[key] === "string" ? (data[key] as string) : "");
+  const uploaded: HermesUploadedFile = {
+    id: text("id"),
+    name: text("name"),
+    mime_type: text("mime_type"),
+    size: typeof data.size === "number" ? data.size : 0,
+    url: text("url"),
+    local_path: text("local_path"),
+  };
+  if (!uploaded.id || !uploaded.name || !uploaded.url || !uploaded.local_path) {
+    throw new HermesError("invalid_response", "hermes returned an incomplete upload");
   }
   return uploaded;
 }
 
 /**
- * Per-document ceiling of `POST /api/hermes/upload`.
+ * Absolute browser URL for a stored attachment.
  *
- * Mirrors `MAX_UPLOAD_BYTES` in `backend/src/routes/hermes_media.rs`; keeping
- * the check here turns a rejected 25 MB stream into an immediate error instead
- * of a "connection lost" message after the upload already failed.
+ * S4's receipt carries an absolute path (`/api/uploads/<id>`, D-B2), not an
+ * origin. When the dashboard and the API live on different hosts, the origin
+ * comes from `apiBaseUrl()` — never from a hard-coded host; a relative mount
+ * (`/api`) already matches the path, so it is used as-is.
  */
-export const MAX_UPLOAD_DOCUMENT_BYTES = 25 * 1024 * 1024;
+function uploadMediaUrl(url: string): string {
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(url)) return url;
+  const base = apiBaseUrl();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(base)) {
+    try {
+      return new URL(url, base).toString();
+    } catch {
+      return url;
+    }
+  }
+  return url;
+}
 
 /**
- * Make the signed media URL absolute: the agent fetches it from outside the
- * browser, so it must be reachable and must carry the API mount.
+ * Read one stored attachment back with the session bearer (D-B2).
  *
- * The upload posts to `apiBaseUrl()`, so a URL relative to that base belongs to
- * the same origin and prefix: `window.location.origin` would hand the agent
- * `http://<page>/...`, which is unreachable when `NEXT_PUBLIC_API_URL` points
- * at another host.
+ * `<img>`, `<video>` and `<audio>` cannot send an Authorization header, and
+ * `GET /api/uploads/{id}` is session-authenticated, so the bubble asks the
+ * transport for the bytes and hands the element an object URL instead of
+ * pointing it at a route that would answer 401.
  */
-export function absoluteMediaUrl(url: string): string {
-  if (/^https?:\/\//i.test(url)) return url;
-  const path = url.startsWith("/") ? url : `/${url}`;
-  const base = apiBaseUrl();
-  if (!/^https?:\/\//i.test(base)) {
-    // Same-origin mount (`/api`): the URL already carries its prefix.
-    if (typeof window === "undefined") return url;
-    return `${window.location.origin}${path}`;
-  }
-  let baseUrl: URL;
+export async function fetchHermesUpload(url: string): Promise<Blob> {
+  let res: Response;
   try {
-    baseUrl = new URL(base);
+    res = await fetch(uploadMediaUrl(url), { headers: authHeaders() });
   } catch {
-    return url;
+    throw new HermesError("network", "network error");
   }
-  const mount = baseUrl.pathname.replace(/\/+$/, "");
-  // The media route lives under the `/api` mount; swap that prefix for the
-  // configured one instead of hard-coding the browser's own path.
-  const underMount =
-    path === "/api" ? "" : path.startsWith("/api/") ? path.slice("/api".length) : null;
-  return `${baseUrl.origin}${mount}${underMount ?? path}`;
+  if (!res.ok) throw errorFromResponse(res.status, await res.text());
+  try {
+    return await res.blob();
+  } catch {
+    throw new HermesError("invalid_response", "hermes returned no attachment bytes");
+  }
 }

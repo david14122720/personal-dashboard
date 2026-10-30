@@ -112,6 +112,13 @@ export interface StoredAttachment {
   name: string;
   size: number;
   kind: string;
+  /**
+   * What `POST /api/uploads` stored (S4/D-B3), so a reload can repaint an
+   * image, a video or an audio. Absent for documents stored by an older build.
+   */
+  url?: string;
+  mime_type?: string;
+  local_path?: string;
 }
 
 export interface StoredToolEvent {
@@ -126,16 +133,6 @@ export interface StoredThought {
   kind: "thinking" | "tool";
   text?: string;
   tool?: StoredToolEvent;
-}
-
-export interface StoredArtifact {
-  id: string;
-  name: string;
-  url: string;
-  mime?: string;
-  size?: number;
-  kind: string;
-  path?: string;
 }
 
 export interface StoredQuestionOption {
@@ -162,7 +159,6 @@ export type StoredBubble =
       id: number;
       role: "assistant";
       content: string;
-      artifacts: StoredArtifact[];
       warnings: string[];
       thoughts: StoredThought[];
       question: StoredQuestion | null;
@@ -186,8 +182,20 @@ function isStoredAttachment(value: unknown): value is StoredAttachment {
     isRecord(value) &&
     typeof value.name === "string" &&
     typeof value.size === "number" &&
-    typeof value.kind === "string"
+    typeof value.kind === "string" &&
+    (value.url === undefined || typeof value.url === "string") &&
+    (value.mime_type === undefined || typeof value.mime_type === "string") &&
+    (value.local_path === undefined || typeof value.local_path === "string")
   );
+}
+
+/** Keep only the fields the transcript repaints from; never a stale object URL. */
+function cleanStoredAttachment(value: StoredAttachment): StoredAttachment {
+  const clean: StoredAttachment = { name: value.name, size: value.size, kind: value.kind };
+  if (value.url) clean.url = value.url;
+  if (value.mime_type) clean.mime_type = value.mime_type;
+  if (value.local_path) clean.local_path = value.local_path;
+  return clean;
 }
 
 function isStoredToolEvent(value: unknown): value is StoredToolEvent {
@@ -207,15 +215,6 @@ function isStoredThought(value: unknown): value is StoredThought {
     (value.kind === "thinking" || value.kind === "tool") &&
     (value.text === undefined || typeof value.text === "string") &&
     (value.tool === undefined || isStoredToolEvent(value.tool))
-  );
-}
-
-function isStoredArtifact(value: unknown): value is StoredArtifact {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.name === "string" &&
-    typeof value.url === "string"
   );
 }
 
@@ -244,15 +243,14 @@ function cleanStoredBubble(value: unknown): StoredBubble | null {
         id: value.id,
         role: "user",
         content: value.content,
-        attachments: value.attachments as StoredAttachment[],
+        attachments: (value.attachments as StoredAttachment[]).map(cleanStoredAttachment),
         queued: value.queued,
       };
     }
     case "assistant": {
       if (typeof value.content !== "string") return null;
-      if (!Array.isArray(value.artifacts) || !value.artifacts.every(isStoredArtifact)) {
-        return null;
-      }
+      // Output rendering is gone (S2): an `artifacts` array written by an
+      // older build is ignored, never required and never kept.
       if (!Array.isArray(value.warnings) || !value.warnings.every((w) => typeof w === "string")) {
         return null;
       }
@@ -269,7 +267,6 @@ function cleanStoredBubble(value: unknown): StoredBubble | null {
         id: value.id,
         role: "assistant",
         content: value.content,
-        artifacts: value.artifacts as StoredArtifact[],
         warnings: value.warnings as string[],
         thoughts: value.thoughts as StoredThought[],
         question: question as StoredQuestion | null,

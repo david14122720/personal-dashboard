@@ -5,16 +5,17 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { safeImageSource } from "@/lib/hermes/inline-images";
 import { highlight, normalizeLanguage, type TokenKind } from "@/lib/hermes/highlight";
 
 /**
  * Hermes answers are Markdown from a remote agent: render them as React
  * elements only. `react-markdown` never injects raw HTML, and `rehype-sanitize`
  * strips anything outside the default safe schema (scripts, event handlers,
- * unsafe protocols) as a second barrier. Images are allowed only through
- * `safeImageSource`: a validated raster payload or the proxy's signed media
- * URL, never a remote host the model picked.
+ * unsafe protocols) as a second barrier.
+ *
+ * Owner spec S2: a reply is text and clean Markdown. No image is ever loaded,
+ * so a model-authored `![](…)` — a remote host, a leftover `data:` payload or
+ * a path into the server — collapses to its caption instead of a request.
  */
 type MdNode = { type: string; value?: string; children?: MdNode[] };
 
@@ -146,27 +147,12 @@ const components: Components = {
     <h4 className="mb-1.5 mt-2 text-sm font-semibold text-instrument first:mt-0" {...props} />
   ),
   hr: ({ node: _node, ...props }) => <hr className="my-3 border-hair" {...props} />,
-  // A model-authored URL must never load on render: only a validated payload
-  // or the proxy's own signed media URL can become an <img>.
-  img: ({ src, alt }) => {
-    const safe = safeImageSource(typeof src === "string" ? src : null);
-    if (safe === null) {
-      // Never load a model-chosen URL (remote hosts stay blocked, D-A6), but do
-      // not silently delete the caption either: the alt text is prose, and React
-      // renders it as an escaped text node.
-      const caption = typeof alt === "string" ? alt.trim() : "";
-      return caption.length > 0 ? <span className="text-muted">{caption}</span> : null;
-    }
-    // eslint-disable-next-line @next/next/no-img-element
-    return (
-      <img
-        src={safe}
-        alt={typeof alt === "string" ? alt : ""}
-        loading="lazy"
-        referrerPolicy="no-referrer"
-        className="my-2 h-auto max-w-full rounded-lg shadow-md"
-      />
-    );
+  // Owner spec S2: the web chat answers in text and Markdown only. The caption
+  // survives as prose (React escapes it); no `src` is ever fetched, not even a
+  // same-origin one. Heavy deliverables travel over Telegram instead.
+  img: ({ alt }) => {
+    const caption = typeof alt === "string" ? alt.trim() : "";
+    return caption.length > 0 ? <span className="text-muted">{caption}</span> : null;
   },
   table: ({ node: _node, ...props }) => (
     <div className="my-2 overflow-x-auto">
