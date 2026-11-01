@@ -4,8 +4,6 @@ use uuid::Uuid;
 
 use crate::{auth::middleware, error::AppError};
 
-// Allowed until finance routes (PR2+) call it; covered by unit tests.
-#[allow(dead_code)]
 /// Resolve the authenticated user id from the `Authorization: Bearer` token.
 ///
 /// Accepts both session tokens (`sessions`) and personal API tokens

@@ -256,6 +256,28 @@ fn api_routes() -> Router<AppState> {
     router.fallback(api_fallback_handler)
 }
 
+/// SEC-006: the Content-Security-Policy for the exported SPA.
+///
+/// `script-src 'unsafe-inline'` is unavoidable for a static export: every
+/// exported page carries inline bootstrap `<script>` blocks (three of them in
+/// the deployed `/dashboard/`) and there is no build-time nonce or hash to
+/// reference. The same reasoning applies to `style-src 'unsafe-inline'`, because
+/// React and recharts write inline `style` attributes at runtime. `'unsafe-eval'`
+/// is deliberately absent: no shipped chunk calls `eval` or `new Function`
+/// (checked against the deployed bundle). Everything else is same-origin, so a
+/// compromised third-party asset cannot pull in a remote script, frame the app,
+/// rewrite the document base or post a form outwards.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+     script-src 'self' 'unsafe-inline'; \
+     style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data: blob:; \
+     font-src 'self' data:; \
+     connect-src 'self'; \
+     object-src 'none'; \
+     base-uri 'self'; \
+     form-action 'self'; \
+     frame-ancestors 'none'";
+
 /// Root router: health probes stay at `/`, the API nests under `/api`, and
 /// static assets (the exported frontend) serve same-origin with an SPA
 /// fallback to `index.html` so the client router owns non-API misses.
@@ -307,9 +329,15 @@ fn assemble(
     // one copy of each header even if a handler ever sets one. The layer sits
     // on the outer assembled router, so API JSON, error responses (401/404),
     // the SPA fallback and `ServeDir` are all covered; the request-id/trace
-    // layers stay outermost in `main`. `Permissions-Policy` is edge-owned
-    // (`edge-security-headers`) and the CSP is `frame-ancestors 'none'` only:
-    // the full-CSP/`script-src` decision is deferred.
+    // layers stay outermost in `main`. `Permissions-Policy` stays edge-owned
+    // (`edge-security-headers`); the CSP below is the full policy instead of
+    // the previous `frame-ancestors 'none'` placeholder.
+    //
+    // CORS is deliberately absent: the browser app is served same-origin by
+    // this same server, so no `Access-Control-Allow-*` header is ever emitted
+    // and cross-origin reads stay blocked by the browser.
+    // `no_cors_headers_on_api_response` pins that, and the unused
+    // `tower-http/cors` feature was dropped from the manifest.
     app.layer(SetResponseHeaderLayer::overriding(
         HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
@@ -324,7 +352,7 @@ fn assemble(
     ))
     .layer(SetResponseHeaderLayer::overriding(
         HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static("frame-ancestors 'none'"),
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
     ))
     // PERF: negotiate gzip/brotli from the client's `Accept-Encoding` for every
     // compressible response — the exported frontend's JS/CSS/HTML, the SPA
@@ -553,9 +581,17 @@ mod api_nest_tests {
         assert_eq!(health.status(), StatusCode::OK);
     }
 
+    /// Literal copy of the policy, deliberately NOT the production constant:
+    /// editing `CONTENT_SECURITY_POLICY` (dropping a directive, widening a
+    /// source list) must fail here instead of agreeing with itself.
+    const EXPECTED_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; \
+        style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
+        font-src 'self' data:; connect-src 'self'; object-src 'none'; \
+        base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
     /// SEC-006: the four app-owned headers must be present with exactly these
-    /// values, and the app must not emit `Permissions-Policy` (edge-owned) nor
-    /// a `script-src` directive (deferred CSP decision).
+    /// values, and the app must not emit `Permissions-Policy` (edge-owned).
+    /// The CSP must be the full policy, not the old `frame-ancestors`-only one.
     fn assert_security_headers(res: &axum::http::Response<Body>, context: &str) {
         let headers = res.headers();
         assert_eq!(
@@ -583,12 +619,30 @@ mod api_nest_tests {
             .get("content-security-policy")
             .unwrap_or_else(|| panic!("{context}: missing content-security-policy"));
         assert_eq!(
-            csp, "frame-ancestors 'none'",
+            csp, EXPECTED_CSP,
             "{context}: content-security-policy"
         );
+        let csp = csp.to_str().unwrap();
+        assert_eq!(
+            csp.matches(';').count(),
+            9,
+            "{context}: the policy must keep exactly ten directives"
+        );
+        for directive in [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "frame-ancestors 'none'",
+        ] {
+            assert!(
+                csp.contains(directive),
+                "{context}: CSP must declare {directive}"
+            );
+        }
         assert!(
-            !csp.to_str().unwrap().contains("script-src"),
-            "{context}: CSP must not contain script-src"
+            !csp.contains("unsafe-eval"),
+            "{context}: CSP must not allow eval"
         );
         assert!(
             headers.get("permissions-policy").is_none(),

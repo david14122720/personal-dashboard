@@ -133,7 +133,7 @@ A `TimeoutLayer` with a 15 s budget MUST be applied to the `/api` nest only. It 
 
 ### Requirement: Repo-Owned Security Headers on the Serving Path
 
-The outer router MUST set, via a response-header layer, exactly: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Content-Security-Policy: frame-ancestors 'none'`. The layer MUST cover `ServeDir` responses and API JSON responses, including error responses (401/404/422/500) and the SPA fallback document. The app MUST NOT emit `script-src` and MUST NOT emit `Permissions-Policy`.
+The outer router MUST set, via a response-header layer, exactly: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and the full `Content-Security-Policy` documented in `edge-security-headers`. The layer MUST cover `ServeDir` responses and API JSON responses, including error responses (401/404/422/500) and the SPA fallback document. The app MUST NOT emit `Permissions-Policy`, which stays edge-owned.
 
 #### Scenario: Headers on a static path
 
@@ -153,11 +153,11 @@ The outer router MUST set, via a response-header layer, exactly: `X-Content-Type
 - WHEN each is inspected
 - THEN each carries all four headers
 
-#### Scenario: No script-src and no Permissions-Policy
+#### Scenario: No cross-origin policy and no Permissions-Policy
 
 - GIVEN the served CSP value
 - WHEN inspected
-- THEN it is exactly `frame-ancestors 'none'` with no `script-src`, and no `Permissions-Policy` header is emitted by the app
+- THEN it is the full policy declared in `edge-security-headers`, no `Access-Control-Allow-*` header is emitted, and no `Permissions-Policy` header is emitted by the app
 
 ### Requirement: Accepted Plaintext-LAN Exposure
 

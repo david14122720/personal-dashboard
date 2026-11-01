@@ -40,7 +40,7 @@ The policy MUST produce no Permissions-Policy console messages (unrecognized fea
 
 ### Requirement: App-Owned vs Edge-Owned Header Boundary
 
-Header ownership MUST be unambiguous: the Axum serving path owns `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and the `frame-ancestors` CSP directive; the edge keeps `Permissions-Policy`. The app MUST NOT emit `Permissions-Policy`, and the edge's existing minimal `Permissions-Policy` allowlist MUST remain unchanged by this change.
+Header ownership MUST be unambiguous: the Axum serving path owns `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and the full `Content-Security-Policy`; the edge keeps `Permissions-Policy`. The app MUST NOT emit `Permissions-Policy`, and the edge's existing minimal `Permissions-Policy` allowlist MUST remain unchanged by this change.
 
 #### Scenario: No duplicate Permissions-Policy
 
@@ -60,15 +60,15 @@ Header ownership MUST be unambiguous: the Axum serving path owns `X-Content-Type
 - WHEN a reader asks who sets which header
 - THEN the app-owned set and the edge-owned header are both stated
 
-### Requirement: Deferred script-src / Full CSP Decision
+### Requirement: Full Content-Security-Policy Decision
 
-This change MUST NOT introduce a `script-src` directive or a broader CSP. The served policy MUST be exactly `Content-Security-Policy: frame-ancestors 'none'`. Any future full CSP MUST resolve the inline FOUC guard in `frontend/app/layout.tsx` (hash or nonce rather than a default `'unsafe-inline'`) as its own decision.
+The served policy MUST be exactly `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`. `script-src` and `style-src` MUST carry `'unsafe-inline'` because a static export inlines its bootstrap scripts and React writes inline style attributes, and no build-time nonce or hash exists for them; `'unsafe-eval'` and wildcard sources MUST NOT appear. `Permissions-Policy` stays edge-owned and MUST NOT be emitted by the app. Any later tightening (hashes or a nonce for the inline FOUC guard in `frontend/app/layout.tsx`) is its own decision.
 
-#### Scenario: Served policy is exactly frame-ancestors
+#### Scenario: Served policy is the full CSP
 
 - GIVEN `curl -sI` on a static path and on an API path
 - WHEN the CSP value is inspected
-- THEN it is exactly `frame-ancestors 'none'` with no `script-src` directive
+- THEN it is the full policy above, with `'unsafe-inline'` limited to `script-src` and `style-src`, and no `'unsafe-eval'` or wildcard source
 
 #### Scenario: Deferral is recorded with its reason
 

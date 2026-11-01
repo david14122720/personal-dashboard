@@ -2,13 +2,10 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde_json::json;
 use thiserror::Error;
 
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("unauthorized")]
     Auth,
-    #[error("forbidden")]
-    Forbidden,
     #[error("validation error")]
     Validation(String),
     #[error("not found")]
@@ -17,8 +14,6 @@ pub enum AppError {
     Conflict(String),
     #[error("internal error")]
     Internal,
-    #[error("database error")]
-    Db,
     #[error("rate limited")]
     RateLimited(u64),
 }
@@ -27,12 +22,11 @@ impl AppError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Auth => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN"),
             Self::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "VALIDATION_ERROR"),
             Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED"),
-            Self::Internal | Self::Db => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
+            Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         }
     }
 
@@ -40,10 +34,9 @@ impl AppError {
         match self {
             Self::Validation(msg) | Self::Conflict(msg) => msg.clone(),
             Self::Auth => "Invalid credentials".to_string(),
-            Self::Forbidden => "Forbidden".to_string(),
             Self::NotFound => "Not found".to_string(),
             Self::RateLimited(_) => "Too many requests".to_string(),
-            Self::Internal | Self::Db => "Internal server error".to_string(),
+            Self::Internal => "Internal server error".to_string(),
         }
     }
 }
@@ -95,11 +88,5 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(code, "INTERNAL_ERROR");
         assert_eq!(AppError::Internal.message(), "Internal server error");
-    }
-
-    #[test]
-    fn db_also_maps_to_500() {
-        let (status, _) = AppError::Db.status_and_code();
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

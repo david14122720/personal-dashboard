@@ -16,9 +16,8 @@ use crate::error::AppError;
 pub const MAX_MONEY_AMOUNT: i64 = 1_000_000_000;
 
 // Money parsers share one shape: trim → Decimal::from_str → range/scale guard →
-// AppError::Validation (422). `parse_money_amount` is live in P2 routes; the two
-// new variants carry #[allow(dead_code)] until the P3 route slices call them.
-// All three parsers are covered by unit tests below.
+// AppError::Validation (422). All variants are called by live routes and covered
+// by unit tests below.
 /// Parse a wire-format money string into [`Decimal`].
 ///
 /// Accepts values `> 0` with at most 2 decimal places (`"50.00"`, `"10.5"`).
@@ -37,8 +36,6 @@ pub fn parse_money_amount(raw: &str) -> Result<Decimal, AppError> {
     Ok(amount)
 }
 
-// Allowed until subscription/asset routes (P3 slices 4-5) call it; covered by unit tests.
-#[allow(dead_code)]
 /// Parse a non-negative wire-format money string into [`Decimal`].
 ///
 /// Accepts values `>= 0` with at most 2 decimal places (`"0.00"` free-tier
