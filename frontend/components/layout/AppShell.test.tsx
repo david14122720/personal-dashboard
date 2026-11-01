@@ -347,9 +347,10 @@ describe("AppShell collapsible rail", () => {
     expect(within(aside).queryByText(/v0\./)).toBeNull();
     expect(within(aside).queryByText("David Rojas")).toBeNull();
     expect(within(aside).queryByText("david@example.com")).toBeNull();
-    // Icons remain, each with its accessible name and a hover tooltip.
+    // Icons remain, each with its accessible name and a hover tooltip:
+    // the four primary destinations plus the Ajustes hub.
     const links = within(aside).getAllByRole("link");
-    expect(links).toHaveLength(6);
+    expect(links).toHaveLength(5);
     for (const link of links) {
       expect(link.getAttribute("aria-label")).toBeTruthy();
       expect(link.querySelector("[data-rail-tooltip]")).not.toBeNull();
