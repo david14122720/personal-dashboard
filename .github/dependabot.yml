@@ -1,0 +1,55 @@
+# Dependabot version updates. Security updates are enabled in the repository
+# settings and open on their own; this file only schedules maintenance PRs.
+# Every PR runs the full CI (backend tests with Postgres, frontend tests and a
+# production build), so nothing reaches `main` without passing those gates.
+version: 2
+updates:
+  # CI workflows: a major bump here is the normal case (v4 -> v5), so the whole
+  # ecosystem is grouped and nothing else is needed.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+    open-pull-requests-limit: 3
+
+  # Rust backend: minor and patch updates share one PR; majors stay separate so
+  # a breaking Axum/Tokio change is reviewed alone.
+  - package-ecosystem: "cargo"
+    directory: "/backend"
+    schedule:
+      interval: "monthly"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    open-pull-requests-limit: 3
+
+  # Next.js frontend (pnpm lockfile at frontend/pnpm-lock.yaml). Majors such as
+  # Next or React arrive as their own PR, never inside the grouped one.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "monthly"
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    open-pull-requests-limit: 3
+
+  # Base images of the production Dockerfile (node:22-slim, rust:1-slim-bookworm).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "build"
+    open-pull-requests-limit: 2
