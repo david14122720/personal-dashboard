@@ -32,7 +32,7 @@ jobs:
       # deployed environment both carry this same value.
       SESSION_TTL_HOURS: 24
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       # Service containers cannot mount backend/migrations as initdb scripts
       # (docker-compose does), so apply them with autocommit psql, matching the
@@ -50,11 +50,11 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: frontend/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
