@@ -141,3 +141,32 @@ was imprecise, because `ca-certificates` pulls the `openssl` package transitivel
 comment now says the package is no longer requested explicitly instead of claiming it is absent.
 Accepted without change: leftover unreachable snapshots in `pnpm-lock.yaml` (harmless for
 `--frozen-lockfile`, and pruning them by hand without pnpm would be unverifiable).
+
+L8 (the image was built and smoke-tested after all). The Docker CLI turned out to be usable in
+windows: the daemon runs outside this session's 64-task cgroup, so `docker build` completed in 4m28s
+(42/42 steps) and produced image `9281d61ab2f1`. The smoke test had to avoid the CLI for the same
+resource reason (Go's runtime aborts with `pthread_create failed` when it loses the race), so it drives
+the Docker Engine API over `/var/run/docker.sock` with `curl` and reads the container log. Verified in
+the real container, not just by inspection:
+
+- `GET /health` → 200 and `GET /healthz` on the sibling MCP server → 200; Docker reports
+  `HEALTHCHECK: healthy`, which is the new Node `fetch` probe working on both ports.
+- Headers on `/dashboard/`: `nosniff`, `DENY`, `no-referrer`, and the full CSP (`default-src`,
+  `script-src 'self' 'unsafe-inline'`, `style-src 'self' 'unsafe-inline'`, `object-src 'none'`,
+  `frame-ancestors 'none'`), with no `unsafe-eval` and no `Access-Control-Allow-Origin`. The 401 from
+  `/api/accounts` carries the same CSP.
+- `/api/accounts` without a token → 401; `/api/hermes/runs` → 404; `/dashboard/` → 200.
+- `Config.User = appuser`; the backend process runs with uid/gid 10001 and `CapEff=0000000000000400`,
+  i.e. exactly `CAP_NET_BIND_SERVICE` (bit 10) and nothing else, and it listens on 80 and 3002. That
+  proves the capability survives the in-layer `libcap2-bin` purge.
+- `/usr/sbin/setcap`, `/usr/sbin/getcap` and `curl` are absent from the final filesystem;
+  `/app/static/index.html` and `/app/mcp-dashboard/dist/index.js` are present.
+- Final image size: 413 MB.
+
+L9 (measured size delta). The previous Dockerfile was rebuilt from `HEAD~1` (`pd-baseline`) with the
+same sources, so the comparison isolates the infrastructure change: 422,359,913 bytes before versus
+413,536,440 bytes after, i.e. **8.8 MB smaller (−2.1%)**. The gain is bounded by the `node:22-slim`
+base plus the MCP `node_modules`, which dominate both images; the removed pieces are `libssl3`,
+`curl`, and the `libcap2-bin` tooling, none of which ship any more. Formerly `curl` was installed and
+`libcap2-bin` stayed after `setcap`; both are gone from the final filesystem and the capability is
+still effective, so the saving is real and not a behaviour change.
