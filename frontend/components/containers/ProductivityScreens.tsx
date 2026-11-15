@@ -520,25 +520,17 @@ export default function ProductivityScreens() {
     notes: null,
   });
   const prevOpenRef = useRef<ProductivitySectionId | null>(null);
-  /** Local-day bounds of the KPI "Eventos de hoy" read, pinned once per mount
-   * so the SWR key stays stable. */
-  const [todayBounds] = useState(() => {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start.getTime() + DAY_MS - 1);
-    return { from: start.toISOString(), to: end.toISOString() };
-  });
   const debouncedQuery = useDebouncedValue(query.trim());
 
   const goals = useGoals();
   const tasks = useTasks();
   // The Eventos card renders real VENCIDOS/HOY counts, so it reads the full
-  // owned list (same hook and endpoint; both bounds are optional).
+  // owned list (same hook and endpoint; both bounds are optional). The KPI
+  // "Eventos de hoy" is derived from this same list: one read, one "today".
   const events = useEvents(null, null);
-  const todayEventsQuery = useEvents(todayBounds.from, todayBounds.to);
   const notes = useNotesSearch(debouncedQuery);
 
-  const queries = [goals, tasks, events, todayEventsQuery, notes];
+  const queries = [goals, tasks, events, notes];
   const isLoading = queries.some((q) => q.isLoading);
   const failed = queries.filter((q) => q.error);
 
@@ -609,19 +601,17 @@ export default function ProductivityScreens() {
             activeGoals.length,
         );
   const linkedTasks = allTasks.filter((task) => task.goal_id && activeGoalIds.has(task.goal_id)).length;
-  // The backend's range predicate keeps a past point event (`ends_at IS NULL`)
-  // inside today's range, so the local-day overlap filter is what makes the
-  // tile count honest.
-  const todayEvents = (todayEventsQuery.data ?? []).filter((event) => eventOverlapsDate(event, todayYmd));
-  const nextTodayEvents = todayEvents
+  // The KPI "Eventos de hoy" is fed by `todaySectionEvents`, derived above from
+  // the same `allEvents` list with the same local-day overlap rule; a past
+  // point event (`ends_at IS NULL`) still counts because it touches the day.
+  const nextTodayEvents = todaySectionEvents
     .filter((event) => eventEndMs(event) >= nowMs)
     .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))
     .slice(0, 2);
   // When today has nothing left, the tile still shows the next real events
   // (each row carries its own real date) instead of an empty list.
-  const todayIds = new Set(todayEvents.map((event) => event.id));
   const nextUpcomingEvents = allEvents
-    .filter((event) => !todayIds.has(event.id) && eventEndMs(event) >= nowMs)
+    .filter((event) => !todaySectionEventIds.has(event.id) && eventEndMs(event) >= nowMs)
     .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
   const nextTodayEventIds = new Set(nextTodayEvents.map((event) => event.id));
   const todayEventRows: ProductivityEventRow[] = [
@@ -849,7 +839,7 @@ export default function ProductivityScreens() {
               }}
               goals={{ count: activeGoals.length, progress: goalsProgress, linkedTasks }}
               todayEvents={{
-                count: todayEvents.length,
+                count: todaySectionEvents.length,
                 rows: todayEventRows,
                 nothingLeftToday: nextTodayEventIds.size === 0,
               }}

@@ -746,11 +746,12 @@ describe("productivity KPI row (T5a, real data only)", () => {
       location: null,
     };
     server.use(
-      http.get("http://test.local/api/events", ({ request }) => {
-        const url = new URL(request.url);
-        // The two-bound KPI read carries `to`; the one-sided section read does not.
-        return HttpResponse.json(url.searchParams.has("to") ? [ended] : [next]);
-      }),
+      // S18: the today KPI and the next-events line now share the single
+      // unbounded read (the two-bound duplicate request was removed), so the
+      // handler answers with the whole list exactly as the server does.
+      http.get("http://test.local/api/events", () =>
+        HttpResponse.json([ended, next]),
+      ),
     );
     renderScreens();
     await screen.findByRole("region", { name: "Métricas de productividad" });
