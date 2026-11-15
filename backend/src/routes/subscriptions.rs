@@ -24,12 +24,21 @@
 //!
 //! Pay (`POST /api/subscriptions/{id}/pay`) runs one transaction that locks
 //! the account first, then the subscription (`SELECT ... FOR UPDATE`), guards
-//! (inactive → 422, price zero → 422, stored price at/above the cap → 422,
-//! paid this cycle → 409), idempotently
-//! seeds the fixed `Suscripciones` category, inserts the audit movement,
-//! debits the account, stamps `last_paid_on` and advances `next_billing_on`.
-//! The lock-first order mirrors the movements ledger discipline (design
-//! §Data Flow) so concurrent payers serialize instead of deadlocking.
+//! (account foreign/missing/archived → one uniform 422, inactive → 422, price
+//! zero → 422, stored price at/above the cap → 422, paid this cycle → 409),
+//! idempotently seeds the fixed `Suscripciones` category, inserts the audit
+//! movement, debits the account, stamps `last_paid_on` and advances
+//! `next_billing_on`. The lock-first order mirrors the movements ledger
+//! discipline (design §Data Flow) so concurrent payers serialize instead of
+//! deadlocking.
+//!
+//! "Paid this cycle" stays `last_paid_on` set and `next_billing_on` still in
+//! the future, so the pay button re-enables exactly when the due date arrives.
+//! The client-writable due date is closed at its write instead: `PATCH`
+//! rejects any backwards move of `next_billing_on` against the stored due date
+//! and still rejects a value on or before `last_paid_on` (422), both read under
+//! the same transaction that updates the row, so paying and then moving the due
+//! date backwards can no longer re-open a second pay for the same cycle.
 //!
 //! Registered in `routes/mod.rs` (pay wiring in `main.rs`, S-B slice).
 
@@ -84,12 +93,25 @@ const LIST_SUBS_BRIEF_SQL: &str =
     "SELECT id, name, price, currency, frequency::text, next_billing_on, is_active, last_paid_on FROM subscriptions WHERE user_id=$1 ORDER BY created_at ASC";
 const GET_SUB_SQL: &str = "SELECT id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on FROM subscriptions WHERE id=$1 AND user_id=$2";
 const PATCH_SUB_SQL: &str = "UPDATE subscriptions SET name=COALESCE($3, name), price=COALESCE($4, price), next_billing_on=COALESCE($5, next_billing_on), is_active=COALESCE($6, is_active), cancelled_at=CASE WHEN $6 IS NULL THEN cancelled_at WHEN $6 THEN NULL ELSE COALESCE(cancelled_at, now()) END, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, price, currency, frequency::text, next_billing_on, category_id, payment_method, url, notes, is_active, cancelled_at, created_at, updated_at, last_paid_on";
+/// PATCH pre-write lock: the pay state (`last_paid_on` plus the stored
+/// `next_billing_on`) is read under `FOR UPDATE` on the owned row, inside the
+/// same transaction that writes the new due date, so the backwards-due-date
+/// guard cannot be raced by a concurrent pay (design §Data Flow lock-first
+/// discipline; no check-then-act).
+const PATCH_LOCK_LAST_PAID_SQL: &str =
+    "SELECT last_paid_on, next_billing_on FROM subscriptions WHERE id=$1 AND user_id=$2 FOR UPDATE";
 const DELETE_SUB_SQL: &str = "DELETE FROM subscriptions WHERE id=$1 AND user_id=$2";
 /// Pay-time account lock. Carries the currency so the handler can enforce the
 /// same-currency rule against the subscription before any ledger row or debit
 /// is written (mirrors `LOCK_TRANSFER_ACCOUNTS_SQL` in `movements.rs`).
+/// `AND NOT is_archived` rejects archived accounts under the same row lock
+/// (no check-then-act): the handler maps the miss to one 422 that names
+/// neither existence nor the flag, so foreign, missing and archived ids are
+/// indistinguishable.
 const PAY_LOCK_ACCOUNT_SQL: &str =
-    "SELECT id, currency FROM accounts WHERE id=$1 AND user_id=$2 FOR UPDATE";
+    "SELECT id, currency FROM accounts WHERE id=$1 AND user_id=$2 AND NOT is_archived FOR UPDATE";
+/// Pay lock on the subscription row; also carries `last_paid_on` and
+/// `next_billing_on` so the paid-cycle guard is evaluated on the locked row.
 const PAY_LOCK_SUB_SQL: &str = "SELECT id, price, is_active, next_billing_on, last_paid_on, currency FROM subscriptions WHERE id=$1 AND user_id=$2 FOR UPDATE";
 const SEED_CATEGORY_SQL: &str = "INSERT INTO categories (user_id, kind, name) VALUES ($1, 'finance'::category_kind, 'Suscripciones') ON CONFLICT (user_id, kind, name) DO UPDATE SET name = EXCLUDED.name RETURNING id";
 const PAY_INSERT_MOVEMENT_SQL: &str = "INSERT INTO movements (user_id, account_id, category_id, direction, amount, occurred_on, description, subscription_id) VALUES ($1,$2,$3,'expense',$4,$5,NULL,$6)";
@@ -164,7 +186,9 @@ pub struct PatchSubscriptionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PaySubscriptionRequest {
-    /// Owned account to debit. Foreign or missing → 404, never 403.
+    /// Owned, non-archived account to debit. Foreign, missing and archived
+    /// all resolve to the same 422, never 403 (and never a 404 that would
+    /// distinguish "not yours" from "archived").
     pub account_id: Uuid,
 }
 
@@ -190,7 +214,9 @@ pub struct SubscriptionResponse {
     /// Date of the last successful pay in `America/Bogota` (`NULL` = never
     /// paid). Combined with `next_billing_on`, it derives the paid-this-cycle
     /// state lazily: paid when `last_paid_on IS NOT NULL AND
-    /// next_billing_on > today`.
+    /// next_billing_on > today`. A paid row's due date may only move forward
+    /// (`PATCH` rejects a backwards move against the stored due date and any
+    /// `next_billing_on <= last_paid_on` with 422).
     pub last_paid_on: Option<NaiveDate>,
 }
 
@@ -436,10 +462,58 @@ fn map_sub_db_err(e: sqlx::Error) -> AppError {
 }
 
 /// Whether the locked subscription counts as paid for the cycle containing
-/// `today`: `last_paid_on` set and the advanced due date still in the
-/// future. Pure so both the handler and tests share one definition.
-fn is_paid_this_cycle(last_paid_on: Option<NaiveDate>, next_billing_on: Option<NaiveDate>, today: NaiveDate) -> bool {
+/// `today`: `last_paid_on` set and the advanced due date still in the future.
+/// Pure so both the handler and tests share one definition.
+fn is_paid_this_cycle(
+    last_paid_on: Option<NaiveDate>,
+    next_billing_on: Option<NaiveDate>,
+    today: NaiveDate,
+) -> bool {
     last_paid_on.is_some() && next_billing_on.is_some_and(|due| due > today)
+}
+
+/// Pay guard: the 409 for a second submit in the cycle already covered by
+/// `last_paid_on`. [`is_paid_this_cycle`] stays the single definition; this
+/// shape lets the regression test assert the status without a database.
+fn reject_paid_cycle(
+    last_paid_on: Option<NaiveDate>,
+    next_billing_on: Option<NaiveDate>,
+    today: NaiveDate,
+) -> Result<(), AppError> {
+    if is_paid_this_cycle(last_paid_on, next_billing_on, today) {
+        return Err(AppError::Conflict(
+            "la suscripción ya está pagada en este ciclo".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// PATCH write guard: once a cycle has been paid, the client-writable due date
+/// may only move forward. Any new value before the stored due date re-opens
+/// `pay` as soon as that earlier date arrives (the F-20/JD-A-001 chain:
+/// `last_paid_on + 1 day` is after the payment, so the old
+/// `<= last_paid_on` check let it through). The second check keeps refusing
+/// legacy rows whose stored due date predates `last_paid_on`. No `last_paid_on`
+/// or no due date in the payload → nothing to guard.
+fn reject_due_date_into_paid_cycle(
+    next_billing_on: Option<NaiveDate>,
+    stored_next_billing_on: Option<NaiveDate>,
+    last_paid_on: Option<NaiveDate>,
+) -> Result<(), AppError> {
+    let (Some(next_billing_on), Some(last_paid_on)) = (next_billing_on, last_paid_on) else {
+        return Ok(());
+    };
+    if stored_next_billing_on.is_some_and(|stored| next_billing_on < stored) {
+        return Err(AppError::Validation(
+            "una suscripción pagada solo puede mover su fecha de cobro hacia adelante".into(),
+        ));
+    }
+    if next_billing_on <= last_paid_on {
+        return Err(AppError::Validation(
+            "next_billing_on no puede ser anterior o igual a la última fecha de pago".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub async fn create_subscription_handler(
@@ -556,6 +630,23 @@ pub async fn patch_subscription_handler(
         .as_deref()
         .map(|raw| validate_calendar_date(raw, "next_billing_on"))
         .transpose()?;
+    // Lock-first in one transaction: the pay state is read under `FOR UPDATE`
+    // and the update below runs in the same transaction, so the backwards
+    // due-date guard cannot be raced by a concurrent pay.
+    let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
+    let stored: Option<(Option<NaiveDate>, Option<NaiveDate>)> =
+        sqlx::query_as(PATCH_LOCK_LAST_PAID_SQL)
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::Internal)?;
+    let Some((stored_last_paid_on, stored_next_billing_on)) = stored else {
+        return Err(AppError::NotFound);
+    };
+    // A paid cycle is closed: the due date may only move forward, so both the
+    // `PATCH` into the past and the `last_paid_on + 1 day` move are 422 (F-20).
+    reject_due_date_into_paid_cycle(next_billing_on, stored_next_billing_on, stored_last_paid_on)?;
     // Single atomic statement: omitted fields keep their value via
     // `COALESCE`; `cancelled_at` stays server-owned (`NULL` bind keeps it,
     // `true` clears it, `false` stamps `now()` when unset).
@@ -566,11 +657,14 @@ pub async fn patch_subscription_handler(
         .bind(price)
         .bind(next_billing_on)
         .bind(body.is_active)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_sub_db_err)?;
-    row.map(|r| Json(SubscriptionResponse::from(r)))
-        .ok_or(AppError::NotFound)
+    let Some(row) = row else {
+        return Err(AppError::NotFound);
+    };
+    tx.commit().await.map_err(|_| AppError::Internal)?;
+    Ok(Json(SubscriptionResponse::from(row)))
 }
 
 pub async fn delete_subscription_handler(
@@ -601,7 +695,9 @@ pub async fn pay_subscription_handler(
     let today = today_bogota();
     let mut tx = state.pool.begin().await.map_err(|_| AppError::Internal)?;
     // Lock-first (movements discipline): the account row serializes
-    // concurrent payers; a referenced foreign/missing account is 404.
+    // concurrent payers. The lock filters archived accounts out as well
+    // (S11), so a miss is one uniform 422 for foreign, missing and archived
+    // ids: the caller cannot tell which one it was.
     let locked_account: Option<(Uuid, String)> = sqlx::query_as(PAY_LOCK_ACCOUNT_SQL)
         .bind(body.account_id)
         .bind(user_id)
@@ -609,7 +705,9 @@ pub async fn pay_subscription_handler(
         .await
         .map_err(|_| AppError::Internal)?;
     let Some((_, account_currency)) = locked_account else {
-        return Err(AppError::NotFound);
+        return Err(AppError::Validation(
+            "la cuenta no existe o está archivada".into(),
+        ));
     };
     // Then the subscription row: foreign/missing is 404, never 403.
     let locked: Option<PayLockedRow> = sqlx::query_as(PAY_LOCK_SUB_SQL)
@@ -648,11 +746,7 @@ pub async fn pay_subscription_handler(
                 .into(),
         ));
     }
-    if is_paid_this_cycle(last_paid_on, next_billing_on, today) {
-        return Err(AppError::Conflict(
-            "la suscripción ya está pagada en este ciclo".into(),
-        ));
-    }
+    reject_paid_cycle(last_paid_on, next_billing_on, today)?;
     // Idempotent fixed-category seed: exact `(user_id, 'finance',
     // 'Suscripciones')` key, so a same-named row of another kind coexists
     // untouched. `DO UPDATE` (no-op) is the only way to get the existing id
@@ -967,10 +1061,14 @@ mod tests {
         );
     }
 
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).expect("valid test date")
+    }
+
     #[test]
     fn paid_this_cycle_derives_from_last_paid_and_due() {
-        let today = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
-        let future = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let today = date(2026, 9, 24);
+        let future = date(2026, 10, 15);
         // Paid with the due date still ahead: paid.
         assert!(is_paid_this_cycle(Some(today), Some(future), today));
         // Due date reached: pay is enabled again without any background job.
@@ -978,6 +1076,98 @@ mod tests {
         // Never paid, or no due date: not paid.
         assert!(!is_paid_this_cycle(None, Some(future), today));
         assert!(!is_paid_this_cycle(Some(today), None, today));
+    }
+
+    /// The normal monthly flow, which the first cut of S13 broke: the owner
+    /// pays on the due date and gets the next cycle scheduled one month out,
+    /// with the guard closed right after (409) and the state consistent.
+    #[test]
+    fn paying_on_the_due_date_is_the_normal_monthly_cycle() {
+        let due = date(2026, 11, 15);
+        // Due date arrives: the previous advance no longer covers it.
+        assert!(reject_paid_cycle(Some(date(2026, 10, 15)), Some(due), due).is_ok());
+        // The pay itself advances the due date past `today`...
+        let advanced = advance_next_billing(Some(due), due);
+        assert_eq!(advanced, date(2026, 12, 15));
+        // ...which is exactly what the paid predicate reads.
+        assert_409(
+            reject_paid_cycle(Some(due), Some(advanced), due)
+                .expect_err("a second pay in the cycle just paid is 409"),
+        );
+        // One month later the guard opens again with no PATCH and no job.
+        assert!(reject_paid_cycle(Some(due), Some(advanced), advanced).is_ok());
+    }
+
+    /// S13/F-20 regression: `PATCH next_billing_on` is client-writable, so
+    /// moving the due date backwards used to re-enable `pay` for the cycle
+    /// just paid. The write guard rejects every move before the stored due
+    /// date, and still rejects values inside the paid cycle for legacy rows.
+    #[test]
+    fn patching_a_paid_due_date_backwards_is_422() {
+        // day D, and the due date after the pay is D + 1 month.
+        let last_paid = date(2026, 11, 14);
+        let due_after_pay = date(2026, 12, 14);
+        // JD-A-001 exploit: D + 1 day is after `last_paid_on`, so the old
+        // guard let it through, but it is backwards against the stored due.
+        let backward_err = reject_due_date_into_paid_cycle(
+            Some(date(2026, 11, 15)),
+            Some(due_after_pay),
+            Some(last_paid),
+        )
+        .expect_err("D + 1 day must not reopen the paid cycle");
+        assert!(
+            matches!(&backward_err, AppError::Validation(msg) if msg.contains("hacia adelante")),
+            "the backwards move must name the forward-only rule, got: {backward_err:?}"
+        );
+        assert_422(backward_err);
+        // Any other backwards move against the stored due date is refused.
+        assert_422(
+            reject_due_date_into_paid_cycle(
+                Some(date(2026, 12, 13)),
+                Some(due_after_pay),
+                Some(last_paid),
+            )
+            .expect_err("a backwards due date must not reopen a paid cycle"),
+        );
+        // Keeping the stored due date or moving strictly forward stays 200.
+        assert!(reject_due_date_into_paid_cycle(
+            Some(due_after_pay),
+            Some(due_after_pay),
+            Some(last_paid)
+        )
+        .is_ok());
+        assert!(reject_due_date_into_paid_cycle(
+            Some(date(2026, 12, 15)),
+            Some(due_after_pay),
+            Some(last_paid)
+        )
+        .is_ok());
+        // The existing `<= last_paid_on` guard still covers legacy rows whose
+        // stored due date predates the last payment.
+        for inside_cycle in [date(2026, 11, 1), last_paid] {
+            assert_422(
+                reject_due_date_into_paid_cycle(
+                    Some(inside_cycle),
+                    Some(date(2026, 11, 1)),
+                    Some(last_paid),
+                )
+                .expect_err("legacy rows still cannot move into the paid cycle"),
+            );
+        }
+        assert!(reject_due_date_into_paid_cycle(
+            Some(date(2026, 11, 15)),
+            Some(date(2026, 11, 1)),
+            Some(last_paid)
+        )
+        .is_ok());
+        // Never paid, or no due date in the payload: nothing to guard.
+        assert!(
+            reject_due_date_into_paid_cycle(Some(date(2026, 1, 1)), Some(due_after_pay), None)
+                .is_ok()
+        );
+        assert!(
+            reject_due_date_into_paid_cycle(None, Some(due_after_pay), Some(last_paid)).is_ok()
+        );
     }
 
     #[test]
@@ -1112,6 +1302,17 @@ mod tests {
             PAY_LOCK_SUB_SQL.contains("currency") && PAY_LOCK_ACCOUNT_SQL.contains("currency"),
             "pay must carry both currencies so the same-currency rule is enforceable"
         );
+        assert!(
+            PAY_LOCK_ACCOUNT_SQL.contains("NOT is_archived"),
+            "the pay account lock must exclude archived accounts (S11), got: {PAY_LOCK_ACCOUNT_SQL}"
+        );
+        assert!(
+            PATCH_LOCK_LAST_PAID_SQL.contains("last_paid_on")
+                && PATCH_LOCK_LAST_PAID_SQL.contains("next_billing_on")
+                && PATCH_LOCK_LAST_PAID_SQL.contains("id=$1 AND user_id=$2")
+                && PATCH_LOCK_LAST_PAID_SQL.contains("FOR UPDATE"),
+            "patch must read the pay state on the owned row under a lock (S13), got: {PATCH_LOCK_LAST_PAID_SQL}"
+        );
     }
 
     fn test_pool() -> Option<sqlx::PgPool> {
@@ -1181,6 +1382,25 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("seed account")
+    }
+
+    /// Archived owned account: it disappears from the listings, and the pay
+    /// lock filters it out under the row lock (S11).
+    async fn seed_archived_account(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+        name: &str,
+        balance: &str,
+    ) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO accounts (user_id, name, balance, is_archived) VALUES ($1,$2,$3::numeric,TRUE) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(format!("{name}-{}", Uuid::new_v4()))
+        .bind(balance)
+        .fetch_one(pool)
+        .await
+        .expect("seed archived account")
     }
 
     async fn seed_category(pool: &sqlx::PgPool, user_id: Uuid, kind: &str, name: &str) -> Uuid {
@@ -1717,6 +1937,174 @@ mod tests {
         cleanup_user(&pool, user_id).await;
     }
 
+    /// S13 regression guard for the normal monthly flow: the pay action is
+    /// enabled when the due date arrives, so paying ON the due date must be
+    /// 200 (not 409), schedule the next occurrence one month out and close the
+    /// guard again immediately.
+    #[tokio::test]
+    async fn pay_on_the_due_date_is_200_and_advances_the_cycle() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP pay_on_the_due_date_is_200_and_advances_the_cycle: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let account_id = seed_account(&pool, user_id, "100000").await;
+        let today = today_bogota();
+        let due_today = today.format("%Y-%m-%d").to_string();
+        let (_, sub) = create_subscription_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_body("Gym", "19900", &due_today),
+        )
+        .await
+        .expect("create is 201");
+        assert_eq!(sub.next_billing_on, Some(today));
+        let paid = pay(state.clone(), headers.clone(), sub.id, account_id)
+            .await
+            .expect("paying on the due date is the normal monthly flow (200)");
+        assert_eq!(paid.last_paid_on, Some(today));
+        let advanced = advance_next_billing(Some(today), today);
+        assert_eq!(paid.next_billing_on, Some(advanced));
+        // Closed again right after the pay; no background job re-opens it.
+        let err = pay(state.clone(), headers.clone(), sub.id, account_id)
+            .await
+            .expect_err("a second pay in the same cycle is 409");
+        assert_409(err);
+        assert_eq!(movement_count(&pool, user_id).await, 1);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// S13: once the cycle is paid, the client-writable due date may only move
+    /// forward. The audited exploit (pay → `PATCH next_billing_on` into the
+    /// past → pay again) is 422 with the row untouched, while a forward move
+    /// and an unrelated edit stay 200.
+    #[tokio::test]
+    async fn patch_due_date_into_a_paid_cycle_is_422_and_keeps_the_row() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP patch_due_date_into_a_paid_cycle_is_422_and_keeps_the_row: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_state(&pool).await;
+        let account_id = seed_account(&pool, user_id, "100000").await;
+        let (_, sub) = create_subscription_handler(
+            State(state.clone()),
+            headers.clone(),
+            create_body("Gym", "19900", "2026-10-15"),
+        )
+        .await
+        .expect("create is 201");
+        let paid = pay(state.clone(), headers.clone(), sub.id, account_id)
+            .await
+            .expect("first pay is 200");
+        let last_paid = paid.last_paid_on.expect("pay stamps last_paid_on");
+        let due_after_pay = paid.next_billing_on.expect("pay advances the due date");
+        // JD-A-001: D + 1 day is after `last_paid_on` but before the stored
+        // due date, so only the backwards-move guard can refuse it. Writes on
+        // or before `last_paid_on` are refused too.
+        for past in [
+            last_paid.succ_opt().expect("day after pay exists"),
+            last_paid,
+            last_paid.pred_opt().unwrap(),
+            date(2020, 1, 1),
+        ] {
+            let err = patch_subscription_handler(
+                State(state.clone()),
+                headers.clone(),
+                Path(sub.id),
+                Json(
+                    serde_json::from_value(json!({
+                        "next_billing_on": past.format("%Y-%m-%d").to_string()
+                    }))
+                    .expect("backwards due-date patch"),
+                ),
+            )
+            .await
+            .expect_err("a backwards due date on a paid row must be 422");
+            assert_422(err);
+        }
+        // The refused PATCH leaves the pay gate closed: a second pay in the
+        // same cycle is still 409, never a duplicate debit.
+        assert_409(
+            pay(state.clone(), headers.clone(), sub.id, account_id)
+                .await
+                .expect_err("the refused backwards patch must not re-enable pay"),
+        );
+        let got = get_subscription_handler(State(state.clone()), headers.clone(), Path(sub.id))
+            .await
+            .expect("subscription still readable");
+        assert_eq!(
+            got.next_billing_on,
+            Some(due_after_pay),
+            "the 422 must leave the due date untouched"
+        );
+        assert_eq!(got.last_paid_on, Some(last_paid));
+        assert_eq!(movement_count(&pool, user_id).await, 1);
+        // Moving forward is the legitimate re-schedule and stays 200.
+        let forward = advance_next_billing(Some(due_after_pay), due_after_pay);
+        let patched = patch_subscription_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(sub.id),
+            Json(
+                serde_json::from_value(json!({
+                    "next_billing_on": forward.format("%Y-%m-%d").to_string()
+                }))
+                .expect("forward due-date patch"),
+            ),
+        )
+        .await
+        .expect("a forward due date is 200");
+        assert_eq!(patched.next_billing_on, Some(forward));
+        // An edit that does not carry the due date is not affected.
+        let renamed = patch_subscription_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(sub.id),
+            Json(serde_json::from_value(json!({"name": "Renombrada"})).expect("name patch")),
+        )
+        .await
+        .expect("name-only patch is 200");
+        assert_eq!(renamed.name, "Renombrada");
+        assert_eq!(renamed.next_billing_on, Some(forward));
+        // Legacy rows may store a due date earlier than `last_paid_on`; the
+        // second guard still refuses a new value inside the paid cycle.
+        let legacy_due = last_paid.pred_opt().expect("previous day exists");
+        sqlx::query(
+            "UPDATE subscriptions SET next_billing_on=$2, last_paid_on=$3 WHERE id=$1 AND user_id=$4",
+        )
+        .bind(sub.id)
+        .bind(legacy_due)
+        .bind(last_paid)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("seed legacy due date");
+        let err = patch_subscription_handler(
+            State(state.clone()),
+            headers.clone(),
+            Path(sub.id),
+            Json(
+                serde_json::from_value(json!({
+                    "next_billing_on": last_paid.format("%Y-%m-%d").to_string()
+                }))
+                .expect("legacy due-date patch"),
+            ),
+        )
+        .await
+        .expect_err("a legacy row still cannot move its due date into the paid cycle");
+        assert_422(err);
+        let got = get_subscription_handler(State(state.clone()), headers.clone(), Path(sub.id))
+            .await
+            .expect("subscription still readable");
+        assert_eq!(
+            got.next_billing_on,
+            Some(legacy_due),
+            "the legacy 422 must leave the due date untouched"
+        );
+        assert_eq!(got.last_paid_on, Some(last_paid));
+        cleanup_user(&pool, user_id).await;
+    }
+
     #[tokio::test]
     async fn pay_free_and_inactive_subscriptions_are_422() {
         let Some(pool) = test_pool() else {
@@ -1813,13 +2201,17 @@ mod tests {
         cleanup_user(&pool, user_id).await;
     }
 
+    /// S11: the account lock filters archived accounts, so the miss is one
+    /// uniform 422 — the same status and message a foreign or missing id
+    /// gets, with nothing persisted (no movement, no debit, no stamp).
     #[tokio::test]
-    async fn pay_with_foreign_or_missing_account_is_404() {
+    async fn pay_with_foreign_missing_or_archived_account_is_422() {
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP pay_with_foreign_or_missing_account_is_404: no DATABASE_URL");
+            eprintln!("SKIP pay_with_foreign_missing_or_archived_account_is_422: no DATABASE_URL");
             return;
         };
         let (state, headers, user_id) = db_state(&pool).await;
+        let archived_account = seed_archived_account(&pool, user_id, "Vieja", "100000").await;
         let (_, sub) = create_subscription_handler(
             State(state.clone()),
             headers.clone(),
@@ -1829,13 +2221,25 @@ mod tests {
         .expect("create is 201");
         let (_, _, other_user) = db_state(&pool).await;
         let foreign_account = seed_account(&pool, other_user, "50000").await;
-        for account_id in [foreign_account, Uuid::new_v4()] {
+        for account_id in [foreign_account, Uuid::new_v4(), archived_account] {
             let err = pay(state.clone(), headers.clone(), sub.id, account_id)
                 .await
-                .expect_err("foreign/missing account pay must be 404");
-            assert_404(err);
+                .expect_err("foreign/missing/archived account pay must be 422");
+            assert!(
+                matches!(&err, AppError::Validation(msg) if msg == "la cuenta no existe o está archivada"),
+                "one uniform 422 for every unresolvable account id, naming neither existence nor the archived flag, got: {err:?}"
+            );
+            assert_422(err);
         }
         assert_eq!(movement_count(&pool, user_id).await, 0);
+        assert_eq!(
+            balance_of(&pool, archived_account).await,
+            Decimal::new(10_000_000, 2)
+        );
+        let got = get_subscription_handler(State(state.clone()), headers.clone(), Path(sub.id))
+            .await
+            .expect("subscription readable");
+        assert_eq!(got.last_paid_on, None);
         cleanup_user(&pool, user_id).await;
         cleanup_user(&pool, other_user).await;
     }
@@ -1855,8 +2259,9 @@ mod tests {
         )
         .await
         .expect("create is 201");
-        // The account disappears before pay runs: 404, no movement, and the
-        // subscription row is untouched (full rollback, no partial effect).
+        // The account disappears before pay runs: the same uniform 422, no
+        // movement, and the subscription row is untouched (full rollback, no
+        // partial effect).
         sqlx::query("DELETE FROM accounts WHERE id=$1")
             .bind(account_id)
             .execute(&pool)
@@ -1864,8 +2269,8 @@ mod tests {
             .expect("delete account");
         let err = pay(state.clone(), headers.clone(), sub.id, account_id)
             .await
-            .expect_err("pay on deleted account must be 404");
-        assert_404(err);
+            .expect_err("pay on deleted account must be 422");
+        assert_422(err);
         assert_eq!(movement_count(&pool, user_id).await, 0);
         let got = get_subscription_handler(State(state.clone()), headers.clone(), Path(sub.id))
             .await
