@@ -22,10 +22,9 @@
 //! delete, so valuation history survives for charts. Archived assets read as
 //! deleted: list/detail/archive resolve to 404 for them, and no valuation can
 //! be recorded against them. An optional `account_id` links the asset to an
-//! owned bank account (else 422); foreign asset ids resolve to 404 without
-//! leaking existence, while valuations against an asset id that exists for
-//! nobody are 422 (orphaned-asset FK guard, mirroring the surviving routes'
-//! ownership contract).
+//! owned bank account (else 422). An asset id in the URL path is answered 404
+//! with one shared body whether it is foreign, archived or absent (audit
+//! F-19): the write probes stay `user_id`-scoped and never classify the miss.
 //!
 //! Net worth is an on-demand aggregate (no trigger, no materialization):
 //! per currency, the sum of every non-archived asset `current_value`. It is
@@ -94,15 +93,14 @@ const ARCHIVE_ASSET_SQL: &str =
 const PATCH_ASSET_BASE_SQL: &str = "UPDATE assets SET updated_at = now()";
 const ASSET_OWNERSHIP_SQL: &str =
     "SELECT id FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived";
-const ASSET_EXISTS_SQL: &str = "SELECT id FROM assets WHERE id=$1";
 const ACCOUNT_OWNERSHIP_SQL: &str = "SELECT id FROM accounts WHERE id=$1 AND user_id=$2";
 const MAX_VALUATION_SQL: &str = "SELECT max(recorded_on) FROM asset_valuations WHERE asset_id=$1";
 /// Valuation writes lock the owned asset row first (movements discipline). The
 /// ordering guard below is check-then-act, and without the lock two concurrent
 /// inserts both pass it: the `AFTER INSERT` trigger then overwrites
 /// `current_value` with whichever row commits last, older date included.
-/// `AND NOT is_archived` preserves the `ensure_asset_writable` contract
-/// (archived or foreign → 404, truly absent → 422).
+/// `AND NOT is_archived` preserves the [`ensure_asset_writable`] contract
+/// (foreign, archived or absent → the same 404, audit F-19).
 const LOCK_ASSET_SQL: &str =
     "SELECT id FROM assets WHERE id=$1 AND user_id=$2 AND NOT is_archived FOR UPDATE";
 /// Stored currency of the owned asset, read AFTER [`LOCK_ASSET_SQL`]: the
@@ -385,9 +383,11 @@ pub async fn ensure_account_owned(
     ))
 }
 
-/// Resolve the asset for a write: owned and non-archived → Ok; exists
-/// (foreign, or owned-but-archived) → 404 (never leak existence); exists
-/// for nobody → 422 (orphaned-asset FK guard per the finance-assets spec).
+/// Resolve the asset for a write: owned and non-archived → Ok; every other id
+/// — foreign, owned-but-archived, or absent — → the same 404 with the same
+/// body (audit F-19). One `user_id`-scoped query decides it: an unscoped
+/// exists-probe would answer 422 for an id that exists for nobody, which
+/// confirms existence to a caller that does not own the row.
 pub async fn ensure_asset_writable(
     pool: &sqlx::PgPool,
     asset_id: Uuid,
@@ -402,15 +402,7 @@ pub async fn ensure_asset_writable(
     if owned.is_some() {
         return Ok(());
     }
-    let exists: Option<Uuid> = sqlx::query_scalar(ASSET_EXISTS_SQL)
-        .bind(asset_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    if exists.is_some() {
-        return Err(AppError::NotFound);
-    }
-    Err(AppError::Validation("asset does not exist".into()))
+    Err(AppError::NotFound)
 }
 
 /// Map asset write errors: `23514` (check) and `22P02` (invalid enum text —
@@ -552,7 +544,8 @@ pub async fn patch_asset_handler(
     {
         return Err(AppError::Validation("no updatable fields provided".into()));
     }
-    // Archivado/ajeno → 404, inexistente puro → 422 (contrato ensure_asset_writable).
+    // Archivado, ajeno o inexistente → el mismo 404 (contrato
+    // ensure_asset_writable, auditoría F-19).
     ensure_asset_writable(&state.pool, id, user_id).await?;
     // Lock-first: the currency guard and the UPDATE must see the same snapshot,
     // exactly like the valuation POST. A concurrent valuation insert locks this
@@ -566,18 +559,9 @@ pub async fn patch_asset_handler(
         .map_err(|_| AppError::Internal)?;
     if locked.is_none() {
         // The pre-transaction probe can lose a race (the asset was archived or
-        // deleted meanwhile); resolve the same contract under the lock:
-        // archived/foreign → 404, absent for everybody → 422.
-        let exists: Option<Uuid> = sqlx::query_scalar(ASSET_EXISTS_SQL)
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| AppError::Internal)?;
-        return Err(if exists.is_some() {
-            AppError::NotFound
-        } else {
-            AppError::Validation("asset does not exist".into())
-        });
+        // deleted meanwhile); resolve the same contract under the lock without
+        // a second query: anything the lock could not read is the same 404.
+        return Err(AppError::NotFound);
     }
     let name = match body.name.as_deref() {
         Some(raw) => Some(validate_required_text(raw, MAX_NAME_LEN, "name")?),
@@ -738,16 +722,9 @@ pub async fn create_valuation_handler(
         .await
         .map_err(|_| AppError::Internal)?;
     if owned.is_none() {
-        let exists: Option<Uuid> = sqlx::query_scalar(ASSET_EXISTS_SQL)
-            .bind(asset_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| AppError::Internal)?;
-        return Err(if exists.is_some() {
-            AppError::NotFound
-        } else {
-            AppError::Validation("asset does not exist".into())
-        });
+        // Foreign, archived and absent are the same answer (audit F-19): the
+        // lock query already decided it, so no classification query follows.
+        return Err(AppError::NotFound);
     }
     // Ordering guard: the trigger blindly overwrites `current_value`, so a
     // valuation at or before the latest recorded date is rejected here.
@@ -828,6 +805,21 @@ mod tests {
     fn assert_409(err: AppError) {
         let resp = err.into_response();
         assert_eq!(resp.status(), axum::http::StatusCode::CONFLICT);
+    }
+
+    /// Render an error into `(status, body)` so a test can pin both: the F-19
+    /// contract is that a foreign, archived or absent id answers
+    /// byte-identically, which a status-only assertion cannot see.
+    async fn error_response(err: AppError) -> (axum::http::StatusCode, String) {
+        let resp = err.into_response();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("error body must be readable");
+        (
+            status,
+            String::from_utf8(bytes.to_vec()).expect("error body must be UTF-8"),
+        )
     }
 
     #[test]
@@ -1109,8 +1101,8 @@ mod tests {
             "delete must never hard-delete, got: {ARCHIVE_ASSET_SQL}"
         );
         assert!(
-            ASSET_EXISTS_SQL.contains("FROM assets WHERE id=$1"),
-            "orphaned-asset probe must be unscoped, got: {ASSET_EXISTS_SQL}"
+            ASSET_OWNERSHIP_SQL.contains("id=$1 AND user_id=$2 AND NOT is_archived"),
+            "asset probe must stay owned+live scoped, got: {ASSET_OWNERSHIP_SQL}"
         );
         assert!(
             NET_WORTH_SQL.contains("NOT is_archived"),
@@ -1427,47 +1419,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn valuation_on_missing_asset_is_422() {
+    async fn foreign_archived_and_missing_asset_ids_answer_the_same_404() {
+        // S12/F-19: the asset id is a URL path resource, so foreign, archived
+        // and absent must all answer 404 with the same body. Both probes are
+        // pinned: the PATCH resolver (`ensure_asset_writable`) and the
+        // valuation write, which decides under the row lock.
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP valuation_on_missing_asset_is_422: no DATABASE_URL");
-            return;
-        };
-        let (state, headers, user_id) = db_state(&pool).await;
-        let err = create_valuation_handler(
-            State(state.clone()),
-            headers.clone(),
-            Path(Uuid::new_v4()),
-            valuation_body("100.00", "2026-09-01"),
-        )
-        .await
-        .expect_err("orphaned asset valuation must be 422");
-        assert_eq!(
-            err.into_response().status(),
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY
-        );
-        cleanup_user(&pool, user_id).await;
-    }
-
-    #[tokio::test]
-    async fn valuation_on_foreign_asset_is_404() {
-        let Some(pool) = test_pool() else {
-            eprintln!("SKIP valuation_on_foreign_asset_is_404: no DATABASE_URL");
+            eprintln!(
+                "SKIP foreign_archived_and_missing_asset_ids_answer_the_same_404: no DATABASE_URL"
+            );
             return;
         };
         let (state_a, _, user_a) = db_state(&pool).await;
         let (state_b, headers_b, user_b) = db_state(&pool).await;
-        let asset_id = seed_asset(&pool, user_a).await;
-        let err = create_valuation_handler(
-            State(state_b.clone()),
-            headers_b,
-            Path(asset_id),
-            valuation_body("100.00", "2026-09-01"),
+        let foreign_asset = seed_asset(&pool, user_a).await;
+        let archived_asset: Uuid = sqlx::query_scalar(
+            "INSERT INTO assets (user_id, name, category, is_archived) VALUES ($1,$2,'investment',TRUE) RETURNING id",
         )
+        .bind(user_b)
+        .bind(format!("archived-{}", Uuid::new_v4()))
+        .fetch_one(&pool)
         .await
-        .expect_err("foreign asset valuation must be 404");
+        .expect("seed archived asset");
+        let absent_asset = Uuid::new_v4();
+        let cases = [
+            ("foreign", foreign_asset),
+            ("archived", archived_asset),
+            ("absent", absent_asset),
+        ];
+        let expected_status = axum::http::StatusCode::NOT_FOUND;
+        let expected_body = r#"{"error":{"code":"NOT_FOUND","message":"Not found"}}"#;
+
+        let mut resolved = Vec::new();
+        for (case, asset_id) in cases {
+            let err = ensure_asset_writable(&pool, asset_id, user_b)
+                .await
+                .expect_err(&format!("{case} asset must not be writable"));
+            resolved.push((case, error_response(err).await));
+        }
+        let mut valued = Vec::new();
+        for (case, asset_id) in cases {
+            let err = create_valuation_handler(
+                State(state_b.clone()),
+                headers_b.clone(),
+                Path(asset_id),
+                valuation_body("100.00", "2026-09-01"),
+            )
+            .await
+            .expect_err(&format!("{case} asset valuation must be rejected"));
+            valued.push((case, error_response(err).await));
+        }
+
+        for ((case, got), (_, under_lock)) in resolved.iter().zip(valued.iter()) {
+            assert_eq!(got.0, expected_status, "{case} asset status");
+            assert_eq!(got.1, expected_body, "{case} asset body");
+            assert_eq!(
+                under_lock, got,
+                "{case} valuation must answer exactly like the resolver"
+            );
+        }
         assert_eq!(
-            err.into_response().status(),
-            axum::http::StatusCode::NOT_FOUND
+            resolved[0].1, resolved[1].1,
+            "foreign and archived must answer identically"
+        );
+        assert_eq!(
+            resolved[0].1, resolved[2].1,
+            "foreign and absent must answer identically"
         );
         let _ = state_a;
         cleanup_user(&pool, user_a).await;

@@ -30,9 +30,10 @@
 //! `reminder_id` linking is out of scope for slice 1 (additive later).
 //!
 //! `DELETE /habits/:id/logs/:date` is the idempotent toggle-off for a daily
-//! log: ownership is validated like every other log write (foreign habit →
-//! 404, orphaned habit → 422) and the response is 204 even when no log row
-//! exists — a missing row is already the desired end state, never a 404.
+//! log: ownership is validated like every other log write (a habit id in the
+//! URL is 404 for foreign and absent alike, with one shared body — audit
+//! F-19) and the response is 204 even when no log row exists — a missing row
+//! is already the desired end state, never a 404.
 //!
 //! Streaks are computed on demand with gaps-and-islands SQL over
 //! `idx_habit_logs_habit_date`: `done` increments, `skipped` is neutral
@@ -99,7 +100,6 @@ const GET_HABIT_SQL: &str = "SELECT id, name, description, direction::text, freq
 const PATCH_HABIT_SQL: &str = "UPDATE habits SET name=COALESCE($3,name), description=COALESCE($4,description), target_per_period=COALESCE($5,target_per_period), end_date=COALESCE($6,end_date), category_id=COALESCE($7,category_id), color=COALESCE($8,color), icon=COALESCE($9,icon), is_archived=COALESCE($10,is_archived), category=COALESCE($11,category), short_label=COALESCE($12,short_label), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, name, description, direction::text, frequency::text, days_of_week, target_per_period, start_date, end_date, category_id, color, icon, is_archived, created_at, updated_at, category, short_label";
 const DELETE_HABIT_SQL: &str = "DELETE FROM habits WHERE id=$1 AND user_id=$2";
 const HABIT_OWNERSHIP_SQL: &str = "SELECT id FROM habits WHERE id=$1 AND user_id=$2";
-const HABIT_EXISTS_SQL: &str = "SELECT id FROM habits WHERE id=$1";
 const HABIT_MASK_SQL: &str = "SELECT days_of_week FROM habits WHERE id=$1 AND user_id=$2";
 const CATEGORY_LOOKUP_SQL: &str = "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
 const CREATE_LOG_SQL: &str = "INSERT INTO habit_logs (user_id, habit_id, log_date, status, count_value, notes) VALUES ($1,$2,$3,$4::habit_log_status,$5,$6) RETURNING id, habit_id, log_date, status::text, count_value, notes, created_at, updated_at";
@@ -691,9 +691,13 @@ pub async fn ensure_habit_category(
     }
 }
 
-/// Resolve the habit for a log/streak write: owned → Ok; exists for another
-/// user → 404 (never leak existence); exists for nobody → 422 (orphaned-habit
-/// FK guard, mirroring the debts `ensure_debt_writable` contract).
+/// Resolve the habit for a log write: owned → Ok; every other id — foreign or
+/// absent — → the same 404 with the same body (audit F-19). One
+/// `user_id`-scoped query decides it: an unscoped exists-probe answered 422 for
+/// an id that exists for nobody, which confirmed existence to a caller that
+/// does not own the row. Archived habits stay writable on purpose:
+/// `is_archived` is not deletion here (the list keeps archived rows for
+/// "Desarchivar"), so the probe carries no `NOT is_archived`.
 pub async fn ensure_habit_writable(
     pool: &sqlx::PgPool,
     habit_id: Uuid,
@@ -708,15 +712,7 @@ pub async fn ensure_habit_writable(
     if owned.is_some() {
         return Ok(());
     }
-    let exists: Option<Uuid> = sqlx::query_scalar(HABIT_EXISTS_SQL)
-        .bind(habit_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    if exists.is_some() {
-        return Err(AppError::NotFound);
-    }
-    Err(AppError::Validation("habit does not exist".into()))
+    Err(AppError::NotFound)
 }
 
 /// Map habit write errors: `23505` (duplicate name, duplicate log date) →
@@ -975,8 +971,8 @@ pub async fn patch_log_handler(
 }
 
 /// Idempotent toggle-off for one habit/date log: same ownership gate as the
-/// other log writes (foreign → 404, orphan → 422) and always 204, so deleting
-/// an absent row succeeds instead of leaking a 404.
+/// other log writes (foreign and absent habits answer the same 404) and always
+/// 204, so deleting an absent row succeeds instead of leaking a 404.
 pub async fn delete_log_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1502,6 +1498,21 @@ mod tests {
         assert_eq!(resp.status(), axum::http::StatusCode::CONFLICT);
     }
 
+    /// Render an error into `(status, body)` so a test can pin both: the F-19
+    /// contract is that a foreign id and an absent id answer byte-identically,
+    /// which a status-only assertion cannot see.
+    async fn error_response(err: AppError) -> (axum::http::StatusCode, String) {
+        let resp = err.into_response();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("error body must be readable");
+        (
+            status,
+            String::from_utf8(bytes.to_vec()).expect("error body must be UTF-8"),
+        )
+    }
+
     #[test]
     fn accepts_trimmed_valid_name() {
         assert_eq!(
@@ -1770,8 +1781,8 @@ mod tests {
             "delete must scope id+user_id, got: {DELETE_HABIT_SQL}"
         );
         assert!(
-            HABIT_EXISTS_SQL.contains("FROM habits WHERE id=$1"),
-            "orphaned-habit probe must be unscoped, got: {HABIT_EXISTS_SQL}"
+            HABIT_OWNERSHIP_SQL.contains("id=$1 AND user_id=$2"),
+            "habit probe must stay scoped to the caller, got: {HABIT_OWNERSHIP_SQL}"
         );
     }
 
@@ -2192,22 +2203,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn log_on_missing_habit_is_422() {
+    async fn foreign_and_absent_habit_ids_answer_the_same_404() {
+        // S12/F-19: the habit id is a URL path resource, so create-log,
+        // patch-log and delete-log must answer 404 with the same body for a
+        // habit owned by another user and for one that exists for nobody.
+        // Archived habits are deliberately not part of this probe:
+        // `is_archived` is not deletion here, so they stay writable.
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP log_on_missing_habit_is_422: no DATABASE_URL");
+            eprintln!("SKIP foreign_and_absent_habit_ids_answer_the_same_404: no DATABASE_URL");
             return;
         };
-        let (state, headers, user_id) = db_state(&pool).await;
-        let err = create_log_handler(
-            State(state.clone()),
-            headers.clone(),
-            Path(Uuid::new_v4()),
-            log_body("2026-09-02", "done"),
-        )
-        .await
-        .expect_err("orphaned habit log must be 422");
-        assert_422(err);
-        cleanup_user(&pool, user_id).await;
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
+        let foreign_habit = seed_habit(&pool, user_a).await;
+        let absent_habit = Uuid::new_v4();
+        let ids = [("foreign", foreign_habit), ("absent", absent_habit)];
+        let expected_status = axum::http::StatusCode::NOT_FOUND;
+        let expected_body = r#"{"error":{"code":"NOT_FOUND","message":"Not found"}}"#;
+
+        // POST /habits/:id/logs
+        let mut created = Vec::new();
+        for (case, habit_id) in ids {
+            let err = create_log_handler(
+                State(state_b.clone()),
+                headers_b.clone(),
+                Path(habit_id),
+                log_body("2026-09-02", "done"),
+            )
+            .await
+            .expect_err(&format!("{case} habit log create must be 404"));
+            created.push((case, error_response(err).await));
+        }
+        // PATCH /habits/:id/logs/:date
+        let mut patched = Vec::new();
+        for (case, habit_id) in ids {
+            let err = patch_log_handler(
+                State(state_b.clone()),
+                headers_b.clone(),
+                Path((habit_id, "2026-09-02".to_string())),
+                Json(serde_json::from_value(json!({"status": "done"})).expect("valid log patch")),
+            )
+            .await
+            .expect_err(&format!("{case} habit log patch must be 404"));
+            patched.push((case, error_response(err).await));
+        }
+        // DELETE /habits/:id/logs/:date
+        let mut deleted = Vec::new();
+        for (case, habit_id) in ids {
+            let err = delete_log_handler(
+                State(state_b.clone()),
+                headers_b.clone(),
+                Path((habit_id, "2026-09-02".to_string())),
+            )
+            .await
+            .expect_err(&format!("{case} habit log delete must be 404"));
+            deleted.push((case, error_response(err).await));
+        }
+
+        for (probe, answered) in [
+            ("create-log", &created),
+            ("patch-log", &patched),
+            ("delete-log", &deleted),
+        ] {
+            for (case, (status, body)) in answered {
+                assert_eq!(*status, expected_status, "{case} {probe} status");
+                assert_eq!(body, expected_body, "{case} {probe} body");
+            }
+            assert_eq!(
+                answered[0].1, answered[1].1,
+                "foreign and absent habits must answer identically on {probe}"
+            );
+        }
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
     }
 
     #[tokio::test]
@@ -2286,24 +2355,6 @@ mod tests {
         assert_404(err);
         cleanup_user(&pool, user_a).await;
         cleanup_user(&pool, user_b).await;
-    }
-
-    #[tokio::test]
-    async fn delete_log_unknown_habit_is_422() {
-        let Some(pool) = test_pool() else {
-            eprintln!("SKIP delete_log_unknown_habit_is_422: no DATABASE_URL");
-            return;
-        };
-        let (state, headers, user_id) = db_state(&pool).await;
-        let err = delete_log_handler(
-            State(state),
-            headers,
-            Path((Uuid::new_v4(), "2026-09-02".to_string())),
-        )
-        .await
-        .expect_err("nonexistent habit delete-log must be 422");
-        assert_422(err);
-        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]

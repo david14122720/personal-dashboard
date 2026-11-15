@@ -14,11 +14,11 @@
 //! scope for this slice (same precedent as habits/goals slices — additive
 //! later) and is likewise rejected by `deny_unknown_fields`.
 //!
-//! Goal linking: `goal_id` is optional. An owned goal links with 201; a goal
-//! owned by another user → 404 (never leak existence); a nonexistent goal →
-//! 422 (orphaned-FK guard, mirroring the habits `ensure_habit_writable`
-//! contract). `category_id` must be an owned `task`-kind category (else 422
-//! per the P3 category contract).
+//! Goal linking: `goal_id` is optional. An owned goal links with 201; any
+//! goal the caller does not own — foreign or absent — is the same 422 with the
+//! same message (audit F-19: the probe must never leak existence, so it is one
+//! `user_id`-scoped query and no miss classification). `category_id` must be
+//! an owned `task`-kind category (else 422 per the P3 category contract).
 //!
 //! Views (`GET /tasks?view=`): `today` (`due_date = $2 AND
 //! `completed_at IS NULL`), `upcoming` (`due_date > $2 AND
@@ -87,7 +87,6 @@ const GET_TASK_SQL: &str = "SELECT id, title, description, priority::text, statu
 const PATCH_TASK_SQL: &str = "UPDATE tasks SET title=COALESCE($3,title), description=COALESCE($4,description), priority=COALESCE($5::task_priority,priority), status=COALESCE($6::task_status,status), due_date=COALESCE($7,due_date), goal_id=COALESCE($8,goal_id), category_id=COALESCE($9,category_id), sort_order=COALESCE($10,sort_order), updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, title, description, priority::text, status::text, due_date, completed_at, goal_id, category_id, reminder_id, sort_order, created_at, updated_at";
 const DELETE_TASK_SQL: &str = "DELETE FROM tasks WHERE id=$1 AND user_id=$2";
 const GOAL_OWNERSHIP_SQL: &str = "SELECT id FROM goals WHERE id=$1 AND user_id=$2";
-const GOAL_EXISTS_SQL: &str = "SELECT id FROM goals WHERE id=$1";
 const CATEGORY_LOOKUP_SQL: &str = "SELECT kind::text FROM categories WHERE id=$1 AND user_id=$2";
 
 type TaskRow = (
@@ -400,9 +399,11 @@ pub fn validate_task_patch(body: &PatchTaskRequest) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Resolve the goal for a task write: owned → Ok; exists for another user →
-/// 404 (never leak existence); exists for nobody → 422 (orphaned-goal FK
-/// guard, mirroring the habits `ensure_habit_writable` contract).
+/// Resolve the goal for a task write: owned → Ok; every other id — foreign or
+/// absent — → the same 422 with the same message (audit F-19). One scoped
+/// query decides it: an unscoped exists-probe would answer differently for a
+/// foreign goal and tell the caller that id is in use elsewhere, and skipping
+/// the check entirely would let a foreign `goal_id` reach the FK insert.
 pub async fn ensure_task_goal(
     pool: &sqlx::PgPool,
     goal_id: Uuid,
@@ -416,14 +417,6 @@ pub async fn ensure_task_goal(
         .map_err(|_| AppError::Internal)?;
     if owned.is_some() {
         return Ok(());
-    }
-    let exists: Option<Uuid> = sqlx::query_scalar(GOAL_EXISTS_SQL)
-        .bind(goal_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    if exists.is_some() {
-        return Err(AppError::NotFound);
     }
     Err(AppError::Validation("goal does not exist".into()))
 }
@@ -664,6 +657,21 @@ mod tests {
         assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
+    /// Render an error into `(status, body)` so a test can pin both: the F-19
+    /// contract is that a foreign id and an absent id answer byte-identically,
+    /// which a status-only assertion cannot see.
+    async fn error_response(err: AppError) -> (axum::http::StatusCode, String) {
+        let resp = err.into_response();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("error body must be readable");
+        (
+            status,
+            String::from_utf8(bytes.to_vec()).expect("error body must be UTF-8"),
+        )
+    }
+
     #[test]
     fn accepts_trimmed_valid_title() {
         assert_eq!(
@@ -791,8 +799,8 @@ mod tests {
             );
         }
         assert!(
-            GOAL_EXISTS_SQL.contains("FROM goals WHERE id=$1"),
-            "orphaned-goal probe must be unscoped, got: {GOAL_EXISTS_SQL}"
+            GOAL_OWNERSHIP_SQL.contains("id=$1 AND user_id=$2"),
+            "goal probe must stay scoped to the caller, got: {GOAL_OWNERSHIP_SQL}"
         );
     }
 
@@ -1143,38 +1151,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn foreign_goal_link_is_404_and_missing_goal_is_422() {
+    async fn foreign_and_missing_goal_ids_answer_the_same_422() {
+        // S12/F-19: the `goal_id` probe carries the same 422 and the same body
+        // whether the goal is foreign or exists for nobody. A difference here
+        // is an existence oracle for any UUID the caller presents.
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP foreign_goal_link_is_404_and_missing_goal_is_422: no DATABASE_URL");
+            eprintln!("SKIP foreign_and_missing_goal_ids_answer_the_same_422: no DATABASE_URL");
             return;
         };
         let (state_a, _, user_a) = db_state(&pool).await;
         let (state_b, headers_b, user_b) = db_state(&pool).await;
         let foreign_goal = seed_goal(&pool, user_a).await;
-        // Goal owned by another user → 404 (never leak existence).
-        let body = Json(
-            serde_json::from_value::<CreateTaskRequest>(json!({
-                "title": format!("task-{}", Uuid::new_v4()),
-                "goal_id": foreign_goal
-            }))
-            .expect("valid body with goal"),
+        let missing_goal = Uuid::new_v4();
+        let mut answered = Vec::new();
+        for (case, goal_id) in [("foreign", foreign_goal), ("missing", missing_goal)] {
+            let body = Json(
+                serde_json::from_value::<CreateTaskRequest>(json!({
+                    "title": format!("task-{}", Uuid::new_v4()),
+                    "goal_id": goal_id
+                }))
+                .expect("valid body with goal"),
+            );
+            let err = create_task_handler(State(state_b.clone()), headers_b.clone(), body)
+                .await
+                .expect_err(&format!("{case} goal link must be rejected"));
+            answered.push((case, error_response(err).await));
+        }
+        let expected_status = axum::http::StatusCode::UNPROCESSABLE_ENTITY;
+        let expected_body =
+            r#"{"error":{"code":"VALIDATION_ERROR","message":"goal does not exist"}}"#;
+        for (case, (status, body)) in &answered {
+            assert_eq!(*status, expected_status, "{case} goal link status");
+            assert_eq!(body, expected_body, "{case} goal link body");
+        }
+        assert_eq!(
+            answered[0].1, answered[1].1,
+            "foreign and missing goal links must answer identically"
         );
-        let err = create_task_handler(State(state_b.clone()), headers_b.clone(), body)
-            .await
-            .expect_err("foreign goal link must be 404");
-        assert_404(err);
-        // Goal that exists for nobody → 422 (orphaned-FK guard).
-        let body = Json(
-            serde_json::from_value::<CreateTaskRequest>(json!({
-                "title": format!("task-{}", Uuid::new_v4()),
-                "goal_id": Uuid::new_v4()
-            }))
-            .expect("valid body with goal"),
-        );
-        let err = create_task_handler(State(state_b.clone()), headers_b.clone(), body)
-            .await
-            .expect_err("missing goal link must be 422");
-        assert_422(err);
         let _ = state_a;
         cleanup_user(&pool, user_a).await;
         cleanup_user(&pool, user_b).await;

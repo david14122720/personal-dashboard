@@ -8,9 +8,11 @@
 //!
 //! Ownership matrix: an event may link to entities in five domains — habits,
 //! goals, tasks, subscriptions, and categories. Each provided link id
-//! is probed in two steps: a `user_id`-scoped probe (owned → Ok), then an
-//! unscoped exists-probe (exists for another user → 422, exists for nobody →
-//! 404). `category_id` is ownership-only (any kind — the `category_kind`
+//! is probed once with a `user_id`-scoped query: owned → Ok, and every other
+//! id — foreign or absent — → the same 422 with the same message (audit F-19:
+//! an unscoped exists-probe answered 422 for a foreign id and 404 for an
+//! absent one, which told the caller whether a UUID exists and whose it is).
+//! `category_id` is ownership-only (any kind — the `category_kind`
 //! enum has no `event` kind): unowned or missing → 422 per the P3 category
 //! contract, never 404. `reminder_id` linking is out of scope for this slice
 //! (same precedent as the habits/goals/tasks slices — additive later) and is
@@ -74,13 +76,9 @@ const PATCH_EVENT_SQL: &str = "UPDATE events SET title=COALESCE($3,title), descr
 const DELETE_EVENT_SQL: &str = "DELETE FROM events WHERE id=$1 AND user_id=$2";
 
 const HABIT_OWNERSHIP_SQL: &str = "SELECT id FROM habits WHERE id=$1 AND user_id=$2";
-const HABIT_EXISTS_SQL: &str = "SELECT id FROM habits WHERE id=$1";
 const GOAL_OWNERSHIP_SQL: &str = "SELECT id FROM goals WHERE id=$1 AND user_id=$2";
-const GOAL_EXISTS_SQL: &str = "SELECT id FROM goals WHERE id=$1";
 const TASK_OWNERSHIP_SQL: &str = "SELECT id FROM tasks WHERE id=$1 AND user_id=$2";
-const TASK_EXISTS_SQL: &str = "SELECT id FROM tasks WHERE id=$1";
 const SUBSCRIPTION_OWNERSHIP_SQL: &str = "SELECT id FROM subscriptions WHERE id=$1 AND user_id=$2";
-const SUBSCRIPTION_EXISTS_SQL: &str = "SELECT id FROM subscriptions WHERE id=$1";
 const CATEGORY_OWNERSHIP_SQL: &str = "SELECT id FROM categories WHERE id=$1 AND user_id=$2";
 
 /// Row mirror of the event SELECT lists (15 columns — `reminder_id` is
@@ -390,12 +388,13 @@ pub fn validate_event_patch(body: &PatchEventRequest) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Resolve one cross-domain link: scoped probe (owned → Ok), then unscoped
-/// exists-probe (exists for another user → 422, exists for nobody → 404).
+/// Resolve one cross-domain link with a single scoped probe: owned → Ok; any
+/// other id — foreign or absent — → the same 422 with the same message (audit
+/// F-19). The message names the field, never ownership or existence of another
+/// user's row, and no second query classifies the miss.
 async fn ensure_event_link(
     pool: &sqlx::PgPool,
     scoped_sql: &'static str,
-    exists_sql: &'static str,
     id: Uuid,
     user_id: Uuid,
     field: &'static str,
@@ -409,17 +408,7 @@ async fn ensure_event_link(
     if owned.is_some() {
         return Ok(());
     }
-    let exists: Option<Uuid> = sqlx::query_scalar(exists_sql)
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::Internal)?;
-    if exists.is_some() {
-        return Err(AppError::Validation(format!(
-            "{field} belongs to another user"
-        )));
-    }
-    Err(AppError::NotFound)
+    Err(AppError::Validation(format!("{field} does not exist")))
 }
 
 /// Verify the category is owned (any kind — the `category_kind` enum has no
@@ -455,51 +444,26 @@ pub struct EventLinks {
 }
 
 /// Validate every provided link id against the ownership matrix (habits,
-/// goals, tasks, subscriptions: owned → Ok, foreign → 422, missing →
-/// 404; categories: owned → Ok, else 422).
+/// goals, tasks, subscriptions: owned → Ok, foreign or missing → 422 with the
+/// same message; categories: owned → Ok, else 422).
 pub async fn ensure_event_links(
     pool: &sqlx::PgPool,
     user_id: Uuid,
     links: EventLinks,
 ) -> Result<(), AppError> {
     if let Some(id) = links.habit_id {
-        ensure_event_link(
-            pool,
-            HABIT_OWNERSHIP_SQL,
-            HABIT_EXISTS_SQL,
-            id,
-            user_id,
-            "habit",
-        )
-        .await?;
+        ensure_event_link(pool, HABIT_OWNERSHIP_SQL, id, user_id, "habit").await?;
     }
     if let Some(id) = links.goal_id {
-        ensure_event_link(
-            pool,
-            GOAL_OWNERSHIP_SQL,
-            GOAL_EXISTS_SQL,
-            id,
-            user_id,
-            "goal",
-        )
-        .await?;
+        ensure_event_link(pool, GOAL_OWNERSHIP_SQL, id, user_id, "goal").await?;
     }
     if let Some(id) = links.task_id {
-        ensure_event_link(
-            pool,
-            TASK_OWNERSHIP_SQL,
-            TASK_EXISTS_SQL,
-            id,
-            user_id,
-            "task",
-        )
-        .await?;
+        ensure_event_link(pool, TASK_OWNERSHIP_SQL, id, user_id, "task").await?;
     }
     if let Some(id) = links.subscription_id {
         ensure_event_link(
             pool,
             SUBSCRIPTION_OWNERSHIP_SQL,
-            SUBSCRIPTION_EXISTS_SQL,
             id,
             user_id,
             "subscription",
@@ -804,6 +768,21 @@ mod tests {
         assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
+    /// Render an error into `(status, body)` so a test can pin both: the F-19
+    /// contract is that a foreign id and an absent id answer byte-identically,
+    /// which a status-only assertion cannot see.
+    async fn error_response(err: AppError) -> (axum::http::StatusCode, String) {
+        let resp = err.into_response();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("error body must be readable");
+        (
+            status,
+            String::from_utf8(bytes.to_vec()).expect("error body must be UTF-8"),
+        )
+    }
+
     #[test]
     fn accepts_trimmed_valid_title() {
         assert_eq!(
@@ -955,14 +934,15 @@ mod tests {
             );
         }
         for sql in [
-            HABIT_EXISTS_SQL,
-            GOAL_EXISTS_SQL,
-            TASK_EXISTS_SQL,
-            SUBSCRIPTION_EXISTS_SQL,
+            HABIT_OWNERSHIP_SQL,
+            GOAL_OWNERSHIP_SQL,
+            TASK_OWNERSHIP_SQL,
+            SUBSCRIPTION_OWNERSHIP_SQL,
+            CATEGORY_OWNERSHIP_SQL,
         ] {
             assert!(
-                !sql.contains("user_id"),
-                "exists-probe must be unscoped, got: {sql}"
+                sql.contains("id=$1 AND user_id=$2"),
+                "link probe must stay scoped to the caller, got: {sql}"
             );
         }
     }
@@ -1271,36 +1251,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cross_user_links_are_422() {
-        // RED (task 5.3.1): every link domain owned by another user must be
-        // 422 — never 404 (the entity exists) and never 201 (no hijack).
+    async fn foreign_and_missing_link_ids_answer_the_same_422() {
+        // S12/F-19: one `user_id`-scoped probe decides every link, so a link
+        // owned by another user answers exactly like one that exists for
+        // nobody — same 422, same body. Anything else is an existence oracle
+        // (and, before the fix, also disclosed ownership).
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP cross_user_links_are_422: no DATABASE_URL");
+            eprintln!("SKIP foreign_and_missing_link_ids_answer_the_same_422: no DATABASE_URL");
             return;
         };
         let (state_a, _, user_a) = db_state(&pool).await;
         let (state_b, headers_b, user_b) = db_state(&pool).await;
-        let links: Vec<(&str, Uuid)> = vec![
-            ("habit_id", seed_habit(&pool, user_a).await),
-            ("goal_id", seed_goal(&pool, user_a).await),
-            ("task_id", seed_task(&pool, user_a).await),
-            ("subscription_id", seed_subscription(&pool, user_a).await),
+        let probes: Vec<(&str, &str, Uuid)> = vec![
+            ("habit_id", "habit", seed_habit(&pool, user_a).await),
+            ("goal_id", "goal", seed_goal(&pool, user_a).await),
+            ("task_id", "task", seed_task(&pool, user_a).await),
+            (
+                "subscription_id",
+                "subscription",
+                seed_subscription(&pool, user_a).await,
+            ),
         ];
-        for (field, id) in links {
-            let body = Json(
-                serde_json::from_value::<CreateEventRequest>(json!({
-                    "title": format!("event-{}", Uuid::new_v4()),
-                    "starts_at": "2026-09-07T10:00:00Z",
-                    field: id,
-                }))
-                .expect("valid body with link"),
+        for (field, domain, foreign_id) in probes {
+            let mut answered = Vec::new();
+            for (case, id) in [("foreign", foreign_id), ("missing", Uuid::new_v4())] {
+                let body = Json(
+                    serde_json::from_value::<CreateEventRequest>(json!({
+                        "title": format!("event-{}", Uuid::new_v4()),
+                        "starts_at": "2026-09-07T10:00:00Z",
+                        field: id,
+                    }))
+                    .expect("valid body with link"),
+                );
+                let err = create_event_handler(State(state_b.clone()), headers_b.clone(), body)
+                    .await
+                    .expect_err(&format!("{case} {field} link must be rejected"));
+                answered.push((case, error_response(err).await));
+            }
+            let expected_body = format!(
+                r#"{{"error":{{"code":"VALIDATION_ERROR","message":"{domain} does not exist"}}}}"#
             );
-            let err = create_event_handler(State(state_b.clone()), headers_b.clone(), body)
-                .await
-                .expect_err(&format!("cross-user {field} link must be 422"));
-            assert_422(err);
+            for (case, (status, body)) in &answered {
+                assert_eq!(
+                    *status,
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    "{case} {field} link status"
+                );
+                assert_eq!(body, &expected_body, "{case} {field} link body");
+            }
+            assert_eq!(
+                answered[0].1, answered[1].1,
+                "foreign and missing {field} links must answer identically"
+            );
         }
-        // Category is ownership-only: a foreign category is 422 as well.
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    #[tokio::test]
+    async fn foreign_and_missing_category_links_answer_the_same_422() {
+        // Categories are ownership-only, so foreign and missing already share
+        // one message; pin it so the contract cannot drift back into a probe.
+        let Some(pool) = test_pool() else {
+            eprintln!(
+                "SKIP foreign_and_missing_category_links_answer_the_same_422: no DATABASE_URL"
+            );
+            return;
+        };
+        let (state_a, _, user_a) = db_state(&pool).await;
+        let (state_b, headers_b, user_b) = db_state(&pool).await;
         let foreign_category: Uuid = sqlx::query_scalar(
             "INSERT INTO categories (user_id, kind, name) VALUES ($1,'task',$2) RETURNING id",
         )
@@ -1309,64 +1329,37 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("seed category");
-        let body = Json(
-            serde_json::from_value::<CreateEventRequest>(json!({
-                "title": format!("event-{}", Uuid::new_v4()),
-                "starts_at": "2026-09-07T10:00:00Z",
-                "category_id": foreign_category,
-            }))
-            .expect("valid body with category"),
-        );
-        let err = create_event_handler(State(state_b.clone()), headers_b.clone(), body)
-            .await
-            .expect_err("cross-user category link must be 422");
-        assert_422(err);
-        let _ = state_a;
-        cleanup_user(&pool, user_a).await;
-        cleanup_user(&pool, user_b).await;
-    }
-
-    #[tokio::test]
-    async fn missing_links_are_404_and_missing_category_is_422() {
-        // RED (task 5.3.2): a link id that exists for nobody is 404 (except
-        // categories, which are ownership-only → 422 per the P3 contract).
-        let Some(pool) = test_pool() else {
-            eprintln!("SKIP missing_links_are_404_and_missing_category_is_422: no DATABASE_URL");
-            return;
-        };
-        let (state, headers, user_id) = db_state(&pool).await;
-        for field in [
-            "habit_id",
-            "goal_id",
-            "task_id",
-            "subscription_id",
-        ] {
+        let mut answered = Vec::new();
+        for (case, category_id) in [("foreign", foreign_category), ("missing", Uuid::new_v4())] {
             let body = Json(
                 serde_json::from_value::<CreateEventRequest>(json!({
                     "title": format!("event-{}", Uuid::new_v4()),
                     "starts_at": "2026-09-07T10:00:00Z",
-                    field: Uuid::new_v4(),
+                    "category_id": category_id,
                 }))
-                .expect("valid body with link"),
+                .expect("valid body with category"),
             );
-            let err = create_event_handler(State(state.clone()), headers.clone(), body)
+            let err = create_event_handler(State(state_b.clone()), headers_b.clone(), body)
                 .await
-                .expect_err(&format!("missing {field} link must be 404"));
-            assert_404(err);
+                .expect_err(&format!("{case} category link must be rejected"));
+            answered.push((case, error_response(err).await));
         }
-        let body = Json(
-            serde_json::from_value::<CreateEventRequest>(json!({
-                "title": format!("event-{}", Uuid::new_v4()),
-                "starts_at": "2026-09-07T10:00:00Z",
-                "category_id": Uuid::new_v4(),
-            }))
-            .expect("valid body with category"),
+        let expected_body = r#"{"error":{"code":"VALIDATION_ERROR","message":"category must be an owned category"}}"#;
+        for (case, (status, body)) in &answered {
+            assert_eq!(
+                *status,
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "{case} category status"
+            );
+            assert_eq!(body, expected_body, "{case} category body");
+        }
+        assert_eq!(
+            answered[0].1, answered[1].1,
+            "foreign and missing categories must answer identically"
         );
-        let err = create_event_handler(State(state.clone()), headers.clone(), body)
-            .await
-            .expect_err("missing category link must be 422");
-        assert_422(err);
-        cleanup_user(&pool, user_id).await;
+        let _ = state_a;
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
     }
 
     #[tokio::test]
