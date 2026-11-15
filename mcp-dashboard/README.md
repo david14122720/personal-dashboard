@@ -1,7 +1,7 @@
 # personal-dashboard MCP (Streamable HTTP, TypeScript)
 
 MCP HTTP server for the personal-dashboard Axum backend, using the
-Streamable HTTP transport from `@modelcontextprotocol/sdk`. Exposes login plus
+Streamable HTTP transport from `@modelcontextprotocol/sdk`. Exposes
 CRUD for accounts, tasks, habits, notes, events and goals, plus
 list/read access to categories, subscriptions, assets and
 net-worth, token management (`list/create/revoke`) with preferences
@@ -33,11 +33,11 @@ Copy the env template (create `mcp-dashboard/.env` locally, never commit it):
 ```bash
 MCP_PORT=3101
 PERSONAL_DASHBOARD_API_URL=http://localhost:3001/api
-PERSONAL_DASHBOARD_TOKEN=
 ```
 
-`.env.example` ships with the same three keys (`MCP_PORT=3101` plus the two
-existing ones, token empty).
+`.env.example` mirrors these keys. `PERSONAL_DASHBOARD_TOKEN` is ignored: the
+server never reads a token from the environment (audit F-10, 2026-11-14), so a
+request without a valid `Authorization: Bearer` header is always `401`.
 
 ## Run
 
@@ -59,14 +59,18 @@ Endpoints:
 
 Auth is **per-request**, never cached globally:
 
-1. Send `Authorization: Bearer <token>` on every MCP HTTP request. That token
-   is forwarded as the backend Bearer token for all tool calls in the request.
-2. Or set `PERSONAL_DASHBOARD_TOKEN` (e.g. a `pd_...` api token) as fallback
-   when the header is absent.
-3. Or call the `login` tool once with `{ "email": "...", "password": "..." }`
-   to obtain a token, then send it as the `Authorization` header yourself.
-   `login` does **not** store anything server-side, so concurrent clients can
-   never leak credentials into each other.
+1. Get a token from the dashboard token screen (**Ajustes → tokens**) and send
+   it as `Authorization: Bearer <token>` on **every** MCP HTTP request. There
+   is no `login` tool and no way to bootstrap a credential over MCP.
+2. The token is validated against the backend (`GET /api/me`) before any
+   session is created or any tool is dispatched, and then forwarded for that
+   request's tool calls. An invented or revoked token gets `401`, and there is
+   **no environment fallback**: a missing or non-Bearer header is always `401`
+   (audit F-09/F-10).
+3. Definitive validation verdicts are cached per token for at most 60 s, so a
+   revocation can take that long to take effect. A transient backend failure
+   (network error, timeout, 5xx/429) is **not** cached: the next request
+   retries instead of serving a stale `401` for the rest of the TTL.
 
 ## Smoke test
 
@@ -114,13 +118,14 @@ Any MCP client that supports remote (Streamable HTTP) servers:
 }
 ```
 
-Replace `host` with the machine running `npm start` and `<token>` with a
-backend session/api token (or omit `headers` when `PERSONAL_DASHBOARD_TOKEN`
-is set server-side).
+Replace `host` with the machine running `npm start` and `<token>` with a token
+issued by the dashboard token screen (Ajustes → tokens). The `Authorization`
+header is mandatory: there is no env fallback and no `login` tool.
 
 ## Tools
 
-Auth: `login` (returns the token, does not cache it).
+Auth: every request carries `Authorization: Bearer <token>` (from the dashboard
+token screen, Ajustes → tokens); there is no `login` tool.
 
 Accounts: `list_accounts`, `get_account`, `create_account` (name plus
 optional currency/notes/color/icon; the strict schema rejects unknown
@@ -247,8 +252,10 @@ npm run typecheck
 | --- | ------- | ------- |
 | `MCP_PORT` | `3101` | HTTP listen port |
 | `PERSONAL_DASHBOARD_API_URL` | `http://localhost:3001/api` | Axum backend base URL |
-| `PERSONAL_DASHBOARD_TOKEN` | (empty) | Optional fallback backend token |
 | `MCP_ALLOWED_HOSTS` | (empty) | Extra Host values allowed on /mcp (comma-separated; localhost always allowed) |
+
+There is no `PERSONAL_DASHBOARD_TOKEN`: every request must carry its own
+`Authorization: Bearer` header, and that token is validated before dispatch.
 
 ## Production container
 
@@ -267,7 +274,6 @@ Image env defaults (each overridable in the Dokploy env field):
 | `MCP_PORT` | `3002` | HTTP listen port inside the container |
 | `PERSONAL_DASHBOARD_API_URL` | `http://127.0.0.1:80/api` | Sibling backend in the same container |
 | `MCP_ALLOWED_HOSTS` | `192.168.50.120` | LAN host allowed through the host guard |
-| `PERSONAL_DASHBOARD_TOKEN` | (unset) | No baked token: auth stays per-request `Authorization: Bearer ...` |
 
 The `/mcp` host guard strips the `:port` suffix before matching, so
 `MCP_ALLOWED_HOSTS=192.168.50.120` accepts `Host: 192.168.50.120:8056` from

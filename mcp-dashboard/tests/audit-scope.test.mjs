@@ -1,5 +1,7 @@
 // Behavior tests for the audit buffer hardening and per-caller scoping
-// (T10 / audit F-03 + F-04, specs S3 and S4).
+// (T10 / audit F-03 + F-04, specs S3 and S4). The HTTP gate validates the
+// credential (audit F-09/S1), so `boot` injects a fake validator: these tests
+// never reach a backend.
 //
 // The buffer is module state, so every test uses its own credential: rows are
 // asserted through the public list_audit_log tool, filtered by principal,
@@ -11,6 +13,7 @@ import assert from "node:assert/strict";
 import { createApp } from "../dist/index.js";
 import { dispatchTool } from "../dist/tools.js";
 import {
+  acceptToken,
   callTool,
   closeSessions,
   initialize,
@@ -18,12 +21,8 @@ import {
   startServer,
 } from "./support/mcp-http.mjs";
 
-// See mcp-auth-sessions.test.mjs: the env fallback would authenticate every
-// anonymous request of this file.
-delete process.env.PERSONAL_DASHBOARD_TOKEN;
-
 async function boot(t, options = {}) {
-  const { app, sessions } = createApp(options);
+  const { app, sessions } = createApp({ validateToken: acceptToken, ...options });
   const server = await startServer(app);
   t.after(async () => {
     closeSessions(sessions);

@@ -4,18 +4,18 @@
 // Everything else uses `Authorization: Bearer <token>`.
 //
 // Token resolution is per-request: callers pass the token explicitly
-// (taken from the incoming MCP request's `Authorization` header).
-// Fallback is the PERSONAL_DASHBOARD_TOKEN env var. There is no mutable
-// process-global token state, so concurrent MCP clients cannot leak
-// credentials into each other.
+// (taken from the incoming MCP request's `Authorization` header) and it is
+// only used after `GET /api/me` validated it (audit F-09, in auth.ts). There
+// is no environment fallback and no mutable process-global token state, so a
+// request without a credential is never authenticated and concurrent MCP
+// clients cannot leak credentials into each other (audit F-10).
 //
 // Env:
 //   PERSONAL_DASHBOARD_API_URL default http://localhost:3001/api
-//   PERSONAL_DASHBOARD_TOKEN   optional fallback token (e.g. pd_... api token)
 
 const DEFAULT_API_URL = "http://localhost:3001/api";
 
-/** Explicit per-request token. `undefined` means "try the env fallback". */
+/** Explicit per-request token. `undefined` means "send no credential". */
 export type RequestToken = string | undefined;
 
 export function getApiBaseUrl(): string {
@@ -24,17 +24,13 @@ export function getApiBaseUrl(): string {
   return base.replace(/\/+$/, "");
 }
 
-/** Env-only fallback token (PERSONAL_DASHBOARD_TOKEN). */
-export function getEnvToken(): string | undefined {
-  const env = process.env.PERSONAL_DASHBOARD_TOKEN?.trim();
-  return env && env.length > 0 ? env : undefined;
-}
-
-/** Explicit per-request token wins; otherwise the env fallback. */
+/**
+ * The explicit per-request token, or nothing. There is deliberately no
+ * environment fallback: an absent header must never authenticate (audit F-10).
+ */
 export function resolveToken(explicit: RequestToken): string | undefined {
   const t = explicit?.trim();
-  if (t && t.length > 0) return t;
-  return getEnvToken();
+  return t && t.length > 0 ? t : undefined;
 }
 
 export class ApiError extends Error {
@@ -119,22 +115,4 @@ export function apiPatch<T>(path: string, body: unknown, token?: RequestToken): 
 
 export function apiDelete<T>(path: string, token?: RequestToken): Promise<T> {
   return apiFetch<T>(path, { method: "DELETE", token });
-}
-
-export interface LoginResponse {
-  token: string;
-  expires_at: string;
-}
-
-/**
- * POST /api/login. Returns the token to the caller; it is NOT cached
- * anywhere global. The caller must send it back as
- * `Authorization: Bearer <token>` on subsequent MCP requests.
- */
-export async function login(email: string, password: string): Promise<LoginResponse> {
-  return apiFetch<LoginResponse>("/login", {
-    method: "POST",
-    body: { email, password },
-    auth: false,
-  });
 }

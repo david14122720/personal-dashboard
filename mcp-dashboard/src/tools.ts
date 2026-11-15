@@ -2,8 +2,10 @@
 // Routes mirror backend/src/main.rs `api_routes` (mounted under /api).
 //
 // Auth is per-request: dispatchTool(name, args, token) forwards the token
-// (taken from the incoming MCP request's `Authorization` header, with env
-// fallback resolved in client.ts) to every backend call. No global state.
+// (taken from the incoming MCP request's `Authorization` header, already
+// validated against the backend). The HTTP gate also passes the resolved
+// caller identity, which is what the audit log is attributed to. No global
+// state.
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -12,7 +14,6 @@ import {
   apiGet,
   apiPatch,
   apiPost,
-  login as apiLogin,
   type RequestToken,
 } from "./client.js";
 
@@ -32,7 +33,16 @@ interface ToolEntry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   schema: z.ZodTypeAny;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  run: (args: any, token?: RequestToken) => Promise<string>;
+  run: (args: any, token?: RequestToken, context?: DispatchContext) => Promise<string>;
+}
+
+/**
+ * Facts the HTTP auth gate resolved for this request (audit F-09/S1). Tool
+ * handlers that need an identity use `principal`, never the raw credential.
+ */
+export interface DispatchContext {
+  /** Audit principal derived from the backend-resolved `user_id`. */
+  principal?: string;
 }
 
 const uuid = z.uuid();
@@ -78,11 +88,6 @@ function boolProp(description: string): object {
 function intProp(description: string): object {
   return { type: "integer", description };
 }
-
-const LoginSchema = z.object({
-  email: z.email(),
-  password: z.string().min(1),
-});
 
 const ListAccountsSchema = z.object({});
 
@@ -364,7 +369,7 @@ const DeleteByIdSchema = z.object({ id: uuid });
 
 const CreateTokenSchema = z.object({
   name: z.string().min(1).max(80),
-  expires_in_days: z.number().int().min(1).max(3650).optional(),
+  expires_in_days: z.number().int().min(1).max(90).optional(),
 });
 
 const ListTokensSchema = z.object({});
@@ -405,23 +410,6 @@ const ListAuditLogSchema = z.object({
 });
 
 const entries: ToolEntry[] = [
-  {
-    def: {
-      name: "login",
-      description:
-        "POST /api/login. Authenticates with email+password and returns the Bearer token (plus expires_at). The token is NOT cached: send it back as `Authorization: Bearer <token>` on subsequent MCP requests. Example: {\"email\":\"you@example.com\",\"password\":\"secret\"}.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          email: strProp("User email address, e.g. you@example.com"),
-          password: strProp("User password (min 1 char, never log it)"),
-        },
-        required: ["email", "password"],
-      },
-    },
-    schema: LoginSchema,
-    run: async (args) => fmt(await apiLogin(args.email, args.password)),
-  },
   {
     def: {
       name: "list_accounts",
@@ -1143,12 +1131,17 @@ const entries: ToolEntry[] = [
     def: {
       name: "create_token",
       description:
-        "POST /api/tokens. Creates a personal API token. SESSION AUTH ONLY: call with a session Bearer token from login, never with an existing `pd_...` token (backend is 401 otherwise). Returns the raw `pd_...` secret EXACTLY ONCE (Cache-Control: no-store) — copy it now, it is never stored nor shown again. SENSITIVE: never log, commit, or share the raw value. Optional expires_in_days (1-3650); omitted means 90 days (audit F-01/A6). Duplicate names per user are 409.",
+        "POST /api/tokens. Creates a personal API token. SESSION AUTH ONLY: call with a dashboard session Bearer token, never with an existing `pd_...` token (backend is 401 otherwise). Returns the raw `pd_...` secret EXACTLY ONCE (Cache-Control: no-store) — copy it now, it is never stored nor shown again. SENSITIVE: never log, commit, or share the raw value. Optional expires_in_days (1-90); omitted means 90 days (audit F-01/A6/F-13). Duplicate names per user are 409.",
       inputSchema: {
         type: "object",
         properties: {
           name: strProp("Token name, 1-80 chars (trimmed)"),
-          expires_in_days: intProp("Lifetime in whole days, 1-3650; omitted means 90 days"),
+          expires_in_days: {
+            type: "integer",
+            minimum: 1,
+            maximum: 90,
+            description: "Lifetime in whole days, 1-90; omitted means 90 days",
+          },
         },
         required: ["name"],
       },
@@ -1244,11 +1237,13 @@ const entries: ToolEntry[] = [
       },
     },
     schema: ListAuditLogSchema,
-    run: async (args, token) => {
-      // Audit F-04: scoping needs an identity. A defined-but-blank credential
-      // has none, so it must be rejected instead of falling back to the whole
-      // buffer (readAuditLog returns everything when no principal is given).
-      const principal = principalForToken(token);
+    run: async (args, token, context) => {
+      // Audit F-04: scoping needs an identity. Behind the HTTP gate the
+      // principal comes from the validated identity (F-09/S1); a defined-but-
+      // blank credential has none, so it must be rejected instead of falling
+      // back to the whole buffer (readAuditLog returns everything when no
+      // principal is given).
+      const principal = context?.principal ?? principalForToken(token);
       if (principal === undefined) {
         throw new Error("list_audit_log requires an authenticated caller");
       }
@@ -1311,6 +1306,18 @@ export function principalForToken(token?: RequestToken): string | undefined {
 }
 
 /**
+ * Caller id for the identity the backend resolved (audit F-09/S1). The audit
+ * principal is the validated `users.id`, never a hash of unverified input, so
+ * two sessions of the same account land on the same principal. The `user:`
+ * namespace keeps it from ever colliding with a token hash.
+ */
+export function principalForUser(userId: string): string | undefined {
+  const id = userId.trim();
+  if (id.length === 0) return undefined;
+  return createHash("sha256").update(`user:${id}`).digest("hex").slice(0, 16);
+}
+
+/**
  * Mask a request token for the audit log. `pd_` API tokens contribute
  * only their 8-char display prefix (useless without the 256-bit secret);
  * opaque session tokens collapse to the label "session"; missing tokens
@@ -1353,6 +1360,7 @@ export async function dispatchTool(
   name: string,
   rawArgs: unknown,
   token?: RequestToken,
+  context?: DispatchContext,
 ): Promise<string> {
   const entry = entries.find((e) => e.def.name === name);
   if (!entry) {
@@ -1360,7 +1368,7 @@ export async function dispatchTool(
     throw new Error("unknown tool");
   }
   const parsed = entry.schema.parse(rawArgs ?? {});
-  return entry.run(parsed, token);
+  return entry.run(parsed, token, context);
 }
 
 export function listToolNames(): string[] {

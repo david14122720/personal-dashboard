@@ -66,10 +66,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ENV STATIC_DIR=/app/static
 ENV PORT=80
+# Production posture for the Node MCP server in this image (audit F-17/S3):
+# Express stops emitting X-Powered-By and its development error page.
+ENV NODE_ENV=production
 # MCP defaults inside the container (overridable via the Dokploy env field).
 # PERSONAL_DASHBOARD_API_URL points at the sibling backend on :80.
 # MCP_ALLOWED_HOSTS opens the host guard for LAN access; localhost stays allowed.
-# PERSONAL_DASHBOARD_TOKEN is intentionally unset: auth stays per-request Bearer.
+# Auth is per-request Bearer only; there is no environment token fallback
+# (audit F-10), so no token variable is read or documented here.
 ENV MCP_PORT=3002
 ENV PERSONAL_DASHBOARD_API_URL=http://127.0.0.1:80/api
 ENV MCP_ALLOWED_HOSTS=192.168.50.120

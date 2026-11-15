@@ -138,3 +138,13 @@ export async function listAudit(base, { token, sessionId, limit } = {}) {
   if (call.isError) throw new Error(`list_audit_log failed: ${call.text}`);
   return JSON.parse(call.text);
 }
+
+/**
+ * Credential validator for tests (audit F-09/S1): accepts every non-blank
+ * token and resolves it to its own identity, so no backend request is made and
+ * per-credential audit scoping stays observable. Tests that need a different
+ * verdict pass their own `validateToken`.
+ */
+export function acceptToken(token) {
+  return Promise.resolve({ userId: `user:${token.trim()}` });
+}

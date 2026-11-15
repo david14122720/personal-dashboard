@@ -124,3 +124,36 @@ test("touch keeps a session alive only while it has not expired", () => {
   assert.deepEqual(sessions.sweep(), ["a"]);
   assert.equal(a.closed, 1);
 });
+
+test("an owner-bound session is invisible to another owner and not closed by it", () => {
+  let clock = 0;
+  const sessions = new SessionRegistry(4, TTL, () => clock);
+  const a = fakeSession();
+  sessions.open("a", a, "user-a");
+
+  // Same answer as an unknown id, and no side effect on the entry.
+  assert.equal(sessions.get("a", "user-b"), undefined);
+  sessions.touch("a", "user-b");
+  sessions.close("a", "user-b");
+  assert.equal(a.closed, 0);
+  assert.equal(sessions.size, 1);
+
+  assert.equal(sessions.get("a", "user-a"), a);
+  sessions.close("a", "user-a");
+  assert.equal(a.closed, 1);
+  assert.equal(sessions.size, 0);
+});
+
+test("a mismatched lookup does not refresh the idle timer", () => {
+  let clock = 0;
+  const sessions = new SessionRegistry(4, TTL, () => clock);
+  const a = fakeSession();
+  sessions.open("a", a, "user-a");
+
+  clock = 80;
+  assert.equal(sessions.get("a", "user-b"), undefined);
+
+  clock = 120; // 120ms since open: expired unless the mismatch refreshed it
+  assert.deepEqual(sessions.sweep(), ["a"]);
+  assert.equal(a.closed, 1);
+});

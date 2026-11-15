@@ -1,9 +1,7 @@
 // Behavior tests for MCP credential enforcement and bounded sessions
-// (T10 / audit F-02 + F-03, specs S2 and S10).
-//
-// Each test boots the compiled server on an ephemeral loopback port, so the
-// assertions run through the public HTTP surface a real MCP client uses. No
-// backend request is made: the tools exercised here never reach the API.
+// (T10 / audit F-02 + F-03, specs S2 and S10), updated for the server-side
+// credential check (audit F-09/S1): every boot injects a fake validator, so no
+// backend request is made. The env fallback (audit F-10) no longer exists.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -12,6 +10,7 @@ import { createApp } from "../dist/index.js";
 import { readAuditLog } from "../dist/tools.js";
 import {
   INITIALIZE,
+  acceptToken,
   callTool,
   closeSessions,
   initialize,
@@ -21,19 +20,13 @@ import {
   startServer,
 } from "./support/mcp-http.mjs";
 
-// The env fallback (PERSONAL_DASHBOARD_TOKEN) is a configured credential, so it
-// has to be absent for the "request without a credential" cases to mean
-// anything. It is removed for this test file only (node --test runs each file
-// in its own process).
-delete process.env.PERSONAL_DASHBOARD_TOKEN;
-
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN = "pd_test_alpha_secret";
 
 /** Fresh app plus listening loopback server, torn down by the test. */
 async function boot(t, options = {}) {
-  const { app, sessions } = createApp(options);
+  const { app, sessions } = createApp({ validateToken: acceptToken, ...options });
   const server = await startServer(app);
   t.after(async () => {
     closeSessions(sessions);
