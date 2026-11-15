@@ -314,6 +314,25 @@ impl SummaryGroup {
             Self::Year => "year",
         }
     }
+
+    /// Calendar units the inclusive window would expand to, computed
+    /// arithmetically so the check itself never allocates (audit F-11).
+    fn window_buckets(self, from: NaiveDate, to: NaiveDate) -> i64 {
+        match self {
+            Self::Day => to.signed_duration_since(from).num_days() + 1,
+            Self::Week => {
+                let start = summary_unit_start(self, from);
+                let end = summary_unit_start(self, to);
+                end.signed_duration_since(start).num_days() / 7 + 1
+            }
+            Self::Month => {
+                (i64::from(to.year()) - i64::from(from.year())) * 12
+                    + (i64::from(to.month()) - i64::from(from.month()))
+                    + 1
+            }
+            Self::Year => i64::from(to.year()) - i64::from(from.year()) + 1,
+        }
+    }
 }
 
 /// Parse the `group` query parameter strictly, following [`parse_read_shape`]:
@@ -344,6 +363,39 @@ pub fn parse_summary_window(
 ) -> Result<(NaiveDate, NaiveDate), AppError> {
     parse_movement_range(from, to)?
         .ok_or_else(|| AppError::Validation("from and to are required".into()))
+}
+
+/// Hard caps for the summary window (audit F-11).
+///
+/// [`summary_bucket_windows`] allocates one keyed struct per calendar unit in
+/// the window before any row is read, so an unbounded window is a
+/// single-request memory amplifier: `group=day` over `0001-01-01..9999-12-31`
+/// expands to 3_652_059 buckets. The cap keeps the worst case at 400.
+const MAX_SUMMARY_BUCKETS: i64 = 400;
+/// Widest span accepted for any group (5 years, leap-safe).
+const MAX_SUMMARY_SPAN_DAYS: i64 = 366 * 5;
+
+/// Reject summary windows that would expand past the chart contract
+/// (audit F-11). Runs before any database work and allocates nothing.
+pub fn validate_summary_window(
+    group: SummaryGroup,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<(), AppError> {
+    let span_days = to.signed_duration_since(from).num_days();
+    if span_days > MAX_SUMMARY_SPAN_DAYS {
+        return Err(AppError::Validation(format!(
+            "window is too wide: at most {MAX_SUMMARY_SPAN_DAYS} days are accepted (got {span_days})"
+        )));
+    }
+    let buckets = group.window_buckets(from, to);
+    if buckets > MAX_SUMMARY_BUCKETS {
+        return Err(AppError::Validation(format!(
+            "window is too wide for group `{}`: {buckets} buckets, at most {MAX_SUMMARY_BUCKETS} are accepted",
+            group.as_str()
+        )));
+    }
+    Ok(())
 }
 
 /// First day of the calendar unit containing `date` (Monday for `week`).
@@ -953,8 +1005,10 @@ pub async fn movement_summary_handler(
     ValidatedQuery(query): ValidatedQuery<MovementSummaryQuery>,
 ) -> Result<Json<MovementSummaryResponse>, AppError> {
     let user_id = require_user_id(&headers, &state.pool).await?;
-    let (from, to) = parse_summary_window(query.from.as_deref(), query.to.as_deref())?;
     let group = parse_summary_group(query.group.as_deref())?;
+    let (from, to) = parse_summary_window(query.from.as_deref(), query.to.as_deref())?;
+    // F-11: cap the window before the bucket expansion allocates anything.
+    validate_summary_window(group, from, to)?;
     let currency: String = sqlx::query_scalar(USER_CURRENCY_SQL)
         .bind(user_id)
         .fetch_one(&state.pool)
@@ -1990,6 +2044,41 @@ mod tests {
         ] {
             assert_422(parse_summary_window(from, to).unwrap_err());
         }
+    }
+
+    #[test]
+    fn summary_window_caps_the_bucket_expansion() {
+        // F-11: the expansion allocates one bucket per unit before reading a
+        // row, so the extremes of the calendar must be 422, not an OOM.
+        let (from, to) =
+            parse_summary_window(Some("0001-01-01"), Some("9999-12-31")).expect("parses");
+        for group in [
+            SummaryGroup::Day,
+            SummaryGroup::Week,
+            SummaryGroup::Month,
+            SummaryGroup::Year,
+        ] {
+            assert_422(validate_summary_window(group, from, to).unwrap_err());
+        }
+
+        // `day` accepts exactly 400 buckets and rejects the 401st.
+        let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let last_ok = start + chrono::Days::new(399);
+        let one_more = start + chrono::Days::new(400);
+        assert!(validate_summary_window(SummaryGroup::Day, start, last_ok).is_ok());
+        assert_422(validate_summary_window(SummaryGroup::Day, start, one_more).unwrap_err());
+
+        // Nothing breaks a window longer than five years, whatever its
+        // granularity would pack into buckets.
+        let five_years = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        let six_years = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        assert!(validate_summary_window(SummaryGroup::Year, five_years, six_years).is_err());
+        assert!(validate_summary_window(
+            SummaryGroup::Year,
+            five_years,
+            NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()
+        )
+        .is_ok());
     }
 
     #[test]
