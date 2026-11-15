@@ -1986,10 +1986,14 @@ mod tests {
         };
         let (state, headers, user_id) = db_state(&pool).await;
         let account_id = seed_account(&pool, user_id, "100000").await;
+        // Seed the due date at today so the pay below advances it a full
+        // period past `last_paid_on`; a stale hardcoded date can land exactly
+        // on `last_paid_on + 1 day`, which the guard legitimately allows.
+        let due_today = today_bogota().format("%Y-%m-%d").to_string();
         let (_, sub) = create_subscription_handler(
             State(state.clone()),
             headers.clone(),
-            create_body("Gym", "19900", "2026-10-15"),
+            create_body("Gym", "19900", &due_today),
         )
         .await
         .expect("create is 201");
