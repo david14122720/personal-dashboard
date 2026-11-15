@@ -2,7 +2,7 @@ use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{auth::helper::require_user_id, auth::middleware, error::AppError, state::AppState};
+use crate::{auth::helper::require_user_id, error::AppError, state::AppState};
 
 #[derive(Debug, Serialize)]
 pub struct MeResponse {
@@ -20,29 +20,32 @@ pub struct Preferences {
     pub dashboard_layout: serde_json::Value,
 }
 
-/// Session lookup for `GET /api/me`: the session must be live AND its owner
-/// active. Deactivating a user stops its existing sessions, not just new
-/// logins (security audit A4) — the same predicate the auth middleware and
-/// the session helper enforce.
-const ME_LOOKUP_SQL: &str = r#"SELECT u.id, u.email, u.display_name,
+/// Profile lookup for `GET /api/me`, keyed by the already-resolved user id.
+///
+/// Credential resolution happens in `require_user_id` (sessions AND personal
+/// API tokens), the same helper `PATCH /api/me/preferences` uses; this query
+/// only reads the row. Requiring `u.is_active` here too keeps a user that was
+/// deactivated between resolution and read from getting a body (audit A4).
+const ME_PROFILE_SQL: &str = r#"SELECT u.id, u.email, u.display_name,
           p.currency_code, p.locale, p.timezone, p.dashboard_layout
-   FROM sessions s
-   JOIN users u ON u.id = s.user_id
+   FROM users u
    LEFT JOIN user_preferences p ON p.user_id = u.id
-   WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
-     AND u.is_active"#;
+   WHERE u.id = $1 AND u.is_active"#;
 
 pub async fn me_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<MeResponse>, AppError> {
-    let token = middleware::extract_bearer(&headers).ok_or(AppError::Auth)?;
-    let hash = middleware::bearer_hash(&token);
+    // F-21: both credential types. The MCP server validates every request's
+    // `pd_...` token with `GET /api/me`, so a session-only lookup here made
+    // every API token 401 and left the MCP unusable. Reading one's own profile
+    // is the same privilege `PATCH /api/me/preferences` already grants a token.
+    let user_id = require_user_id(&headers, &state.pool).await?;
 
     let row = sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>, Option<String>, Option<serde_json::Value>)>(
-        ME_LOOKUP_SQL,
+        ME_PROFILE_SQL,
     )
-    .bind(&hash)
+    .bind(user_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|_| AppError::Internal)?;
@@ -326,11 +329,68 @@ mod preferences_tests {
     // -- A4: the /me lookup must require an active owner --
 
     #[test]
-    fn me_lookup_requires_an_active_user() {
+    fn me_profile_lookup_requires_an_active_user() {
         assert!(
-            ME_LOOKUP_SQL.contains("u.is_active"),
-            "the /me session lookup must require an active user, got: {ME_LOOKUP_SQL}"
+            ME_PROFILE_SQL.contains("u.is_active"),
+            "the /me profile lookup must require an active user, got: {ME_PROFILE_SQL}"
         );
+    }
+
+    fn bearer_headers(raw: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {raw}").parse().unwrap(),
+        );
+        headers
+    }
+
+    /// F-21: `GET /api/me` must accept a personal API token, because the MCP
+    /// server validates every `pd_...` credential with this endpoint. The
+    /// lookup used to read `sessions` only, so a perfectly valid API token got
+    /// a 401 and the whole MCP surface was unreachable.
+    #[tokio::test]
+    async fn api_token_resolves_me_and_revocation_is_401() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP api_token_resolves_me_and_revocation_is_401: no DATABASE_URL");
+            return;
+        };
+        let (state, _session_headers, user_id) = db_state(&pool).await;
+
+        // Only the API token travels below, so a 200 proves it authenticates
+        // on its own (the seeded session is not in this header map).
+        let raw = crate::routes::tokens::mint_raw_token();
+        let hash = crate::auth::tokens::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at) VALUES ($1,$2,$3,$4, now() + interval '90 days')",
+        )
+        .bind(user_id)
+        .bind(format!("me-{}", Uuid::new_v4()))
+        .bind(&hash)
+        // Same 8-character display prefix `token_prefix` stores.
+        .bind(raw.chars().take(8).collect::<String>())
+        .execute(&pool)
+        .await
+        .expect("seed api token");
+
+        let me = me_handler(State(state.clone()), bearer_headers(&raw))
+            .await
+            .expect("a valid API token must get 200")
+            .0;
+        assert_eq!(me.id, user_id);
+
+        sqlx::query("UPDATE api_tokens SET revoked_at = now() WHERE token_hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .expect("revoke api token");
+
+        let err = me_handler(State(state), bearer_headers(&raw))
+            .await
+            .expect_err("a revoked API token must be 401");
+        assert_401(err);
+
+        cleanup_user(&pool, user_id).await;
     }
 
     #[tokio::test]
