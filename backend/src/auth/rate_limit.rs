@@ -11,13 +11,13 @@ use uuid::Uuid;
 
 /// Failure budget per client IP: 10 failures / `WINDOW`.
 const MAX_REQUESTS: usize = 10;
-/// Failure budget per normalized account email: 5 failures / `WINDOW`.
+/// Reporting budget per normalized account email: 5 failures / `WINDOW`.
 ///
-/// Residual self-lockout tradeoff (accepted, design decision 5): an attacker
-/// who knows an email can delay that account's next successful login for at
-/// most `WINDOW` (15 min) by burning this budget. The delay is bounded by
-/// the window and never extends past the last recorded failure; a successful
-/// login clears the bucket immediately.
+/// This budget never *blocks* an attempt. It is consulted only after a failed
+/// verification, where it turns the generic 401 into a `429` with a
+/// `Retry-After` hint, so an attacker who knows the owner's email cannot lock
+/// the owner out by burning it (audit F-12). The cost of a guess stays bounded
+/// by Argon2id and by the per-IP budget; a successful login clears the bucket.
 const MAX_ACCOUNT_FAILURES: usize = 5;
 const WINDOW: Duration = Duration::from_secs(15 * 60);
 /// Hard ceiling for distinct keys retained by [`LoginRateLimiter`] (DD5),
@@ -40,9 +40,12 @@ const TOKEN_MINT_WINDOW: Duration = Duration::from_secs(60 * 60);
 /// mint budget rides on this struct so `AppState` stays unchanged).
 ///
 /// Failure-only (A2): successful logins consume no quota and clear the
-/// account bucket; only the IP bucket bounds a client that rotates emails.
-/// Account keys are edge-trimmed and lowercased so `CITEXT` casing cannot
-/// split one account across two buckets.
+/// account bucket. The two login buckets play different roles: the IP bucket
+/// is the only pre-verification gate ([`Self::check_login_ip`]), so it is what
+/// bounds Argon2 work from one source, while the account bucket reports
+/// pressure after the fact ([`Self::account_retry`]) and can never refuse a
+/// correct password. Account keys are edge-trimmed and lowercased so `CITEXT`
+/// casing cannot split one account across two buckets.
 ///
 /// Token mints are the opposite: every *successful* mint consumes quota
 /// (validation/DB failures mint nothing), so probing names never burns the
@@ -170,36 +173,43 @@ impl LoginRateLimiter {
         email.trim().to_lowercase()
     }
 
-    /// Gate `POST /login` before any DB or Argon2 work. Returns `None` when
-    /// both buckets allow the attempt, or `Some(retry_after)` with the larger
-    /// remaining window when either bucket is full. Never records anything.
-    pub fn check_login(&self, ip: IpAddr, account: &str) -> Option<Duration> {
+    /// Gate `POST /login` before any DB or Argon2 work. Only the IP bucket can
+    /// refuse an attempt here: this is what bounds password-verification work
+    /// from one source. Returns `None` while the source has budget left, or
+    /// `Some(retry_after)` once it is spent. Never records anything.
+    ///
+    /// The account budget is deliberately absent from this gate (audit F-12):
+    /// rejecting on it before verifying let anyone who knew the owner's email
+    /// lock the owner out with five guesses, renewable forever.
+    pub fn check_login_ip(&self, ip: IpAddr) -> Option<Duration> {
         // SEC-005: a poisoned lock must not panic inside the request path;
         // recover the guard and keep serving.
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         prune(&mut state.by_ip, self.window, now);
-        prune(&mut state.by_account, self.window, now);
-
-        let account = Self::normalize_account(account);
-        let ip_retry = blocked_for(
+        blocked_for(
             state.by_ip.get(&ip),
             self.max_requests,
             self.window,
             now,
-        );
-        let account_retry = blocked_for(
+        )
+    }
+
+    /// Remaining wait for the account bucket, or `None` while it still has
+    /// room. Call this **after** a failed verification to decide between the
+    /// generic 401 and a `429` with `Retry-After`. Never call it as a gate: a
+    /// correct password must be accepted even when the budget is exhausted.
+    pub fn account_retry(&self, account: &str) -> Option<Duration> {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        prune(&mut state.by_account, self.window, now);
+        let account = Self::normalize_account(account);
+        blocked_for(
             state.by_account.get(&account),
             self.max_account_failures,
             self.window,
             now,
-        );
-        match (ip_retry, account_retry) {
-            (None, None) => None,
-            (Some(ip_window), None) => Some(ip_window),
-            (None, Some(account_window)) => Some(account_window),
-            (Some(ip_window), Some(account_window)) => Some(ip_window.max(account_window)),
-        }
+        )
     }
 
     /// Record one failed authentication against both buckets. Called only
@@ -456,7 +466,8 @@ mod tests {
         // The old limiter recorded every `check`; the new one only inspects.
         let limiter = LoginRateLimiter::new();
         for _ in 0..(MAX_REQUESTS + 5) {
-            assert!(limiter.check_login(ip(), "user@example.com").is_none());
+            assert!(limiter.check_login_ip(ip()).is_none());
+            assert!(limiter.account_retry("user@example.com").is_none());
         }
         assert_eq!(limiter.count_ip(ip()), 0);
         assert_eq!(limiter.count_account("user@example.com"), 0);
@@ -468,7 +479,7 @@ mod tests {
         // the IP: repeated successes must keep succeeding.
         let limiter = LoginRateLimiter::new();
         for _ in 0..15 {
-            assert!(limiter.check_login(ip(), "user@example.com").is_none());
+            assert!(limiter.check_login_ip(ip()).is_none());
             limiter.record_success("user@example.com");
         }
         assert_eq!(limiter.count_ip(ip()), 0);
@@ -482,26 +493,48 @@ mod tests {
             // Distinct accounts keep the account bucket out of this assertion.
             limiter.record_failure(ip(), &format!("victim-{i}@example.com"));
         }
-        let retry = limiter.check_login(ip(), "victim-9@example.com").unwrap();
+        let retry = limiter.check_login_ip(ip()).unwrap();
         assert!(retry > Duration::from_secs(0));
         assert!(retry <= WINDOW);
     }
 
     #[test]
-    fn blocks_the_6th_failure_for_one_account_independent_of_the_ip_bucket() {
+    fn the_account_budget_reports_pressure_but_never_blocks_the_ip() {
+        // F-12: the 6th guess for one account must not refuse the source. It
+        // only upgrades the next *failed* answer from 401 to 429; the IP gate
+        // stays open so the owner's correct password still gets verified.
         let limiter = LoginRateLimiter::new();
         for _ in 0..MAX_ACCOUNT_FAILURES {
             limiter.record_failure(ip(), "owner@example.com");
         }
         assert_eq!(limiter.count_ip(ip()), MAX_ACCOUNT_FAILURES);
         assert!(
-            limiter.check_login(ip(), "owner@example.com").is_some(),
-            "the 6th attempt for a 5-failure account must be blocked"
+            limiter.account_retry("owner@example.com").is_some(),
+            "an exhausted account budget must report a retry hint"
         );
         assert!(
-            limiter.check_login(ip(), "other@example.com").is_none(),
-            "another account from the same IP must still be served"
+            limiter.check_login_ip(ip()).is_none(),
+            "the account budget must never block a correct password"
         );
+        assert!(
+            limiter.account_retry("other@example.com").is_none(),
+            "another account keeps its own budget"
+        );
+    }
+
+    #[test]
+    fn a_burned_account_budget_still_lets_the_owner_in() {
+        // F-12 end to end at the limiter level: an attacker fills the account
+        // budget, the owner's attempt is still admitted by the gate, and the
+        // successful login clears the bucket.
+        let limiter = LoginRateLimiter::new();
+        for _ in 0..MAX_ACCOUNT_FAILURES {
+            limiter.record_failure(ip_n(9), "owner@example.com");
+        }
+        assert!(limiter.account_retry("owner@example.com").is_some());
+        assert!(limiter.check_login_ip(ip()).is_none());
+        limiter.record_success("owner@example.com");
+        assert!(limiter.account_retry("owner@example.com").is_none());
     }
 
     #[test]
@@ -512,8 +545,8 @@ mod tests {
         for i in 0..MAX_REQUESTS {
             limiter.record_failure(blocked, &format!("blocked-{i}@example.com"));
         }
-        assert!(limiter.check_login(blocked, "blocked-0@example.com").is_some());
-        assert!(limiter.check_login(other, "elsewhere@example.com").is_none());
+        assert!(limiter.check_login_ip(blocked).is_some());
+        assert!(limiter.check_login_ip(other).is_none());
     }
 
     #[test]
@@ -522,7 +555,7 @@ mod tests {
         for _ in 0..MAX_REQUESTS {
             limiter.record_failure(ip(), "user@example.com");
         }
-        let retry = limiter.check_login(ip(), "user@example.com").unwrap();
+        let retry = limiter.check_login_ip(ip()).unwrap();
         assert!(retry > Duration::from_secs(0));
         assert!(retry <= WINDOW);
     }
@@ -533,11 +566,11 @@ mod tests {
         for _ in 0..MAX_ACCOUNT_FAILURES {
             limiter.record_failure(ip(), "owner@example.com");
         }
-        let retry = limiter.check_login(ip(), "owner@example.com").unwrap();
+        let retry = limiter.account_retry("owner@example.com").unwrap();
         assert!(retry <= Duration::from_millis(50));
         std::thread::sleep(Duration::from_millis(60));
         assert!(
-            limiter.check_login(ip(), "owner@example.com").is_none(),
+            limiter.account_retry("owner@example.com").is_none(),
             "the bucket must drain within the window"
         );
     }
@@ -565,11 +598,11 @@ mod tests {
         }
         assert_eq!(limiter.count_account("owner@example.com"), MAX_ACCOUNT_FAILURES);
         assert!(
-            limiter.check_login(ip(), "OWNER@example.com").is_some(),
+            limiter.account_retry("OWNER@example.com").is_some(),
             "CITEXT-style normalization must key the same bucket"
         );
         limiter.record_success("owner@EXAMPLE.com");
-        assert!(limiter.check_login(ip(), " Owner@example.com ").is_none());
+        assert!(limiter.account_retry(" Owner@example.com ").is_none());
     }
 
     // -- A2: bound discipline survives per map --
@@ -599,15 +632,17 @@ mod tests {
         let stale_ip = ip_n(1);
         limiter.record_failure(stale_ip, "stale@example.com");
         std::thread::sleep(Duration::from_millis(60));
-        // Any limiter call prunes expired attempts (and emptied keys).
-        assert!(limiter.check_login(ip_n(2), "fresh@example.com").is_none());
+        // Each gate prunes its own map: the account budget is only consulted
+        // on the post-verification path, so it is pruned there.
+        assert!(limiter.check_login_ip(ip_n(2)).is_none());
         assert_eq!(limiter.count_ip(stale_ip), 0, "expired IP key must be removed");
+        assert_eq!(limiter.key_count_ip(), 0);
+        assert!(limiter.account_retry("stale@example.com").is_none());
         assert_eq!(
             limiter.count_account("stale@example.com"),
             0,
             "expired account key must be removed"
         );
-        assert_eq!(limiter.key_count_ip(), 0);
         assert_eq!(limiter.key_count_account(), 0);
     }
 
@@ -623,7 +658,7 @@ mod tests {
         limiter.record_failure(ip_n(2), "second@example.com");
         limiter.record_failure(ip_n(3), "third@example.com");
         assert!(
-            limiter.check_login(blocked, "blocked-0@example.com").is_some(),
+            limiter.check_login_ip(blocked).is_some(),
             "a currently blocked IP key must never be evicted"
         );
         assert!(limiter.key_count_ip() <= 2);
@@ -638,7 +673,7 @@ mod tests {
         limiter.record_failure(ip_n(100), "second@example.com");
         limiter.record_failure(ip_n(101), "third@example.com");
         assert!(
-            limiter.check_login(ip_n(200), "blocked@example.com").is_some(),
+            limiter.account_retry("blocked@example.com").is_some(),
             "a currently blocked account key must never be evicted"
         );
         assert!(limiter.key_count_account() <= 2);
@@ -679,7 +714,7 @@ mod tests {
         }
         // The limiter is still usable for a legitimate login afterwards.
         assert!(
-            limiter.check_login(ip_n(200), "owner@example.com").is_none(),
+            limiter.check_login_ip(ip_n(200)).is_none(),
             "a legitimate login must still pass after the flood"
         );
     }
@@ -840,9 +875,11 @@ mod tests {
         }));
         assert!(poisoned.is_err(), "the lock must have been poisoned");
         // The request paths recover the guard instead of panicking.
-        assert!(limiter.check_login(ip(), "user@example.com").is_none());
+        assert!(limiter.check_login_ip(ip()).is_none());
         limiter.record_failure(ip(), "user@example.com");
-        assert!(limiter.check_login(ip(), "user@example.com").is_none());
+        // One failure is below the budget: the limiter recovered from the
+        // poisoned lock and still reports room on both paths.
+        assert!(limiter.account_retry("user@example.com").is_none());
         limiter.record_success("user@example.com");
         assert_eq!(limiter.count_account("user@example.com"), 0);
     }

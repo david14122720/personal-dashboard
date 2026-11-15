@@ -147,13 +147,13 @@ pub async fn login_handler(
     // Rate limit before DB work. SEC-004: the key is the peer socket
     // address; `X-Forwarded-For` is honoured only when the peer is in the
     // limiter-owned trusted set (DD2/DD3 amendment), and the fixed local
-    // default is used when connect-info is absent. A2: the gate is
-    // failure-only and keyed per IP (10/15 min) and per normalized account
-    // (5/15 min), so a successful login never consumes quota and an attacker
-    // who rotates emails still exhausts the IP budget.
+    // default is used when connect-info is absent. Only the IP budget gates
+    // here; it is what bounds Argon2 work from one source (10/15 min). The
+    // account budget is consulted after a failed verification (audit F-12), so
+    // burning it can never lock the owner out of a correct password.
     let ip = rate_limit_key(peer.0, &headers, state.rate_limiter.trusted_proxies());
     let account = LoginRateLimiter::normalize_account(&email);
-    if let Some(retry) = state.rate_limiter.check_login(ip, &account) {
+    if let Some(retry) = state.rate_limiter.check_login_ip(ip) {
         let secs = retry.as_secs().max(1);
         return Err(AppError::RateLimited(secs));
     }
@@ -180,6 +180,12 @@ pub async fn login_handler(
     };
     let Some(user_id) = verified_user_id else {
         state.rate_limiter.record_failure(ip, &account);
+        // Audit F-12: the per-account budget reports pressure only after the
+        // verification failed. A correct password always wins, so an attacker
+        // who knows the email cannot renew a lockout against the owner.
+        if let Some(retry) = state.rate_limiter.account_retry(&account) {
+            return Err(AppError::RateLimited(retry.as_secs().max(1)));
+        }
         return Err(AppError::Auth);
     };
 
