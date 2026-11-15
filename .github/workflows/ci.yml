@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Least privilege for every job: nothing in this workflow writes to the repo.
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -32,8 +36,12 @@ jobs:
       # deployed environment both carry this same value.
       SESSION_TTL_HOURS: 24
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned by full commit SHA (v4.4.0): a moved tag cannot change what runs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Pinned by full commit SHA: `stable` is a branch of this action repo.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       # Service containers cannot mount backend/migrations as initdb scripts
       # (docker-compose does), so apply them with autocommit psql, matching the
       # out-of-band convention documented in the migration files.
@@ -50,11 +58,14 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      # Pinned by full commit SHA (v4.4.0).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           package_json_file: frontend/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -66,3 +77,25 @@ jobs:
       # spec discovery and loading on every push. The live run happens
       # against a deployed backend (see frontend/playwright.config.ts).
       - run: pnpm exec playwright test --list
+
+  # Secret hygiene (F-16): fail the build when a credential lands in a commit.
+  secret-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The action lists a PR's commits through the API on pull_request events.
+      # Commenting is disabled below, so no `pull-requests: write` is needed.
+      pull-requests: read
+    steps:
+      # Full history is required: the action scans a commit range with git log.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Pinned by full commit SHA (v2.3.9). Exit code 2 (leaks) fails the job.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          # Automatic workflow token, always present; not a repository secret.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read-only scan: skip PR review comments (needs no write scope).
+          GITLEAKS_ENABLE_COMMENTS: "false"
