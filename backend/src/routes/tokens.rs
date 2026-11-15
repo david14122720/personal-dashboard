@@ -37,13 +37,15 @@ pub const TOKEN_PREFIX: &str = "pd_";
 pub const PREFIX_LEN: usize = 8;
 /// Maximum name length, mirroring `chk_api_token_name_len` (`1..=80` chars).
 pub const MAX_NAME_LEN: usize = 80;
-/// Maximum lifetime accepted by `expires_in_days` (`1..=90`).
+/// Maximum lifetime accepted by `expires_in_days` (`1..=180`).
 ///
 /// F-13: the caller used to pick up to 3650 days (~10 years), so a session
 /// stolen seconds before expiring could mint a decade-long credential that
-/// neither logout nor `DELETE /sessions` revokes. 90 days is the ceiling now;
-/// a larger value is a 422, never a silently clamped lifetime.
-pub const MAX_EXPIRES_IN_DAYS: i64 = 90;
+/// neither logout nor `DELETE /sessions` revokes. The ceiling is 180 days
+/// (owner decision, 2026-11-15: six months for long-lived agent credentials);
+/// a larger value is a 422, never a silently clamped lifetime. There is still
+/// no "never expires": F-01/A6 keeps every credential bounded and revocable.
+pub const MAX_EXPIRES_IN_DAYS: i64 = 180;
 
 const CREATE_TOKEN_SQL: &str = "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at) VALUES ($1,$2,$3,$4,$5) RETURNING id, name, prefix, scopes, expires_at, created_at";
 const LIST_TOKENS_SQL: &str = "SELECT id, name, prefix, scopes, expires_at, last_used_at, revoked_at, created_at FROM api_tokens WHERE user_id=$1 ORDER BY created_at DESC, id DESC";
@@ -57,8 +59,8 @@ const REVOKE_ALL_TOKENS_SQL: &str = "UPDATE api_tokens SET revoked_at=now() WHER
 #[serde(deny_unknown_fields)]
 pub struct CreateTokenRequest {
     pub name: String,
-    /// Optional lifetime in whole days (`1..=90`); omitted applies the 90-day
-    /// ceiling instead of "never expires".
+    /// Optional lifetime in whole days (`1..=180`); omitted applies the
+    /// 180-day ceiling instead of "never expires".
     pub expires_in_days: Option<i64>,
 }
 
@@ -144,7 +146,7 @@ pub fn validate_token_name(raw: &str) -> Result<String, AppError> {
     Ok(name)
 }
 
-/// Whole-day lifetimes of `1..=90`; omitted means
+/// Whole-day lifetimes of `1..=180`; omitted means
 /// [`DEFAULT_EXPIRES_IN_DAYS`], never "no expiry".
 pub fn validate_expires_in_days(raw: Option<i64>) -> Result<Option<i64>, AppError> {
     match raw {
@@ -159,7 +161,7 @@ pub fn validate_expires_in_days(raw: Option<i64>) -> Result<Option<i64>, AppErro
 /// Lifetime applied when the caller omits `expires_in_days`.
 ///
 /// Audit F-01/A6: a credential that never expires turns one stolen session into
-/// permanent access. Omitted means 90 days, and the response still reports the
+/// permanent access. Omitted means 180 days, and the response still reports the
 /// resulting `expires_at`. Tied to the ceiling on purpose: an omission default
 /// above [`MAX_EXPIRES_IN_DAYS`] would be the same F-13 hole through the other
 /// door.
@@ -465,27 +467,28 @@ mod tokens_tests {
     #[test]
     fn an_omitted_lifetime_still_expires() {
         // Audit F-01/A6: no caller-supplied value must not mean "forever".
-        assert_eq!(effective_lifetime_days(None).unwrap(), 90);
+        assert_eq!(effective_lifetime_days(None).unwrap(), 180);
         assert_eq!(effective_lifetime_days(Some(30)).unwrap(), 30);
         assert_eq!(effective_lifetime_days(Some(90)).unwrap(), 90);
+        assert_eq!(effective_lifetime_days(Some(180)).unwrap(), 180);
         assert_422(effective_lifetime_days(Some(0)).unwrap_err());
-        assert_422(effective_lifetime_days(Some(91)).unwrap_err());
+        assert_422(effective_lifetime_days(Some(181)).unwrap_err());
     }
 
-    /// F-13: the caller used to choose up to 3650 days. The ceiling is 90 now:
+    /// F-13: the caller used to choose up to 3650 days. The ceiling is 180 now:
     /// the boundary is accepted, one day past it is a 422 (never a silent
     /// clamp, so the caller always gets the lifetime it asked for), and an
     /// omitted value lands exactly on the same ceiling.
     #[test]
-    fn expires_in_days_allows_1_to_90_or_absent() {
-        assert_eq!(MAX_EXPIRES_IN_DAYS, 90);
+    fn expires_in_days_allows_1_to_180_or_absent() {
+        assert_eq!(MAX_EXPIRES_IN_DAYS, 180);
         assert_eq!(validate_expires_in_days(None).unwrap(), None);
         assert_eq!(validate_expires_in_days(Some(1)).unwrap(), Some(1));
         assert_eq!(
             validate_expires_in_days(Some(MAX_EXPIRES_IN_DAYS)).unwrap(),
-            Some(90)
+            Some(180)
         );
-        for bad in [Some(0), Some(-7), Some(91), Some(3650), Some(i64::MAX)] {
+        for bad in [Some(0), Some(-7), Some(181), Some(3650), Some(i64::MAX)] {
             assert_422(validate_expires_in_days(bad).unwrap_err());
         }
         assert_eq!(
@@ -832,12 +835,12 @@ mod tokens_tests {
         cleanup_user(&pool, user_b).await;
     }
 
-    /// F-13: an omitted lifetime lands on the 90-day ceiling, never on
+    /// F-13: an omitted lifetime lands on the 180-day ceiling, never on
     /// "forever".
     #[tokio::test]
-    async fn omitted_lifetime_creates_a_90_day_token() {
+    async fn omitted_lifetime_creates_a_180_day_token() {
         let Some(pool) = test_pool() else {
-            eprintln!("SKIP omitted_lifetime_creates_a_90_day_token: no DATABASE_URL");
+            eprintln!("SKIP omitted_lifetime_creates_a_180_day_token: no DATABASE_URL");
             return;
         };
         let (state, headers, user_id) = db_user_with_session(&pool).await;
@@ -854,8 +857,8 @@ mod tokens_tests {
         let expires_at = created.expires_at.expect("an expiry is always reported");
         let lifetime = expires_at - Utc::now();
         assert!(
-            lifetime > Duration::days(89) && lifetime <= Duration::days(90),
-            "omitted lifetime must be 90 days, got {lifetime}"
+            lifetime > Duration::days(179) && lifetime <= Duration::days(180),
+            "omitted lifetime must be 180 days, got {lifetime}"
         );
         cleanup_user(&pool, user_id).await;
     }

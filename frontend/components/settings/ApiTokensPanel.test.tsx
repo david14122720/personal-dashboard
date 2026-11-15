@@ -135,12 +135,15 @@ describe("ApiTokensPanel revoke-all (F-13)", () => {
     expect(screen.getByRole("button", { name: "Revocar todos" })).toBeDisabled();
   });
 
-  it("never offers a lifetime above the 90-day cap", async () => {
+  it("never offers a lifetime above the 180-day cap", async () => {
     renderPanel();
     expect(await screen.findByText("cli")).toBeInTheDocument();
     const select = screen.getByLabelText("Expiración") as HTMLSelectElement;
     const options = Array.from(select.options).map((option) => option.textContent);
-    expect(options).toEqual(["Nunca", "30 días", "90 días"]);
+    expect(options).toEqual(["30 días", "90 días", "180 días"]);
+    // F-01/A6: no unbounded option, and nothing the API would reject with 422.
+    expect(options.some((label) => label === "Nunca")).toBe(false);
     expect(options.some((label) => label?.includes("365"))).toBe(false);
+    expect(select.value).toBe("180");
   });
 });

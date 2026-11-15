@@ -9,9 +9,12 @@ import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
 import { createToken, listTokens, revokeAllTokens, revokeToken, type ApiToken, type CreatedToken } from "@/lib/api/tokens";
 
-// F-13: the backend caps `expires_in_days` at 90, so the picker never offers a
-// lifetime the API would reject with 422.
-const EXPIRY_OPTIONS = ["30", "90"] as const;
+// F-13: the backend caps `expires_in_days` at 180, so the picker never offers a
+// lifetime the API would reject with 422. There is no "never expires" option:
+// an unbounded credential is exactly what F-01/A6 closed, and omission already
+// means the 180-day ceiling.
+const EXPIRY_OPTIONS = ["30", "90", "180"] as const;
+const DEFAULT_EXPIRY = "180";
 
 function formatDate(value: string | null): string {
   if (!value) return t("tokens.never");
@@ -33,7 +36,7 @@ export default function ApiTokensPanel() {
   const [loadError, setLoadError] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [expiry, setExpiry] = useState<string>("never");
+  const [expiry, setExpiry] = useState<string>(DEFAULT_EXPIRY);
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CreatedToken | null>(null);
   const [copied, setCopied] = useState(false);
@@ -76,13 +79,10 @@ export default function ApiTokensPanel() {
     setCopied(false);
     setRevokedAll(null);
     try {
-      const result = await createToken(
-        trimmed,
-        expiry === "never" ? undefined : Number(expiry),
-      );
+      const result = await createToken(trimmed, Number(expiry));
       setCreated(result);
       setName("");
-      setExpiry("never");
+      setExpiry(DEFAULT_EXPIRY);
       setTokens(await listTokens());
     } catch {
       setActionError(t("tokens.createFailed"));
@@ -217,7 +217,6 @@ export default function ApiTokensPanel() {
                 onChange={(e) => setExpiry(e.target.value)}
                 className={deck.fieldInput}
               >
-                <option value="never">{t("tokens.expiryNever")}</option>
                 {EXPIRY_OPTIONS.map((days) => (
                   <option key={days} value={days}>
                     {t("tokens.expiryDays", { n: days })}
