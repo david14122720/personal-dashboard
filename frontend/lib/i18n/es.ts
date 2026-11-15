@@ -859,6 +859,15 @@ export const es = {
     active: "Activo",
     revoked: "Revocado",
     expired: "Expirado",
+    // F-13 revoke-all: the control that closes every credential at once. The
+    // confirmation names the consequence (automations stop) instead of asking
+    // a bland "are you sure".
+    revokeAll: "Revocar todos",
+    revokingAll: "Revocando…",
+    confirmRevokeAll:
+      "¿Revocar todos tus tokens? Las automatizaciones que los usan dejarán de funcionar.",
+    revokeAllDone: "{n} token(s) revocados.",
+    revokeAllFailed: "No se pudieron revocar los tokens. Inténtalo de nuevo.",
   },
   common: {
     retry: "Reintentar",

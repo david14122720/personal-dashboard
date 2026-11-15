@@ -24,7 +24,13 @@ pub fn bearer_hash(token: &str) -> String {
 /// (A4: deactivation stops existing sessions on their next request).
 const SESSION_LOOKUP_SQL: &str = "SELECT s.user_id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.is_active";
 /// Active API-token lookup: unrevoked, unexpired and owned by an active user.
-const API_TOKEN_LOOKUP_SQL: &str = "SELECT t.user_id FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now()) AND u.is_active";
+///
+/// F-13: `expires_at` is mandatory here. Legacy rows were inserted without an
+/// expiry (`expires_at IS NULL`), and the old `IS NULL OR expires_at > now()`
+/// predicate kept them valid forever; migration `0019_api_token_expiry.sql`
+/// backfills them to `created_at + 90 days`, so a NULL row is now simply a
+/// non-authenticating row.
+const API_TOKEN_LOOKUP_SQL: &str = "SELECT t.user_id FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND t.expires_at > now() AND u.is_active";
 /// Touch an API token on successful use (never leaks whether the token
 /// existed: a miss simply yields 401 without writing anything).
 ///
@@ -141,6 +147,21 @@ mod tests {
                 "lookup must require an active user, got: {sql}"
             );
         }
+    }
+
+    #[test]
+    fn api_token_lookup_requires_an_expiry() {
+        // F-13: a NULL `expires_at` used to mean "valid forever", so a legacy
+        // row outlived logout and every session revoke. Expiry is mandatory at
+        // read time now; migration 0019 backfills the rows that lacked one.
+        assert!(
+            !API_TOKEN_LOOKUP_SQL.contains("expires_at IS NULL"),
+            "the lookup must not accept an expiring-less token, got: {API_TOKEN_LOOKUP_SQL}"
+        );
+        assert!(
+            API_TOKEN_LOOKUP_SQL.contains("t.expires_at > now()"),
+            "the lookup must require a live expiry, got: {API_TOKEN_LOOKUP_SQL}"
+        );
     }
 
     #[test]

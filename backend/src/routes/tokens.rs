@@ -8,7 +8,12 @@
 //! other surface (list, revoke, database) only ever carries the SHA-256 hash
 //! or the display prefix.
 //!
-//! Registered in `main.rs` (`POST/GET /tokens`, `DELETE /tokens/{id}`).
+//! Registered in `main.rs` (`POST/GET /tokens`, `DELETE /tokens/{id}`);
+//! [`revoke_all_tokens_handler`] belongs on that same collection route as a
+//! `DELETE`. It is the control F-13 asks for: one statement closes every live
+//! token of the caller, so a stolen session cannot leave a credential behind
+//! that survives logout. Deliberately unbudgeted — a revoke after a
+//! compromise must never be throttled.
 
 use axum::{
     extract::{Path, State},
@@ -32,18 +37,28 @@ pub const TOKEN_PREFIX: &str = "pd_";
 pub const PREFIX_LEN: usize = 8;
 /// Maximum name length, mirroring `chk_api_token_name_len` (`1..=80` chars).
 pub const MAX_NAME_LEN: usize = 80;
-/// Maximum lifetime accepted by `expires_in_days` (`1..=3650`, ~10 years).
-pub const MAX_EXPIRES_IN_DAYS: i64 = 3650;
+/// Maximum lifetime accepted by `expires_in_days` (`1..=90`).
+///
+/// F-13: the caller used to pick up to 3650 days (~10 years), so a session
+/// stolen seconds before expiring could mint a decade-long credential that
+/// neither logout nor `DELETE /sessions` revokes. 90 days is the ceiling now;
+/// a larger value is a 422, never a silently clamped lifetime.
+pub const MAX_EXPIRES_IN_DAYS: i64 = 90;
 
 const CREATE_TOKEN_SQL: &str = "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at) VALUES ($1,$2,$3,$4,$5) RETURNING id, name, prefix, scopes, expires_at, created_at";
 const LIST_TOKENS_SQL: &str = "SELECT id, name, prefix, scopes, expires_at, last_used_at, revoked_at, created_at FROM api_tokens WHERE user_id=$1 ORDER BY created_at DESC, id DESC";
 const REVOKE_TOKEN_SQL: &str = "UPDATE api_tokens SET revoked_at=COALESCE(revoked_at, now()) WHERE id=$1 AND user_id=$2 RETURNING id, name, prefix, scopes, expires_at, last_used_at, revoked_at, created_at";
+/// Revoke-all (F-13): one statement over every still-live token of the caller.
+/// `revoked_at IS NULL` is what makes the call idempotent — a second pass
+/// matches nothing, so it reports `revoked: 0` and moves no timestamp.
+const REVOKE_ALL_TOKENS_SQL: &str = "UPDATE api_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTokenRequest {
     pub name: String,
-    /// Optional lifetime in whole days (`1..=3650`); omitted means no expiry.
+    /// Optional lifetime in whole days (`1..=90`); omitted applies the 90-day
+    /// ceiling instead of "never expires".
     pub expires_in_days: Option<i64>,
 }
 
@@ -68,6 +83,12 @@ pub struct ApiTokenResponse {
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RevokeAllTokensResponse {
+    /// How many tokens this call actually revoked. A second call reports `0`.
+    pub revoked: u64,
 }
 
 impl
@@ -123,7 +144,8 @@ pub fn validate_token_name(raw: &str) -> Result<String, AppError> {
     Ok(name)
 }
 
-/// Whole-day lifetimes of `1..=3650`; omitted means the token never expires.
+/// Whole-day lifetimes of `1..=90`; omitted means
+/// [`DEFAULT_EXPIRES_IN_DAYS`], never "no expiry".
 pub fn validate_expires_in_days(raw: Option<i64>) -> Result<Option<i64>, AppError> {
     match raw {
         None => Ok(None),
@@ -137,9 +159,11 @@ pub fn validate_expires_in_days(raw: Option<i64>) -> Result<Option<i64>, AppErro
 /// Lifetime applied when the caller omits `expires_in_days`.
 ///
 /// Audit F-01/A6: a credential that never expires turns one stolen session into
-/// permanent access. Omitted now means 90 days, and the response still reports
-/// the resulting `expires_at`.
-const DEFAULT_EXPIRES_IN_DAYS: i64 = 90;
+/// permanent access. Omitted means 90 days, and the response still reports the
+/// resulting `expires_at`. Tied to the ceiling on purpose: an omission default
+/// above [`MAX_EXPIRES_IN_DAYS`] would be the same F-13 hole through the other
+/// door.
+const DEFAULT_EXPIRES_IN_DAYS: i64 = MAX_EXPIRES_IN_DAYS;
 
 pub fn effective_lifetime_days(raw: Option<i64>) -> Result<i64, AppError> {
     Ok(validate_expires_in_days(raw)?.unwrap_or(DEFAULT_EXPIRES_IN_DAYS))
@@ -277,6 +301,30 @@ pub async fn delete_token_handler(
     .map_err(|_| AppError::Internal)?;
     row.map(|r| Json(ApiTokenResponse::from(r)))
         .ok_or(AppError::NotFound)
+}
+
+/// `DELETE /api/tokens`: revoke every still-live token of the caller in one
+/// statement (F-13, revoke-all "me han robado la sesión" control).
+///
+/// Accepts either a session or an API token, like the other management
+/// surfaces: the caller is always the resolved `user_id`, so one user can never
+/// revoke another's credentials. Idempotent — the second call reports
+/// `revoked: 0` — and deliberately unbudgeted (no rate-limit reservation): a
+/// revoke after a compromise must never be throttled.
+pub async fn revoke_all_tokens_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<RevokeAllTokensResponse>, AppError> {
+    let token = middleware::extract_bearer(&headers).ok_or(AppError::Auth)?;
+    let user_id = middleware::resolve_token_user_id(&state.pool, &token).await?;
+    let res = sqlx::query(REVOKE_ALL_TOKENS_SQL)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    Ok(Json(RevokeAllTokensResponse {
+        revoked: res.rows_affected(),
+    }))
 }
 
 #[cfg(test)]
@@ -419,22 +467,32 @@ mod tokens_tests {
         // Audit F-01/A6: no caller-supplied value must not mean "forever".
         assert_eq!(effective_lifetime_days(None).unwrap(), 90);
         assert_eq!(effective_lifetime_days(Some(30)).unwrap(), 30);
-        assert_eq!(effective_lifetime_days(Some(3650)).unwrap(), 3650);
+        assert_eq!(effective_lifetime_days(Some(90)).unwrap(), 90);
         assert_422(effective_lifetime_days(Some(0)).unwrap_err());
-        assert_422(effective_lifetime_days(Some(3651)).unwrap_err());
+        assert_422(effective_lifetime_days(Some(91)).unwrap_err());
     }
 
+    /// F-13: the caller used to choose up to 3650 days. The ceiling is 90 now:
+    /// the boundary is accepted, one day past it is a 422 (never a silent
+    /// clamp, so the caller always gets the lifetime it asked for), and an
+    /// omitted value lands exactly on the same ceiling.
     #[test]
-    fn expires_in_days_allows_1_to_3650_or_absent() {
+    fn expires_in_days_allows_1_to_90_or_absent() {
+        assert_eq!(MAX_EXPIRES_IN_DAYS, 90);
         assert_eq!(validate_expires_in_days(None).unwrap(), None);
         assert_eq!(validate_expires_in_days(Some(1)).unwrap(), Some(1));
         assert_eq!(
-            validate_expires_in_days(Some(3650)).unwrap(),
-            Some(3650)
+            validate_expires_in_days(Some(MAX_EXPIRES_IN_DAYS)).unwrap(),
+            Some(90)
         );
-        for bad in [Some(0), Some(-7), Some(3651), Some(i64::MAX)] {
+        for bad in [Some(0), Some(-7), Some(91), Some(3650), Some(i64::MAX)] {
             assert_422(validate_expires_in_days(bad).unwrap_err());
         }
+        assert_eq!(
+            effective_lifetime_days(None).unwrap(),
+            MAX_EXPIRES_IN_DAYS,
+            "the omission default must never exceed the ceiling"
+        );
     }
 
     #[test]
@@ -450,7 +508,12 @@ mod tokens_tests {
 
     #[test]
     fn token_sql_scopes_every_statement_by_user_id() {
-        for sql in [CREATE_TOKEN_SQL, LIST_TOKENS_SQL, REVOKE_TOKEN_SQL] {
+        for sql in [
+            CREATE_TOKEN_SQL,
+            LIST_TOKENS_SQL,
+            REVOKE_TOKEN_SQL,
+            REVOKE_ALL_TOKENS_SQL,
+        ] {
             assert!(
                 sql.contains("user_id"),
                 "token SQL must scope by user_id, got: {sql}"
@@ -467,6 +530,31 @@ mod tokens_tests {
         assert!(
             LIST_TOKENS_SQL.contains("ORDER BY created_at DESC"),
             "list must order newest first, got: {LIST_TOKENS_SQL}"
+        );
+    }
+
+    /// F-13 revoke-all shape: one statement over the caller's live tokens. The
+    /// `user_id` predicate is the whole authorization (a caller can only ever
+    /// reach their own rows) and `revoked_at IS NULL` is what makes the second
+    /// call report `revoked: 0` instead of restamping rows.
+    #[test]
+    fn revoke_all_sql_is_scoped_idempotent_and_ignores_ids() {
+        assert!(
+            REVOKE_ALL_TOKENS_SQL.contains("WHERE user_id=$1 AND revoked_at IS NULL"),
+            "revoke-all must scope by user_id and only match live rows, got: {REVOKE_ALL_TOKENS_SQL}"
+        );
+        assert!(
+            REVOKE_ALL_TOKENS_SQL.starts_with("UPDATE api_tokens SET revoked_at=now()"),
+            "revoke-all must stamp now(), once, and stay a single statement, got: {REVOKE_ALL_TOKENS_SQL}"
+        );
+        assert!(
+            !REVOKE_ALL_TOKENS_SQL.contains("COALESCE"),
+            "live-row filtering must come from the predicate, not COALESCE, got: {REVOKE_ALL_TOKENS_SQL}"
+        );
+        assert!(
+            !REVOKE_ALL_TOKENS_SQL.contains("WHERE id=")
+                && !REVOKE_ALL_TOKENS_SQL.contains("AND id="),
+            "revoke-all must not take a caller-supplied id, got: {REVOKE_ALL_TOKENS_SQL}"
         );
     }
 
@@ -495,7 +583,7 @@ mod tokens_tests {
     }
 
     #[tokio::test]
-    async fn unauthenticated_create_list_and_delete_are_401() {
+    async fn unauthenticated_create_list_delete_and_revoke_all_are_401() {
         let body = Json(CreateTokenRequest {
             name: "cli".into(),
             expires_in_days: None,
@@ -512,6 +600,21 @@ mod tokens_tests {
             .await
             .expect_err("missing bearer must be 401");
         assert_401(err);
+        // F-13: revoke-all is authenticated like every other management
+        // surface; no credential means 401 before the statement is built.
+        let err = revoke_all_tokens_handler(State(lazy_state()), HeaderMap::new())
+            .await
+            .expect_err("missing bearer must be 401");
+        assert_401(err);
+    }
+
+    /// F-13: the revoke-all response is the count of rows this call closed, and
+    /// its shape carries no token material.
+    #[test]
+    fn revoke_all_shape_is_a_bare_count() {
+        let body = serde_json::to_value(RevokeAllTokensResponse { revoked: 3 }).unwrap();
+        assert_eq!(body, json!({"revoked": 3}));
+        assert_eq!(body.as_object().map(|o| o.len()), Some(1));
     }
 
     // -- DB-backed tests (skip honestly without DATABASE_URL) --
@@ -655,6 +758,108 @@ mod tokens_tests {
         cleanup_user(&pool, user_b).await;
     }
 
+    /// F-13: revoking every token closes the caller's live credentials in one
+    /// call, spares another user's tokens, and a second call reports zero.
+    #[tokio::test]
+    async fn revoke_all_closes_every_caller_token_once() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP revoke_all_closes_every_caller_token_once: no DATABASE_URL");
+            return;
+        };
+        let (state_a, headers_a, user_a) = db_user_with_session(&pool).await;
+        let (state_b, headers_b, user_b) = db_user_with_session(&pool).await;
+        for (name, days) in [("one", None), ("two", Some(30)), ("three", None)] {
+            let (_status, _headers, _created) = create_token_handler(
+                State(state_a.clone()),
+                headers_a.clone(),
+                Json(CreateTokenRequest {
+                    name: name.into(),
+                    expires_in_days: days,
+                }),
+            )
+            .await
+            .expect("user A creates a token");
+        }
+        let (_, _, foreign) = create_token_handler(
+            State(state_b.clone()),
+            headers_b.clone(),
+            Json(CreateTokenRequest {
+                name: "foreign".into(),
+                expires_in_days: None,
+            }),
+        )
+        .await
+        .expect("user B creates a token");
+
+        let first = revoke_all_tokens_handler(State(state_a.clone()), headers_a.clone())
+            .await
+            .expect("revoke-all is 200")
+            .0;
+        assert_eq!(
+            first.revoked, 3,
+            "every live token of the caller was closed"
+        );
+        let listed_a = list_tokens_handler(State(state_a.clone()), headers_a.clone())
+            .await
+            .expect("list is 200")
+            .0;
+        assert_eq!(listed_a.len(), 3);
+        assert!(
+            listed_a.iter().all(|token| token.revoked_at.is_some()),
+            "each listed token must carry revoked_at"
+        );
+
+        // Idempotent: nothing live is left, so the count is zero.
+        let second = revoke_all_tokens_handler(State(state_a.clone()), headers_a.clone())
+            .await
+            .expect("second revoke-all is 200")
+            .0;
+        assert_eq!(second.revoked, 0);
+
+        // Scoped: the other user's token is untouched.
+        let listed_b = list_tokens_handler(State(state_b.clone()), headers_b.clone())
+            .await
+            .expect("foreign list is 200")
+            .0;
+        assert_eq!(listed_b.len(), 1);
+        assert_eq!(listed_b[0].id, foreign.id);
+        assert_eq!(
+            listed_b[0].revoked_at, None,
+            "another user's token must never be revoked by this call"
+        );
+
+        cleanup_user(&pool, user_a).await;
+        cleanup_user(&pool, user_b).await;
+    }
+
+    /// F-13: an omitted lifetime lands on the 90-day ceiling, never on
+    /// "forever".
+    #[tokio::test]
+    async fn omitted_lifetime_creates_a_90_day_token() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP omitted_lifetime_creates_a_90_day_token: no DATABASE_URL");
+            return;
+        };
+        let (state, headers, user_id) = db_user_with_session(&pool).await;
+        let (_, _, created) = create_token_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(CreateTokenRequest {
+                name: "ceiling".into(),
+                expires_in_days: None,
+            }),
+        )
+        .await
+        .expect("create is 201");
+        let expires_at = created.expires_at.expect("an expiry is always reported");
+        let lifetime = expires_at - Utc::now();
+        assert!(
+            lifetime > Duration::days(89) && lifetime <= Duration::days(90),
+            "omitted lifetime must be 90 days, got {lifetime}"
+        );
+        cleanup_user(&pool, user_id).await;
+    }
+
     #[tokio::test]
     async fn tokens_api_token_authenticates_and_touches_last_used() {
         let Some(pool) = test_pool() else {
@@ -710,7 +915,7 @@ mod tokens_tests {
         let raw = mint_raw_token();
         let hash = token_crypto::hash_token(&raw);
         sqlx::query(
-            "INSERT INTO api_tokens (user_id, name, token_hash, prefix) VALUES ($1,'throttle',$2,'pd_thr')",
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at) VALUES ($1,'throttle',$2,'pd_thr', now() + interval '30 days')",
         )
         .bind(user_id)
         .bind(&hash)
@@ -774,7 +979,7 @@ mod tokens_tests {
         let raw = mint_raw_token();
         let hash = token_crypto::hash_token(&raw);
         sqlx::query(
-            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, last_used_at) VALUES ($1,'stale',$2,'pd_stl', now() - interval '6 minutes')",
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, last_used_at, expires_at) VALUES ($1,'stale',$2,'pd_stl', now() - interval '6 minutes', now() + interval '30 days')",
         )
         .bind(user_id)
         .bind(&hash)
@@ -820,6 +1025,39 @@ mod tokens_tests {
         let err = list_tokens_handler(State(state.clone()), headers_for(&raw))
             .await
             .expect_err("expired api token must not list");
+        assert_401(err);
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// F-13: a legacy row inserted without an expiry must not authenticate. The
+    /// migration backfills the rows that already exist; this proves the read
+    /// path stopped trusting `expires_at IS NULL` for any row that appears
+    /// later (nothing in the schema forbids NULL: the backfill is not a NOT NULL
+    /// constraint change).
+    #[tokio::test]
+    async fn api_token_without_expiry_is_rejected() {
+        let Some(pool) = test_pool() else {
+            eprintln!("SKIP api_token_without_expiry_is_rejected: no DATABASE_URL");
+            return;
+        };
+        let (state, _, user_id) = db_user_with_session(&pool).await;
+        let raw = mint_raw_token();
+        let hash = token_crypto::hash_token(&raw);
+        sqlx::query(
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at) VALUES ($1,'legacy',$2,'pd_lgcy', NULL)",
+        )
+        .bind(user_id)
+        .bind(&hash)
+        .execute(&pool)
+        .await
+        .expect("seed an expiring-less api token");
+        let err = middleware::resolve_token_user_id(&state.pool, &raw)
+            .await
+            .expect_err("a token without an expiry must be 401");
+        assert_401(err);
+        let err = list_tokens_handler(State(state.clone()), headers_for(&raw))
+            .await
+            .expect_err("a token without an expiry must not list");
         assert_401(err);
         cleanup_user(&pool, user_id).await;
     }

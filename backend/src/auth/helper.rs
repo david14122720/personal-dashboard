@@ -318,7 +318,7 @@ mod tests {
         let raw = crate::auth::tokens::generate_token();
         let hash = crate::auth::tokens::hash_token(&raw);
         sqlx::query(
-            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at, revoked_at) VALUES ($1, $2, $3, $4, NULL, NULL)",
+            "INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at, revoked_at) VALUES ($1, $2, $3, $4, now() + interval '30 days', NULL)",
         )
         .bind(user_id)
         .bind("helper test token")

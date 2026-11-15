@@ -234,10 +234,13 @@ fn api_routes() -> Router<AppState> {
             post(routes::assets::create_valuation_handler),
         )
         .route("/net-worth", get(routes::assets::get_net_worth_handler))
+        // F-13: `DELETE /tokens` is the revoke-all control and lives on the
+        // collection path; `/tokens/{id}` below stays the single-token revoke.
         .route(
             "/tokens",
             post(routes::tokens::create_token_handler)
-                .get(routes::tokens::list_tokens_handler),
+                .get(routes::tokens::list_tokens_handler)
+                .delete(routes::tokens::revoke_all_tokens_handler),
         )
         .route("/tokens/{id}", delete(routes::tokens::delete_token_handler))
         // A5 (login hardening): session listing and revoke-all. Mounted next

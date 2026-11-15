@@ -1,13 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { createToken, listTokens, revokeToken } from "./tokens";
+import { createToken, listTokens, revokeAllTokens, revokeToken } from "./tokens";
 import { resetAuthRedirectForTests, setToken } from "./client";
 
 process.env.NEXT_PUBLIC_API_URL = "http://test.local/api";
 
 const seenBodies: unknown[] = [];
 const seenDeletes: string[] = [];
+let revokeAllCalls = 0;
+let revokeAllFailure: number | null = null;
 
 const server = setupServer(
   http.get("http://test.local/api/tokens", () => {
@@ -58,6 +60,17 @@ const server = setupServer(
       created_at: "2026-09-18T00:00:00Z",
     });
   }),
+  http.delete("http://test.local/api/tokens", () => {
+    revokeAllCalls += 1;
+    if (revokeAllFailure !== null) {
+      return HttpResponse.json(
+        { code: "INTERNAL", message: "boom" },
+        { status: revokeAllFailure },
+      );
+    }
+    // Idempotent: the first call closes 2, the second closes none.
+    return HttpResponse.json({ revoked: revokeAllCalls === 1 ? 2 : 0 });
+  }),
 );
 
 beforeAll(() => server.listen());
@@ -66,6 +79,8 @@ afterEach(() => {
   localStorage.clear();
   seenBodies.length = 0;
   seenDeletes.length = 0;
+  revokeAllCalls = 0;
+  revokeAllFailure = null;
   resetAuthRedirectForTests();
 });
 afterAll(() => server.close());
@@ -104,5 +119,23 @@ describe("tokens api", () => {
     setToken("session-123");
     await revokeToken("11111111-1111-1111-1111-111111111111");
     expect(seenDeletes).toEqual(["11111111-1111-1111-1111-111111111111"]);
+  });
+
+  it("revokes every token and reports the count", async () => {
+    setToken("session-123");
+    await expect(revokeAllTokens()).resolves.toEqual({ revoked: 2 });
+    // F-13: revoke-all targets the collection path, not an id, and stays
+    // idempotent on the server.
+    expect(seenDeletes).toHaveLength(0);
+    await expect(revokeAllTokens()).resolves.toEqual({ revoked: 0 });
+  });
+
+  it("surfaces a failed revoke-all as an ApiError", async () => {
+    setToken("session-123");
+    revokeAllFailure = 500;
+    await expect(revokeAllTokens()).rejects.toMatchObject({
+      status: 500,
+      code: "INTERNAL",
+    });
   });
 });

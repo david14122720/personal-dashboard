@@ -6,7 +6,7 @@
  * and metadata — callers must never expect secret material there.
  */
 
-import { apiDelete, apiGet, apiPost } from "@/lib/api/client";
+import { apiDelete, apiFetch, apiGet, apiPost, toApiError } from "@/lib/api/client";
 
 /** List/revoke shape: metadata only, never the raw secret nor its hash. */
 export interface ApiToken {
@@ -45,4 +45,24 @@ export function createToken(name: string, expires_in_days?: number): Promise<Cre
 
 export function revokeToken(id: string): Promise<void> {
   return apiDelete(`/tokens/${id}`);
+}
+
+/** Revoke-all result: how many live tokens this call actually closed. */
+export interface RevokeAllResult {
+  revoked: number;
+}
+
+/**
+ * Revoke every token of the caller in one server statement (`DELETE /tokens`).
+ *
+ * Uses `apiFetch` directly because `apiDelete` resolves to void and this
+ * endpoint answers `{ "revoked": n }` — the count is the only confirmation the
+ * UI can report. Idempotent: a second call answers `{ revoked: 0 }`.
+ */
+export async function revokeAllTokens(): Promise<RevokeAllResult> {
+  const res = await apiFetch("/tokens", { method: "DELETE" });
+  if (!res.ok) {
+    throw await toApiError(res);
+  }
+  return (await res.json()) as RevokeAllResult;
 }

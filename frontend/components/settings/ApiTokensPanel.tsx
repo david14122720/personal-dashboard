@@ -7,9 +7,11 @@ import { VerifiedIcon } from "@/components/dashboard/icons";
 import { deck } from "@/components/ui/deckStyles";
 import { t } from "@/lib/i18n";
 import { getToken } from "@/lib/api/client";
-import { createToken, listTokens, revokeToken, type ApiToken, type CreatedToken } from "@/lib/api/tokens";
+import { createToken, listTokens, revokeAllTokens, revokeToken, type ApiToken, type CreatedToken } from "@/lib/api/tokens";
 
-const EXPIRY_OPTIONS = ["30", "90", "365"] as const;
+// F-13: the backend caps `expires_in_days` at 90, so the picker never offers a
+// lifetime the API would reject with 422.
+const EXPIRY_OPTIONS = ["30", "90"] as const;
 
 function formatDate(value: string | null): string {
   if (!value) return t("tokens.never");
@@ -36,6 +38,9 @@ export default function ApiTokensPanel() {
   const [created, setCreated] = useState<CreatedToken | null>(null);
   const [copied, setCopied] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [revokingAll, setRevokingAll] = useState(false);
+  const [revokeAllError, setRevokeAllError] = useState(false);
+  const [revokedAll, setRevokedAll] = useState<number | null>(null);
 
   useEffect(() => {
     if (!getToken()) {
@@ -69,6 +74,7 @@ export default function ApiTokensPanel() {
     setCreating(true);
     setActionError(null);
     setCopied(false);
+    setRevokedAll(null);
     try {
       const result = await createToken(
         trimmed,
@@ -99,6 +105,7 @@ export default function ApiTokensPanel() {
     if (!window.confirm(t("tokens.confirmDelete", { name: token.name }))) return;
     setDeletingId(token.id);
     setActionError(null);
+    setRevokedAll(null);
     try {
       await revokeToken(token.id);
       setTokens(await listTokens());
@@ -108,6 +115,28 @@ export default function ApiTokensPanel() {
       setDeletingId(null);
     }
   }
+
+  // F-13 revoke-all: one confirm, one call, then the list is re-read so the
+  // UI shows exactly what the server now holds. The count comes from the
+  // response, not from the pre-call list, so it stays truthful when another
+  // tab revoked something in between.
+  async function onRevokeAll() {
+    if (!window.confirm(t("tokens.confirmRevokeAll"))) return;
+    setRevokingAll(true);
+    setRevokeAllError(false);
+    setRevokedAll(null);
+    try {
+      const { revoked } = await revokeAllTokens();
+      setRevokedAll(revoked);
+      await refresh();
+    } catch {
+      setRevokeAllError(true);
+    } finally {
+      setRevokingAll(false);
+    }
+  }
+
+  const liveCount = tokens.filter((token) => token.revoked_at === null).length;
 
   return (
     <section aria-label={t("tokens.title")} className="flex flex-col gap-6">
@@ -124,6 +153,18 @@ export default function ApiTokensPanel() {
         {actionError ? (
           <p role="alert" className={deck.alertBanner}>
             {actionError}
+          </p>
+        ) : null}
+
+        {revokeAllError ? (
+          <p role="alert" className={deck.alertBanner}>
+            {t("tokens.revokeAllFailed")}
+          </p>
+        ) : null}
+
+        {revokedAll !== null ? (
+          <p role="status" className={deck.successBanner}>
+            {t("tokens.revokeAllDone", { n: revokedAll })}
           </p>
         ) : null}
 
@@ -194,7 +235,20 @@ export default function ApiTokensPanel() {
           </form>
         </DeckCard>
 
-        <DeckCard title={t("tokens.listTitle")}>
+        <DeckCard
+          title={t("tokens.listTitle")}
+          headerClassName={deck.sectionHeaderWrap}
+          action={
+            <button
+              type="button"
+              disabled={revokingAll || liveCount === 0}
+              onClick={() => void onRevokeAll()}
+              className={deck.dangerAction}
+            >
+              {revokingAll ? t("tokens.revokingAll") : t("tokens.revokeAll")}
+            </button>
+          }
+        >
           {loading ? (
             <p role="status" className="text-sm text-faint">
               {t("tokens.loading")}
