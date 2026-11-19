@@ -3,9 +3,10 @@
 # Stage frontend (Next.js static export) + Stage backend (Rust Axum serving STATIC_DIR)
 # + Stage mcp (TypeScript Streamable HTTP server on :3002, same container).
 
-FROM node:22-slim AS frontend
+FROM node:26-slim AS frontend
 WORKDIR /app/frontend
-RUN corepack enable && corepack prepare pnpm@11.23.0 --activate
+# Node 26 no longer ships corepack, so pnpm is installed through npm instead.
+RUN npm install -g pnpm@11.23.0
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 COPY frontend/ ./
 RUN pnpm install --frozen-lockfile --offline || pnpm install --frozen-lockfile
@@ -30,20 +31,20 @@ RUN cargo build --release --locked
 
 # Stage mcp: compile the TypeScript MCP server, then drop devDependencies so
 # only the production runtime (dist + pruned node_modules) ships downstream.
-FROM node:22-slim AS mcp
+FROM node:26-slim AS mcp
 WORKDIR /app/mcp-dashboard
 COPY mcp-dashboard/ ./
 RUN npm ci && npm run build && npm prune --omit=dev
 
-# Final stage on node:22-slim (bookworm family) so one image runs both the
+# Final stage on node:26-slim (trixie family) so one image runs both the
 # Rust backend and the Node MCP server. Keeps the previous runtime behaviour
 # (appuser uid 10001, setcap on the backend binary, STATIC_DIR, PORT).
 # No libssl3 either: the backend binary links no libssl/libcrypto (sqlx uses
 # tls-rustls), and Node ships its own TLS stack. ca-certificates is still
-# installed for outbound TLS verification, and on bookworm it pulls the openssl
+# installed for outbound TLS verification, and on trixie it pulls the openssl
 # package transitively, so libssl3 can still appear through that path — it is
 # simply no longer requested explicitly.
-FROM node:22-slim
+FROM node:26-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 10001 appuser
