@@ -369,7 +369,7 @@ const DeleteByIdSchema = z.object({ id: uuid });
 
 const CreateTokenSchema = z.object({
   name: z.string().min(1).max(80),
-  expires_in_days: z.number().int().min(1).max(90).optional(),
+  expires_in_days: z.number().int().min(1).max(180).optional(),
 });
 
 const ListTokensSchema = z.object({});
@@ -1131,7 +1131,7 @@ const entries: ToolEntry[] = [
     def: {
       name: "create_token",
       description:
-        "POST /api/tokens. Creates a personal API token. SESSION AUTH ONLY: call with a dashboard session Bearer token, never with an existing `pd_...` token (backend is 401 otherwise). Returns the raw `pd_...` secret EXACTLY ONCE (Cache-Control: no-store) — copy it now, it is never stored nor shown again. SENSITIVE: never log, commit, or share the raw value. Optional expires_in_days (1-90); omitted means 90 days (audit F-01/A6/F-13). Duplicate names per user are 409.",
+        "POST /api/tokens. Creates a personal API token. SESSION AUTH ONLY: call with a dashboard session Bearer token, never with an existing `pd_...` token (backend is 401 otherwise). Returns the raw `pd_...` secret EXACTLY ONCE (Cache-Control: no-store) — copy it now, it is never stored nor shown again. SENSITIVE: never log, commit, or share the raw value. Optional expires_in_days (1-180); omitted means 180 days, the backend's `MAX_EXPIRES_IN_DAYS` ceiling (audit F-01/A6/F-13). Duplicate names per user are 409.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1139,8 +1139,8 @@ const entries: ToolEntry[] = [
           expires_in_days: {
             type: "integer",
             minimum: 1,
-            maximum: 90,
-            description: "Lifetime in whole days, 1-90; omitted means 90 days",
+            maximum: 180,
+            description: "Lifetime in whole days, 1-180; omitted means 180 days",
           },
         },
         required: ["name"],
