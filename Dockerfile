@@ -80,7 +80,7 @@ ENV PERSONAL_DASHBOARD_API_URL=http://127.0.0.1:80/api
 ENV MCP_ALLOWED_HOSTS=192.168.50.120
 USER appuser
 EXPOSE 80 3002
-# Probes both processes with Node's built-in fetch (Node 22), so the image
+# Probes both processes with Node's built-in fetch (Node 26), so the image
 # ships no curl. Exit 0 only when both /health and /healthz answer ok.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s CMD ["node","-e","const urls=['http://127.0.0.1:80/health','http://127.0.0.1:3002/healthz'];(async()=>{for(const u of urls){const r=await fetch(u);if(!r.ok)process.exit(1)}})().then(()=>process.exit(0),()=>process.exit(1))"]
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

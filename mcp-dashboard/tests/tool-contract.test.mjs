@@ -30,7 +30,7 @@ test("the unauthenticated login relay is gone", async () => {
   );
 });
 
-test("create_token advertises and enforces the backend's 180-day ceiling", async () => {
+test("create_token advertises and enforces the backend's 180-day ceiling", async (t) => {
   const def = toolDefinitions.find((d) => d.name === "create_token");
   assert.ok(def, "create_token must stay registered");
 
@@ -51,4 +51,21 @@ test("create_token advertises and enforces the backend's 180-day ceiling", async
     () => dispatchTool("create_token", { name: "cli", expires_in_days: 181 }, "pd_unused"),
     /180/,
   );
+
+  // Positive pin independent of zod's wording: the ceiling value itself must
+  // validate. fetch is stubbed so no request can leave the process.
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => new Response("{}", { status: 200 });
+  try {
+    await dispatchTool("create_token", { name: "cli", expires_in_days: 180 }, "pd_session");
+  } catch (err) {
+    assert.notEqual(
+      err?.name,
+      "ZodError",
+      `expires_in_days: 180 must pass validation, got: ${err}`,
+    );
+  }
 });

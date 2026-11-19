@@ -36,7 +36,7 @@ jobs:
       # deployed environment both carry this same value.
       SESSION_TTL_HOURS: 24
     steps:
-      # Pinned by full commit SHA (v4.4.0): a moved tag cannot change what runs.
+      # Pinned by full commit SHA (v7.0.1): a moved tag cannot change what runs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -58,7 +58,7 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      # Pinned by full commit SHA (v4.4.0).
+      # Pinned by full commit SHA (v7.0.1).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -92,7 +92,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Pinned by full commit SHA (v2.3.9). Exit code 2 (leaks) fails the job.
+      # Pinned by full commit SHA (v3.0.0). Exit code 2 (leaks) fails the job.
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           # Automatic workflow token, always present; not a repository secret.
